@@ -149,6 +149,28 @@ EOF
 chmod 600 "$MARKER_PATH"
 log "Preflight: clone-in-progress marker written (restore is now armed)"
 
+# Hardware serial (CID) of the SD card the root filesystem lives on.
+# prepare_for_cloning.sh records it; first_boot.sh compares against it so
+# a SOURCE box that reboots mid-clone is never mistaken for a fresh clone
+# (the marker alone cannot tell them apart — the image carries it too).
+# Prints nothing for non-SD roots (USB/NVMe expose no CID).
+root_card_cid() {
+    local src disk
+    src="$(findmnt -no SOURCE / 2>/dev/null)" || return 0
+    disk="$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)" || return 0
+    [[ -n "$disk" ]] && cat "/sys/block/${disk}/device/cid" 2>/dev/null || true
+}
+SOURCE_CID="$(root_card_cid)"
+if [[ -n "$SOURCE_CID" ]]; then
+    printf '%s\n' "$SOURCE_CID" > "${BACKUP_DIR}/source_card_cid"
+    chmod 600 "${BACKUP_DIR}/source_card_cid"
+    log "Preflight: source card CID recorded (first_boot.sh will refuse to run on this card)"
+else
+    log "Preflight: WARNING — root is not on an SD card with a CID; a reboot"
+    log "           mid-clone would let first_boot.sh wipe THIS box. Do not reboot"
+    log "           until restore_after_cloning.sh has run."
+fi
+
 # ---------------------------------------------------------------------------
 # Step 1: Stop services
 # ---------------------------------------------------------------------------
@@ -611,6 +633,44 @@ SECRET_PATHS+=(
     "/var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db"
 )
 
+# Operator identity and private material outside the app tree. None of it is
+# product state, and none of it had ever been on a list:
+#   - SSH client PRIVATE keys (id_*: id_ed25519, id_rsa, their .pub twins)
+#     for magic and root. Whoever reads a unit's card gets the operator's
+#     key — and with it whatever GitHub account or other box it opens.
+#   - known_hosts: a map of every machine the operator ever SSH'd to from
+#     this box (hostnames/IPs, unless hashed).
+#   - ~/.gitconfig (name + email), ~/.git-credentials (a plaintext token),
+#     and the GitHub CLI's hosts.yml (an OAuth token).
+#   - NetworkManager's seen-bssids (the MAC of every access point the
+#     operator's Wi-Fi profile ever associated with — geolocatable) and
+#     timestamps (connection-UUID usage history), plus secret_key, the
+#     per-host seed NM derives stable-privacy IPv6 addresses and randomized
+#     MACs from: shipping one seed makes every unit derive the same ones.
+#     NM regenerates all three when absent.
+#
+# DELIBERATELY NOT here: ~/.ssh/authorized_keys. The owner's key ships on
+# every unit on purpose (owner decision), as do the shared `magic` password
+# and passwordless sudo. Only the operator's OUTBOUND identity is stripped.
+#
+# Stash-and-restore like everything else on this list, so the source box
+# keeps working keys, git config and Wi-Fi history after the dd.
+for _h in /home/magic /root; do
+    SECRET_PATHS+=(
+        "${_h}/.ssh/id_*"
+        "${_h}/.ssh/known_hosts*"
+        "${_h}/.gitconfig"
+        "${_h}/.git-credentials"
+        "${_h}/.config/gh/hosts.yml"
+    )
+done
+unset _h
+SECRET_PATHS+=(
+    "/var/lib/NetworkManager/seen-bssids"
+    "/var/lib/NetworkManager/timestamps"
+    "/var/lib/NetworkManager/secret_key"
+)
+
 # ---------------------------------------------------------------------------
 # Content curation: what the golden image SHIPS
 # ---------------------------------------------------------------------------
@@ -895,6 +955,25 @@ fi
 rm -f /var/log/cloud-init.log* /var/log/cloud-init-output.log* 2>/dev/null || true
 log "[2c/5] cloud-init logs removed (they render the Wi-Fi PSK at DEBUG)"
 
+# Docker's per-container json-file logs: the operator's Radarr/Sonarr/
+# Prowlarr activity (search terms, titles, indexer URLs) and Gluetun's VPN
+# session detail. `compose down` in Step 1 removes the stack's containers
+# and their log files with them, so on a normal run this finds nothing;
+# it exists for containers compose down did not remove (a failed down, a
+# container started by hand). Truncated, NOT stashed: logs are disposable,
+# they were unbounded before setup_services.sh configured rotation (a
+# tmpfs stash could ENOSPC the whole prepare), and the source box loses
+# nothing it needs. Truncating frees the blocks, so Step 4c's fill covers
+# them. first_boot.sh truncates any that still ride in on an older image.
+shopt -s nullglob
+_dlogs=(/var/lib/docker/containers/*/*-json.log*)
+shopt -u nullglob
+for _f in "${_dlogs[@]}"; do
+    truncate -s 0 "$_f" 2>/dev/null || true
+done
+log "[2c/5] Docker container logs truncated (${#_dlogs[@]} file(s))"
+unset _dlogs _f
+
 # ---------------------------------------------------------------------------
 # Step 2d: the MOVIES-drive fstab entry must not block boot on a unit that
 # has no movie drive — which is EVERY unit, the first time a customer
@@ -986,6 +1065,12 @@ leak_checks=(
     '/opt/magic_dingus_box/services/config/sonarr|sonarr.db*'
     '/opt/magic_dingus_box/services/config/prowlarr|prowlarr.db*'
     '/opt/magic_dingus_box/magic_dingus_box_cpp|media_browser.db*'
+    # Operator outbound identity (authorized_keys is intentionally NOT
+    # checked — it ships by owner decision).
+    '/home/magic/.ssh|id_*'
+    '/root/.ssh|id_*'
+    '/home/magic/.config/gh|hosts.yml'
+    '/root/.config/gh|hosts.yml'
 )
 for chk in "${leak_checks[@]}"; do
     dir="${chk%%|*}"
@@ -1022,9 +1107,20 @@ log "[3/5] Re-enabling magic-first-boot.service (so cloned Pi runs it)..."
 # the clone. Install from the repo copy synced to ${INSTALL_DIR}/systemd/.
 UNIT_INSTALLED="/etc/systemd/system/magic-first-boot.service"
 UNIT_SRC="${INSTALL_DIR}/systemd/magic-first-boot.service"
+# "Present" is not "correct": a unit installed by an older deploy keeps its
+# old ordering forever if we only install when missing (the same trap the
+# LABEL=MOVIES fstab guard fell into). The image must carry the repo's
+# CURRENT unit — its Before= list is what keeps a clone's Docker stack from
+# dialling the VPN on the source's key before first_boot wipes it — so
+# replace it whenever it differs.
+if [[ -f "$UNIT_INSTALLED" && -f "$UNIT_SRC" ]] && ! cmp -s "$UNIT_SRC" "$UNIT_INSTALLED"; then
+    install -m 0644 "$UNIT_SRC" "$UNIT_INSTALLED"
+    systemctl daemon-reload
+    log "[3/5] Replaced stale magic-first-boot.service unit with ${UNIT_SRC}"
+fi
 if [[ ! -f "$UNIT_INSTALLED" ]]; then
     if [[ -f "$UNIT_SRC" ]]; then
-        cp "$UNIT_SRC" "$UNIT_INSTALLED"
+        install -m 0644 "$UNIT_SRC" "$UNIT_INSTALLED"
         systemctl daemon-reload
         log "[3/5] Installed missing magic-first-boot.service unit from ${UNIT_SRC}"
     else

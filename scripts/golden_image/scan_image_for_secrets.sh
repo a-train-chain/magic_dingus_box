@@ -19,8 +19,9 @@
 #   ./scan_image_for_secrets.sh --image ~/golden.img.gz --needles ~/secrets.txt
 #
 #   --pi HOST        harvest needles from a live box over SSH (Wi-Fi SSID +
-#                    PSK, every services/.env value, the Flask HMAC secret,
-#                    SSH host private keys)
+#                    PSK + seen BSSIDs, every services/.env value, the Flask
+#                    HMAC secret, SSH host private keys, the operator's SSH
+#                    client private keys, git-credentials, gh OAuth token)
 #   --needles FILE   use a file of literal secrets instead, one per line
 #   --skip-integrity skip the gzip CRC check (faster, but a truncated image
 #                    can then report a false clean -- not recommended)
@@ -104,6 +105,17 @@ if [[ -n "$PI_HOST" ]]; then
     # They are still scanned -- if that design decision changes, the gate
     # notices immediately -- but they are reported separately instead of
     # turning every correct image red.
+    #
+    # Operator OUTBOUND identity (prepare_for_cloning.sh stashes all of it):
+    # SSH client private keys (body lines 2+ only -- line 1 of an unencrypted
+    # OpenSSH key is a near-constant header shared with the host keys above,
+    # and would report a false LEAK on every correct image), git-credentials
+    # lines, the gh CLI OAuth token, and NetworkManager's seen-bssids (AP
+    # MACs, geolocatable). NOT scanned: known_hosts and ~/.gitconfig -- their
+    # values (hostnames, the operator's name/email) legitimately recur in
+    # any image carrying a git checkout's reflogs, so they would bury real
+    # hits; prepare's post-scrub file check covers those instead.
+    # authorized_keys is never harvested: it ships by owner decision.
     ssh -o ConnectTimeout=10 "$PI_HOST" '
         sudo grep -hoE "^ssid=.+" /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null | sed "s/^ssid=/wifi-ssid\t/"
         sudo grep -hoE "^psk=.+"  /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null | sed "s/^psk=/wifi-psk\t/"
@@ -112,6 +124,14 @@ if [[ -n "$PI_HOST" ]]; then
           | sed "s/^\([A-Za-z_][A-Za-z0-9_]*\)=/env:\1\t/"
         sudo sed "s/^/flask-secret\t/" /opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key 2>/dev/null
         sudo grep -h -v -e "-----" /etc/ssh/ssh_host_*_key 2>/dev/null | sed "s/^/expected:ssh-host-key\t/"
+        sudo find /home/magic/.ssh /root/.ssh -maxdepth 1 -type f -name "id_*" ! -name "*.pub" \
+             -exec awk "/-----/{n=0;next} {n++; if (n>1) print}" {} + 2>/dev/null \
+          | sed "s/^/ssh-client-private-key\t/"
+        sudo cat /home/magic/.git-credentials /root/.git-credentials 2>/dev/null | sed "s/^/git-credentials\t/"
+        sudo grep -hoE "oauth_token:[[:space:]]*[^[:space:]]+" /home/magic/.config/gh/hosts.yml /root/.config/gh/hosts.yml 2>/dev/null \
+          | sed -E "s/^oauth_token:[[:space:]]*/gh-oauth-token\t/"
+        sudo grep -hoE "([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" /var/lib/NetworkManager/seen-bssids 2>/dev/null \
+          | sed "s/^/wifi-bssid\t/"
     ' 2>/dev/null \
         | sed -e '/\t[[:space:]]*$/d' -e 's/[[:space:]]*$//' -e '/^$/d' \
         | sort -u > "$TMP_NEEDLES" || true

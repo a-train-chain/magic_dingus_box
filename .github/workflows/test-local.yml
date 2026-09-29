@@ -29,8 +29,21 @@ jobs:
   # someone remembered a manual run. BUILD_KIOSK=OFF skips every
   # Linux-kiosk dependency (DRM/GStreamer/evdev) exactly like the Mac
   # configure does; Catch2 and spdlog arrive via FetchContent.
+  #
+  # Two legs. media_browser=OFF is the configure this job always ran (8
+  # suites). media_browser=ON adds the 9th, MediaBrowserUnit — which was
+  # never built in CI at all, even though every production box and the
+  # release binary are MB-ON — and also compiles the other 8 with
+  # MEDIA_BROWSER_ENABLED defined, i.e. the way they actually ship. Its
+  # extra apt deps are the Media Browser set from install_deps.sh /
+  # release.yml (CMake REQUIRED under ENABLE_MEDIA_BROWSER).
   cpp-unit:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        media_browser: ["OFF", "ON"]
+    name: cpp-unit (media browser ${{ matrix.media_browser }})
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,17 +51,31 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config git \
+          sudo apt-get install -y build-essential cmake pkg-config git tzdata \
             libjsoncpp-dev libyaml-cpp-dev
+          if [ "${{ matrix.media_browser }}" = "ON" ]; then
+            sudo apt-get install -y libcurl4-openssl-dev libsqlite3-dev \
+              libtorrent-rasterbar-dev libboost-dev
+          fi
 
       - name: Configure (tests only, no kiosk)
-        run: cmake -S magic_dingus_box_cpp -B build-ci -DBUILD_KIOSK=OFF
+        run: >
+          cmake -S magic_dingus_box_cpp -B build-ci
+          -DBUILD_KIOSK=OFF
+          -DENABLE_MEDIA_BROWSER=${{ matrix.media_browser }}
 
       - name: Build test suites
         run: cmake --build build-ci -j"$(nproc)"
 
       - name: Run suites
         run: ctest --test-dir build-ci --output-on-failure
+
+      # Guard against the MB leg silently degrading back to 8 suites (a
+      # CMake gate change that drops the MediaBrowserUnit registration would
+      # otherwise still exit green).
+      - name: Assert Media Browser suite ran
+        if: matrix.media_browser == 'ON'
+        run: ctest --test-dir build-ci -N | grep -q "MediaBrowserUnit"
 
   # The Flask web-admin pytest suite (playlist CRUD, OTA endpoints,
   # pairing, backup/restore, storage eligibility, upload staging).

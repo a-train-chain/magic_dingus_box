@@ -48,6 +48,12 @@ if [[ ! -f "$MARKER_PATH" ]]; then
     exit 0
 fi
 
+# Disarm first-boot BEFORE anything below can fail: this script runs under
+# set -e, and an abort in step 1 used to leave the service enabled, so the
+# source's next reboot ran first_boot.sh against it. Step 2 repeats this
+# (idempotent) for the log line.
+systemctl disable magic-first-boot.service &>/dev/null || true
+
 # ---------------------------------------------------------------------------
 # Step 1: Restore per-Pi identity files from backup
 # ---------------------------------------------------------------------------
@@ -109,6 +115,11 @@ fi
 # artifact would not carry the ProtonVPN private key, the phone-remote HMAC
 # secret or the TMDB key. The manifest records each file's original path so
 # they go back exactly where they came from, with their ownership.
+# The manifest is generic, so every SECRET_PATHS class comes back through this
+# one loop — including the operator's SSH client keys + known_hosts, git and
+# gh credentials, and NetworkManager's seen-bssids/timestamps/secret_key
+# (mode 600 on the private keys is preserved, which ssh insists on).
+# Docker container logs are NOT here: prepare truncates them (disposable).
 SECRET_STASH="/dev/shm/mdb-secret-stash"
 
 if [[ -f "${SECRET_STASH}/manifest" ]]; then

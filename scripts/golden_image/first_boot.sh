@@ -68,6 +68,36 @@ log "=== Magic Dingus Box first-boot setup starting ==="
 log "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')"
 
 # ---------------------------------------------------------------------------
+# Source-box guard. prepare_for_cloning.sh enables this service on the
+# SOURCE box so the image carries it enabled. If the source reboots before
+# restore_after_cloning.sh disables it again (Mac slept mid-dd, trap never
+# ran, power cycle), this script would wipe the source's saves, pairings and
+# service config, and Step 6d would delete cloning_backup/ — the only copy of
+# what restore needs. Same card as prepare recorded => this is the source.
+# ---------------------------------------------------------------------------
+# Hardware serial (CID) of the SD card the root filesystem lives on.
+# prepare_for_cloning.sh records it; first_boot.sh compares against it so
+# a SOURCE box that reboots mid-clone is never mistaken for a fresh clone
+# (the marker alone cannot tell them apart — the image carries it too).
+# Prints nothing for non-SD roots (USB/NVMe expose no CID).
+root_card_cid() {
+    local src disk
+    src="$(findmnt -no SOURCE / 2>/dev/null)" || return 0
+    disk="$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)" || return 0
+    [[ -n "$disk" ]] && cat "/sys/block/${disk}/device/cid" 2>/dev/null || true
+}
+CLONE_BACKUP_DIR="/var/lib/magic-dingus-box/cloning_backup"
+if [[ -f "${CLONE_BACKUP_DIR}/in_progress" && -s "${CLONE_BACKUP_DIR}/source_card_cid" ]]; then
+    THIS_CID="$(root_card_cid)"
+    if [[ -n "$THIS_CID" && "$THIS_CID" == "$(cat "${CLONE_BACKUP_DIR}/source_card_cid")" ]]; then
+        log "=== This is the SOURCE card (a clone was in progress when it rebooted)."
+        log "=== NOT running first-boot. Run: sudo bash /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh"
+        systemctl disable magic-first-boot.service 2>/dev/null || true
+        exit 0
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Step 1: Regenerate SSH host keys
 # ---------------------------------------------------------------------------
 log "[1/7] Regenerating SSH host keys..."
@@ -117,9 +147,10 @@ fi
 #
 # Done here rather than in prepare_for_cloning.sh so the SOURCE box keeps its
 # identity: truncating it there would change the source's DHCP identity too.
-# Deliberately placed BEFORE the filesystem expand — the expand reboots on
-# some paths, and a duplicate machine-id must not survive even one DHCP
-# exchange.
+# Deliberately placed BEFORE the filesystem expand and everything after
+# it, so a duplicate machine-id cannot survive even one DHCP exchange that
+# a later step might trigger. (The expand itself grows the partition ONLINE
+# with growpart/resize2fs and never reboots.)
 log "[1b/7] Regenerating machine-id..."
 rm -f /etc/machine-id /var/lib/dbus/machine-id
 systemd-machine-id-setup >/dev/null 2>&1 || true
@@ -330,6 +361,15 @@ else
         || hostname "$NEW_HOSTNAME" 2>/dev/null \
         || log "[3/7] WARNING: runtime hostname not applied (takes effect on reboot)"
 
+    # avahi-daemon reads the hostname once at startup and keeps advertising
+    # it. Without a restart it keeps announcing the SOURCE box's name
+    # (magicpi.local / magicpi-XXXX.local) until the next reboot, colliding
+    # with the source on mDNS and making `<new-hostname>.local` unresolvable
+    # during the very first session — when the operator is most likely to
+    # try the Content Manager. try-restart: no-op if avahi is not running.
+    systemctl try-restart avahi-daemon.service 2>/dev/null \
+        || log "[3/7] WARNING: avahi-daemon restart failed (mDNS name updates on reboot)"
+
     # The gate record, LAST. DATA_DIR may not exist yet on a minimal image
     # (Step 4 normally creates it, but that runs after this): an unguarded
     # redirect into a missing directory would abort the whole script before
@@ -407,9 +447,25 @@ if [[ -d "$SERVICES_DIR" ]]; then
     # gluetun would have failed to come up (no WG creds in .env that
     # we're about to delete anyway), but other containers may have
     # entered a healthy-ish state. Compose down cleanly.
-    if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null; then
+    #
+    # ONLY when dockerd is already up. docker.socket socket-activates
+    # docker.service on the first client call, and docker.service is
+    # After=network-online.target — so on a unit that has no Wi-Fi yet
+    # (every unit, the first time a customer powers it on) this one
+    # `docker compose down` sat waiting on NetworkManager-wait-online's
+    # timeout, holding up first boot and, through our Before= ordering,
+    # the kiosk itself. Skipping is safe: prepare_for_cloning.sh already
+    # ran `compose down` on the source (the image carries no containers),
+    # and magic-dingus-services.service is ConditionPathExists=.env, which
+    # this step deletes below — so nothing brings the stack up afterwards.
+    # `is-active` is false for "activating" too, which is exactly the
+    # stall case.
+    if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null \
+       && systemctl is-active --quiet docker.service; then
         (cd "$SERVICES_DIR" && docker compose down 2>&1 | sed 's/^/    /' || true)
         log "[6/7] Stopped Docker stack (was inherited from source image)"
+    elif [[ -f "$SERVICES_DIR/docker-compose.yml" ]]; then
+        log "[6/7] docker.service not active — skipping compose down (image carries no running stack)"
     fi
 
     # Remove the .env (WG creds + API keys + qBit password)
@@ -685,6 +741,24 @@ if [[ -d /var/log/audit ]]; then
     rm -f /var/log/audit/audit.log.* 2>/dev/null || true
     truncate -s 0 /var/log/audit/audit.log 2>/dev/null || true
 fi
+
+# Docker's per-container json-file logs. They hold the source operator's
+# Radarr/Sonarr/Prowlarr activity (search terms, titles, indexer URLs) and
+# Gluetun's VPN session detail (endpoint, forwarded port, public IP).
+# prepare_for_cloning.sh truncates them before the dd; this is the on-unit
+# net for a card cut by an older prepare. Truncated rather than deleted:
+# a container that still exists expects its log file to be there, and
+# truncating in place is safe even against a running dockerd. Glob covers
+# the rotated siblings (<id>-json.log.1 ...) that log rotation creates.
+shopt -s nullglob
+DOCKER_LOGS=(/var/lib/docker/containers/*/*-json.log*)
+shopt -u nullglob
+for f in "${DOCKER_LOGS[@]}"; do
+    truncate -s 0 "$f" 2>/dev/null || true
+done
+if [[ ${#DOCKER_LOGS[@]} -gt 0 ]]; then
+    log "[6/7] Truncated ${#DOCKER_LOGS[@]} inherited Docker container log(s)"
+fi
 log "[6/7] Inherited logs cleared (this unit's own history starts now)"
 
 # Step 6d: Wipe inherited cloning-backup state.
@@ -751,19 +825,27 @@ PI_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)"
 if [[ "$PI_MODEL" == "Raspberry Pi 4 "* ]]; then
     log "[6/7] Pi 4B detected — pruning Pi 5-only game content..."
     pruned_kb=0
-    for path in \
-        "${DATA_DIR}/roms/n64" \
-        "${DATA_DIR}/roms/dreamcast" \
-        "${DATA_DIR}/thumbnails/n64" \
-        "${DATA_DIR}/thumbnails/dreamcast" \
-        "${DATA_DIR}/playlists/games_n64.yaml" \
-        "${DATA_DIR}/playlists/games_dreamcast.yaml"; do
-        if [[ -e "$path" ]]; then
-            sz=$(du -sk "$path" 2>/dev/null | cut -f1) || sz=0
-            rm -rf "$path"
-            pruned_kb=$((pruned_kb + sz))
-            log "    pruned: ${path#${INSTALL_DIR}/} (${sz} KB)"
-        fi
+    # BOTH data/ AND build/data/ — the same dual-copy trap Step 6c and 6f
+    # document: build/data/ carries its own thumbnails and playlists (and on
+    # some source boxes its own roms/), so pruning only data/ left the Pi 5
+    # playlists on disk under the path a build-tree run reads, and left the
+    # space unreclaimed. BUILD_DATA_DIR is defined in Step 6 above.
+    for base in "$DATA_DIR" "$BUILD_DATA_DIR"; do
+        [[ -d "$base" ]] || continue
+        for path in \
+            "${base}/roms/n64" \
+            "${base}/roms/dreamcast" \
+            "${base}/thumbnails/n64" \
+            "${base}/thumbnails/dreamcast" \
+            "${base}/playlists/games_n64.yaml" \
+            "${base}/playlists/games_dreamcast.yaml"; do
+            if [[ -e "$path" ]]; then
+                sz=$(du -sk "$path" 2>/dev/null | cut -f1) || sz=0
+                rm -rf "$path"
+                pruned_kb=$((pruned_kb + sz))
+                log "    pruned: ${path#"${INSTALL_DIR}"/} (${sz} KB)"
+            fi
+        done
     done
     log "[6/7] Pi 5-only content pruned (~$((pruned_kb / 1024)) MB reclaimed for operator use)"
 else
@@ -855,9 +937,9 @@ fi
 # It exists for clones cut from OLDER donor images: they get the
 # MemoryLow drop-ins, the zram tune, and the cmdline append here. A
 # cmdline change on that path logs REBOOT_REQUIRED and simply arms on
-# the box's next natural power cycle — first_boot must not add another
-# reboot to the sequence (Step 2's expand may already have done one),
-# and the posture is inert-but-harmless until then. Best-effort like
+# the box's next natural power cycle — first_boot must not add a reboot
+# to the sequence (Step 2's online expand never reboots, and neither does
+# anything else here), and the posture is inert-but-harmless until then. Best-effort like
 # every other converge step: a failure must not stop first boot.
 MEMTUNE="/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh"
 if [[ -f "$MEMTUNE" ]]; then

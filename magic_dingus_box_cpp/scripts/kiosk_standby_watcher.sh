@@ -38,7 +38,15 @@
 set -euo pipefail
 
 GPIO_PIN=3
-GPIO_CHIP=gpiochip0
+# The 40-pin header's chip, resolved at startup by LABEL (see
+# resolve_gpio_chip). Never hardcode it: the header is gpiochip0 on a Pi 4B
+# but was gpiochip4 on early Pi 5 kernels (back to 0 since 6.6.47), and a
+# wrong chip makes gpiomon watch a line that is not GPIO 3 at all.
+GPIO_CHIP=""
+# Header-chip labels in preference order — the same list the kiosk uses
+# (PlatformProfile::gpiochip_labels / gpio_manager.cpp): Pi 5 RP1, Pi 4B
+# BCM2711, older BCM2835.
+GPIO_HEADER_LABELS=(pinctrl-rp1 pinctrl-bcm2711 pinctrl-bcm2835)
 LOG_TAG=kiosk-standby
 
 # The kiosk is handled on its own, first on the way down and first on the
@@ -80,6 +88,30 @@ LED_PINS=(12 16 26 20)
 log() {
     echo "[kiosk-standby] $1"
     logger -t "$LOG_TAG" "$1" 2>/dev/null || true
+}
+
+# Pick the header chip from `gpiodetect` output on stdin. Lines look like
+#   gpiochip0 [pinctrl-rp1] (54 lines)
+# (identical in libgpiod 1.x and 2.x). Prints the chip name of the first
+# preferred label present, or gpiochip0 when none matches or the input is
+# empty — the historical value, and correct on a Pi 4B.
+pick_header_chip() {
+    local detect label
+    detect="$(cat)"
+    for label in "${GPIO_HEADER_LABELS[@]}"; do
+        local chip
+        chip="$(printf '%s\n' "$detect" \
+                | awk -v want="[${label}]" '$2 == want { print $1; exit }')"
+        if [[ -n "$chip" ]]; then
+            echo "$chip"
+            return 0
+        fi
+    done
+    echo gpiochip0
+}
+
+resolve_gpio_chip() {
+    { gpiodetect 2>/dev/null || true; } | pick_header_chip
 }
 
 read_gpio() {
@@ -412,7 +444,18 @@ monitor_loop() {
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
-log "Starting kiosk-standby-watcher (PID=$$)"
+main() {
+    log "Starting kiosk-standby-watcher (PID=$$)"
 
-reconcile_initial_state
-monitor_loop
+    GPIO_CHIP="$(resolve_gpio_chip)"
+    log "GPIO header chip: ${GPIO_CHIP}"
+
+    reconcile_initial_state
+    monitor_loop
+}
+
+# Sourceable for tests (tests/local/kiosk_standby_watcher_chip.bats): only
+# run when executed, not when sourced.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

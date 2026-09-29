@@ -71,7 +71,13 @@ jobs:
               file magic_dingus_box_cpp | grep -q aarch64 || { echo "FATAL: not an aarch64 binary"; exit 1; }
               strings magic_dingus_box_cpp | grep -q "READY=1" || { echo "FATAL: binary lacks sd_notify support (libsystemd-dev missing?)"; exit 1; }
               strings magic_dingus_box_cpp | grep -qi "prowlarr" || { echo "FATAL: Media Browser not compiled in"; exit 1; }
-              echo "Binary assertions passed: aarch64, sd_notify, Media Browser"
+              #   HAVE_GPIOD — libgpiod is ALSO an optional CMake dep; without
+              #     libgpiod-dev the power button, LEDs and rotary encoder
+              #     compile out and the stub prints this string instead.
+              if strings magic_dingus_box_cpp | grep -q "compiled without HAVE_GPIOD"; then
+                echo "FATAL: GPIO compiled out (libgpiod-dev missing?)"; exit 1
+              fi
+              echo "Binary assertions passed: aarch64, sd_notify, Media Browser, GPIO"
             '
 
       - name: Package binary

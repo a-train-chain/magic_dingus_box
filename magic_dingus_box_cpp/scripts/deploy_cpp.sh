@@ -571,15 +571,19 @@ declare -A PKG_MAP=(
     ["libtorrent-rasterbar"]="libtorrent-rasterbar-dev"
     ["sqlite3"]="libsqlite3-dev"
     ["libcurl"]="libcurl4-openssl-dev"
-    ["pugixml"]="libpugixml-dev"
+    ["libsystemd"]="libsystemd-dev"
 )
 
-# Base dependency set
-CHECK_PKGS=(libdrm gbm egl glesv2 libevdev libgpiod yaml-cpp jsoncpp)
+# Base dependency set. libsystemd is here because it is load-bearing even
+# though CMake only auto-detects it: without it sd_notify compiles out and
+# systemd kills the healthy Type=notify kiosk (v1.7.2). pugixml was dropped —
+# nothing links it (install_deps.sh / README agree).
+CHECK_PKGS=(libdrm gbm egl glesv2 libevdev libgpiod yaml-cpp jsoncpp libsystemd)
 
-# Add Media Browser deps when requested
+# Add Media Browser deps when requested. Boost (CMake REQUIRED) has no
+# pkg-config file; libtorrent-rasterbar-dev pulls its headers in.
 if [ "${MEDIA_BROWSER}" = "true" ]; then
-    CHECK_PKGS+=(libtorrent-rasterbar sqlite3 libcurl pugixml)
+    CHECK_PKGS+=(libtorrent-rasterbar sqlite3 libcurl)
 fi
 
 # Check each dependency

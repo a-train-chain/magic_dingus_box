@@ -165,6 +165,33 @@ fi
 echo "Ensuring ${TARGET_USER} is in docker group..."
 usermod -aG docker "${TARGET_USER}"
 
+# 1b. Container log rotation. Docker's json-file driver never rotates by
+# default, so every container log grew without bound on the SD card (and
+# carried the operator's activity into golden images). Merged into
+# /etc/docker/daemon.json without clobbering other keys; see
+# configure_docker_logging.sh. dockerd only reads log-opts at start, so it is
+# restarted when (and only when) the file changed — containers with restart
+# policies come straight back. EXISTING containers keep their old (unrotated)
+# log config until they are recreated; the `compose up -d` below does not
+# recreate unchanged services, so on an already-provisioned box run
+# `docker compose up -d --force-recreate` in ${SERVICES_DIR:-services/} once
+# (or let the next compose-file change recreate them).
+if ! command -v jq &>/dev/null; then
+    apt-get install -y -qq jq
+fi
+if _dlog="$(bash "${SCRIPT_DIR}/configure_docker_logging.sh" /etc/docker/daemon.json)"; then
+    if [ "$_dlog" = "changed" ]; then
+        echo "Docker log rotation configured (json-file, 10m x 3) — restarting dockerd"
+        systemctl restart docker.service \
+            || echo "WARN: docker restart failed; rotation applies after the next dockerd start"
+    else
+        echo "Docker log rotation already configured"
+    fi
+else
+    echo "WARN: could not configure Docker log rotation (see message above) — continuing"
+fi
+unset _dlog
+
 # 2. Storage layout
 echo "Creating storage layout at ${STORAGE_ROOT}..."
 # Radarr writes movies directly to ${STORAGE_ROOT}/library/<Title (Year)>/, no

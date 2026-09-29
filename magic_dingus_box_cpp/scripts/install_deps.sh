@@ -114,12 +114,18 @@ if [[ $INCLUDE_MEDIA_BROWSER -eq 1 ]]; then
     echo "Installing Media Browser dependencies..."
     # sqlite3 is the CLI binary — libsqlite3-dev ships only headers/libs,
     # and the watch-state acceptance checks shell out to `sqlite3` on the box.
+    # libboost-dev: CMakeLists.txt has find_package(Boost REQUIRED) for the
+    # Media Browser build (libtorrent's headers need it). It was only ever
+    # present transitively; named here to match release.yml and the README.
+    # libpugixml-dev was dropped: nothing in src/ or CMakeLists.txt uses
+    # pugixml, and release.yml never installed it, so it was a stale entry
+    # that made on-Pi builds and CI disagree about the dependency set.
     sudo apt install -y \
       libtorrent-rasterbar-dev \
+      libboost-dev \
       libsqlite3-dev \
       sqlite3 \
-      libcurl4-openssl-dev \
-      libpugixml-dev
+      libcurl4-openssl-dev
 fi
 
 # --- Persistent journal -------------------------------------------------------

@@ -71,6 +71,80 @@ if [[ "$THROT" == "0x0" ]]; then pass "clock ${ARM_MHZ}MHz, ${TEMP}, no throttli
 else fail "THROTTLED (${THROT}) at ${TEMP} — check cooling/PSU"; fi
 
 # ---------------------------------------------------------------------
+header "First boot & boot config"
+# ---------------------------------------------------------------------
+# A clone that did not finish first_boot.sh still carries SOURCE-BOX state
+# (hostname, saves, pairing, credentials) while looking perfectly healthy —
+# the 2026-08-04 parted failure killed first boot at Step 2 on every unit
+# and nothing else in this script could see it.
+#
+# The log is APPENDED across runs and a clone inherits the source's copy, so
+# only the LAST run counts: from the final "starting" line to the end.
+FB_LOG=/var/log/magic-first-boot.log
+FB_START="=== Magic Dingus Box first-boot setup starting ==="
+FB_DONE="=== Magic Dingus Box first-boot setup complete ==="
+if [[ -r "$FB_LOG" ]]; then
+  FB_LAST=$(awk -v s="$FB_START" 'index($0, s) { buf = "" } { buf = buf $0 "\n" } END { printf "%s", buf }' "$FB_LOG")
+  if grep -qF "=== FAILED" <<<"$FB_LAST"; then
+    fail "first boot FAILED on its last run — $(grep -F '=== FAILED' <<<"$FB_LAST" | head -1 | sed 's/^[^ ]* //') (see ${FB_LOG})"
+  elif grep -qF "$FB_DONE" <<<"$FB_LAST"; then
+    pass "first boot completed (${FB_LOG})"
+  elif grep -qF "This is the SOURCE card" <<<"$FB_LAST"; then
+    # The source-card guard: this box is the clone SOURCE and correctly
+    # refused to run first boot on itself.
+    pass "first boot skipped by the source-card guard (this is the clone source)"
+  else
+    fail "first boot started but never logged completion — interrupted? (see ${FB_LOG})"
+  fi
+else
+  # The source box (or a hand-provisioned one) may never have run first boot.
+  # A clone that never ran it is caught by the enabled-unit check below.
+  pass "no first-boot log (source / hand-provisioned box)"
+fi
+
+# The unit self-disables as its final step; still enabled means first boot
+# has not completed, and it WILL run (wiping saves/pairing) on next boot.
+FB_STATE=$(systemctl is-enabled magic-first-boot.service 2>/dev/null)
+case "$FB_STATE" in
+  enabled|enabled-runtime)
+    fail "magic-first-boot.service is still ENABLED — first boot has not completed (or a clone left it on)" ;;
+  *) pass "magic-first-boot.service not enabled (${FB_STATE:-not installed})" ;;
+esac
+
+# config.txt model-specific settings must live under [pi4]/[pi5], never
+# [all] — one image boots both boards. Filters stack in config.txt, so only
+# the MODEL filters ([piN]/[cmN]/[all]/[none]) change the context tracked
+# here; e.g. [HDMI:0] after [pi5] is still Pi 5-only.
+CFG=/boot/firmware/config.txt
+[[ -f "$CFG" ]] || CFG=/boot/config.txt
+if [[ -r "$CFG" ]]; then
+  CFG_KV=$(awk '
+    { sub(/#.*/, ""); gsub(/^[ \t]+|[ \t]+$/, "") }
+    /^\[.*\]$/ {
+      f = tolower(substr($0, 2, length($0) - 2))
+      if (f ~ /^(all|none|pi[0-9a-z]*|cm[0-9a-z]*)$/) ctx = f
+      next
+    }
+    /^(kernel|v3d_freq|gpu_mem)=/ { print (ctx == "" ? "all" : ctx) ":" $0 }
+  ' "$CFG")
+  grep -qx "pi5:kernel=kernel8.img" <<<"$CFG_KV" \
+    && pass "[pi5] kernel=kernel8.img (4 KB pages — flycast)" \
+    || fail "[pi5] kernel=kernel8.img missing from ${CFG} — flycast dies on the 16 KB-page kernel"
+  grep -q "^pi5:v3d_freq=" <<<"$CFG_KV" \
+    && pass "[pi5] $(grep '^pi5:v3d_freq=' <<<"$CFG_KV" | tail -1 | cut -d: -f2)" \
+    || fail "[pi5] v3d_freq missing from ${CFG}"
+  grep -qx "pi4:gpu_mem=76" <<<"$CFG_KV" \
+    && pass "[pi4] gpu_mem=76" \
+    || fail "[pi4] gpu_mem=76 missing from ${CFG}"
+  CFG_ALL=$(grep -E "^all:(kernel|v3d_freq|gpu_mem)=" <<<"$CFG_KV" | cut -d: -f2- | tr '\n' ' ')
+  [[ -z "$CFG_ALL" ]] \
+    && pass "no model-specific kernel/v3d_freq/gpu_mem under [all]" \
+    || fail "model-specific setting(s) under [all] in ${CFG}: ${CFG_ALL}— move them to [pi4]/[pi5]"
+else
+  warn "config.txt not found (not a Pi?)"
+fi
+
+# ---------------------------------------------------------------------
 header "Display"
 # ---------------------------------------------------------------------
 WANT=$(python3 - <<'PY' 2>/dev/null
