@@ -55,14 +55,49 @@ bool core_supports_overscan(const std::string& core_name) {
 
 }  // namespace
 
+std::string libretro_core_name(const std::string& core_name) {
+    if (core_name.find("_libretro") != std::string::npos) return core_name;
+    return core_name + "_libretro";
+}
+
+std::optional<std::string> resolve_core_dir(const std::string& core_name,
+                                            const std::string& system_dir,
+                                            const std::string& user_dir) {
+    if (core_name.empty()) return std::nullopt;
+    const std::string so = libretro_core_name(core_name) + ".so";
+    for (const std::string* dir : {&system_dir, &user_dir}) {
+        if (dir->empty()) continue;
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(
+                std::filesystem::path(*dir) / so, ec)) {
+            return *dir;
+        }
+    }
+    return std::nullopt;
+}
+
+bool rotate_launcher_log(const std::string& log_path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(log_path, ec)) return true;
+    // rename(2) atomically replaces an existing .1.
+    std::filesystem::rename(log_path, log_path + ".1", ec);
+    return !ec;
+}
+
 void write_remote_quit_config(std::ostream& out) {
     // See launch_contract.h. Keep in sync with QUIT_GAME in
     // magic_dingus_box/web/remote/uinput_writer.py (KEY_Z = 44).
     out << "input_exit_emulator = \"z\"\n";
 }
 
-void write_menu_toggle_combo_config(std::ostream& out) {
-    out << "input_menu_toggle_gamepad_combo = \"3\"\n";
+void write_menu_disabled_config(std::ostream& out) {
+    // See launch_contract.h. "0" is INPUT_COMBO_NONE in RetroArch's
+    // menu_toggle_gamepad_combo enum; "nul" is its explicit unbound-key
+    // sentinel (the keyboard default is F1).
+    out << "input_menu_toggle_gamepad_combo = \"0\"\n";
+    out << "input_menu_toggle = \"nul\"\n";
+    out << "menu_show_online_updater = \"false\"\n";
+    out << "menu_show_core_updater = \"false\"\n";
 }
 
 std::vector<std::string> core_input_device_args(

@@ -26,6 +26,8 @@ namespace fs = std::filesystem;
 
 namespace retroarch {
 
+volatile sig_atomic_t g_active_session_pgid = 0;
+
 namespace {
     // Escape a string for safe embedding inside a SINGLE-QUOTED shell context.
     //
@@ -69,6 +71,12 @@ namespace {
 RetroArchLauncher::RetroArchLauncher() : retroarch_available_(false) {
 }
 
+std::optional<std::string> RetroArchLauncher::find_core_dir(
+        const std::string& core_name) {
+    return resolve_core_dir(core_name, kSystemLibretroDir,
+                            config::retroarch::get_cores_dir());
+}
+
 bool RetroArchLauncher::initialize() {
     retroarch_bin_ = find_retroarch();
     
@@ -110,7 +118,14 @@ bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_
         std::cerr << "ROM not found: " << game_info.rom_path << std::endl;
         return false;
     }
-    
+
+    // Missing core: refuse before release_controllers() or any teardown.
+    if (!find_core_dir(game_info.core_name)) {
+        std::cerr << "Core not installed: "
+                  << libretro_core_name(game_info.core_name) << std::endl;
+        return false;
+    }
+
     release_controllers();
     
     // Always use DRM/KMS launch (matches app architecture)
@@ -130,35 +145,33 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     std::cout << "Bezel file: " << (opts.bezel_file.empty() ? "(none)" : opts.bezel_file) << std::endl;
     std::cout << "Launching RetroArch in DRM/KMS mode" << std::endl;
     
+    // RetroArch expects the full core name with _libretro suffix for -L
+    const std::string core_name = libretro_core_name(game_info.core_name);
+
+    // Resolve the core BEFORE touching anything. The controller already
+    // refuses a missing core before it stops video / releases DRM
+    // (find_core_dir); this is the backstop for any other caller. It used
+    // to log "defaulting to system" and launch anyway, so a missing core
+    // surfaced only as a dead RetroArch after the display handoff.
+    const auto found_dir = find_core_dir(core_name);
+    if (!found_dir) {
+        std::cerr << "Core not installed: " << core_name << ".so (searched "
+                  << kSystemLibretroDir << " and "
+                  << config::retroarch::get_cores_dir() << ")" << std::endl;
+        return false;
+    }
+    const std::string libretro_dir = *found_dir;
+    std::cout << "Found core: " << libretro_dir << "/" << core_name << ".so"
+              << std::endl;
+
+    // One session per log file: move last session's to .1 so the full
+    // --verbose output cannot grow ~/retroarch_launcher.log forever.
+    if (!rotate_launcher_log(config::retroarch::get_launcher_log())) {
+        std::cerr << "Could not rotate launcher log (appending)" << std::endl;
+    }
+
     // Stop GStreamer and cleanup audio resources first
     stop_gstreamer_and_cleanup();
-
-    // Build command
-    // RetroArch expects the full core name with _libretro suffix for -L argument
-    std::string core_name = game_info.core_name;
-    // Ensure _libretro suffix is present for RetroArch -L flag
-    if (core_name.find("_libretro") == std::string::npos) {
-        core_name += "_libretro";
-    }
-
-    // Detect core location
-    std::string libretro_dir = "/usr/lib/aarch64-linux-gnu/libretro";
-    std::string user_core_dir = config::retroarch::get_cores_dir();
-    
-    // Check if core exists in system dir
-    std::string system_core_path = libretro_dir + "/" + core_name + ".so";
-    if (!fs::exists(system_core_path)) {
-        // Check user dir
-        std::string user_core_path = user_core_dir + "/" + core_name + ".so";
-        if (fs::exists(user_core_path)) {
-            libretro_dir = user_core_dir;
-            std::cout << "Found core in user directory: " << user_core_path << std::endl;
-        } else {
-            std::cout << "Core not found in system or user directory, defaulting to system: " << system_core_path << std::endl;
-        }
-    } else {
-        std::cout << "Found core in system directory: " << system_core_path << std::endl;
-    }
 
     std::vector<std::string> cmd = {
         retroarch_bin_.value(),
@@ -401,6 +414,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             {
                 std::ostringstream remote_quit;
                 retroarch::write_remote_quit_config(remote_quit);
+                retroarch::write_menu_disabled_config(remote_quit);
                 script_file << remote_quit.str();
             }
             script_file << "EOF\n";
@@ -477,7 +491,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# We rely on core-specific sections to define mappings\n";
             script_file << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
             script_file << "input_enable_hotkey = \"true\"\n";
-            write_menu_toggle_combo_config(script_file);
+            // Menu chord/key/updater disabled in the override file above
+            // (write_menu_disabled_config) -- the kiosk ships no RA menu.
             script_file << "input_auto_game_focus = \"true\"\n";
             script_file << "input_game_focus_enable = \"true\"\n";
             script_file << "input_logging_enable = \"false\"\n";
@@ -510,6 +525,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
                 // see retroarch::write_remote_quit_config().
                 std::ostringstream remote_quit;
                 retroarch::write_remote_quit_config(remote_quit);
+                retroarch::write_menu_disabled_config(remote_quit);
                 script_file << remote_quit.str();
             }
             script_file << "core_options_path = \"/tmp/retroarch_core_options.cfg\"\n";
@@ -547,7 +563,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "audio_dsp_plugin = \"\"\n";
             script_file << "input_keyboard_layout = \"us\"\n";
             script_file << "libretro_directory = \"" << libretro_dir << "\"\n";
-            script_file << "menu_show_online_updater = \"true\"\n";
             script_file << "core_updater_buildbot_cores_url = \"https://buildbot.libretro.com/nightly/linux/aarch64/latest\"\n";
             script_file << "core_updater_buildbot_assets_url = \"https://buildbot.libretro.com/assets/\"\n";
             script_file << "core_updater_auto_extract_archive = \"true\"\n";
@@ -830,6 +845,10 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
                 terminate_process_group(launch_pid, std::chrono::milliseconds(500));
                 return false;
             }
+            g_active_session_pgid = launch_pid;
+            struct ClearActiveSession {
+                ~ClearActiveSession() { g_active_session_pgid = 0; }
+            } clear_active_session;
 
             std::cout << "RetroArch launch initiated (PID: " << launch_pid
                       << ", waiting up to 15 seconds for KMS)" << std::endl;

@@ -97,6 +97,7 @@
 #endif
 
 #include <csignal>
+#include "retroarch/retroarch_launcher.h"
 
 // `systemctl stop` (and therefore every OTA restart) delivers SIGTERM.
 // Without a handler the default action killed the kiosk mid-frame: the
@@ -110,7 +111,14 @@
 // that never expected it — the render loop notices the flag within a
 // frame anyway.
 static volatile sig_atomic_t g_shutdown_requested = 0;
-static void handle_shutdown_signal(int) { g_shutdown_requested = 1; }
+static void handle_shutdown_signal(int) {
+    g_shutdown_requested = 1;
+    // Mid-game the main thread is blocked in waitpid() and never reads the
+    // flag; ask the game session to quit (and auto-save) so the normal
+    // return path runs and the loop exits. kill() is async-signal-safe.
+    const pid_t game_pgid = retroarch::g_active_session_pgid;
+    if (game_pgid > 0) kill(-game_pgid, SIGTERM);
+}
 
 using namespace platform;
 using namespace video;
@@ -1722,6 +1730,15 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
 
     while (running && !g_shutdown_requested) {
+        // DRM master could not be re-acquired after a game: the screen is
+        // gone for good, but the loop would keep pinging the watchdog and
+        // hold a black screen forever. Leave with a failure status instead
+        // so systemd's Restart=on-failure brings the kiosk back.
+        if (controller.display_lost()) {
+            LOG_ERROR("Display lost after game — exiting for a systemd restart");
+            running = false;
+            break;
+        }
 #ifdef HAVE_SYSTEMD
         sd_notify(0, "WATCHDOG=1");
 #endif
@@ -4836,6 +4853,12 @@ int main(int /* argc */, char* /* argv */[]) {
     // sites in the settings menu alone), and logging::shutdown() has already
     // flushed and closed the log. The kernel reclaims the rest, exactly as it
     // would after the SIGKILL this replaces.
+#ifdef MEDIA_BROWSER_ENABLED
+    // The game-end hook resumes torrents asynchronously; on the display-lost
+    // path we get here right after the game, so let that finish rather than
+    // leave the swarm paused until the next boot.
+    if (controller.display_lost()) game_quiet_mode.wait_until_idle();
+#endif
     std::fflush(nullptr);
-    _exit(0);
+    _exit(controller.display_lost() ? 1 : 0);
 }

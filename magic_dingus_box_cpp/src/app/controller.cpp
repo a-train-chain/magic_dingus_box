@@ -667,6 +667,17 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             return utils::Result<>::fail(error);
         }
         
+        // The core must be installed BEFORE anything is torn down. Found
+        // late, it cost a stopped video, a released DRM master and input
+        // grab, and a dark screen while RetroArch failed to load it. Same
+        // search order as the launcher (system libretro dir, then user).
+        if (!retroarch::RetroArchLauncher::find_core_dir(core_name)) {
+            std::string error = "Emulator core not installed: " +
+                                retroarch::libretro_core_name(core_name);
+            std::cerr << "Error: " << error << std::endl;
+            return utils::Result<>::fail(error);
+        }
+
         // Look for overlay/bezel (optional)
         std::string overlay_path;
         // Could implement bezel lookup here based on emulator_system if needed
@@ -763,7 +774,6 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
         retroarch::LaunchOptions opts;
         opts.display_mode = state.display_settings.mode;
-        opts.pi_model = state.platform_profile.model;
         {
             int idx = state.display_settings.bezel_index;
             if (idx >= 0 && idx < static_cast<int>(state.available_bezels.size())) {
@@ -848,7 +858,13 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             }
             
             if (!acquired) {
-                std::cerr << "CRITICAL: Failed to acquire DRM master after retries! Attempting to proceed anyway..." << std::endl;
+                // Used to "proceed anyway": the render loop then kept the
+                // re-enabled watchdog happy in front of a black screen
+                // forever. Flag it so main exits non-zero and systemd
+                // (Restart=on-failure) restarts the kiosk from scratch.
+                std::cerr << "CRITICAL: Failed to acquire DRM master after retries! "
+                             "Display lost; the kiosk must restart." << std::endl;
+                display_lost_ = true;
             }
             
             // Restore the mode the kiosk actually booted with — NOT 640x480.
@@ -967,6 +983,11 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         }
         prepare_kiosk_state_after_game(state);
 
+        if (display_lost_) {
+            std::string error = "Display lost after game (DRM master not re-acquired): " + item.title;
+            std::cerr << "Error: " << error << std::endl;
+            return utils::Result<>::fail(error);
+        }
         if (launched) {
             std::cout << "Successfully launched game: " << item.title << std::endl;
             return utils::Result<>::ok();

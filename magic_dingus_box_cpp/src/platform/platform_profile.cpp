@@ -70,6 +70,11 @@ PlatformProfile profile_for(PiModel model) {
             // Pi 5-only systems (see header). Tokens must already be in
             // normalize_game_system() form.
             p.unsupported_game_systems = {"n64", "dreamcast"};
+            // Same gate keyed on the core, for items whose system string
+            // is blank/nonstandard. Normalized form (normalize_emulator_core).
+            p.unsupported_emulator_cores = {"mupen64plus_next_libretro",
+                                            "parallel_n64_libretro",
+                                            "flycast_libretro"};
             break;
         case PiModel::Pi5:
             p.has_analog_audio = false;
@@ -126,6 +131,45 @@ bool supports_game_system(const PlatformProfile& profile,
     return std::find(profile.unsupported_game_systems.begin(),
                      profile.unsupported_game_systems.end(),
                      key) == profile.unsupported_game_systems.end();
+}
+
+std::string normalize_emulator_core(const std::string& emulator_core) {
+    std::string out;
+    out.reserve(emulator_core.size() + 9);
+    for (char c : emulator_core) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '"' ||
+            c == '\'' || c == '\0') {
+            continue;
+        }
+        out.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (out.size() > 3 && out.compare(out.size() - 3, 3, ".so") == 0) {
+        out.resize(out.size() - 3);
+    }
+    if (out.empty() || out == "auto") return out;
+    static const std::string kSuffix = "_libretro";
+    if (out.size() < kSuffix.size() ||
+        out.compare(out.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0) {
+        out += kSuffix;
+    }
+    return out;
+}
+
+bool supports_emulator_core(const PlatformProfile& profile,
+                            const std::string& emulator_core) {
+    const std::string key = normalize_emulator_core(emulator_core);
+    if (key.empty() || key == "auto") return true;
+    return std::find(profile.unsupported_emulator_cores.begin(),
+                     profile.unsupported_emulator_cores.end(),
+                     key) == profile.unsupported_emulator_cores.end();
+}
+
+bool supports_game_item(const PlatformProfile& profile,
+                        const std::string& emulator_system,
+                        const std::string& emulator_core) {
+    return supports_game_system(profile, emulator_system) &&
+           supports_emulator_core(profile, emulator_core);
 }
 
 std::optional<std::string> find_hdmi_sink(const std::string& pactl_short_sinks) {

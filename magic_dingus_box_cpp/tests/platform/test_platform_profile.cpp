@@ -352,6 +352,56 @@ TEST_CASE("Pi 5 and Unknown profiles hide nothing") {
     REQUIRE(supports_game_system(profile_for(PiModel::Pi5), "Dreamcast"));
 }
 
+TEST_CASE("normalize_emulator_core canonicalizes playlist core strings") {
+    REQUIRE(normalize_emulator_core("flycast_libretro") == "flycast_libretro");
+    REQUIRE(normalize_emulator_core("Flycast") == "flycast_libretro");
+    REQUIRE(normalize_emulator_core(" \"mupen64plus_next\" ") ==
+            "mupen64plus_next_libretro");
+    REQUIRE(normalize_emulator_core("parallel_n64_libretro.so") ==
+            "parallel_n64_libretro");
+    REQUIRE(normalize_emulator_core("") == "");
+    REQUIRE(normalize_emulator_core("auto") == "auto");
+}
+
+TEST_CASE("Pi 4 profile gates the N64 and Dreamcast CORES too") {
+    PlatformProfile p = profile_for(PiModel::Pi4);
+    REQUIRE(p.unsupported_emulator_cores.size() == 3);
+    for (const char* core : {"mupen64plus_next_libretro",
+                             "parallel_n64_libretro", "flycast_libretro",
+                             "mupen64plus_next", "Flycast"}) {
+        INFO("core: " << core);
+        REQUIRE_FALSE(supports_emulator_core(p, core));
+        // Blank / nonstandard system strings no longer smuggle them in.
+        REQUIRE_FALSE(supports_game_item(p, "", core));
+        REQUIRE_FALSE(supports_game_item(p, "Nintendo 64", core));
+        REQUIRE_FALSE(supports_game_item(p, "sega-dc", core));
+    }
+    // Either gate alone is enough to reject.
+    REQUIRE_FALSE(supports_game_item(p, "N64", "some_future_core"));
+    // The original seven cores stay supported.
+    for (const char* core : {"nestopia_libretro", "snes9x2010_libretro",
+                             "genesis_plus_gx_libretro", "pcsx_rearmed_libretro",
+                             "mednafen_pce_fast_libretro", "prosystem_libretro",
+                             "fbneo_libretro"}) {
+        INFO("core: " << core);
+        REQUIRE(supports_emulator_core(p, core));
+    }
+    // Never hide what the gate doesn't understand.
+    REQUIRE(supports_emulator_core(p, ""));
+    REQUIRE(supports_emulator_core(p, "auto"));
+    REQUIRE(supports_emulator_core(p, "dosbox_pure_libretro"));
+    REQUIRE(supports_game_item(p, "SNES", "snes9x2010_libretro"));
+}
+
+TEST_CASE("Pi 5 and Unknown profiles gate no cores") {
+    for (auto m : {PiModel::Pi5, PiModel::Unknown}) {
+        PlatformProfile p = profile_for(m);
+        REQUIRE(p.unsupported_emulator_cores.empty());
+        REQUIRE(supports_game_item(p, "", "mupen64plus_next_libretro"));
+        REQUIRE(supports_game_item(p, "Dreamcast", "flycast_libretro"));
+    }
+}
+
 // ---------------------------------------------------------------
 // service_quiet_mode — memory-gated pause-vs-trickle decision
 // ---------------------------------------------------------------

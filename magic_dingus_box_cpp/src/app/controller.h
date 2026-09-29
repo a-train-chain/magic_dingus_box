@@ -119,7 +119,18 @@ public:
         kiosk_mode_h_ = h;
     }
 
+    // True once the kiosk has lost the display for good: DRM master could
+    // not be re-acquired after a game (5 retries). Nothing can be drawn and
+    // no in-process retry is known to recover, but the render loop would
+    // keep pinging the systemd watchdog in front of a black screen forever.
+    // main.cpp must check this after every load_playlist_item() and exit
+    // NON-ZERO so Restart=on-failure brings up a fresh kiosk that opens the
+    // display from scratch. Sticky: never cleared.
+    bool display_lost() const { return display_lost_; }
+
 private:
+    bool display_lost_ = false;
+
     // Poll until playback starts, up to max_ms. Ticks the player's state
     // machine (bus drain + non-blocking state poll) and the optional
     // progress callback every ~16ms, returning as soon as is_playing()

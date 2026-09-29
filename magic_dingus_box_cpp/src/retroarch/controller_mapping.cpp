@@ -531,11 +531,35 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
         }
     }
 
-    // Hotkeys are emitted as input_enable_hotkey_btn / input_menu_toggle_btn,
-    // i.e. the same digital-only form as the face buttons above.
-    put_btn(&ControllerMapping::enable_hotkey_btn, sem.hotkey_enable);
+    // Hotkeys: the EXIT GESTURE, which is the only way out of a game on a
+    // kiosk with no RetroArch menu. It must resolve on every pad, so unlike
+    // the face buttons it gets two extra rules:
+    //
+    //   1. Captured as an AXIS (an N64 clone's Z trigger on ABS_Z) -> emit
+    //      the _axis form. put_btn would leave the _btn field "" and the
+    //      whole hotkey block would be skipped.
+    //   2. Not captured at all (a profile saved before the wizard required
+    //      Z/Select) -> fall back to the builtin profile of the same style.
+    //      On an unknown pad that index may be the wrong button, but a
+    //      guessed exit is recoverable and a missing one is not.
+    const PhysicalProfile& builtin =
+        profile.style == ControllerStyle::N64_STYLE ? builtin_n64_adapter_profile()
+                                                    : builtin_dragonrise_profile();
+    auto put_hotkey = [&](std::string ControllerMapping::*btn_field,
+                          std::string ControllerMapping::*axis_field,
+                          const std::optional<LogicalControl>& slot) {
+        if (!slot) return;
+        const PhysicalBinding* b = profile.binding(*slot);
+        if (!b || b->token.empty()) b = builtin.binding(*slot);
+        if (!b || b->token.empty()) return;
+        if (b->kind == Kind::AXIS) m.*axis_field = b->token;
+        else m.*btn_field = b->token;
+    };
+    put_hotkey(&ControllerMapping::enable_hotkey_btn,
+               &ControllerMapping::enable_hotkey_axis, sem.hotkey_enable);
     put_btn(&ControllerMapping::menu_toggle_btn, sem.menu_toggle);
-    put_btn(&ControllerMapping::exit_emulator_btn, sem.exit_emulator);
+    put_hotkey(&ControllerMapping::exit_emulator_btn,
+               &ControllerMapping::exit_emulator_axis, sem.exit_emulator);
     return m;
 }
 
@@ -625,10 +649,15 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
 
 void write_hotkey_binds(std::ostream& out,
                         const ControllerMapping& map) {
-    if (map.enable_hotkey_btn.empty()) return;
-
-    out << "input_enable_hotkey_btn = \""
-        << map.enable_hotkey_btn << "\"\n";
+    if (!map.enable_hotkey_btn.empty()) {
+        out << "input_enable_hotkey_btn = \""
+            << map.enable_hotkey_btn << "\"\n";
+    } else if (!map.enable_hotkey_axis.empty()) {
+        out << "input_enable_hotkey_axis = \""
+            << map.enable_hotkey_axis << "\"\n";
+    } else {
+        return;
+    }
     if (!map.menu_toggle_btn.empty()) {
         out << "input_menu_toggle_btn = \""
             << map.menu_toggle_btn << "\"\n";
@@ -636,6 +665,9 @@ void write_hotkey_binds(std::ostream& out,
     if (!map.exit_emulator_btn.empty()) {
         out << "input_exit_emulator_btn = \""
             << map.exit_emulator_btn << "\"\n";
+    } else if (!map.exit_emulator_axis.empty()) {
+        out << "input_exit_emulator_axis = \""
+            << map.exit_emulator_axis << "\"\n";
     }
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <csignal>
 #include <string>
 #include <optional>
 #include <vector>
@@ -7,6 +8,14 @@
 #include "launch_contract.h"
 
 namespace retroarch {
+
+// Process group of the running game session, 0 when none. Read by the
+// kiosk's SIGTERM handler (hence sig_atomic_t, no locks): a service stop
+// mid-game — OTA install, reboot, poweroff — forwards SIGTERM to RetroArch
+// so it quits through its own shutdown path and auto-saves, instead of
+// being SIGKILLed by systemd's stop timeout while the kiosk sits blocked
+// in waitpid() never looking at its shutdown flag.
+extern volatile sig_atomic_t g_active_session_pgid;
 
 struct GameLaunchInfo {
     std::string rom_path;
@@ -27,6 +36,13 @@ public:
 
     // Check if RetroArch is available
     bool is_available() const { return retroarch_available_; }
+
+    // Directory holding the core's .so (system libretro dir first, then the
+    // user core dir -- the order launch_drm uses), or nullopt when the core
+    // is not installed. Pure filesystem lookup, no side effects: call it
+    // BEFORE tearing down video/DRM/input so a missing core is a clean,
+    // showable error instead of a dark screen after the handoff.
+    static std::optional<std::string> find_core_dir(const std::string& core_name);
 
 private:
     // Find RetroArch executable

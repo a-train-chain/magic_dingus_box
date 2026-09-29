@@ -111,7 +111,10 @@ IOWeight=1000
 # Kill all processes in the service's cgroup on stop
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=5
+# 20 s, not 5: a stop mid-game forwards SIGTERM to RetroArch (see
+# handle_shutdown_signal), which then writes its auto-save state and the
+# kiosk re-acquires DRM before exiting. 5 s SIGKILLed that save.
+TimeoutStopSec=20
 WatchdogSec=10
 
 [Install]

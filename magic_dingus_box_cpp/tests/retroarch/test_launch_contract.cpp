@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <sys/wait.h>
@@ -838,31 +839,100 @@ TEST_CASE("generated KMS watcher is valid Bash", "[retroarch][startup]") {
     fs::remove(script_path);
 }
 
-TEST_CASE("video contract is identical across Pi models until Pi 5 is benchmarked",
+TEST_CASE("video contract pins the swapchain workarounds on every board",
           "[retroarch][video][platform]") {
-    // LaunchOptions carries the detected board so Pi-5-specific tuning has
-    // a single place to land. The two Pi-4-empirical workarounds
-    // (video_threaded=false, max_swapchain_images=2) were RE-BENCHMARKED
-    // on Pi 5 / V3D 7.1 on 2026-07-25 and both were kept: threaded video
-    // still produces a swapchain failure the non-threaded path doesn't
-    // (1 vs 0), and swapchain depth made no measurable difference. See
-    // write_video_config() for the full data. This test pins the parity
-    // so any future divergence stays a conscious, measured decision.
-    retroarch::LaunchOptions pi4_options;
-    pi4_options.display_mode = app::DisplayMode::MODERN_TV;
-    pi4_options.bezel_file = "mdb_kv19.png";
-    pi4_options.pi_model = platform::PiModel::Pi4;
+    // The video contract takes NO board input (LaunchOptions carried an
+    // unread pi_model field until 2026-09; removed as dead). The two
+    // Pi-4-empirical workarounds (video_threaded=false,
+    // max_swapchain_images=2) were RE-BENCHMARKED on Pi 5 / V3D 7.1 on
+    // 2026-07-25 and both were kept: threaded video still produces a
+    // swapchain failure the non-threaded path doesn't (1 vs 0), and
+    // swapchain depth made no measurable difference. See
+    // write_video_config() for the full data. A future per-board split
+    // must add a PlatformProfile field (dual-board contract), not revive
+    // an ad-hoc model switch here.
+    retroarch::LaunchOptions options;
+    options.display_mode = app::DisplayMode::MODERN_TV;
+    options.bezel_file = "mdb_kv19.png";
 
-    retroarch::LaunchOptions pi5_options = pi4_options;
-    pi5_options.pi_model = platform::PiModel::Pi5;
+    std::ostringstream out;
+    retroarch::write_video_config(out, options);
+    require_line(out.str(), "video_threaded = \"false\"");
+    require_line(out.str(), "video_max_swapchain_images = \"2\"");
+}
 
-    std::ostringstream pi4_out, pi5_out;
-    retroarch::write_video_config(pi4_out, pi4_options);
-    retroarch::write_video_config(pi5_out, pi5_options);
+TEST_CASE("core lookup searches the system dir, then the user dir",
+          "[retroarch][core]") {
+    const fs::path root = fs::temp_directory_path() / "mdb_core_lookup_test";
+    fs::remove_all(root);
+    const fs::path sys = root / "sys";
+    const fs::path usr = root / "usr";
+    fs::create_directories(sys);
+    fs::create_directories(usr);
 
-    REQUIRE(pi4_out.str() == pi5_out.str());
-    require_line(pi5_out.str(), "video_threaded = \"false\"");
-    require_line(pi5_out.str(), "video_max_swapchain_images = \"2\"");
+    SECTION("missing everywhere -> nullopt (the launch must be refused)") {
+        REQUIRE_FALSE(retroarch::resolve_core_dir("flycast_libretro",
+                                                  sys.string(), usr.string()));
+        REQUIRE_FALSE(retroarch::resolve_core_dir("", sys.string(), usr.string()));
+    }
+    SECTION("user dir only") {
+        std::ofstream(usr / "flycast_libretro.so") << "x";
+        auto dir = retroarch::resolve_core_dir("flycast_libretro",
+                                               sys.string(), usr.string());
+        REQUIRE(dir);
+        REQUIRE(*dir == usr.string());
+    }
+    SECTION("system dir wins when both have it") {
+        std::ofstream(usr / "nestopia_libretro.so") << "x";
+        std::ofstream(sys / "nestopia_libretro.so") << "x";
+        auto dir = retroarch::resolve_core_dir("nestopia_libretro",
+                                               sys.string(), usr.string());
+        REQUIRE(dir);
+        REQUIRE(*dir == sys.string());
+    }
+    SECTION("a suffix-less name (auto-resolved) finds the _libretro .so") {
+        std::ofstream(sys / "mupen64plus_next_libretro.so") << "x";
+        REQUIRE(retroarch::libretro_core_name("mupen64plus_next") ==
+                "mupen64plus_next_libretro");
+        REQUIRE(retroarch::libretro_core_name("flycast_libretro") ==
+                "flycast_libretro");
+        REQUIRE(retroarch::resolve_core_dir("mupen64plus_next",
+                                            sys.string(), usr.string()));
+    }
+    SECTION("a DIRECTORY named like the core is not a core") {
+        fs::create_directories(sys / "fbneo_libretro.so");
+        REQUIRE_FALSE(retroarch::resolve_core_dir("fbneo_libretro",
+                                                  sys.string(), usr.string()));
+    }
+    fs::remove_all(root);
+}
+
+TEST_CASE("launcher log rotates to .1 so it cannot grow forever",
+          "[retroarch][log]") {
+    const fs::path root = fs::temp_directory_path() / "mdb_log_rotate_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const std::string log = (root / "retroarch_launcher.log").string();
+    auto slurp = [](const std::string& p) {
+        std::ifstream f(p);
+        return std::string(std::istreambuf_iterator<char>(f), {});
+    };
+
+    // No log yet: nothing to do, not an error.
+    REQUIRE(retroarch::rotate_launcher_log(log));
+    REQUIRE_FALSE(fs::exists(log + ".1"));
+
+    std::ofstream(log) << "session 1\n";
+    REQUIRE(retroarch::rotate_launcher_log(log));
+    REQUIRE_FALSE(fs::exists(log));
+    REQUIRE(slurp(log + ".1") == "session 1\n");
+
+    // Second session replaces the old .1 -- bounded at two sessions.
+    std::ofstream(log) << "session 2\n";
+    REQUIRE(retroarch::rotate_launcher_log(log));
+    REQUIRE(slurp(log + ".1") == "session 2\n");
+    REQUIRE_FALSE(fs::exists(log + ".2"));
+    fs::remove_all(root);
 }
 
 TEST_CASE("remote-quit bind lets the phone remote's KEY_Z chord exit the core",
@@ -879,15 +949,25 @@ TEST_CASE("remote-quit bind lets the phone remote's KEY_Z chord exit the core",
     require_line(config, "input_exit_emulator = \"z\"");
 }
 
-TEST_CASE("menu-toggle combo opens Quick Menu with L1 R1 Start Select",
+TEST_CASE("RetroArch menu is unreachable: no chord, no key, no updater",
           "[retroarch][hotkeys][menu-combo]") {
+    // Owner decision 2026-08-03: no RetroArch menu on a kiosk. The old
+    // chord (enum 3 = L1+R1+Start+Select) was the last way into it.
     std::ostringstream out;
-    retroarch::write_menu_toggle_combo_config(out);
+    retroarch::write_menu_disabled_config(out);
     const std::string config = out.str();
 
-    require_line(config, "input_menu_toggle_gamepad_combo = \"3\"");
-    REQUIRE(config.find("input_menu_toggle_gamepad_combo = \"1\"") ==
+    require_line(config, "input_menu_toggle_gamepad_combo = \"0\"");  // NONE
+    require_line(config, "input_menu_toggle = \"nul\"");
+    require_line(config, "menu_show_online_updater = \"false\"");
+    require_line(config, "menu_show_core_updater = \"false\"");
+    REQUIRE(config.find("input_menu_toggle_gamepad_combo = \"3\"") ==
             std::string::npos);
+    // The exit path must not depend on the menu: the remote's quit bind is
+    // a direct exit_emulator hotkey, written alongside this block.
+    std::ostringstream quit;
+    retroarch::write_remote_quit_config(quit);
+    require_line(quit.str(), "input_exit_emulator = \"z\"");
 }
 
 TEST_CASE("HDMI ALSA device picks vc4hdmi0 by NAME on both Pi 4 and Pi 5",

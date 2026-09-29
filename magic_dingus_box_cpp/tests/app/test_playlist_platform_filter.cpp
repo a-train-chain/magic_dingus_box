@@ -32,6 +32,12 @@ PlaylistItem game_item(const std::string& system) {
     return it;
 }
 
+PlaylistItem game_item_core(const std::string& system, const std::string& core) {
+    PlaylistItem it = game_item(system);
+    it.emulator_core = core;
+    return it;
+}
+
 PlaylistItem video_item() {
     PlaylistItem it;
     it.source_type = "local";
@@ -128,4 +134,45 @@ TEST_CASE("Unknown (dev machine) filters nothing") {
     in.push_back(playlist("Nintendo 64 Classics", {game_item("N64")}));
     auto out = PlaylistLoader::filter_for_platform(std::move(in), profile);
     REQUIRE(out.size() == 1);
+}
+
+TEST_CASE("Pi 4 drops N64/Dreamcast cores even with a blank or odd system") {
+    // The system gate alone let these through: an operator- or tool-built
+    // item with emulator_system "" / "Nintendo 64" / "sega-dc" but an N64
+    // or Dreamcast core would appear on a Pi 4 and try to run the core.
+    auto profile = platform::profile_for(platform::PiModel::Pi4);
+    std::vector<Playlist> in;
+    in.push_back(playlist("Odd Systems", {
+        game_item_core("", "mupen64plus_next_libretro"),
+        game_item_core("Nintendo 64", "parallel_n64_libretro"),
+        game_item_core("sega-dc", "flycast_libretro"),
+        game_item_core("", "flycast"),               // suffix-less
+        game_item_core("SNES", "snes9x2010_libretro"),
+        game_item_core("", "nestopia_libretro"),
+    }));
+    auto out = PlaylistLoader::filter_for_platform(std::move(in), profile);
+    REQUIRE(out.size() == 1);
+    REQUIRE(out[0].items.size() == 2);
+    REQUIRE(out[0].items[0].emulator_core == "snes9x2010_libretro");
+    REQUIRE(out[0].items[1].emulator_core == "nestopia_libretro");
+}
+
+TEST_CASE("Pi 4 drops a playlist whose only items are gated by core") {
+    auto profile = platform::profile_for(platform::PiModel::Pi4);
+    std::vector<Playlist> in;
+    in.push_back(playlist("Mystery", {game_item_core("", "flycast_libretro")}));
+    auto out = PlaylistLoader::filter_for_platform(std::move(in), profile);
+    REQUIRE(out.empty());
+}
+
+TEST_CASE("Pi 5 keeps N64/Dreamcast cores regardless of system string") {
+    auto profile = platform::profile_for(platform::PiModel::Pi5);
+    std::vector<Playlist> in;
+    in.push_back(playlist("Odd Systems", {
+        game_item_core("", "mupen64plus_next_libretro"),
+        game_item_core("sega-dc", "flycast_libretro"),
+    }));
+    auto out = PlaylistLoader::filter_for_platform(std::move(in), profile);
+    REQUIRE(out.size() == 1);
+    REQUIRE(out[0].items.size() == 2);
 }

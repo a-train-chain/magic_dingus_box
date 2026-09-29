@@ -98,6 +98,17 @@ struct PlatformProfile {
     // protects the menu regardless of what content is on disk (e.g. an
     // operator uploading an N64 ROM to a Pi 4 box via the web admin).
     std::vector<std::string> unsupported_game_systems;
+
+    // Libretro cores this board cannot run, as normalized core names (see
+    // normalize_emulator_core). The CORE twin of unsupported_game_systems:
+    // the system gate alone let an item through whose emulator_system was
+    // blank or nonstandard ("Nintendo 64", "sega-dc", "") while its
+    // emulator_core was still an N64/Dreamcast core, and a Pi 4 would then
+    // try to run mupen64plus/flycast. An item is hidden if EITHER gate
+    // rejects it.
+    //   Pi 4: the two N64 cores + flycast.
+    //   Pi 5 / Unknown: empty.
+    std::vector<std::string> unsupported_emulator_cores;
 };
 
 // Parse the contents of /proc/device-tree/model (may carry a trailing
@@ -125,6 +136,25 @@ std::string normalize_game_system(const std::string& emulator_system);
 // understand.
 bool supports_game_system(const PlatformProfile& profile,
                           const std::string& emulator_system);
+
+// Normalize an emulator_core value for comparison: lowercase, whitespace
+// and quotes stripped, a trailing ".so" dropped, and "_libretro" appended
+// when absent ("Flycast" -> "flycast_libretro"). "" and "auto" stay as-is
+// (an "auto" core is resolved from the system, which the system gate
+// already covers).
+std::string normalize_emulator_core(const std::string& emulator_core);
+
+// False only when `emulator_core` normalizes into the profile's
+// unsupported_emulator_cores list. Empty/"auto"/unknown cores are
+// SUPPORTED — same never-hide-what-you-don't-understand rule.
+bool supports_emulator_core(const PlatformProfile& profile,
+                            const std::string& emulator_core);
+
+// The gate the playlist filter applies to one emulated_game item: both
+// the system AND the core must be supported.
+bool supports_game_item(const PlatformProfile& profile,
+                        const std::string& emulator_system,
+                        const std::string& emulator_core);
 
 // --- PulseAudio sink resolution -------------------------------------
 // All take the raw output of `pactl list short sinks`, whose lines are

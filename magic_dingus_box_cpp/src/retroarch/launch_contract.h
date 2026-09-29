@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <functional>
+#include <optional>
 #include <iosfwd>
 #include <string>
 #include <sys/types.h>
@@ -25,11 +26,6 @@ enum class Renderer {
 struct LaunchOptions {
     app::DisplayMode display_mode = app::DisplayMode::CRT_NATIVE;
     std::string bezel_file;
-    // Detected board, so Pi-5-specific video tuning has one place to
-    // land. Today the emitted contract is identical for every model
-    // (pinned by test_launch_contract) — the Pi 4 V3D swapchain
-    // workarounds are kept everywhere until re-benchmarked on Pi 5.
-    platform::PiModel pi_model = platform::PiModel::Unknown;
     // Video driver for this core. Set from the core name at launch
     // (see renderer_for_core). Defaults to Vulkan for the existing
     // 2D/PS1-class lineup.
@@ -73,6 +69,32 @@ struct LaunchOptions {
 double n64_content_aspect(const std::string& core_name,
                           const std::string& rom_path);
 
+// Where the distro's libretro cores live (Debian aarch64 packaging). The
+// launcher searches here FIRST, then the user core dir
+// (config::retroarch::get_cores_dir()) -- the same order everywhere.
+inline constexpr const char* kSystemLibretroDir =
+    "/usr/lib/aarch64-linux-gnu/libretro";
+
+// Canonical RetroArch core name: playlist/auto-resolved names may omit the
+// "_libretro" suffix ("flycast" -> "flycast_libretro"); RetroArch's -L and
+// the .so filename both need it.
+std::string libretro_core_name(const std::string& core_name);
+
+// The directory holding <core>_libretro.so, searching system_dir then
+// user_dir; nullopt when neither has it. Called by the kiosk BEFORE it
+// tears down video/DRM/input for a launch: a missing core used to be
+// discovered only after the display handoff, when RetroArch failed with
+// the kiosk already dark.
+std::optional<std::string> resolve_core_dir(const std::string& core_name,
+                                            const std::string& system_dir,
+                                            const std::string& user_dir);
+
+// Rotate the per-session launcher log: move `log_path` to `log_path.1`
+// (replacing any previous .1) so each launch starts a fresh file and the
+// log is bounded to two sessions. A missing log is not an error. Returns
+// false only when an existing log could not be moved.
+bool rotate_launcher_log(const std::string& log_path);
+
 // Pick the renderer a core needs. GL for the N64 cores (GLideN64),
 // Vulkan for everything else the kiosk ships (incl. Dreamcast/flycast).
 Renderer renderer_for_core(const std::string& core_name);
@@ -88,8 +110,17 @@ void write_video_config(std::ostream& out, const LaunchOptions& options);
 // kiosk units ship no keyboards, so re-binding costs nothing.)
 void write_remote_quit_config(std::ostream& out);
 
-// Debian RetroArch 1.20 enum 3 = L1 + R1 + Start + Select.
-void write_menu_toggle_combo_config(std::ostream& out);
+// Make the RetroArch menu unreachable (owner decision 2026-08-03: no RA
+// menu on a kiosk -- see CLAUDE.md "Exit a game"). Clears the gamepad menu
+// chord (it was enum 3 = L1+R1+Start+Select, which a player can hit by
+// accident and which leads to settings, the core downloader and "Quit"
+// without auto-save guarantees), unbinds the keyboard toggle, and hides the
+// online/core updater. Written into the --appendconfig override so no
+// RetroArch default can clobber it. Nothing on the exit path needs the
+// menu: games quit through input_exit_emulator_btn/_axis (the physical
+// Z+Start / Select+Start gesture, write_hotkey_binds) and the phone
+// remote's KEY_Z (write_remote_quit_config).
+void write_menu_disabled_config(std::ostream& out);
 
 // Command-line device overrides for the core. Debian RetroArch loads
 // input_libretro_device_pN from remap files rather than the global config,

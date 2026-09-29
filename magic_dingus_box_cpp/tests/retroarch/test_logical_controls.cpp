@@ -40,11 +40,11 @@ TEST_CASE("required_controls is a strict subset of capture_steps",
     for (auto style : {ControllerStyle::PS_STYLE, ControllerStyle::N64_STYLE}) {
         const auto steps = capture_steps(style);
         const auto required = required_controls(style);
-        REQUIRE(required.size() == 6);
+        REQUIRE(required.size() == 7);
         for (auto c : required)
             REQUIRE(std::find(steps.begin(), steps.end(), c) != steps.end());
     }
-    // The floor: four d-pad directions plus confirm and Start, in each
+    // The floor: four d-pad directions, confirm, Start and the exit modifier, in each
     // vocabulary. See the header for why nothing else is mandatory.
     const auto ps = required_controls(ControllerStyle::PS_STYLE);
     REQUIRE(std::find(ps.begin(), ps.end(), LogicalControl::CROSS) != ps.end());
@@ -52,6 +52,10 @@ TEST_CASE("required_controls is a strict subset of capture_steps",
     const auto n64 = required_controls(ControllerStyle::N64_STYLE);
     REQUIRE(std::find(n64.begin(), n64.end(), LogicalControl::N64_A) != n64.end());
     REQUIRE(std::find(n64.begin(), n64.end(), LogicalControl::N64_START) != n64.end());
+    // The exit gesture's hotkey-enable modifier. With no RetroArch menu on
+    // the kiosk, a profile saved without it has no way out of a game.
+    REQUIRE(std::find(ps.begin(), ps.end(), LogicalControl::SELECT) != ps.end());
+    REQUIRE(std::find(n64.begin(), n64.end(), LogicalControl::N64_Z) != n64.end());
 }
 
 TEST_CASE("every control has a human prompt", "[logical_controls]") {

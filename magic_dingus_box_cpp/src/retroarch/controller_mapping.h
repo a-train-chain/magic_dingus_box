@@ -100,6 +100,14 @@ struct ControllerMapping {
     std::string enable_hotkey_btn = ""; // The "modifier" button (must be held)
     std::string menu_toggle_btn = "";   // The button to press with modifier
     std::string exit_emulator_btn = ""; // Optional exit button
+    // AXIS form of the two exit-gesture hotkeys (input_enable_hotkey_axis /
+    // input_exit_emulator_axis). Set INSTEAD of the _btn field when the
+    // pad's profile captured that control as an analog axis -- e.g. an N64
+    // clone whose Z trigger reports ABS_Z. Without this form the kind-aware
+    // put_btn contract leaves the _btn field empty, write_hotkey_binds()
+    // emits nothing, and the pad has no way out of a game.
+    std::string enable_hotkey_axis = "";
+    std::string exit_emulator_axis = "";
 };
 
 // A per-core mapping expressed in LOGICAL controls instead of physical
@@ -240,6 +248,10 @@ PortMappings resolve_port_mappings(
 void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
                              int player);
 
+// Emit the global hotkey lines (the exit gesture). Each hotkey is written
+// in _btn OR _axis form, whichever the mapping carries; nothing at all is
+// written when the enable-hotkey modifier resolved to neither, because an
+// exit bind without its modifier would fire on a bare press.
 void write_hotkey_binds(std::ostream& out,
                         const ControllerMapping& map);
 
