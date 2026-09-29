@@ -82,13 +82,10 @@ struct LibraryEntry {
 // input order, then one per INCLUDED Series, in input order. Sorting stays
 // the caller's job (build_library_view).
 //
-// TV inclusion rule: a series produces an entry only when
-//   series.episode_file_count > 0 || downloading_refs.count({Tv, tmdb_id})
-// The first operand is the SERIES-LEVEL stat on purpose — a series whose only
-// files are S0 specials still owns real disk content and must stay visible —
-// and the second is the escape hatch for a freshly-started download whose
-// first import hasn't landed (episodeFileCount == 0), without which no TV
-// tile could ever show DOWNLOADING.
+// TV inclusion rule: every series Sonarr holds produces an entry, files or
+// not — the same as movies. A show whose seasons were all deleted stays in the
+// Library (file_count == 0, not downloading = "empty"); only Remove takes a
+// show out. Counts use the season-0-excluded sums.
 //
 // `watched_movie_ids` / `tv_watched_counts` are WatchStore::watched_movie_ids
 // / tv_watched_counts snapshots — read them on the render thread (WatchStore

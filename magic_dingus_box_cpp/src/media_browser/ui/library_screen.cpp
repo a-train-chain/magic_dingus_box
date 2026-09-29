@@ -879,6 +879,39 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                kTvChipFontPx, th.accent);
             }
 
+            // Emptied show (every season deleted, nothing in flight): still in
+            // the Library by design, so say why it cannot play. Dim the poster
+            // and tag its bottom edge; the top-left slot belongs to the TV chip.
+            if (en->ref.kind == MediaKind::Tv && en->file_count == 0 &&
+                !en->downloading && !state_badge_shown) {
+                r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                               static_cast<float>(cell_w),
+                               static_cast<float>(poster_h),
+                               ::ui::Color(0, 0, 0, 150));
+                constexpr int kEmptyFontPx = 12;
+                constexpr int kEmptyPadX = 6;
+                constexpr int kEmptyPadY = 2;
+                const std::string empty_label = "NOTHING DOWNLOADED";
+                const int tw = r.mb_text_width(empty_label, kEmptyFontPx);
+                const int bw = tw + 2 * kEmptyPadX;
+                const int bh = kEmptyFontPx + 2 * kEmptyPadY;
+                const int bx = x + (cell_w - bw) / 2;
+                // Raised above the year pill (bottom-right) so they never overlap.
+                const int by = y + poster_h - bh - chrome::kPad1
+                             - chrome::kBadgeBoxH - chrome::kPad1;
+                r.mb_fill_rect(static_cast<float>(bx), static_cast<float>(by),
+                               static_cast<float>(bw), static_cast<float>(bh),
+                               th.bg);
+                r.mb_stroke_rect(static_cast<float>(bx), static_cast<float>(by),
+                                 static_cast<float>(bw), static_cast<float>(bh),
+                                 2.0f, th.dim);
+                r.mb_draw_text(empty_label,
+                               static_cast<float>(bx + kEmptyPadX),
+                               static_cast<float>(by + kEmptyPadY +
+                                                  kEmptyFontPx - 2),
+                               kEmptyFontPx, th.dim);
+            }
+
             // Meta line below poster: title only, wrapped to 2 lines
             // when needed. Year now lives inside the poster card.
             // Line 1 = longest leading word chunk that fits on one

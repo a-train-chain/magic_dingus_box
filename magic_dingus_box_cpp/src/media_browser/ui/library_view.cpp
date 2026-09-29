@@ -49,15 +49,15 @@ std::vector<LibraryEntry> build_library_entries(
         entries.push_back(std::move(e));
     }
 
-    // ---- TV: included when the series-level stat says any file exists OR a
-    // download is active. The series-level statistics.episodeFileCount is
-    // correct HERE (a specials-only series still owns real disk content) and
-    // ONLY here — the counts and the watched math below use the
+    // ---- TV: every series is included; counts below use the
     // season-0-excluded sums, matching WatchStore::tv_watched_counts. ----
     for (const Series& s : tv) {
         const MediaRef ref{MediaKind::Tv, s.tmdb_id};
         const bool is_downloading = downloading_refs.count(ref) > 0;
-        if (s.episode_file_count <= 0 && !is_downloading) continue;
+        // Every series Sonarr holds is an entry, files or not — the same rule
+        // movies have always had. A show emptied by per-season deletes used to
+        // vanish here and read as removed (Game of Thrones, 2026-08-22); Remove
+        // is the only thing that takes a show out of the Library.
 
         int file_count = 0;
         int total_count = 0;

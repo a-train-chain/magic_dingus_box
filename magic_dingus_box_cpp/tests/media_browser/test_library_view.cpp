@@ -219,21 +219,46 @@ TEST_CASE("Movie downloading comes from a Movie-kind ref in downloading_refs",
 // build_library_entries — TV inclusion rule
 // =====================================================================
 
-TEST_CASE("A 0-file, non-downloading series produces no entry",
+TEST_CASE("A 0-file, non-downloading series stays in the Library, empty",
           "[library_view][entries][tv][inclusion]") {
-    // The spec's inclusion rule: a series appears once it has any file OR an
-    // active download. A bare "added to Sonarr, nothing grabbed yet" series
-    // stays off the Library grid (Browse/SeriesDetail is where it lives).
+    // Deleting every season of a show (per-season delete) must not look like
+    // deleting the show: Sonarr still holds the record, so the Library keeps
+    // it — exactly as a file-less movie is kept. Only Remove takes it out.
     const std::vector<Movie> no_movies;
     std::vector<Series> tv{
-        make_series(100, "Nothing Yet", 2026, kCutoff,
-                    {make_season(1, 10, 0)}, /*series_level_file_count=*/0),
+        make_series(100, "Emptied Show", 2026, kCutoff,
+                    {make_season(1, 10, 0), make_season(2, 10, 0)},
+                    /*series_level_file_count=*/0),
     };
 
     const auto entries = mbu::build_library_entries(
         no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
-    REQUIRE(entries.empty());
+    REQUIRE(entries.size() == 1);
+    CHECK(entries[0].ref == tv_ref(100));
+    CHECK(entries[0].file_count == 0);
+    CHECK(entries[0].total_count == 20);
+    CHECK_FALSE(entries[0].downloading);
+    CHECK_FALSE(entries[0].watched);  // 0 files can never read as watched
+}
+
+TEST_CASE("An emptied show with watch history still reads unwatched",
+          "[library_view][entries][tv][inclusion]") {
+    // Watched through S1 before the files were deleted: the counts stay
+    // season-0-excluded, and the file_count > 0 guard keeps it unwatched,
+    // so the Unwatched filter still offers it.
+    const std::vector<Movie> no_movies;
+    std::vector<Series> tv{
+        make_series(100, "Emptied Show", 2026, kCutoff,
+                    {make_season(1, 10, 0)}, /*series_level_file_count=*/0),
+    };
+    const std::unordered_map<int, int> tv_counts{{100, 10}};
+
+    const auto entries = mbu::build_library_entries(
+        no_movies, tv, kNoWatchedMovies, tv_counts, kNoDownloads, kNoStarted);
+
+    REQUIRE(entries.size() == 1);
+    CHECK_FALSE(entries[0].watched);
 }
 
 TEST_CASE("A 0-file series WITH an active download is present, downloading",
