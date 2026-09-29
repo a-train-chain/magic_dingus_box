@@ -201,9 +201,17 @@ echo "  ✓ Code synced"
 # bench deploy, 2026-07-22.
 ssh "${PI_HOST}" "mkdir -p ${PI_DIR}/magic_dingus_box/web ${PI_DIR}/scripts/golden_image ${PI_DIR}/services ${PI_DIR}/systemd"
 echo "Step 1.5: Syncing Web UI to ${PI_HOST}:${PI_DIR}/magic_dingus_box/web"
+# venv/.pytest_cache are the Mac dev environment (macOS binaries,
+# symlinks into /opt/homebrew): the box runs /usr/bin/python3 and never
+# uses them, but they were copied onto every deployed box and from there
+# into every golden image. Excluded paths are not deleted from the box by
+# --delete, so an existing copy stays until removed by hand.
 rsync -avz --checksum \
     --delete \
     --exclude '__pycache__' \
+    --exclude 'venv' \
+    --exclude '.venv' \
+    --exclude '.pytest_cache' \
     "${CPP_DIR}/../magic_dingus_box/web/" \
     "${PI_HOST}:${PI_DIR}/magic_dingus_box/web/"
     

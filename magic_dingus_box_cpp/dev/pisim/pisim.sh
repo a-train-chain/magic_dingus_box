@@ -59,7 +59,7 @@ cmd_build() {
         b=${BUILD_DIR}/magic_dingus_box_cpp
         # Same release-blocking assertions as release.yml — a binary that
         # silently compiled out a load-bearing capability must not ship.
-        # Dump strings to a file first: under pipefail, `strings | grep -q`
+        # Dump strings to a file first: under pipefail, strings piped into grep -q
         # fails spuriously when grep exits early and strings takes SIGPIPE.
         strings \$b > /tmp/kiosk.strings
         file \$b | grep -q aarch64                 || { echo 'FATAL: not aarch64'; exit 1; }
