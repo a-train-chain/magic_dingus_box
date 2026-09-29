@@ -85,3 +85,63 @@ TEST_CASE("suggest: watched specials never move the frontier", "[season_choice]"
     w[WatchKey{0, 1}] = WatchRowLite{100, 100, true};
     CHECK(suggested_season(rows, w) == 1);
 }
+
+TEST_CASE("chooser: opens on the suggested season and steps through candidates, clamped",
+          "[season_choice][chooser]") {
+    SeasonChooser c;
+    CHECK_FALSE(c.current().has_value());
+    c.open({3, 5, 6, 8}, 5);
+    REQUIRE(c.choosing);
+    CHECK(c.current() == 5);
+    c.step(+1); CHECK(c.current() == 6);
+    c.step(+5); CHECK(c.current() == 8);   // clamped, no wrap
+    c.step(-9); CHECK(c.current() == 3);
+}
+
+TEST_CASE("chooser: open snaps a non-candidate start to the nearest candidate",
+          "[season_choice][chooser]") {
+    SeasonChooser c;
+    c.open({2, 7}, 5);
+    CHECK(c.current() == 7);  // nearest at or above wins a tie-break upward
+    SeasonChooser d;
+    d.open({2, 7}, 9);
+    CHECK(d.current() == 7);
+}
+
+TEST_CASE("chooser: confirm returns the season and goes idle; cancel returns nothing",
+          "[season_choice][chooser]") {
+    SeasonChooser c;
+    c.open({4, 5}, 4);
+    c.step(+1);
+    CHECK(c.confirm() == 5);
+    CHECK_FALSE(c.choosing);
+    CHECK_FALSE(c.confirm().has_value());
+    c.open({4, 5}, 4);
+    c.cancel();
+    CHECK_FALSE(c.choosing);
+}
+
+TEST_CASE("chooser: revalidate snaps or cancels when candidates change",
+          "[season_choice][chooser]") {
+    SeasonChooser c;
+    c.open({4, 5, 6}, 5);
+    c.revalidate({4, 6});          // S5 started downloading elsewhere
+    CHECK(c.current() == 6);
+    c.revalidate({});              // everything now on disk / in flight
+    CHECK_FALSE(c.choosing);
+}
+
+TEST_CASE("chooser: an empty candidate list never opens", "[season_choice][chooser]") {
+    SeasonChooser c;
+    c.open({}, 1);
+    CHECK_FALSE(c.choosing);
+}
+
+TEST_CASE("chooser label: arrows, season, GiB, (est) only when estimated",
+          "[season_choice][chooser]") {
+    const int64_t gib = 1024LL * 1024 * 1024;
+    CHECK(chooser_label(5, 22 * gib, true) ==
+          "\xE2\x80\xB9 Season 5 \xC2\xB7 ~22 GB (est) \xE2\x80\xBA");
+    CHECK(chooser_label(12, 3 * gib, false) ==
+          "\xE2\x80\xB9 Season 12 \xC2\xB7 ~3 GB \xE2\x80\xBA");
+}
