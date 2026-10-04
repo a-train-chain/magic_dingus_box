@@ -80,6 +80,12 @@ public:
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). The only animation is the filter
+    // overlay's slide; everything else changes on input or when a worker
+    // result is applied (content_epoch_).
+    bool wants_continuous_redraw() const override;
+    uint64_t redraw_signature() const override;
+
     // tmdb_id of the poster most recently selected by the user. Consumed by
     // the dispatcher in main.cpp to forward to DetailScreen on transition.
     int selected_tmdb_id() const { return selected_tmdb_id_; }
@@ -205,6 +211,10 @@ private:
     SonarrClient& sonarr_;
     TmdbClient& tmdb_;
     ::app::AppState& state_;
+    // Bumped whenever update() applies a worker result (TMDB page, For You,
+    // library refresh) — the redraw gate's "content changed" signal. A
+    // revalidate can swap in a same-size page, so sizes alone would miss it.
+    uint64_t content_epoch_ = 0;
     // See the constructor's doc comment. Read only by render() (via
     // browse_grid_state_message and the service-warning line) and never
     // written after construction.

@@ -11,6 +11,7 @@
 // Tasks 18-23 replace each stub screen's render() with real UI; the base
 // class and dispatcher wiring stay stable.
 
+#include <cstdint>
 #include <vector>
 #include "platform/input_manager.h"
 
@@ -56,6 +57,28 @@ public:
     // Draw the screen. screen_w / screen_h are the current framebuffer
     // dimensions (may change if the display is resized).
     virtual void render(::ui::Renderer& r, int screen_w, int screen_h) = 0;
+
+    // ── Redraw gate (app/redraw_gate.h) ──────────────────────────────
+    // The main loop skips render/swap/flip on iterations where nothing on
+    // screen can change. A screen opts in by returning false here — and
+    // must then return true whenever ANYTHING time-based is visible
+    // (spinner, loading dots, marquee/scrolling text, a timed fade or
+    // countdown, a live-updating value) or a background result it would
+    // otherwise only notice inside render() is pending. Default: draw
+    // every vblank, exactly as before the gate.
+    //
+    // Consulted after update() each iteration; input already forces a
+    // draw on the iteration it arrives, and the gate redraws at least
+    // every 250 ms regardless (a missed dirty source costs latency, never
+    // a frozen screen).
+    virtual bool wants_continuous_redraw() const { return true; }
+
+    // Hash of everything the screen draws that can change WITHOUT input
+    // while wants_continuous_redraw() is false: async results landing
+    // (catalogue pages, details, availability, posters), state set by
+    // workers, ... A change draws exactly one frame. Only consulted when
+    // the screen opted out of continuous drawing.
+    virtual uint64_t redraw_signature() const { return 0; }
 };
 
 }  // namespace media_browser::ui

@@ -65,6 +65,8 @@
 #include "app/auto_advance.h"
 #include "app/redraw_gate.h"
 #include "app/post_game_gate.h"
+#include "debug/screenshot_capture.h"
+#include "ui/crt_time.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
@@ -1632,6 +1634,33 @@ int main(int /* argc */, char* /* argv */[]) {
     LOG_INFO("Redraw gate: {} (idle main menu skips unchanged frames; "
              "MDB_REDRAW_GATE=0 disables)",
              redraw_gate.enabled() ? "ON" : "OFF");
+
+    // Debug screenshots: `touch <data>/screenshot_request` -> the next drawn
+    // frame is saved to <data>/screenshots/<UTC>.bmp (newest 10 kept). See
+    // debug/screenshot_capture.h.
+    debug::ScreenshotCapture screenshot_capture(config::get_data_path());
+
+    // CRT field rate (redraw gate, static CRT menu at 30 fps): the field
+    // the last drawn frame showed, and when that frame's present returned
+    // (field_rate_skip_sleep paces the skipped iteration off it).
+    int64_t crt_last_drawn_field = 0;
+    bool crt_field_rate_logged = false;
+    auto last_present_done = std::chrono::steady_clock::now();
+
+    // UI draw calls per drawn frame (MDB_BATCH_UI A/B), reported per minute.
+    struct {
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        uint64_t frames = 0;
+        uint64_t sum = 0;
+        uint64_t max = 0;
+        bool reported_once = false;
+    } ui_draw_window;
+    LOG_INFO("UI batching: {} (MDB_BATCH_UI=0 restores one draw per primitive)",
+             ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
+#ifdef MEDIA_BROWSER_ENABLED
+    // Poster textures uploaded so far (redraw gate: an upload draws).
+    uint64_t mb_artwork_uploads = 0;
+#endif
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -3626,26 +3655,52 @@ int main(int /* argc */, char* /* argv */[]) {
         // playlist state) has run; from here to the present is drawing,
         // plus a tail of non-drawing work (status file, watch checkpoints,
         // stall watchdog, phone-remote queues, reload pokes) that runs
-        // every iteration regardless. Skipping is opt-in: only the bare
-        // main menu (app::is_static_main_menu) may skip, and even there a
-        // frame is drawn on any input, any change in what it shows, and at
-        // least every RedrawGate::kDefaultMaxIdle. See app/redraw_gate.h.
+        // every iteration regardless. Skipping is opt-in: the main menu, an
+        // idle open Settings menu, and idle MB Browse/Search/Library/
+        // Detail/SeriesDetail (app::is_static_main_menu over the activity
+        // flags below) may skip, and even there a frame is drawn on any
+        // input, any change in what it shows, and at least every
+        // RedrawGate::kDefaultMaxIdle. See app/redraw_gate.h.
         bool draw_this_frame = true;
+        bool crt_field_rate_this_iteration = false;
         {
             app::MainMenuActivity act;
             act.intro = !state.intro_complete || state.showing_intro_video ||
                         state.intro_fading_out;
             act.video = should_render_video || state.video_active ||
                         state.is_switching_playlist || controller.is_playing();
+            bool mb_menu_screen = false;  // MB, not Playback: MB CRT look
+            [[maybe_unused]] bool mb_screen_static = false;
 #ifdef MEDIA_BROWSER_ENABLED
-            act.media_browser =
+            const bool mb_on =
                 state.current_screen == app::AppScreen::MediaBrowser;
+            mb_menu_screen =
+                mb_on && current_mb_screen != media_browser::ui::Screen::Playback;
+            // Poster uploads run HERE, before the decision, not in the
+            // drawing block: a skipped frame must still upload, and an
+            // upload must draw the frame that shows it (counter below).
+            if (mb_menu_screen) {
+                mb_artwork_uploads += ui_renderer.pump_artwork();
+            }
+            // The active MB screen may opt out of continuous drawing
+            // (MbScreen::wants_continuous_redraw — Browse, Search,
+            // Library, Detail, SeriesDetail when idle); the dispatcher's
+            // modals keep it continuous while shown.
+            mb_screen_static = mb_on &&
+                               !active_mb_screen->wants_continuous_redraw() &&
+                               !mb_exit_modal.is_open() &&
+                               !mb_stall_modal.is_active();
+            act.media_browser = mb_on && !mb_screen_static;
 #endif
             // Includes the wizard and pairing screen (both live inside it).
-            // The close animation also only completes inside a render.
-            act.settings_menu = settings_menu.is_active() ||
-                                settings_menu.is_opening() ||
-                                settings_menu.is_closing();
+            // The open/close slide only advances inside a render, so it is
+            // continuous; an open, idle menu may skip
+            // (SettingsMenuManager::is_static_for_redraw).
+            const bool settings_shown = settings_menu.is_active() ||
+                                        settings_menu.is_opening() ||
+                                        settings_menu.is_closing();
+            act.settings_menu =
+                settings_shown && !settings_menu.is_static_for_redraw();
             act.keyboard = keyboard.is_active();
             act.ui_fade = state.is_fading ||
                           state.post_game_fade_start_ms.load() != 0;
@@ -3657,9 +3712,14 @@ int main(int /* argc */, char* /* argv */[]) {
                 state.has_error_message() || state.show_volume_slider ||
                 state.show_seek_bar || state.seek_bar_timer > 0.0 ||
                 menu_hold.button_held || state.is_loading_game;
+            // The MB menu screens draw the Marquee CRT look (mb_* values,
+            // swapped in around render_crt_effects below), not the kiosk's.
             act.crt_time_effects =
-                state.display_settings.flicker_intensity > 0.0f ||
-                state.display_settings.interlacing_intensity > 0.0f;
+                mb_menu_screen
+                    ? (state.display_settings.mb_flicker_intensity > 0.0f ||
+                       state.display_settings.mb_interlacing_intensity > 0.0f)
+                    : (state.display_settings.flicker_intensity > 0.0f ||
+                       state.display_settings.interlacing_intensity > 0.0f);
 
             // What the static menu draws that can change with no input and
             // no activity flag. The blink phase is the one that changes on
@@ -3671,8 +3731,16 @@ int main(int /* argc */, char* /* argv */[]) {
                 return static_cast<uint64_t>(static_cast<int64_t>(v));
             };
             app::ContentSignature sig;
-            sig.add(static_cast<uint64_t>(
-                ui_renderer.main_menu_blink_phase(gate_now)));
+            // The Media Browser covers the main menu, so its 2 Hz blink
+            // must not redraw a static MB screen.
+            bool main_menu_visible = true;
+#ifdef MEDIA_BROWSER_ENABLED
+            main_menu_visible = !mb_on;
+#endif
+            if (main_menu_visible) {
+                sig.add(static_cast<uint64_t>(
+                    ui_renderer.main_menu_blink_phase(gate_now)));
+            }
             sig.add(static_cast<uint64_t>(state.selected_index));
             sig.add(static_cast<uint64_t>(state.playlist_scroll_offset));
             sig.add(static_cast<uint64_t>(state.playlists.size()));
@@ -3683,30 +3751,86 @@ int main(int /* argc */, char* /* argv */[]) {
             sig.add(as_u64(state.get_duration()));
             sig.add(static_cast<uint64_t>(state.display_settings.mode));
             sig.add(static_cast<uint64_t>(state.display_settings.bezel_index));
+            // An open, static Settings menu: page, cursor, row labels.
+            if (settings_shown) {
+                sig.add(settings_menu.redraw_signature());
+            }
+#ifdef MEDIA_BROWSER_ENABLED
+            // A static MB screen: which screen, what it shows, posters.
+            if (mb_on) {
+                sig.add(static_cast<uint64_t>(current_mb_screen));
+                sig.add(mb_artwork_uploads);
+                if (mb_screen_static) {
+                    sig.add(active_mb_screen->redraw_signature());
+                }
+            }
+#endif
 
             app::RedrawInputs gate_in;
             gate_in.input_event = input_this_iteration;
             gate_in.video_frame = act.video;
             gate_in.animation_active = act.ui_fade || act.transient_overlay;
-            gate_in.screen_requests_continuous = !app::is_static_main_menu(act);
-            gate_in.forced = display_reset_this_iteration;
+            // CRT flicker/interlacing on the otherwise static menu: the
+            // shaders change the picture once per interlace field (30 Hz),
+            // so draw every other vblank instead of every one. Only on a
+            // >= 48 Hz mode (a 24/30 Hz mode already draws at <= 30), and
+            // only with the gate on (MDB_REDRAW_GATE=0 = every vblank).
+            gate_in.crt_field_rate = redraw_gate.enabled() &&
+                                     mode_info.vrefresh >= 48 &&
+                                     app::is_crt_field_rate_main_menu(act);
+            gate_in.screen_requests_continuous =
+                !app::is_static_main_menu(act) && !gate_in.crt_field_rate;
+            // A pending screenshot must be drawn, or it would capture
+            // whatever stale buffer the skip streak left behind.
+            gate_in.forced = display_reset_this_iteration ||
+                             screenshot_capture.poll(gate_now);
             gate_in.content_signature = sig.value();
             draw_this_frame = redraw_gate.should_draw(gate_in, gate_now);
+            crt_field_rate_this_iteration = gate_in.crt_field_rate;
+
+            // Which interlace field the CRT shaders draw. At field rate the
+            // frame is pinned to the field after the last drawn one
+            // (opposite parity, within one field of the clock) — frames are
+            // vblank-locked and fields are not, so the raw clock can show
+            // the same field twice. Otherwise: wall clock, as before.
+            if (draw_this_frame) {
+                const int64_t wall_field = ui::crt_field_index(gate_now);
+                if (gate_in.crt_field_rate) {
+                    crt_last_drawn_field =
+                        ui::crt_render_field(wall_field, crt_last_drawn_field);
+                    ui_renderer.set_crt_field_override(crt_last_drawn_field);
+                } else {
+                    crt_last_drawn_field = wall_field;
+                    ui_renderer.set_crt_field_override(-1);
+                }
+            }
+            if (gate_in.crt_field_rate && !crt_field_rate_logged) {
+                crt_field_rate_logged = true;
+                LOG_INFO("Redraw gate: CRT field rate active — static CRT menu "
+                         "drawn every other vblank ({} Hz mode)",
+                         static_cast<int>(mode_info.vrefresh));
+            }
 
             // Per-minute counts at DEBUG (file log only). The first window
             // goes to INFO as well, so `journalctl -u magic-dingus-box-cpp`
             // alone shows whether the gate is actually skipping on a box.
             if (auto report = redraw_gate.take_report(gate_now)) {
                 static bool first_report = true;
+                // crt30 = iterations on the CRT-only static menu, drawn
+                // at field rate (~half of them should be skipped).
                 if (first_report) {
                     first_report = false;
-                    LOG_INFO("Redraw gate: drew {} / skipped {} iterations in the last {}s",
+                    LOG_INFO("Redraw gate: drew {} / skipped {} iterations in the last {}s "
+                             "(crt30 {})",
                              report->drawn, report->skipped,
-                             app::RedrawGate::kReportInterval.count());
+                             app::RedrawGate::kReportInterval.count(),
+                             report->crt_field_rate);
                 } else {
-                    LOG_DEBUG("Redraw gate: drew {} / skipped {} iterations in the last {}s",
+                    LOG_DEBUG("Redraw gate: drew {} / skipped {} iterations in the last {}s "
+                              "(crt30 {})",
                               report->drawn, report->skipped,
-                              app::RedrawGate::kReportInterval.count());
+                              app::RedrawGate::kReportInterval.count(),
+                              report->crt_field_rate);
                 }
             }
         }
@@ -4001,6 +4125,13 @@ int main(int /* argc */, char* /* argv */[]) {
             const int mb_w = static_cast<int>(ui_renderer.get_width());
             const int mb_h = static_cast<int>(ui_renderer.get_height());
 
+            {
+            // UI batching scope (MDB_BATCH_UI): the screen and its modals
+            // only draw through Renderer primitives, so they accumulate
+            // into as few draws as their textures allow; the scope's end
+            // flushes before the CRT overlay below.
+            ui::Renderer::BatchScope mb_batch_scope(ui_renderer);
+
             active_mb_screen->render(ui_renderer, mb_w, mb_h);
 
             // "Exit Marquee?" confirm modal — rendered above the active MB
@@ -4012,25 +4143,15 @@ int main(int /* argc */, char* /* argv */[]) {
             // exit modal. is_active() inside render() makes it a no-op
             // when not shown. Task 16.
             mb_stall_modal.render(ui_renderer, mb_w, mb_h);
+            }  // mb_batch_scope — flushed here
 
-            // Drain any completed poster fetches and upload them to GL.
-            // Must happen on the GL-owning main thread. Without this
-            // call the background fetcher thread's decoded images would
-            // never make it onto screen.
-            //
-            // SKIP during Playback — texture allocation + GPU upload is
-            // the most expensive non-decode work in the per-frame budget,
-            // and there's no point loading new poster art for a screen
-            // the operator can't see anyway. This shaves CPU+GPU off the
-            // critical path during the GStreamer pipeline's first ~3
-            // seconds (where most QoS frame drops were happening) and
-            // prevents the Pi 4 from accumulating thermal headroom debt
-            // that would otherwise translate into mid-movie throttling.
-            // Pending fetches stay queued and resume the moment the
-            // operator exits playback back to a menu screen.
-            if (current_mb_screen != media_browser::ui::Screen::Playback) {
-                ui_renderer.pump_artwork();
-            }
+            // Poster uploads (ui_renderer.pump_artwork) moved to the redraw
+            // gate block above: they must run on skipped frames too, and an
+            // upload must count as "the picture changed". Same rule as
+            // before — skipped during Playback (texture allocation + GPU
+            // upload is the most expensive non-decode work in the frame
+            // budget, and the operator can't see the posters; pending
+            // fetches resume on the way back to a menu screen).
 
             // CRT effects overlay on Media Browser menu screens (Browse,
             // Library, Search, Detail, Queue, Settings). Same legacy
@@ -4129,9 +4250,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // lower-right with only a corner visible because (1280-480)/2
         // = 400 logical was being interpreted in 640×480 space.
         glViewport(0, 0, mode.width, mode.height);
-        ui::Toast::render(ui_renderer,
-                          ui_renderer.get_width(),
-                          ui_renderer.get_height());
+        {
+            ui::Renderer::BatchScope toast_batch_scope(ui_renderer);
+            ui::Toast::render(ui_renderer,
+                              ui_renderer.get_width(),
+                              ui_renderer.get_height());
+        }
 #endif
         }  // if (draw_this_frame) — drawing, part 1
 
@@ -4687,6 +4811,19 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
             }
 
+            // Debug screenshot: read back the finished frame (everything
+            // above, post-game fade included) before the swap hands the
+            // buffer to the presenter. No-op unless requested. The frame's
+            // UI draw-call count is logged with it — the batching A/B for
+            // one specific screen.
+            if (screenshot_capture.pending()) {
+                ui_renderer.flush_ui_batch();
+                LOG_INFO("Screenshot frame: {} UI draw calls (UI batching {})",
+                         ui_renderer.ui_draw_calls(),
+                         ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
+            }
+            screenshot_capture.capture_before_swap(mode.width, mode.height);
+
             // Swap EGL buffers
             if (!egl.swap_buffers()) {
                 std::cerr << "Failed to swap buffers!" << std::endl;
@@ -4699,6 +4836,35 @@ int main(int /* argc */, char* /* argv */[]) {
             // Present the GBM buffer to the display using page flip
             // Use shared lambda
             present_frame();
+            last_present_done = std::chrono::steady_clock::now();
+
+            // UI draw calls per drawn frame, reported per minute (first
+            // window at INFO so the journal alone shows it; DEBUG after).
+            {
+                const uint64_t draws = ui_renderer.take_ui_draw_calls();
+                ui_draw_window.frames++;
+                ui_draw_window.sum += draws;
+                if (draws > ui_draw_window.max) ui_draw_window.max = draws;
+                if (last_present_done - ui_draw_window.start >= std::chrono::seconds(60)) {
+                    if (ui_draw_window.frames > 0) {
+                        const uint64_t avg = ui_draw_window.sum / ui_draw_window.frames;
+                        if (!ui_draw_window.reported_once) {
+                            LOG_INFO("UI draw calls/frame (last 60s): avg {} max {} over {} "
+                                     "frames (UI batching {})",
+                                     avg, ui_draw_window.max, ui_draw_window.frames,
+                                     ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
+                        } else {
+                            LOG_DEBUG("UI draw calls/frame (last 60s): avg {} max {} over {} "
+                                      "frames (UI batching {})",
+                                      avg, ui_draw_window.max, ui_draw_window.frames,
+                                      ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
+                        }
+                        ui_draw_window.reported_once = true;
+                    }
+                    ui_draw_window.start = last_present_done;
+                    ui_draw_window.frames = ui_draw_window.sum = ui_draw_window.max = 0;
+                }
+            }
         }  // if (draw_this_frame) — drawing, part 2
         
         // BARE BONES: Removed periodic audio checks - let MPV handle audio
@@ -4737,9 +4903,21 @@ int main(int /* argc */, char* /* argv */[]) {
         // without spinning a core.
         const auto pacing = utils::frame_pacing_for(
             mb_movie_active ? 30 : 60, static_cast<int>(mode_info.vrefresh));
-        const auto pace_sleep = utils::frame_cap_sleep(
-            pacing, std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - now));
+        // CRT field rate: a skipped iteration sleeps until just past the
+        // vblank it skips, so the drawing iteration after it has a full
+        // refresh to render and flips exactly two vblanks after the last
+        // flip (utils::field_rate_skip_sleep).
+        const auto pace_now = std::chrono::steady_clock::now();
+        const auto iteration_elapsed =
+            std::chrono::duration_cast<std::chrono::microseconds>(pace_now - now);
+        const auto pace_sleep =
+            (crt_field_rate_this_iteration && !draw_this_frame)
+                ? utils::field_rate_skip_sleep(
+                      pacing, static_cast<int>(mode_info.vrefresh),
+                      std::chrono::duration_cast<std::chrono::microseconds>(
+                          pace_now - last_present_done),
+                      iteration_elapsed)
+                : utils::frame_cap_sleep(pacing, iteration_elapsed);
         if (pace_sleep.count() > 0) std::this_thread::sleep_for(pace_sleep);
     }
     

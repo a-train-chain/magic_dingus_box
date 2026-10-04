@@ -178,6 +178,7 @@ rsync -avz --checksum \
     --exclude 'data/text_input_queue.jsonl' \
     --exclude 'data/media_browser.db*' \
     --exclude 'data/upload_temp' \
+    --exclude 'data/screenshots' \
     --filter 'P data/thumbnails/ps1' \
     --filter 'P data/thumbnails/nes' \
     --filter 'P data/thumbnails/snes' \

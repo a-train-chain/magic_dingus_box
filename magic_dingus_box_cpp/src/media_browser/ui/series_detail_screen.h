@@ -111,6 +111,15 @@ public:
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). Nothing in this screen's paint path is
+    // time-based ("Loading...", "syncing…", "Removing season…" are fixed
+    // text); every change arrives through input or update() — fetch and
+    // mutation drains, the 9 s series poll, confirm expiries — so the
+    // signature hashes the state render() draws from. The poll rebuilds
+    // rows_/buttons_ even when unchanged, hence contents, not a counter.
+    bool wants_continuous_redraw() const override { return false; }
+    uint64_t redraw_signature() const override;
+
 private:
     // ---- load pipeline (DetailScreen's FetchWorker idiom) ----
     struct FetchWorker {

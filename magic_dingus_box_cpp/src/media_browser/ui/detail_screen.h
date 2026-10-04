@@ -193,6 +193,14 @@ public:
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). Detail has no animation (the old blink
+    // is computed but unused); everything changes on input, in update()
+    // (fetch drains, 9 s library poll, banner / confirm expiry) or via
+    // three values render() reads live (Prowlarr state, VPN health, TMDB
+    // key) — all in the signature.
+    bool wants_continuous_redraw() const override { return false; }
+    uint64_t redraw_signature() const override;
+
 private:
     // What the Detail screen is currently showing. Drives which action
     // buttons are rendered and how SELECT resolves.

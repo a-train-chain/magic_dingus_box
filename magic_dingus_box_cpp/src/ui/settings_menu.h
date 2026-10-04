@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 
 namespace app {
@@ -105,7 +106,22 @@ public:
     bool is_closing() const { return is_closing_; }
     
     float get_animation_progress() const;
-    
+
+    // ── Redraw gate (app/redraw_gate.h) ──────────────────────────────
+    // True when the open menu shows nothing that changes on its own, so
+    // the main loop may skip unchanged frames. False while: opening or
+    // closing (the slide only advances inside drawing, via
+    // get_animation_progress()); the pairing screen is up (1 s code
+    // countdown); the controller wizard is up (raw pad capture, not
+    // counted as input); the game browser is up (thumbnails decode and
+    // upload inside drawing); Wi-Fi is scanning, connecting or forgetting
+    // (live rows). The on-screen keyboard is gated separately by main.cpp.
+    bool is_static_for_redraw() const;
+
+    // Hash of what a static menu draws: page, cursor, scroll and every
+    // row's label/sublabel (rebuilt by update() on Wi-Fi edges etc.).
+    uint64_t redraw_signature() const;
+
     void navigate(int delta, int game_playlists_count = 0, int games_in_current_playlist = 0);
     MenuSection select_current();
     

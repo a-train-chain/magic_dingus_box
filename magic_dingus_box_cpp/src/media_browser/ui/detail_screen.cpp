@@ -12,6 +12,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "app/redraw_gate.h"
 #include "media_browser/library/watch_store.h"
 #include "media_browser/movie_remove.h"
 #include "media_browser/qbittorrent/download_watchdog.h"
@@ -655,6 +656,36 @@ void DetailScreen::rebuild_buttons() {
     if (!buttons_.empty() && focus_ >= static_cast<int>(buttons_.size())) {
         focus_ = static_cast<int>(buttons_.size()) - 1;
     }
+}
+
+uint64_t DetailScreen::redraw_signature() const {
+    app::ContentSignature sig;
+    sig.add(static_cast<uint64_t>(tmdb_id_));
+    sig.add(static_cast<uint64_t>(mode_));
+    sig.add(static_cast<uint64_t>(tmdb_detail_.has_value()));
+    sig.add(static_cast<uint64_t>(movie_.has_value()));
+    if (movie_) {
+        sig.add(static_cast<uint64_t>(movie_->has_file));
+        sig.add(static_cast<uint64_t>(movie_->file_size_bytes));
+    }
+    sig.add(static_cast<uint64_t>(import_in_progress_));
+    sig.add(static_cast<uint64_t>(remove_pending_));
+    sig.add(static_cast<uint64_t>(needs_refresh_));
+    sig.add(banner_);
+    sig.add(static_cast<uint64_t>(buttons_.size()));
+    for (const auto& b : buttons_) {
+        sig.add(static_cast<uint64_t>(b.action));
+        sig.add(b.label);
+    }
+    // Read live by render(), with no screen member behind them.
+    if (prowlarr_ != nullptr) {
+        sig.add(static_cast<uint64_t>(prowlarr_->state()));
+    }
+    if (vpn_healthy_provider_) {
+        sig.add(static_cast<uint64_t>(vpn_healthy_provider_()));
+    }
+    sig.add(static_cast<uint64_t>(tmdb_.has_api_key()));
+    return sig.value();
 }
 
 void DetailScreen::update() {

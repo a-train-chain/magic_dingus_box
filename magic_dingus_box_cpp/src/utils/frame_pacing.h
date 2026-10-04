@@ -74,4 +74,28 @@ inline std::chrono::microseconds frame_cap_sleep(
                      floor_sleep});
 }
 
+// CRT field rate (app::RedrawGate draws every other iteration on the
+// static CRT menu): the sleep for an iteration that SKIPPED drawing.
+//
+// Without it a skipped iteration lasts min_iteration (just under one
+// refresh) and the drawing iteration after it starts ~2 ms before the
+// vblank it is meant to skip — a frame rendered in under 2 ms catches
+// that vblank (16 ms frame), a slower one the next (33 ms): uneven 30 fps.
+// Sleeping until just past the skipped vblank instead gives the drawing
+// iteration a full refresh minus the margin to render, and its flip lands
+// exactly two vblanks after the previous one — the same anchor the 30 fps
+// movie cap uses, while input is still polled twice per drawn frame.
+//
+// since_last_present: time since the last present returned (on a vblank).
+// iteration_elapsed: start of this iteration -> now.
+inline std::chrono::microseconds field_rate_skip_sleep(
+        const FramePacing& p, int refresh_hz,
+        std::chrono::microseconds since_last_present,
+        std::chrono::microseconds iteration_elapsed) {
+    if (refresh_hz <= 0) refresh_hz = 60;
+    const std::chrono::microseconds period{1000000 / refresh_hz};
+    const auto past_skipped_vblank = period + period / 8 - since_last_present;
+    return std::max(frame_cap_sleep(p, iteration_elapsed), past_skipped_vblank);
+}
+
 }  // namespace utils

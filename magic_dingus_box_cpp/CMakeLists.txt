@@ -136,6 +136,7 @@ set(VIDEO_SOURCES
 
 set(UI_SOURCES
     src/ui/renderer.cpp
+    src/ui/renderer_batch.cpp
     src/ui/controller_wizard.cpp
     src/ui/controller_wizard_renderer.cpp
     src/ui/pairing_screen.cpp
@@ -183,6 +184,13 @@ set(UTILS_SOURCES
     src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
     src/utils/subprocess.cpp
+    src/utils/bmp_writer.cpp
+    src/utils/screenshot_store.cpp
+)
+
+# Kiosk-only debug hooks (GL readback). See debug/screenshot_capture.h.
+set(DEBUG_SOURCES
+    src/debug/screenshot_capture.cpp
 )
 
 set(RETROARCH_SOURCES
@@ -231,6 +239,7 @@ set(ALL_SOURCES
     ${APP_SOURCES}
     ${UTILS_SOURCES}
     ${RETROARCH_SOURCES}
+    ${DEBUG_SOURCES}
 )
 
 if(BUILD_KIOSK)
@@ -807,7 +816,11 @@ if(UTILS_TEST_SOURCES)
         src/utils/time_format.cpp
         src/utils/services_env.cpp
         # The one fork/exec/wait helper, tested against real processes.
-        src/utils/subprocess.cpp)
+        src/utils/subprocess.cpp
+        # The debug screenshot hook's file side (BMP encode, naming,
+        # atomic write, retention).
+        src/utils/bmp_writer.cpp
+        src/utils/screenshot_store.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)

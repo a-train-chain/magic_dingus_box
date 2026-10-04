@@ -633,6 +633,19 @@ if [[ -d "$BUILD_DATA_DIR" ]]; then
     done
 fi
 
+# Debug screenshots (data/screenshots/*.bmp, from `touch
+# data/screenshot_request` — see debug/screenshot_capture.h). Pictures of the
+# source operator's TV: personal content. prepare_for_cloning.sh strips them
+# from the image; this is the on-unit safety net, same as the watch db below.
+for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
+    [[ -d "$d" ]] || continue
+    if [[ -d "${d}/screenshots" ]]; then
+        rm -rf "${d}/screenshots"
+        log "    wiped: ${d#${INSTALL_DIR}/}/screenshots/"
+    fi
+    rm -f "${d}/screenshot_request"
+done
+
 # Media Browser watch history. media_browser.db holds the source operator's
 # entire viewing record — every episode and movie watched, resume positions,
 # timestamps (watch_state table, schema v3) — plus their library cache. It is

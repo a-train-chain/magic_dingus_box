@@ -156,6 +156,16 @@ bool FontManager::atlas_alloc(int w, int h, int& page_idx, int& x, int& y) {
         glBindTexture(GL_TEXTURE_2D, page.texture);
         std::vector<uint8_t> zeros(
             static_cast<size_t>(kAtlasSize) * kAtlasSize, 0);
+        // Reserved full-coverage block at (0,0) for batched solid fills
+        // (white_texel_u/v). The first shelf starts past it; the glyph
+        // padding that follows keeps it from bleeding into a glyph.
+        for (int wy = 0; wy < kWhiteBlock; ++wy) {
+            for (int wx = 0; wx < kWhiteBlock; ++wx) {
+                zeros[static_cast<size_t>(wy) * kAtlasSize + wx] = 255;
+            }
+        }
+        page.shelf_x = kWhiteBlock;
+        page.shelf_h = kWhiteBlock;
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, kAtlasSize, kAtlasSize, 0,
                      GL_RED, GL_UNSIGNED_BYTE, zeros.data());

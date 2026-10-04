@@ -123,7 +123,8 @@ sudo usermod -a -G video,input $USER
   - `gst_player` - GStreamer pipeline management, playback control
   - `gst_renderer` - GL texture rendering from GStreamer video frames
 - **`ui/`** - User interface
-  - `renderer` - Immediate-mode 2D renderer (quads, text, alpha blending)
+  - `renderer` - Immediate-mode 2D renderer (quads, text, alpha blending). Primitives inside a `Renderer::BatchScope` (the whole `render(state)` pass, the MB screen + modals, the toast) accumulate into one CPU vertex batch (`ui_batch.h`, GL side `renderer_batch.cpp`) and are submitted per texture run; every non-batched GL site in `renderer.cpp` calls `flush_ui_batch()` first, so draw order is unchanged. `MDB_BATCH_UI=0` restores one draw per primitive for A/B; the journal logs UI draw calls/frame per minute.
+  - Redraw gate (`app/redraw_gate.h`, wired in `main.cpp`): render/swap/flip are skipped on iterations where nothing on screen can change — the main menu, an idle open Settings menu (`SettingsMenuManager::is_static_for_redraw`), and MB Browse/Search/Library/Detail/SeriesDetail when idle (`MbScreen::wants_continuous_redraw` + `redraw_signature`). The static menu with CRT flicker/interlacing draws every other vblank (`ui/crt_time.h`). `MDB_REDRAW_GATE=0` disables. A new screen or animation must either keep `wants_continuous_redraw()` true or put its state in the signature.
   - `theme` - Color palette and layout constants
   - `font_manager` - stb_truetype font rasterization → GL textures
   - `settings_menu` - Settings UI state machine
@@ -143,6 +144,7 @@ sudo usermod -a -G video,input $USER
   - `joydev_index` - converts a raw evdev code + the device's capability lists into the RetroArch udev bind token (`"5"`, `"h0up"`, `"+2"`). The kiosk reads evdev codes; RetroArch configs want joystick indices — nothing else bridges the two.
   - `capture_session` - pure state machine behind the Controller Setup wizard: walks the per-style prompt list, decides when a press or stick deflection counts, rejects duplicates, supports skip/redo. No I/O.
   - `controller_detector` - USB controller probing (vendor/product IDs → `ControllerType` enum). `detect_primary_controller()` returns the first recognized pad; `detect_connected_controllers()` returns one entry per `/dev/input/js*` in port order, which is what per-port resolution consumes. Split out of `retroarch_launcher` in v1.4.0.
+- **`debug/`** - `screenshot_capture`: `touch <data>/screenshot_request` and the next drawn frame (the full composite, read back before the swap) is written to `<data>/screenshots/<UTC>.bmp`, newest 10 kept. The directory is excluded from deploy/OTA rsyncs and scrubbed from golden images (personal content).
 - **`utils/`** - Utilities
   - `config` - Centralized path configuration (base paths, RetroArch paths, save dirs)
   - `path_resolver` - Asset path resolution

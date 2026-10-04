@@ -15,6 +15,7 @@
 
 using std::chrono::microseconds;
 using utils::frame_cap_sleep;
+using utils::field_rate_skip_sleep;
 using utils::frame_pacing_for;
 
 namespace {
@@ -137,4 +138,66 @@ TEST_CASE("cap still binds when the flip does not block (SetCrtc fallback)",
         // Floor is within an eighth of a refresh of the target period.
         CHECK(floor_us >= (1000000 / fps) - (1000000 / 60) / 8 - 1);
     }
+}
+
+namespace {
+
+// The CRT field-rate loop: 60 fps pacing, the redraw gate alternating
+// draw / skip, skipped iterations paced by field_rate_skip_sleep.
+std::vector<std::int64_t> simulate_field_rate(int refresh_hz, int frames,
+                                              std::int64_t skip_work_us) {
+    const auto p = frame_pacing_for(60, refresh_hz);
+    const std::int64_t period = 1000000 / refresh_hz;
+    std::vector<std::int64_t> intervals;
+    std::int64_t t = 1234;
+    std::int64_t last_flip = -1;
+    bool draw = true;
+    int drawn = 0;
+    while (drawn < frames) {
+        const std::int64_t start = t;
+        if (draw) {
+            t += render_us(drawn);
+            t = next_vblank(t, period);
+            if (last_flip >= 0) intervals.push_back(t - last_flip);
+            last_flip = t;
+            ++drawn;
+            t += frame_cap_sleep(p, microseconds{t - start}).count();
+        } else {
+            t += skip_work_us;  // input poll, status file, ...
+            t += field_rate_skip_sleep(p, refresh_hz, microseconds{t - last_flip},
+                                       microseconds{t - start})
+                     .count();
+        }
+        draw = !draw;
+    }
+    return intervals;
+}
+
+}  // namespace
+
+TEST_CASE("CRT field rate flips exactly every second vblank", "[frame_pacing]") {
+    // Render costs up to 12 ms (render_us): the drawing iteration starts
+    // just past the skipped vblank, so it has ~14.6 ms of budget.
+    for (std::int64_t skip_work : {0, 300, 3000}) {
+        const std::int64_t two_vblanks = 2 * (1000000 / 60);
+        for (auto d : simulate_field_rate(60, 600, skip_work)) {
+            REQUIRE(d == two_vblanks);
+        }
+    }
+    const std::int64_t two_at_50 = 2 * (1000000 / 50);
+    for (auto d : simulate_field_rate(50, 300, 0)) {
+        REQUIRE(d == two_at_50);
+    }
+}
+
+TEST_CASE("field_rate_skip_sleep: never shorter than the normal cap",
+          "[frame_pacing]") {
+    const auto p = frame_pacing_for(60, 60);
+    // Present long ago: falls back to the ordinary floor.
+    CHECK(utils::field_rate_skip_sleep(p, 60, microseconds{100000},
+                                       microseconds{1000}) ==
+          frame_cap_sleep(p, microseconds{1000}));
+    // Right after a present: sleeps past the next vblank (+ margin).
+    CHECK(utils::field_rate_skip_sleep(p, 60, microseconds{0}, microseconds{0})
+              .count() == 16666 + 16666 / 8);
 }
