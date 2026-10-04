@@ -138,10 +138,8 @@ void SearchScreen::enter() {
     // blocked render for ~1s on every entry to the screen — visible as
     // a stutter on Browse->Search transitions. Now dispatched async; a
     // future update() tick drains it via apply_pending_lib(). Until
-    // then, library_tmdb_ids_ may be empty, the IN LIBRARY chips
-    // simply don't render, and BTN2 quick-add is gated on lib_loaded_
-    // (with a "Loading library — please wait" hint) so the user can't
-    // accidentally re-add a movie that's already in their library.
+    // then, library_tmdb_ids_ may be empty and the IN LIBRARY chips
+    // simply don't render.
     start_lib_fetch();
 }
 
@@ -166,17 +164,6 @@ void SearchScreen::run_lib_fetch(uint64_t gen) {
         spdlog::info("[SearchScreen] lib gen={} stale after get_library; discarding",
                      gen);
         return;
-    }
-    // Profiles are only fetched on the FIRST library load. Subsequent
-    // refreshes (post-add) just need to refresh the in-library set.
-    if (!library_cached_) {
-        r.profiles = radarr_.get_quality_profiles();
-        r.profiles_valid = true;
-        if (gen != lib_current_gen_.load()) {
-            spdlog::info("[SearchScreen] lib gen={} stale after get_quality_profiles; discarding",
-                         gen);
-            return;
-        }
     }
     // Fetch queue alongside the library so apply_pending_lib() can populate
     // downloading_tmdb_ids_ without an extra HTTP round-trip.
@@ -233,73 +220,8 @@ void SearchScreen::apply_pending_lib() {
             }
         }
     }
-    if (incoming.profiles_valid) {
-        quality_profiles_ = std::move(incoming.profiles);
-        library_cached_ = true;
-    }
-    lib_loaded_ = true;
-    lib_loading_ = false;
-    spdlog::info("[SearchScreen] applied lib: {} ids, {} profiles, {} downloading",
-                 library_tmdb_ids_.size(), quality_profiles_.size(),
-                 downloading_tmdb_ids_.size());
-}
-
-void SearchScreen::quick_add_focused() {
-    // Only fires from the results grid; no-op on the keyboard.
-    if (focus_ != Focus::Results) return;
-    if (results_.empty()) return;
-    if (grid_cursor_ < 0 ||
-        grid_cursor_ >= static_cast<int>(results_.size())) return;
-    const auto& hit = results_[grid_cursor_];
-    if (hit.tmdb_id <= 0) return;
-
-    // Block the add until the in-library cache has populated at least
-    // once. Without this, the user could fire a quick-add before the
-    // async lib_ fetch returns, and we'd happily re-add a movie that's
-    // already in their library (Radarr would then create a duplicate).
-    // A toast keeps the user oriented; the lib fetch is fast enough
-    // that they can retry within a second.
-    if (!lib_loaded_) {
-        ::ui::Toast::show("Loading library — please wait");
-        return;
-    }
-
-    if (library_tmdb_ids_.count(hit.tmdb_id) > 0) {
-        ::ui::Toast::show("Already in library");
-        return;
-    }
-
-    int qp = 0;
-    for (const auto& p : quality_profiles_) {
-        if (p.name == "HD-1080p") { qp = p.id; break; }
-    }
-    if (qp == 0 && !quality_profiles_.empty()) qp = quality_profiles_.front().id;
-    if (qp == 0) {
-        ::ui::Toast::show("No quality profile — check Radarr");
-        return;
-    }
-
-    // add_movie() stays synchronous — it's a user-initiated mutation,
-    // expected to block briefly, and serializing it with the lookup
-    // pipeline would add significant complexity for no real win.
-    bool ok = radarr_.add_movie(hit.tmdb_id, qp, /*monitor=*/true);
-    if (!ok) {
-        ::ui::Toast::show("Add failed — see Radarr logs");
-        return;
-    }
-    // Insert into the local cache immediately so the IN LIBRARY chip
-    // appears without waiting for the async refresh below.
-    library_tmdb_ids_.insert(hit.tmdb_id);
-    std::string msg = "Added: ";
-    msg += (hit.title.empty() ? "movie" : hit.title);
-    ::ui::Toast::show(msg);
-
-    // Re-pull the library async so any other state Radarr gained from
-    // the add (radarr_id, etc.) gets picked up next tick. Using the
-    // async path here (instead of a direct radarr_.get_library() call)
-    // matches the Task 6 invariant that all library refreshes go
-    // through the same pipeline.
-    start_lib_fetch();
+    spdlog::info("[SearchScreen] applied lib: {} ids, {} downloading",
+                 library_tmdb_ids_.size(), downloading_tmdb_ids_.size());
 }
 
 void SearchScreen::run_lookup_if_due() {
