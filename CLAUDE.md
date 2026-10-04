@@ -504,7 +504,13 @@ cancels (`removeFromClient=true`) already took their partial data,
 and a step-6 abort still discloses step 5's torrent purge. The
 success toast likewise names what did NOT happen: with no grabbed and
 no imported history record, nothing was blocklisted and the same copy
-can come back.
+can come back. A `std::exception` from either client is an abort like
+any other (same disclosures, same stuck-OFF warning), never the screen's
+generic "something went wrong". The whole sequence lives in
+`src/media_browser/season_delete.{h,cpp}` (`run_delete_season` +
+`compose_season_delete_toast`), renderer-free and unit-tested in
+`tests/media_browser/test_season_delete.cpp`; the screen only spawns,
+drains and paints.
 
 **Re-downloading a deleted season**: SELECT on a season row with
 nothing on disk and nothing in flight starts that season's download
