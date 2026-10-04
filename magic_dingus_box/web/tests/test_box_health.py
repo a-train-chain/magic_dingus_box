@@ -240,8 +240,9 @@ def test_endpoints(app, client, temp_data_dir):
 
 def test_with_services_requires_media_browser_unlock(app, client, temp_data_dir):
     fake = FakeRun()
-    app.config["HEALTH_RUNNER"] = HealthRunner(
+    runner = HealthRunner(
         script=temp_data_dir / "v.sh", cache_path=temp_data_dir / "c.json", run=fake)
+    app.config["HEALTH_RUNNER"] = runner
     with patch("admin._media_browser_unlocked", return_value=False):
         rv = client.post("/admin/health/run", json={"with_services": True})
     assert rv.status_code == 403
@@ -249,6 +250,9 @@ def test_with_services_requires_media_browser_unlock(app, client, temp_data_dir)
     with patch("admin._media_browser_unlocked", return_value=True):
         rv = client.post("/admin/health/run", json={"with_services": True})
     assert rv.status_code == 200
+    # Let the worker write its cache before the temp dir is torn down
+    # (otherwise rmtree races the write: a flaky teardown error).
+    runner.join(5)
 
 
 def test_run_requires_csrf(temp_data_dir):
