@@ -33,7 +33,7 @@ public:
     // quiet the media stack); end is guaranteed to run once begin has, on
     // every path (normal return, launch failure, exception). They carry the
     // side effects that must wrap EVERY game session — systemd watchdog
-    // disable/re-enable, phone-remote status writes, GPIO restart-button
+    // disable/re-enable around the teardown and restore phases, phone-remote status writes, GPIO restart-button
     // polling, media-stack quiet mode — so all five launch routes get
     // them (main-UI select on a mixed playlist, NEXT/PREV, auto-advance,
     // Master Shuffle, Settings game browser), not just the Settings
@@ -42,6 +42,13 @@ public:
                                 std::function<void()> end) {
         game_session_begin_ = std::move(begin);
         game_session_end_   = std::move(end);
+    }
+
+    // systemd watchdog control for the supervised play phase of a game
+    // (see retroarch::LaunchOptions::watchdog). Installed once from main();
+    // empty on dev machines / without libsystemd.
+    void set_session_watchdog(std::function<void(retroarch::SessionWatchdog)> fn) {
+        session_watchdog_ = std::move(fn);
     }
     
     // Playback control
@@ -144,6 +151,7 @@ private:
     retroarch::RetroArchLauncher retroarch_launcher_;
     std::function<void(const app::PlaylistItem&)> game_session_begin_;
     std::function<void()> game_session_end_;
+    std::function<void(retroarch::SessionWatchdog)> session_watchdog_;
 
     // Mode to restore after RetroArch exits. 0 = never set (fall back to
     // the legacy 640x480 floor).

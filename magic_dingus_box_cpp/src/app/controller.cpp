@@ -12,7 +12,6 @@
 #include "app_state.h"
 
 #include <sstream>
-#include <csignal>
 #include <vector>
 #include <iomanip>
 #include <iostream>
@@ -742,7 +741,8 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
                 // CRITICAL: Keep CRTC enabled (disable_crtc = false) for Vulkan
                 // compatibility. Disabling it causes "QueuePresent failed" on
                 // startup for most cores (Genesis, SNES, NES, PS1). We rely on
-                // pkill and display restoration logic for clean exit.
+                // the launcher's session stop and display restoration logic
+                // for a clean exit.
                 const bool disable_crtc = false;
                 std::cout << "Releasing DRM master for RetroArch (disable_crtc="
                           << disable_crtc << ")..." << std::endl;
@@ -752,6 +752,11 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
         };
+
+        // Feed the systemd watchdog while RetroArch plays (main.cpp wires
+        // this to sd_notify); the teardown above and the restore below stay
+        // unwatched, bracketed by the session hooks.
+        opts.watchdog = session_watchdog_;
 
         bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db, static_cast<int>(state.audio_settings.output), opts);
         
@@ -766,45 +771,14 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         // pixel-identical to what is already on the panel, and the stale
         // frame reads as frame 1 of a deliberate fade instead of a hang.
 
-        // CRITICAL: Ensure RetroArch is truly dead before we try to take back control
-        // This prevents "zombie" processes from holding onto DRM/Input resources.
-        // TERM first with a bounded grace, KILL only as the fallback: this
-        // was an unconditional `pkill -9 retroarch`, which on a mid-game
-        // kiosk stop could land while RetroArch was writing its auto
-        // save-state/SRAM. Normally nothing is left (the launcher script
-        // now waits for RetroArch), so this costs one pgrep.
-        std::cout << "RetroArch exited. Ensuring process termination..." << std::endl;
-        {
-            auto run_quiet = [](std::vector<const char*> argv) -> int {
-                argv.push_back(nullptr);
-                pid_t pid = fork();
-                if (pid == 0) {
-                    int devnull = open("/dev/null", O_WRONLY);
-                    if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                    execvp(argv[0], const_cast<char* const*>(argv.data()));
-                    _exit(127);
-                }
-                if (pid < 0) return -1;
-                int s = 0;
-                if (waitpid(pid, &s, 0) < 0) return -1;
-                return WIFEXITED(s) ? WEXITSTATUS(s) : -1;
-            };
-            retroarch::StragglerOps ops;
-            ops.running = [&] { return run_quiet({"pgrep", "-x", "retroarch"}) == 0; };
-            ops.signal = [&](int sig) {
-                run_quiet({"pkill", sig == SIGKILL ? "-KILL" : "-TERM", "-x", "retroarch"});
-            };
-            ops.sleep = [](std::chrono::milliseconds d) { std::this_thread::sleep_for(d); };
-            // 5 s fits inside TimeoutStopSec=20 alongside the rest of the stop.
-            const auto reaped = retroarch::reap_retroarch_stragglers(
-                ops, std::chrono::milliseconds(5000), std::chrono::milliseconds(100));
-            if (reaped == retroarch::StragglerResult::Terminated) {
-                std::cout << "Straggling RetroArch exited after SIGTERM" << std::endl;
-            } else if (reaped == retroarch::StragglerResult::Killed) {
-                std::cerr << "RetroArch ignored SIGTERM for 5 s; SIGKILLed" << std::endl;
-            }
-        }
-        
+        // RetroArch is gone and reaped by the time launch_game returns: the
+        // launcher spawns it directly, supervises it, and every way a session
+        // ends (quit gesture, kiosk SIGTERM, startup timeout) goes through
+        // retroarch::stop_game_session(), which TERMs RetroArch, waits for its
+        // auto-save, and only then SIGKILLs and sweeps its process group. The
+        // `pgrep`/`pkill -x retroarch` safety net that used to live here
+        // guessed at a process the kiosk now owns by PID.
+
         // Fixed settle before re-acquiring DRM master, so RetroArch has fully
         // released DRM and kernel resources. Load-bearing and hardware-tuned;
         // see the follow-on in the 2026-08-02 graceful-exit spec before

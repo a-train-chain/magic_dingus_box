@@ -2,34 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <cmath>
-#include <csignal>
 #include <filesystem>
 #include <ostream>
 #include <sstream>
-#include <thread>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include "utils/config.h"
 
 namespace retroarch {
 
 namespace {
-
-std::string shell_single_quote(const std::string& value) {
-    std::string quoted = "'";
-    for (const char character : value) {
-        if (character == '\'') {
-            quoted += "'\\''";
-        } else {
-            quoted += character;
-        }
-    }
-    quoted += "'";
-    return quoted;
-}
 
 bool is_ps1_core(const std::string& core_name) {
     return core_name.find("pcsx") != std::string::npos ||
@@ -761,146 +743,19 @@ int audio_latency_ms_for_core(const std::string& core_name) {
     return 48;
 }
 
-std::string build_kms_ready_watch_block(const std::string& command,
-                                        const ReadyWatchOptions& options) {
-    std::ostringstream block;
-    block << "unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE SDL_VIDEODRIVER\n";
-    block << "RETROARCH_READY_FILE=" << shell_single_quote(options.ready_file)
-          << "\n";
-    block << "rm -f \"$RETROARCH_READY_FILE\"\n";
-    // Survive the group SIGTERM the kiosk sends when it is stopped mid-game.
-    // Untrapped, bash died at once and the kiosk's waitpid() returned while
-    // RetroArch was still writing its auto save-state/SRAM. The trap is
-    // reset to default in RetroArch itself (children never inherit traps),
-    // so RetroArch still quits through its own handler.
-    block << "trap ':' TERM\n";
-    block << command << " &\n";
-    block << "RETROARCH_PID=$!\n";
-    block << "while kill -0 \"$RETROARCH_PID\" 2>/dev/null; do\n";
-    block << "    for fd in /proc/$RETROARCH_PID/fd/*; do\n";
-    block << "        target=$(readlink \"$fd\" 2>/dev/null || true)\n";
-    block << "        case \"$target\" in\n";
-    block << "            " << options.drm_card_pattern << ")\n";
-    block << "                printf '%s\\n' \"$RETROARCH_PID\" > "
-             "\"$RETROARCH_READY_FILE\"\n";
-    block << "                break 2\n";
-    block << "                ;;\n";
-    block << "        esac\n";
-    block << "    done\n";
-    block << "    sleep 0.05\n";
-    block << "done\n";
-    block << "wait \"$RETROARCH_PID\"\n";
-    block << "RETROARCH_EXIT=$?\n";
-    // A trapped signal makes `wait` return early (status 128+n) while
-    // RetroArch is still alive and saving: keep waiting until it is gone.
-    block << "while kill -0 \"$RETROARCH_PID\" 2>/dev/null; do\n";
-    block << "    wait \"$RETROARCH_PID\"\n";
-    block << "    RETROARCH_EXIT=$?\n";
-    block << "done\n";
-    return block.str();
-}
-
-StartupStatus wait_for_startup(pid_t launcher_pid,
-                               const std::string& ready_file,
-                               std::chrono::milliseconds timeout,
-                               std::chrono::milliseconds poll_interval) {
-    if (launcher_pid <= 0) {
-        return StartupStatus::WaitError;
-    }
-
-    if (poll_interval <= std::chrono::milliseconds::zero()) {
-        poll_interval = std::chrono::milliseconds(1);
-    }
-
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (true) {
-        int status = 0;
-        const pid_t wait_result = waitpid(launcher_pid, &status, WNOHANG);
-        if (wait_result == launcher_pid) {
-            return StartupStatus::Exited;
-        }
-        if (wait_result < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            if (errno == ECHILD) {
-                return StartupStatus::Exited;
-            }
-            return StartupStatus::WaitError;
-        }
-
-        std::error_code marker_error;
-        if (std::filesystem::exists(ready_file, marker_error) && !marker_error) {
-            return StartupStatus::Ready;
-        }
-
-        if (std::chrono::steady_clock::now() >= deadline) {
-            return StartupStatus::TimedOut;
-        }
-        std::this_thread::sleep_for(poll_interval);
-    }
-}
-
-bool terminate_process_group(pid_t launcher_pid,
-                             std::chrono::milliseconds grace) {
-    if (launcher_pid <= 0) {
-        return false;
-    }
-
-    if (kill(-launcher_pid, SIGTERM) != 0 && errno != ESRCH) {
-        return false;
-    }
-
-    const auto deadline = std::chrono::steady_clock::now() + grace;
-    while (std::chrono::steady_clock::now() < deadline) {
-        int status = 0;
-        const pid_t wait_result = waitpid(launcher_pid, &status, WNOHANG);
-        if (wait_result == launcher_pid) {
+bool opt_file_shadows_options(const std::string& opt_contents,
+                              const std::string& prefix) {
+    if (prefix.empty()) return false;
+    std::size_t line_start = 0;
+    while (line_start < opt_contents.size()) {
+        if (opt_contents.compare(line_start, prefix.size(), prefix) == 0) {
             return true;
         }
-        if (wait_result < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return errno == ECHILD;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const std::size_t nl = opt_contents.find('\n', line_start);
+        if (nl == std::string::npos) break;
+        line_start = nl + 1;
     }
-
-    if (kill(-launcher_pid, SIGKILL) != 0 && errno != ESRCH) {
-        return false;
-    }
-
-    while (true) {
-        int status = 0;
-        const pid_t wait_result = waitpid(launcher_pid, &status, 0);
-        if (wait_result == launcher_pid) {
-            return true;
-        }
-        if (wait_result < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return errno == ECHILD;
-        }
-    }
-}
-
-StragglerResult reap_retroarch_stragglers(const StragglerOps& ops,
-                                          std::chrono::milliseconds grace,
-                                          std::chrono::milliseconds poll) {
-    if (!ops.running()) return StragglerResult::None;
-    if (poll <= std::chrono::milliseconds::zero()) poll = std::chrono::milliseconds(1);
-
-    ops.signal(SIGTERM);
-    // Waited time is counted from the sleeps themselves, not a clock, so
-    // the bound holds exactly and the policy is testable without sleeping.
-    for (std::chrono::milliseconds waited{0}; waited < grace; waited += poll) {
-        ops.sleep(poll);
-        if (!ops.running()) return StragglerResult::Terminated;
-    }
-    ops.signal(SIGKILL);
-    return StragglerResult::Killed;
+    return false;
 }
 
 }  // namespace retroarch

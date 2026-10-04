@@ -284,4 +284,49 @@ void write_hotkey_binds(std::ostream& out,
 void write_player_binds(std::ostream& out, const ControllerMapping& map,
                         int player);
 
+// ── Player <-> physical pad pinning (RetroArch device reservation) ───────
+//
+// The kiosk resolves player N's mapping from the Nth pad in /dev/input/js*
+// order (phone remote skipped — detect_connected_controllers()), but
+// RetroArch's udev joypad driver numbers devices ITSELF: it enumerates the
+// udev DB (ID_INPUT_JOYSTICK, event nodes) in libudev's syspath order, and
+// it does not skip the phone remote. input_playerN_joypad_index = N-1 alone
+// therefore did not guarantee that the mapping built for pad A was applied
+// to pad A. Reservation closes that: when a device connects, RetroArch
+// (tasks/task_autodetect.c reallocate_port_if_needed, 1.10+) moves it to the
+// player that reserved it and shuffles whatever was there to a free slot.
+// Player 1's joypad is also the one RetroArch reads hotkeys from, so this
+// pins the exit gesture to the pad whose mapping defined it.
+//
+// Format VERIFIED against the RetroArch v1.20.0 source (Trixie ships
+// 1.20.0), 2026-10-03:
+//   - input_playerN_device_reservation_type is an UNSIGNED INT read with
+//     CONFIG_GET_INT_BASE — enum input_device_reservation_type in
+//     input/input_defines.h: 0 NONE, 1 PREFERRED, 2 RESERVED. A word such
+//     as "preferred" would not parse.
+//   - input_playerN_reserved_device is a string; RetroArch first tries
+//     sscanf("%04x:%04x ") for VID:PID and falls back to an exact device
+//     NAME match. VID:PID is used here: a name is not unique per model and
+//     may carry characters the config format cannot quote.
+// PREFERRED rather than RESERVED: a RESERVED slot is never handed to any
+// other device, so an unplugged P2 pad would leave that player dead even
+// with another pad attached.
+//
+// HARDWARE VALIDATION PENDING: the mechanism is verified in source, not yet
+// on a box (look for "[Autoconf]: Device ... is reserved for player N" in
+// ~/retroarch_launcher.log).
+inline constexpr int kRetroArchReservationNone = 0;
+inline constexpr int kRetroArchReservationPreferred = 1;
+
+// "0079:0006" — lowercase, 4 hex digits each (RetroArch's own menu format).
+std::string reserved_device_token(uint16_t vid, uint16_t pid);
+
+// Emit input_player1/2_device_reservation_type + _reserved_device for the
+// pads resolve_port_mappings() used: player N <- pads[N-1]. A player with no
+// pad, or a pad whose VID/PID could not be read (0000:0000), is written
+// explicitly as NONE/"" so it falls back to RetroArch's default slot logic.
+// With no reservation at all (zero pads) RetroArch behaves exactly as before.
+void write_port_reservations(std::ostream& out,
+                             const std::vector<DetectedPad>& pads);
+
 }  // namespace retroarch

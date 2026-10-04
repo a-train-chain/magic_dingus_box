@@ -111,18 +111,18 @@
 // existed but was unreachable from the one place that stops the service.
 // The handler only requests a loop exit; the normal end-of-main path
 // does the rest, and TimeoutStopSec (20 s) still bounds a wedged cleanup
-// with SIGKILL. SA_RESTART keeps blocking syscalls (waitpid during a
-// game session, poll in the input layer) from surfacing EINTR to code
-// that never expected it — the render loop notices the flag within a
-// frame anyway.
+// with SIGKILL. SA_RESTART keeps blocking syscalls (poll in the input
+// layer) from surfacing EINTR to code that never expected it — the render
+// loop notices the flag within a frame anyway.
 static volatile sig_atomic_t g_shutdown_requested = 0;
 static void handle_shutdown_signal(int) {
     g_shutdown_requested = 1;
-    // Mid-game the main thread is blocked in waitpid() and never reads the
-    // flag; ask the game session to quit (and auto-save) so the normal
-    // return path runs and the loop exits. kill() is async-signal-safe.
-    const pid_t game_pgid = retroarch::g_active_session_pgid;
-    if (game_pgid > 0) kill(-game_pgid, SIGTERM);
+    // Mid-game the main thread is in the launcher's supervision loop, which
+    // polls this request and runs retroarch::stop_game_session() (SIGTERM
+    // RetroArch, wait for its auto-save, then SIGKILL its group). A request
+    // that lands during the pre-launch teardown aborts the launch. Only an
+    // atomic store here — async-signal-safe.
+    retroarch::request_session_stop();
 }
 
 using namespace platform;
@@ -1316,6 +1316,24 @@ int main(int /* argc */, char* /* argv */[]) {
     // systemd SIGABRT'd the kiosk (KillMode=mixed took RetroArch with it).
     std::atomic<bool> game_session_running{false};
     std::thread game_session_gpio_thread;
+    controller.set_session_watchdog([](retroarch::SessionWatchdog ev) {
+#ifdef HAVE_SYSTEMD
+        switch (ev) {
+            case retroarch::SessionWatchdog::Arm:
+                sd_notify(0, "WATCHDOG_USEC=10000000");  // = WatchdogSec=10
+                sd_notify(0, "WATCHDOG=1");
+                break;
+            case retroarch::SessionWatchdog::Ping:
+                sd_notify(0, "WATCHDOG=1");
+                break;
+            case retroarch::SessionWatchdog::Disarm:
+                sd_notify(0, "WATCHDOG_USEC=0");
+                break;
+        }
+#else
+        (void)ev;
+#endif
+    });
     controller.set_game_session_hooks(
         [&](const app::PlaylistItem& item) {
             // Raises is_loading_game, resets loading_alpha to opaque, and
@@ -1333,7 +1351,9 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 #endif
             // GPIO polling thread so the restart button works during
-            // gameplay while the main loop blocks on waitpid.
+            // gameplay while the main thread is inside the game session
+            // (teardown, supervision, restore). The button restarts the
+            // service; the resulting SIGTERM stops the game gracefully.
             game_session_running.store(true);
             game_session_gpio_thread = std::thread([&gpio, &game_session_running]() {
                 while (game_session_running.load()) {
@@ -1342,7 +1362,10 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
             });
 #ifdef HAVE_SYSTEMD
-            // Disable watchdog during RetroArch (blocks on waitpid)
+            // Off for the launch teardown and the post-game DRM/input
+            // restore (each several seconds of blocking work). The launcher
+            // re-arms it for the supervised play phase (set_session_watchdog
+            // above) and disarms it again before the restore.
             sd_notify(0, "WATCHDOG_USEC=0");
 #endif
             // Phone-remote: the per-frame deriver never executes while the

@@ -80,9 +80,6 @@ namespace retroarch {
     // RetroArch system directory ($HOME/.config/retroarch/system)
     std::string get_system_dir();
 
-    // Launcher script path ($HOME/retroarch_launcher.sh)
-    std::string get_launcher_script();
-
     // Launcher log path ($HOME/retroarch_launcher.log)
     std::string get_launcher_log();
 

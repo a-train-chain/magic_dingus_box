@@ -161,8 +161,8 @@ This guarantees correct compositing without X11/compositor overhead.
 ### RetroArch Launch/Return Flow
 
 1. Stop GStreamer pipeline → Release DRM master (keep CRTC for Vulkan) → Release input devices
-2. Fork RetroArch process with generated config and per-core controller mapping
-3. Block on waitpid() until RetroArch exits
+2. fork/exec RetroArch DIRECTLY (no bash wrapper — `retroarch/game_session.{h,cpp}`) with the generated config, per-core controller mapping, and `input_playerN_reserved_device` pinning each player to its pad
+3. Supervise (waitpid WNOHANG/WNOWAIT loop, ~50 ms) until RetroArch exits, pinging the systemd watchdog. Every stop — SIGTERM (`systemctl stop`, OTA, reboot, the GPIO restart button), startup timeout — goes through ONE `stop_game_session()`: SIGTERM RetroArch, ≤5 s for its auto-save, then SIGKILL the process group. The SIGTERM handler only sets `retroarch::request_session_stop()`; never kill from the handler
 4. Re-acquire DRM master (5 retries) → Re-init input (3 retries) → Restore EGL context → Rebuild GL resources
 
 ### Audio System

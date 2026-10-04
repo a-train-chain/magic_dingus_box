@@ -1,5 +1,6 @@
 #include "controller_mapping.h"
 
+#include <cstdio>
 #include <ostream>
 #include <string>
 
@@ -711,6 +712,33 @@ void write_player_binds(std::ostream& out, const ControllerMapping& map,
     out << p << "down_axis = \"" << map.down_axis << "\"\n";
     out << p << "left_axis = \"" << map.left_axis << "\"\n";
     out << p << "right_axis = \"" << map.right_axis << "\"\n";
+}
+
+std::string reserved_device_token(uint16_t vid, uint16_t pid) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04x:%04x", static_cast<unsigned>(vid),
+                  static_cast<unsigned>(pid));
+    return buf;
+}
+
+void write_port_reservations(std::ostream& out,
+                             const std::vector<DetectedPad>& pads) {
+    for (int player = 1; player <= 2; ++player) {
+        const std::string p = "input_player" + std::to_string(player);
+        const std::size_t idx = static_cast<std::size_t>(player - 1);
+        const bool pinned = idx < pads.size() &&
+                            (pads[idx].vid != 0 || pads[idx].pid != 0);
+        if (pinned) {
+            out << p << "_device_reservation_type = \""
+                << kRetroArchReservationPreferred << "\"\n";
+            out << p << "_reserved_device = \""
+                << reserved_device_token(pads[idx].vid, pads[idx].pid) << "\"\n";
+        } else {
+            out << p << "_device_reservation_type = \""
+                << kRetroArchReservationNone << "\"\n";
+            out << p << "_reserved_device = \"\"\n";
+        }
+    }
 }
 
 }  // namespace retroarch
