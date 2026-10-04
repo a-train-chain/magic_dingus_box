@@ -1,4 +1,5 @@
 #include "input_manager.h"
+#include "udev_wake.h"
 
 #include <libevdev/libevdev.h>
 #include <linux/input-event-codes.h>
@@ -14,7 +15,6 @@
 #include <chrono>
 #include <thread>
 #include <cstdlib>
-#include <sys/wait.h>
 
 namespace platform {
 
@@ -151,19 +151,7 @@ bool InputManager::initialize() {
     
     // CRITICAL: Wake up controller before opening devices
     // Controller may be in sleep mode and needs to be triggered
-    auto run_udevadm = [](const char* match) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-            execlp("sudo", "sudo", "udevadm", "trigger", "--action=change",
-                   match, nullptr);
-            _exit(127);
-        }
-        if (pid > 0) { int s; waitpid(pid, &s, 0); }
-    };
-    run_udevadm("--sysname-match=js*");
-    run_udevadm("--sysname-match=event*");
+    platform::udev::wake_input_devices();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
     if (!open_joystick_devices()) {

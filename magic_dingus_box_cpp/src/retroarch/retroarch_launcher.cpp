@@ -4,6 +4,8 @@
 #include "controller_profile.h"
 #include "game_session.h"
 #include "../utils/config.h"
+#include "../utils/subprocess.h"
+#include "../platform/udev_wake.h"
 #include <iostream>
 #include <cstdlib>
 #include <cstdio>
@@ -33,21 +35,10 @@ namespace retroarch {
 namespace {
 
 // Run a helper (udevadm, pkill) to completion with its output discarded.
-int run_quiet(std::vector<const char*> argv) {
-    argv.push_back(nullptr);
-    const pid_t pid = fork();
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-        execvp(argv[0], const_cast<char* const*>(argv.data()));
-        _exit(127);
-    }
-    if (pid < 0) return -1;
-    int status = 0;
-    pid_t r;
-    do { r = waitpid(pid, &status, 0); } while (r < 0 && errno == EINTR);
-    if (r != pid) return -1;
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+// Bounded: every caller sits on the launch path, where a wedged helper
+// would otherwise hang the kiosk on the loading plate.
+int run_quiet(const std::vector<std::string>& argv) {
+    return utils::subprocess::run(argv, std::chrono::milliseconds(5000)).exit_code;
 }
 
 std::string timestamp_now() {
@@ -757,15 +748,26 @@ void RetroArchLauncher::release_controllers() {
     
     // Iterate through joystick devices
     for (int i = 0; i < 4; ++i) {
-        std::string js_path = "/dev/input/js" + std::to_string(i);
-        
+        const std::string js = "js" + std::to_string(i);
+        std::string js_path = "/dev/input/" + js;
+
         // Check if device exists and is readable
         if (access(js_path.c_str(), R_OK) == 0) {
+            // The phone remote's uinput pad has no hardware to reset; its
+            // trigger only ever produced "Permission denied" noise.
+            std::error_code ec;
+            const auto sys = fs::canonical("/sys/class/input/" + js, ec);
+            if (!ec && platform::udev::is_virtual_device_path(sys.string())) continue;
+
             std::cout << "Releasing controller device: " << js_path << std::endl;
-            
-            // Trigger udev to reset the device
-            std::string udev_cmd = "udevadm trigger --action=change --sysname-match=js" + std::to_string(i);
-            int result = std::system(udev_cmd.c_str());
+
+            // Trigger udev to reset the device. NOTE: deliberately unchanged
+            // from the old std::system() call — no sudo — so under the
+            // service's User=magic this most likely fails with EACCES on the
+            // root-owned uevent file; the controller's sudo'd wake
+            // (platform::udev::wake_input_devices) is the one that lands.
+            const int result = run_quiet({"udevadm", "trigger", "--action=change",
+                                          "--sysname-match=" + js});
             if (result != 0) {
                 std::cerr << "Warning: Failed to trigger udev for " << js_path << std::endl;
             }
@@ -811,20 +813,8 @@ void RetroArchLauncher::stop_gstreamer_and_cleanup() {
     // Kill GStreamer processes that are children of our app (avoid killing unrelated processes)
     std::cout << "Killing GStreamer child processes..." << std::endl;
     std::string our_pid = std::to_string(getpid());
-    auto run_pkill = [](const char* const args[]) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-            execvp(args[0], const_cast<char* const*>(args));
-            _exit(127);
-        }
-        if (pid > 0) { int s; waitpid(pid, &s, 0); }
-    };
-    const char* kill_gst1[] = {"pkill", "-9", "-P", our_pid.c_str(), "-f", "gst", nullptr};
-    const char* kill_gst2[] = {"pkill", "-9", "gst-launch-1.0", nullptr};
-    run_pkill(kill_gst1);
-    run_pkill(kill_gst2);
+    run_quiet({"pkill", "-9", "-P", our_pid, "-f", "gst"});
+    run_quiet({"pkill", "-9", "gst-launch-1.0"});
 
     // Wait for processes to exit
     std::this_thread::sleep_for(std::chrono::milliseconds(200));

@@ -28,6 +28,8 @@
 #include "../utils/config.h"
 
 #include "../platform/input_manager.h"
+#include "../platform/udev_wake.h"
+#include "../utils/subprocess.h"
 
 namespace fs = std::filesystem;
 
@@ -71,18 +73,12 @@ void Controller::set_system_volume(int percent) {
 void Controller::apply_system_volume_now(int percent) {
     std::string pct = std::to_string(percent) + "%";
 
+    // Bounded: this runs from update_state() on the render thread, and an
+    // amixer stuck on a wedged ALSA control must cost a frame hiccup, not
+    // the systemd watchdog.
     auto run_amixer = [](const std::string& control, const std::string& pct_str) -> int {
-        pid_t pid = fork();
-        if (pid == -1) return -1;
-        if (pid == 0) {
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-            execlp("amixer", "amixer", "sset", control.c_str(), pct_str.c_str(), nullptr);
-            _exit(127);
-        }
-        int status;
-        waitpid(pid, &status, 0);
-        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        return utils::subprocess::run({"amixer", "sset", control, pct_str},
+                                      std::chrono::milliseconds(2000)).exit_code;
     };
 
     int ret_master = run_amixer("Master", pct);
@@ -684,20 +680,8 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         // CRITICAL: Wake up controller before launching RetroArch
         // Controller may be in sleep mode after GStreamer/DRM cleanup
         std::cout << "Waking up controller before RetroArch launch..." << std::endl;
-        auto run_udevadm = [](const char* match) {
-            pid_t pid = fork();
-            if (pid == 0) {
-                int devnull = open("/dev/null", O_WRONLY);
-                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                execlp("sudo", "sudo", "udevadm", "trigger", "--action=change",
-                       match, nullptr);
-                _exit(127);
-            }
-            if (pid > 0) { int s; waitpid(pid, &s, 0); }
-        };
-        run_udevadm("--sysname-match=js*");
+        platform::udev::wake_input_devices();
         if (progress_callback) progress_callback();
-        run_udevadm("--sysname-match=event*");
         state.loading_progress.store(0.75f);
         state.loading_phase = "WAKING CONTROLLER";
         wait_with_callback(200, progress_callback);
@@ -885,8 +869,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             bool input_initialized = false;
             for (int i = 0; i < 3; ++i) {
                 // Re-wake controller before initializing
-                run_udevadm("--sysname-match=js*");
-                run_udevadm("--sysname-match=event*");
+                platform::udev::wake_input_devices();
                 std::this_thread::sleep_for(std::chrono::milliseconds(300));
                 
                 if (input_manager_->initialize()) {
@@ -902,8 +885,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
                 std::cerr << "CRITICAL: Failed to re-initialize input devices after 3 retries!" << std::endl;
                 // Last-resort attempt: sleep longer and try once more
                 std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                run_udevadm("--sysname-match=js*");
-                run_udevadm("--sysname-match=event*");
+                platform::udev::wake_input_devices();
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 if (input_manager_->initialize()) {
                     std::cout << "Input devices initialized on final retry." << std::endl;

@@ -118,6 +118,7 @@ set(PLATFORM_SOURCES
     src/platform/input_manager.cpp
     src/platform/gpio_manager.cpp
     src/platform/platform_profile.cpp
+    src/platform/udev_wake.cpp
 )
 
 # Media Browser unlock sequence detector — compiled into the kiosk binary
@@ -696,6 +697,8 @@ if(UI_TEST_SOURCES)
         src/utils/time_format.cpp
         # settings_menu.cpp's open() re-probes WIREGUARD_PRIVATE_KEY.
         src/utils/services_env.cpp
+        # wifi_manager.cpp runs nmcli through it.
+        src/utils/subprocess.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -746,6 +749,9 @@ if(PLATFORM_TEST_SOURCES)
     add_executable(test_platform_unit
         ${PLATFORM_TEST_SOURCES}
         src/platform/platform_profile.cpp
+        # Controller-wake node selection (skips virtual/uinput devices).
+        src/platform/udev_wake.cpp
+        src/utils/subprocess.cpp
     )
     target_include_directories(test_platform_unit PRIVATE src)
     target_link_libraries(test_platform_unit PRIVATE Catch2::Catch2WithMain)
@@ -813,6 +819,9 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/app/controller_text_input.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/retroarch/retroarch_launcher.cpp
+        # retroarch_launcher.cpp's helpers (udevadm, pkill) run through these.
+        src/utils/subprocess.cpp
+        src/platform/udev_wake.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
