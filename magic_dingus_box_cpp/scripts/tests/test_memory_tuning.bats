@@ -39,6 +39,36 @@ teardown() {
         "$MAGIC_TUNING_ROOT/etc/sysctl.d/99-mdb-zram.conf"
 }
 
+@test "kiosk drop-in carries OOMScoreAdjust=-500, exactly once across re-runs" {
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    dropin="$MAGIC_TUNING_ROOT/etc/systemd/system/magic-dingus-box-cpp.service.d/memory-protect.conf"
+    [ "$(grep -cx "OOMScoreAdjust=-500" "$dropin")" -eq 1 ]
+    grep -qx "\[Service\]" "$dropin"
+}
+
+@test "installs the service timing drop-ins (storage-attach, smoke-test, missing-search)" {
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    sys="$MAGIC_TUNING_ROOT/etc/systemd/system"
+    grep -qx "TimeoutStartSec=600" "$sys/magic-dingus-storage-attach.service.d/mdb-timeout.conf"
+    grep -qx "TimeoutStartSec=300" "$sys/magic-dingus-smoke-test.service.d/mdb-timeout.conf"
+    timer="$sys/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf"
+    grep -qx "\[Timer\]" "$timer"
+    # Empty assignment first (resets the unit's 3min), then the new value.
+    [ "$(grep -n '^OnBootSec=' "$timer" | head -1)" = "$(grep -n '^OnBootSec=$' "$timer")" ]
+    grep -qx "OnBootSec=11min" "$timer"
+}
+
+@test "timing drop-ins agree with the in-tree units" {
+    units="$SCRIPT_DIR/../../systemd"
+    grep -qx "TimeoutStartSec=600" "$units/magic-dingus-storage-attach.service"
+    grep -qx "TimeoutStartSec=300" "$units/magic-dingus-smoke-test.service"
+    grep -qx "OnBootSec=11min" "$SCRIPT_DIR/../missing_search/magic-dingus-missing-search.timer"
+}
+
 @test "installs kiosk TimeoutStopSec=20 drop-in, idempotently" {
     run bash "$TUNING_SCRIPT"
     [ "$status" -eq 0 ]

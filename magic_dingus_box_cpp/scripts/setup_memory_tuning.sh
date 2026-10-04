@@ -10,9 +10,14 @@
 #        -> MemoryLow=512M: below this usage the kiosk's pages are
 #           exempt from reclaim, so service memory pressure swaps the
 #           latency-tolerant arr stack, never the video pipeline.
+#        -> OOMScoreAdjust=-500: if memory still runs out, the OOM killer
+#           takes a (self-restarting) container, not the kiosk.
 #   1b. /etc/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf
 #        -> TimeoutStopSec=20 so a mid-game stop lets RetroArch auto-save
 #           (the OTA delivery path for a unit-file change; see step 1b)
+#   1c. Media Browser unit timing drop-ins (storage-attach TimeoutStartSec,
+#        smoke-test TimeoutStartSec, missing-search timer OnBootSec) — same
+#        OTA delivery path as 1b
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -69,8 +74,13 @@ cat > "${ETC}/systemd/system/magic-dingus-box-cpp.service.d/memory-protect.conf"
 # the kernel cmdline carries cgroup_enable=memory (same installer).
 [Service]
 MemoryLow=512M
+# When memory does run out, the kernel OOM killer must pick a container
+# (restart: always brings it back) — never the kiosk, whose death drops
+# the picture and the game. -500 biases the choice without making the
+# kiosk unkillable; RetroArch, forked by the kiosk, inherits it.
+OOMScoreAdjust=-500
 EOF
-log "kiosk MemoryLow drop-in installed"
+log "kiosk MemoryLow + OOMScoreAdjust drop-in installed"
 
 # --- 1b. kiosk stop timeout drop-in -----------------------------------------
 # Not memory posture, but this script is the root-run hook every delivery
@@ -89,6 +99,42 @@ cat > "${ETC}/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf" <
 TimeoutStopSec=20
 EOF
 log "kiosk TimeoutStopSec=20 drop-in installed"
+
+# --- 1c. Media Browser service unit timing drop-ins -------------------------
+# Same delivery reasoning as 1b: these unit files were fixed in-tree, but
+# OTA never re-installs units, so fielded boxes only get the fix as a
+# drop-in from this root-run hook. Drop-ins for a unit that is not
+# installed (unprovisioned box) are inert.
+#   storage-attach: its script can legitimately run lock wait (120) + rm
+#     (120) + up (300); the old 180 s killed it mid-`up`, leaving the
+#     storage-bound containers removed and not re-created.
+#   smoke-test: no start timeout at all — a wedged *arr hung it forever.
+#   missing-search timer: OnBootSec must clear missing_search.py's 10 min
+#     boot deferral, or the first run is always a no-op and the next comes
+#     4 h later. The empty assignment resets the unit's own OnBootSec list.
+install -d -m 0755 "${ETC}/systemd/system/magic-dingus-storage-attach.service.d"
+cat > "${ETC}/systemd/system/magic-dingus-storage-attach.service.d/mdb-timeout.conf" << 'EOF'
+# Magic Dingus Box (setup_memory_tuning.sh): cover storage_attach.sh's
+# lock wait + compose rm + compose up worst case.
+[Service]
+TimeoutStartSec=600
+EOF
+install -d -m 0755 "${ETC}/systemd/system/magic-dingus-smoke-test.service.d"
+cat > "${ETC}/systemd/system/magic-dingus-smoke-test.service.d/mdb-timeout.conf" << 'EOF'
+# Magic Dingus Box (setup_memory_tuning.sh): a hung smoke test must fail,
+# not run forever.
+[Service]
+TimeoutStartSec=300
+EOF
+install -d -m 0755 "${ETC}/systemd/system/magic-dingus-missing-search.timer.d"
+cat > "${ETC}/systemd/system/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf" << 'EOF'
+# Magic Dingus Box (setup_memory_tuning.sh): first run after the script's
+# own 10-minute boot deferral, not inside it.
+[Timer]
+OnBootSec=
+OnBootSec=11min
+EOF
+log "service timing drop-ins installed (storage-attach, smoke-test, missing-search)"
 
 # --- 2. system.slice companion ----------------------------------------------
 install -d -m 0755 "${ETC}/systemd/system/system.slice.d"

@@ -315,6 +315,13 @@ if grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null; then
 else
   fail "cgroup memory controller DISABLED (cmdline missing cgroup_enable=memory — run setup_memory_tuning.sh, then reboot)"
 fi
+# OOM bias (same drop-in): when memory runs out the kernel must kill a
+# self-restarting container, not the kiosk. Reads the unit's configured
+# value, so it passes as soon as setup_memory_tuning.sh + daemon-reload ran
+# (the running process picks it up at its next restart).
+KIOSK_OOM=$(systemctl show -p OOMScoreAdjust --value "$UNIT" 2>/dev/null)
+[[ "$KIOSK_OOM" == "-500" ]] && pass "kiosk OOMScoreAdjust=-500 (containers die first under OOM)" \
+  || fail "kiosk OOMScoreAdjust is '${KIOSK_OOM:-unset}', want -500 (run setup_memory_tuning.sh)"
 [[ "$(cat /proc/sys/vm/page-cluster 2>/dev/null)" == "0" ]] \
   && pass "zram page-cluster tuned (0)" \
   || warn "vm.page-cluster != 0 (zram swap-ins decompress 8x more than needed)"
