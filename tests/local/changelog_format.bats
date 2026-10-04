@@ -11,6 +11,8 @@ CHANGELOG="$TESTS_REPO_ROOT/CHANGELOG.md"
     grep -E "^## \[(Unreleased|[0-9]+\.[0-9]+\.[0-9]+)\]" "$CHANGELOG" | head -1
 }
 
+# Plain X.Y.Z only, on purpose: a beta (vX.Y.Z-beta.N) reuses `## [Unreleased]`
+# and gets no heading of its own (magic_dingus_box_cpp/docs/RELEASING.md).
 @test "every release heading matches semver pattern" {
     # Lines like "## [1.3.0] - 2026-02-22" — check the version part
     while IFS= read -r line; do

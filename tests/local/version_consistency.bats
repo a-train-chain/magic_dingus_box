@@ -8,6 +8,12 @@ CHANGELOG="$TESTS_REPO_ROOT/CHANGELOG.md"
     [ -f "$VERSION_FILE" ]
 }
 
+# Beta releases (vX.Y.Z-beta.N tags) deliberately do NOT touch the repo's
+# VERSION or CHANGELOG: they are cut from a commit whose CHANGELOG still has
+# `## [Unreleased]`, and release.yml stamps the full tag string into the
+# tarball's VERSION. So the repo VERSION stays plain X.Y.Z and no
+# `## [X.Y.Z-beta.N]` heading ever exists — see
+# magic_dingus_box_cpp/docs/RELEASING.md "Changelog and VERSION".
 @test "VERSION file contains a semver string" {
     content=$(cat "$VERSION_FILE")
     echo "$content" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+$" \
