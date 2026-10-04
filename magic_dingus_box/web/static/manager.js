@@ -5182,6 +5182,7 @@ async function installUpdate() {
             'installing': 'Installing files...',
             'building': 'Building application...',
             'restarting_services': 'Restarting services...',
+            'web_server_dep': 'Checking Content Manager server...',
             'complete': 'Update complete!'
         };
 

@@ -929,9 +929,23 @@ ensure_phone_remote_uinput() {
 # install_deps.sh, which would apt-update, re-install the whole build
 # toolchain and restart dnsmasq + the port-80 redirect mid-update. Never
 # fatal: a failure (offline, dpkg lock held by unattended-upgrades) only
-# means the box keeps the old server until the next update retries. Runs
-# BEFORE the web restart at the end of install_update, which is what brings
-# the Content Manager up under gunicorn.
+# means the box keeps the old server until the next update retries.
+#
+# Placement (install_update): AFTER the kiosk's verified start and the
+# VERSION commit, BEFORE the web restart that brings the Content Manager up
+# under gunicorn. It only concerns the web server, so it must not keep the
+# screen dark (the kiosk is stopped earlier in the install) for however
+# long a slow mirror takes, nor sit inside the window where a power cut
+# would make the boot recovery roll back a good update.
+#
+# Two phases, because dpkg must NEVER be killed: a SIGTERM mid-unpack
+# leaves "dpkg was interrupted, you must manually run dpkg --configure -a",
+# which blocks every later apt run on the box.
+#   1. --download-only, bounded by `timeout` — all the network time. Killing
+#      a download is harmless.
+#   2. the real install with --no-download and NO timeout: every .deb is
+#      already in the cache, so this is a few seconds of dpkg and cannot
+#      stall on the network; DPkg::Lock::Timeout bounds the lock wait.
 ensure_web_server_dep() {
     if python3 -c "import gunicorn.workers.gthread" 2>/dev/null; then
         log "Content Manager: gunicorn present"
@@ -942,18 +956,26 @@ ensure_web_server_dep() {
         return 0
     fi
     log "Content Manager: gunicorn missing; installing python3-gunicorn"
-    local apt_install=(sudo -n env DEBIAN_FRONTEND=noninteractive timeout 300
-                       apt-get -o DPkg::Lock::Timeout=60 install -y
-                       --no-install-recommends python3-gunicorn)
-    # Retry once after refreshing the package lists: a stale list 404s on
-    # a package version the mirror has since replaced.
-    if "${apt_install[@]}" >&2 \
-       || { sudo -n timeout 300 apt-get -o DPkg::Lock::Timeout=60 update >&2 \
-            && "${apt_install[@]}" >&2; }; then
+    local fetch_secs="${MAGIC_WEB_DEP_FETCH_TIMEOUT:-300}"
+    local apt=(env DEBIAN_FRONTEND=noninteractive
+               apt-get -o DPkg::Lock::Timeout=60)
+    local pkg=(-y --no-install-recommends python3-gunicorn)
+    # Retry the download once after refreshing the package lists: a stale
+    # list 404s on a package version the mirror has since replaced. Both
+    # are network-only (no dpkg), so both may be bounded.
+    if ! sudo -n timeout "$fetch_secs" "${apt[@]}" install --download-only "${pkg[@]}" >&2 \
+       && ! { sudo -n timeout "$fetch_secs" "${apt[@]}" update >&2 \
+              && sudo -n timeout "$fetch_secs" "${apt[@]}" install --download-only "${pkg[@]}" >&2; }; then
+        log_warn "could not download python3-gunicorn (Content Manager keeps its built-in server until the next update)"
+        return 0
+    fi
+    # No timeout here, on purpose (see above).
+    if sudo -n "${apt[@]}" install --no-download "${pkg[@]}" >&2; then
         log "Content Manager: python3-gunicorn installed"
     else
         log_warn "could not install python3-gunicorn (Content Manager keeps its built-in server until the next update)"
     fi
+    return 0
 }
 
 # A failed install: put the previous version back, then report the outcome
@@ -1534,7 +1556,8 @@ install_update() {
     else
         log "Phone Remote: uinput rule already installed"
     fi
-    ensure_web_server_dep
+    # python3-gunicorn (ensure_web_server_dep) is installed further down,
+    # after the kiosk's verified start — it only concerns the web server.
 
     # RetroArch core bootstrap (idempotent). New releases can reference new
     # emulator cores (v1.7.x added N64 + Dreamcast); the cores are binary
@@ -1693,6 +1716,13 @@ install_update() {
 
     # The update is committed; nothing left for the boot recovery to undo.
     clear_ota_marker
+
+    # Content Manager server package. Here, not with the other bootstraps
+    # before the kiosk start: the picture is already back, the update is
+    # already committed, and the web restart below is what picks it up.
+    # Never fails the update (see ensure_web_server_dep).
+    json_progress "web_server_dep" 95 "Checking Content Manager server..."
+    ensure_web_server_dep || true
 
     # Cleanup temp files
     rm -rf "$TEMP_DIR"

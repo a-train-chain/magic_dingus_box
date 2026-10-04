@@ -1159,3 +1159,102 @@ set_phase() {
     grep -q '90-magicdingus-uinput.rules' "$SCRIPT_DIR/../setup_phone_remote_uinput.sh"
     grep -q 'usermod -a -G input' "$SCRIPT_DIR/../setup_phone_remote_uinput.sh"
 }
+
+# =============================================================================
+# python3-gunicorn (ensure_web_server_dep): after the kiosk is back, and
+# dpkg is never run under a timeout
+# =============================================================================
+
+# Source update.sh with gunicorn "missing" and sudo recorded, not run.
+# $1 = space-separated phases that fail: download | update | install
+setup_web_dep() {
+    load_update_functions
+    SKIP_SYSTEMCTL=false
+    WEB_DEP_FAIL="${1:-}"
+    APT_LOG="$TEST_TEMP_DIR/apt.log"
+    : > "$APT_LOG"
+    python3() { return 1; }
+    sudo() {
+        echo "$*" >> "$APT_LOG"
+        case "$*" in
+            *--download-only*) [[ " $WEB_DEP_FAIL " != *" download "* ]] ;;
+            *" update")        [[ " $WEB_DEP_FAIL " != *" update "* ]] ;;
+            *--no-download*)   [[ " $WEB_DEP_FAIL " != *" install "* ]] ;;
+            *) return 0 ;;
+        esac
+    }
+}
+
+@test "web dep: download is bounded by timeout, the dpkg install never is" {
+    setup_web_dep
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"python3-gunicorn installed"* ]]
+    grep -q '^-n timeout [0-9]* env DEBIAN_FRONTEND=noninteractive apt-get .* install --download-only ' "$APT_LOG"
+    grep -q '^-n env DEBIAN_FRONTEND=noninteractive apt-get .* install --no-download .*python3-gunicorn' "$APT_LOG"
+    # Nothing that runs dpkg is wrapped in timeout.
+    [ "$(grep -c -- '--no-download' "$APT_LOG")" -eq 1 ]
+    [ "$(grep -- '--no-download' "$APT_LOG" | grep -c 'timeout')" -eq 0 ]
+}
+
+@test "web dep: a stale package list is refreshed and the download retried" {
+    setup_web_dep
+    # First download fails, the retry after `update` succeeds.
+    sudo() {
+        echo "$*" >> "$APT_LOG"
+        case "$*" in
+            *--download-only*)
+                if grep -q ' update$' "$APT_LOG"; then return 0; fi
+                return 1 ;;
+            *) return 0 ;;
+        esac
+    }
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    grep -q '^-n timeout [0-9]* env .* update$' "$APT_LOG"
+    [ "$(grep -c -- '--download-only' "$APT_LOG")" -eq 2 ]
+    grep -q -- '--no-download' "$APT_LOG"
+}
+
+@test "web dep: an offline box never reaches dpkg and never fails the update" {
+    setup_web_dep "download update"
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not download python3-gunicorn"* ]]
+    [ "$(grep -c -- '--no-download' "$APT_LOG")" -eq 0 ]
+}
+
+@test "web dep: a failed install is a warning, not a failure" {
+    setup_web_dep "install"
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not install python3-gunicorn"* ]]
+}
+
+@test "web dep: already present is a no-op" {
+    setup_web_dep
+    python3() { return 0; }
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    [ ! -s "$APT_LOG" ]
+}
+
+@test "install_update installs the web dep only after the verified start and the VERSION commit" {
+    local start end dep verify marker web_restart
+    start=$(grep -n '^install_update()' "$UPDATE_SCRIPT" | cut -d: -f1)
+    end=$(grep -n '^rollback_internal()' "$UPDATE_SCRIPT" | cut -d: -f1)
+    dep=$(awk -v s="$start" -v e="$end" 'NR>s && NR<e && /^[[:space:]]*ensure_web_server_dep/ {print NR}' "$UPDATE_SCRIPT")
+    # Exactly one call inside install_update.
+    [ "$(echo "$dep" | wc -l | tr -d ' ')" -eq 1 ]
+    [ -n "$dep" ]
+    verify=$(grep -n 'if ! verify_kiosk_started; then' "$UPDATE_SCRIPT" | head -1 | cut -d: -f1)
+    marker=$(awk -v s="$start" -v e="$end" 'NR>s && NR<e && /^    clear_ota_marker$/ {print NR}' "$UPDATE_SCRIPT")
+    web_restart=$(awk -v s="$start" -v e="$end" 'NR>s && NR<e && /restart magic-dingus-web.service/ {print NR}' "$UPDATE_SCRIPT")
+    [ "$dep" -gt "$verify" ]
+    [ "$dep" -gt "$marker" ]
+    [ "$dep" -lt "$web_restart" ]
+}
+
+@test "deploy_cpp.sh installs the web dep through the same function" {
+    grep -q 'update.sh && ensure_web_server_dep' "$SCRIPT_DIR/../deploy_cpp.sh"
+}

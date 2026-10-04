@@ -237,8 +237,9 @@ This guarantees correct compositing without X11/compositor overhead.
     reconnect storm and a streamed upload.
   - Delivery: `install_deps.sh` (fresh installs), `update.sh`
     `ensure_web_server_dep` (OTA — narrow `apt-get install
-    python3-gunicorn`, never fatal), and `deploy_cpp.sh` (calls the same
-    function). Heartbeat file in `/dev/shm`, not the SD-card `TMPDIR`.
+    python3-gunicorn`, never fatal, run only after the kiosk's verified
+    start; the download is `timeout`-bounded, the dpkg install never is),
+    and `deploy_cpp.sh` (calls the same function). Heartbeat file in `/dev/shm`, not the SD-card `TMPDIR`.
 - **Box health + diagnostics** (Settings tab). `POST /admin/health/run`
   (CSRF) starts `sudo -n /bin/bash scripts/verify_box.sh [--with-services]`
   in a single-flight background thread (`box_health.py`; `--with-services`
