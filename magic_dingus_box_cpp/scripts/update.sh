@@ -1119,6 +1119,7 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
+        --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || backup_exit=$?
@@ -1193,6 +1194,11 @@ install_update() {
     #                       - Transient kiosk<->web runtime files;
     #                          excluded so an OTA can't yank them out
     #                          from under the running web admin.
+    #   - data/screenshots/ - Debug screenshots (debug/screenshot_capture,
+    #                          `touch data/screenshot_request`). Per-box,
+    #                          never in the tarball, and kept out of the
+    #                          backup too: they can show personal content
+    #                          and are throwaway by design.
     #   - config/*          - User settings (settings.json, WiFi)
     #   - services/.env     - Per-Pi Media Browser config (WireGuard
     #                          private key, ProtonVPN credentials,
@@ -1291,6 +1297,7 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
+        --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
         --exclude 'magic_dingus_box_cpp/build/*' \
         --exclude 'services/.env' \
@@ -1730,6 +1737,7 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
+        --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
@@ -1866,6 +1874,7 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
+        --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \

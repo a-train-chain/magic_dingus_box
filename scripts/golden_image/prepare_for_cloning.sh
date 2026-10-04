@@ -696,6 +696,20 @@ for _d in data build/data; do
 done
 unset _d
 
+# Debug screenshots (`touch data/screenshot_request` -> data/screenshots/*.bmp,
+# see debug/screenshot_capture.h). A screenshot is a picture of whatever was on
+# the operator's TV — playlists, movie titles, the Wi-Fi keyboard — so it is
+# personal content and must not ship. Small by construction: the kiosk keeps
+# the newest 10 (~6 MB each at 1080p), well inside this list's size invariant.
+# The *.bmp* glob also takes an interrupted write's .bmp.tmp.
+for _d in data build/data; do
+    SECRET_PATHS+=(
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/screenshots/"'*.bmp*'
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/screenshot_request"
+    )
+done
+unset _d
+
 # Dot-prefixed staging siblings. admin.py:545 stages atomic writes with
 # `prefix=f".{path.name}."`, so an interrupted save leaves
 # `.tmdb_api_key.<rand>.tmp` / `.flask_secret.key.<rand>.tmp` — and a leading

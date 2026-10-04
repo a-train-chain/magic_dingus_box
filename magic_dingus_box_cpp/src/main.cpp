@@ -64,6 +64,7 @@
 #include "app/playback_reset.h"
 #include "app/auto_advance.h"
 #include "app/redraw_gate.h"
+#include "debug/screenshot_capture.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
@@ -1628,6 +1629,11 @@ int main(int /* argc */, char* /* argv */[]) {
     LOG_INFO("Redraw gate: {} (idle main menu skips unchanged frames; "
              "MDB_REDRAW_GATE=0 disables)",
              redraw_gate.enabled() ? "ON" : "OFF");
+
+    // Debug screenshots: `touch <data>/screenshot_request` -> the next drawn
+    // frame is saved to <data>/screenshots/<UTC>.bmp (newest 10 kept). See
+    // debug/screenshot_capture.h.
+    debug::ScreenshotCapture screenshot_capture(config::get_data_path());
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -3688,7 +3694,10 @@ int main(int /* argc */, char* /* argv */[]) {
             gate_in.video_frame = act.video;
             gate_in.animation_active = act.ui_fade || act.transient_overlay;
             gate_in.screen_requests_continuous = !app::is_static_main_menu(act);
-            gate_in.forced = display_reset_this_iteration;
+            // A pending screenshot must be drawn, or it would capture
+            // whatever stale buffer the skip streak left behind.
+            gate_in.forced = display_reset_this_iteration ||
+                             screenshot_capture.poll(gate_now);
             gate_in.content_signature = sig.value();
             draw_this_frame = redraw_gate.should_draw(gate_in, gate_now);
 
@@ -4683,6 +4692,11 @@ int main(int /* argc */, char* /* argv */[]) {
                     }
                 }
             }
+
+            // Debug screenshot: read back the finished frame (everything
+            // above, post-game fade included) before the swap hands the
+            // buffer to the presenter. No-op unless requested.
+            screenshot_capture.capture_before_swap(mode.width, mode.height);
 
             // Swap EGL buffers
             if (!egl.swap_buffers()) {

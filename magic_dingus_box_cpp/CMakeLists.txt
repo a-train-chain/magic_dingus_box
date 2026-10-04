@@ -176,6 +176,13 @@ set(UTILS_SOURCES
     src/utils/stb_image_impl.cpp
     src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
+    src/utils/bmp_writer.cpp
+    src/utils/screenshot_store.cpp
+)
+
+# Kiosk-only debug hooks (GL readback). See debug/screenshot_capture.h.
+set(DEBUG_SOURCES
+    src/debug/screenshot_capture.cpp
 )
 
 set(RETROARCH_SOURCES
@@ -224,6 +231,7 @@ set(ALL_SOURCES
     ${APP_SOURCES}
     ${UTILS_SOURCES}
     ${RETROARCH_SOURCES}
+    ${DEBUG_SOURCES}
 )
 
 if(BUILD_KIOSK)
@@ -767,7 +775,11 @@ file(GLOB UTILS_TEST_SOURCES "tests/utils/*.cpp")
 if(UTILS_TEST_SOURCES)
     add_executable(test_utils_unit ${UTILS_TEST_SOURCES}
         src/utils/time_format.cpp
-        src/utils/services_env.cpp)
+        src/utils/services_env.cpp
+        # The debug screenshot hook's file side (BMP encode, naming,
+        # atomic write, retention).
+        src/utils/bmp_writer.cpp
+        src/utils/screenshot_store.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
