@@ -38,15 +38,16 @@ setup() { require_pi; }
     [ "$status" -eq 0 ]
 }
 
-@test "config.txt has CPU overclock (arm_freq=2000)" {
-    run pi_ssh "grep -q '^arm_freq=2000' $CONFIG"
-    [ "$status" -eq 0 ]
+@test "config.txt has no CPU overclock (arm_freq removed for v1 shipping)" {
+    # boot-config.reference.txt: arm_freq=2600 was REMOVED 2026-07-27
+    # after thermal throttling; an active arm_freq line means a stale or
+    # hand-edited config.
+    run pi_ssh "grep -E '^arm_freq=' $CONFIG"
+    [ "$status" -ne 0 ] || { echo "unexpected: $output"; false; }
 }
 
-@test "config.txt has GPU overclock (gpu_freq=600 and v3d_freq=600)" {
-    run pi_ssh "grep -q '^gpu_freq=600' $CONFIG"
-    [ "$status" -eq 0 ]
-    run pi_ssh "grep -q '^v3d_freq=600' $CONFIG"
+@test "config.txt has the Pi 5 V3D clock (v3d_freq=1000, [pi5] only)" {
+    run pi_ssh "grep -q '^v3d_freq=1000' $CONFIG"
     [ "$status" -eq 0 ]
 }
 

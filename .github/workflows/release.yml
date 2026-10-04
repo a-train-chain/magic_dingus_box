@@ -6,6 +6,10 @@ on:
       - 'v*'
 
 jobs:
+  # Every suite, on the tagged commit. The release job waits for it.
+  tests:
+    uses: ./.github/workflows/test-local.yml
+
   # Job 1: Build ARM64 binary using QEMU emulation
   build-arm64:
     runs-on: ubuntu-22.04
@@ -74,6 +78,9 @@ jobs:
               #   HAVE_GPIOD — libgpiod is ALSO an optional CMake dep; without
               #     libgpiod-dev the power button, LEDs and rotary encoder
               #     compile out and the stub prints this string instead.
+              #   /connect?code= — the pairing QR target (ui/pairing_url.h);
+              #     a hardcoded host here broke pairing on every clone.
+              strings magic_dingus_box_cpp | grep -q "/connect?code=" || { echo "FATAL: pairing QR target missing"; exit 1; }
               if strings magic_dingus_box_cpp | grep -q "compiled without HAVE_GPIOD"; then
                 echo "FATAL: GPIO compiled out (libgpiod-dev missing?)"; exit 1
               fi
@@ -197,7 +204,7 @@ jobs:
   # Job 3: Create GitHub Release
   release:
     runs-on: ubuntu-latest
-    needs: [build-arm64, build-source]
+    needs: [tests, build-arm64, build-source]
     permissions:
       contents: write
 

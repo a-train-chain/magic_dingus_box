@@ -4,6 +4,10 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # release.yml calls this whole file and gates publishing on it: a tag
+  # push matches no branch filter, so without the call a release shipped
+  # with no suite having run on the tagged commit.
+  workflow_call:
 
 jobs:
   test:
@@ -76,6 +80,47 @@ jobs:
       - name: Assert Media Browser suite ran
         if: matrix.media_browser == 'ON'
         run: ctest --test-dir build-ci -N | grep -q "MediaBrowserUnit"
+
+  # The real kiosk binary. Every other job builds with BUILD_KIOSK=OFF, so
+  # main.cpp, controller.cpp, the renderer and every Media Browser screen
+  # were first compiled at TAG time, under QEMU, in release.yml — a broken
+  # build surfaced only as a failed release. Native amd64 Trixie compiles
+  # the same sources in a few minutes; the strings checks mirror
+  # release.yml's release-blocking assertions (minus aarch64).
+  kiosk-build:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential cmake pkg-config git binutils \
+            libdrm-dev libgbm-dev libegl-dev libgles2-mesa-dev \
+            libevdev-dev libgpiod-dev \
+            libyaml-cpp-dev libjsoncpp-dev libcurl4-openssl-dev \
+            libtorrent-rasterbar-dev libsqlite3-dev libboost-dev \
+            libsystemd-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-gl
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build kiosk (Media Browser ON, as shipped)
+        run: |
+          cmake -S magic_dingus_box_cpp -B build-kiosk -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF
+          cmake --build build-kiosk -j"$(nproc)"
+
+      - name: Assert release-blocking capabilities
+        run: |
+          B=build-kiosk/magic_dingus_box_cpp
+          strings "$B" | grep -q "READY=1" || { echo "FATAL: no sd_notify (libsystemd-dev?)"; exit 1; }
+          strings "$B" | grep -qi "prowlarr" || { echo "FATAL: Media Browser not compiled in"; exit 1; }
+          strings "$B" | grep -q "/connect?code=" || { echo "FATAL: pairing QR target missing"; exit 1; }
+          if strings "$B" | grep -q "compiled without HAVE_GPIOD"; then
+            echo "FATAL: GPIO compiled out (libgpiod-dev?)"; exit 1
+          fi
 
   # The Flask web-admin pytest suite (playlist CRUD, OTA endpoints,
   # pairing, backup/restore, storage eligibility, upload staging).
