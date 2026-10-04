@@ -1041,6 +1041,59 @@ def _max_transcodes_for(pi_model: str, env_value: Optional[str]) -> int:
     return 2 if pi_model == "pi5" else 1
 
 
+def _detect_pi_model() -> str:
+    """Return 'pi5', 'pi4', or 'unknown' from the device-tree model.
+
+    Python-side mirror of the C++ kiosk's PlatformProfile detection
+    (dual-board contract: board differences resolve at RUNTIME, never
+    at deploy time — one golden image serves both boards). Module-level
+    so tests can stand in for a board."""
+    try:
+        model = Path('/proc/device-tree/model').read_text(errors='ignore')
+    except OSError:
+        return 'unknown'
+    if 'Raspberry Pi 5' in model:
+        return 'pi5'
+    if 'Raspberry Pi 4' in model:
+        return 'pi4'
+    return 'unknown'
+
+
+# TEST-ONLY pre-release rehearsal knob, mirrored from the kiosk's
+# platform::apply_policy_override (platform_profile.h). With
+# MDB_PLATFORM_POLICY_OVERRIDE=pi4 on a Pi 5, the web admin applies the
+# Pi 4B's SOFTWARE POLICIES (one concurrent transcode, ultrafast/CRF 28
+# encoder tier). The kiosk and this service each read their OWN unit
+# environment, so a rehearsal sets it in BOTH units' drop-ins.
+# verify_box.sh FAILS while either unit carries it — never ship a box with it.
+PLATFORM_POLICY_OVERRIDE_ENV = "MDB_PLATFORM_POLICY_OVERRIDE"
+
+
+def _policy_pi_model(real_model: str,
+                     env_value: Optional[str]) -> tuple[str, str]:
+    """Resolve the board whose POLICIES the web admin applies.
+
+    Returns (policy_model, log_line). Same contract as the kiosk: only the
+    exact value "pi4" is accepted, and only on a real Pi 5; anything else
+    leaves `real_model` in force. log_line is "" when the env var is unset,
+    otherwise the one loud line to print at startup (active or ignored)."""
+    if not env_value:
+        return real_model, ""
+    if env_value != "pi4":
+        reason = f"unrecognized value {env_value!r} (only 'pi4' is accepted)"
+    elif real_model == "pi4":
+        reason = "board is already a Pi 4B, so the override is a no-op here"
+    elif real_model != "pi5":
+        reason = "board is not a Pi 5; the override applies only on a Pi 5"
+    else:
+        return "pi4", (
+            "PLATFORM POLICY OVERRIDE ACTIVE: running Pi 4B policies on "
+            f"Raspberry Pi 5 ({PLATFORM_POLICY_OVERRIDE_ENV}=pi4 is "
+            "TEST-ONLY: never ship; verify_box.sh fails while set)")
+    return real_model, (f"{PLATFORM_POLICY_OVERRIDE_ENV} IGNORED: {reason} "
+                        "(remove it from the unit environment)")
+
+
 # ===== emulator_core VALIDATION =====
 #
 # The kiosk joins emulator_core straight into a shared-object path
@@ -3766,22 +3819,6 @@ def create_app(data_dir: Path, config=None) -> Flask:
             _reserved_media_names.discard(path.name)
 
 
-    def _detect_pi_model() -> str:
-        """Return 'pi5', 'pi4', or 'unknown' from the device-tree model.
-
-        Python-side mirror of the C++ kiosk's PlatformProfile detection
-        (dual-board contract: board differences resolve at RUNTIME, never
-        at deploy time — one golden image serves both boards)."""
-        try:
-            model = Path('/proc/device-tree/model').read_text(errors='ignore')
-        except OSError:
-            return 'unknown'
-        if 'Raspberry Pi 5' in model:
-            return 'pi5'
-        if 'Raspberry Pi 4' in model:
-            return 'pi4'
-        return 'unknown'
-
     # x264 encoder tier, resolved per-board at runtime.
     #
     # Pi 5: CRF 23 matches the Retro Ripper's visual-quality target
@@ -3797,7 +3834,17 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # Pi 4B's" rule): ultrafast/28 — one libx264 encode already saturates
     # a Pi 4B sharing 1.5 GB RAM with the kiosk. Env-overridable for
     # experiments without a release.
-    _PI_MODEL = _detect_pi_model()
+    #
+    # _PI_MODEL is the POLICY board: the real one, unless the TEST-ONLY
+    # MDB_PLATFORM_POLICY_OVERRIDE=pi4 makes a Pi 5 rehearse Pi 4B policy
+    # (see _policy_pi_model). Nothing below branches on hardware facts.
+    _REAL_PI_MODEL = _detect_pi_model()
+    _PI_MODEL, _policy_log_line = _policy_pi_model(
+        _REAL_PI_MODEL, os.getenv(PLATFORM_POLICY_OVERRIDE_ENV))
+    if _policy_log_line:
+        print(f"WARNING: {_policy_log_line}", file=sys.stderr)
+    app.config["PLATFORM_POLICY_OVERRIDE"] = (
+        _PI_MODEL if _PI_MODEL != _REAL_PI_MODEL else None)
 
     # Cap concurrent ffmpeg encodes, per board at runtime. One libx264 encode
     # already saturates a Pi 4B (4 cores / 1.5 GB shared with the kiosk and

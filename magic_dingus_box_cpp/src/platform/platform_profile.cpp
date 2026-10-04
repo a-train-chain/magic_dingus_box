@@ -108,7 +108,9 @@ PlatformProfile profile_for(PiModel model) {
     return p;
 }
 
-PlatformProfile detect_platform(const std::string& model_path) {
+namespace {
+
+PlatformProfile detect_hardware(const std::string& model_path) {
     std::ifstream f(model_path, std::ios::binary);
     if (!f.is_open()) {
         // Dev-VM impersonation (dev/pisim/README.md): with no device tree
@@ -117,13 +119,73 @@ PlatformProfile detect_platform(const std::string& model_path) {
         // the real file is absent — a stray env var can never re-profile an
         // actual board.
         if (const char* o = std::getenv("MDB_PI_MODEL_OVERRIDE"); o && *o) {
-            return profile_for(parse_pi_model(o));
+            PlatformProfile p = profile_for(parse_pi_model(o));
+            p.model_string = strip_trailing_junk(o);
+            return p;
         }
         return profile_for(PiModel::Unknown);
     }
     std::stringstream ss;
     ss << f.rdbuf();
-    return profile_for(parse_pi_model(ss.str()));
+    PlatformProfile p = profile_for(parse_pi_model(ss.str()));
+    p.model_string = strip_trailing_junk(ss.str());
+    return p;
+}
+
+} // namespace
+
+PlatformProfile detect_platform(const std::string& model_path) {
+    return apply_policy_override(detect_hardware(model_path),
+                                 std::getenv(kPolicyOverrideEnv));
+}
+
+PlatformProfile apply_policy_override(PlatformProfile detected,
+                                      const char* env_value) {
+    if (env_value == nullptr || *env_value == '\0') return detected;
+    const std::string value(env_value);
+    if (value != "pi4") {
+        detected.policy_override_ignored_reason =
+            "unrecognized value '" + value + "' (only 'pi4' is accepted)";
+        return detected;
+    }
+    if (detected.model == PiModel::Pi4) {
+        detected.policy_override_ignored_reason =
+            "board is already a Pi 4B, so the override is a no-op here";
+        return detected;
+    }
+    if (detected.model != PiModel::Pi5) {
+        detected.policy_override_ignored_reason =
+            "board is not a Pi 5; the override applies only on a Pi 5";
+        return detected;
+    }
+    // POLICY fields only — see the classification table in the header.
+    // Hardware facts (model, model_string, has_analog_audio,
+    // gpiochip_labels, rotary_events_per_detent) stay the real Pi 5's.
+    const PlatformProfile pi4 = profile_for(PiModel::Pi4);
+    detected.pause_services_during_movie = pi4.pause_services_during_movie;
+    detected.trickle_torrents_during_video = pi4.trickle_torrents_during_video;
+    detected.unsupported_game_systems = pi4.unsupported_game_systems;
+    detected.unsupported_emulator_cores = pi4.unsupported_emulator_cores;
+    detected.artwork_cache_budget_bytes = pi4.artwork_cache_budget_bytes;
+    detected.policy_override = "pi4";
+    return detected;
+}
+
+std::string policy_override_log_line(const PlatformProfile& profile) {
+    if (!profile.policy_override.empty()) {
+        const std::string real = profile.model_string.empty()
+            ? std::string("Raspberry Pi 5")
+            : profile.model_string;
+        return "PLATFORM POLICY OVERRIDE ACTIVE: running Pi 4B policies on " +
+               real + " (" + kPolicyOverrideEnv +
+               "=pi4 is TEST-ONLY: never ship; verify_box.sh fails while set)";
+    }
+    if (!profile.policy_override_ignored_reason.empty()) {
+        return std::string(kPolicyOverrideEnv) + " IGNORED: " +
+               profile.policy_override_ignored_reason +
+               " (remove it from the unit environment)";
+    }
+    return "";
 }
 
 std::string normalize_game_system(const std::string& emulator_system) {

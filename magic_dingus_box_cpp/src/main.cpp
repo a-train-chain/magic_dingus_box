@@ -553,6 +553,15 @@ int main(int /* argc */, char* /* argv */[]) {
                   << " (analog audio: " << (profile.has_analog_audio ? "yes" : "no")
                   << ", rotary events/detent: " << profile.rotary_events_per_detent
                   << ")" << std::endl;
+        // TEST-ONLY MDB_PLATFORM_POLICY_OVERRIDE: one loud WARN line, logged
+        // exactly here (detect_platform() itself is called from several
+        // places and stays silent). Active or ignored, a set override must
+        // never be invisible — kiosk_status.json and verify_box.sh carry it
+        // too.
+        if (const std::string ovr = platform::policy_override_log_line(profile);
+            !ovr.empty()) {
+            LOG_WARN("{}", ovr);
+        }
         state.audio_settings.sanitize_for_platform(profile.has_analog_audio);
         // Match the encoder accumulator to this board's pulse rate, or the
         // UI advances every other click (Pi 5) / skips items (Pi 4).
