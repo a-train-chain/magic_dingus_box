@@ -219,6 +219,41 @@ test_version_lt() {
     [[ "$output" == *"Invalid download URL"* ]]
 }
 
+# Single-flight: install and rollback share TEMP_DIR and the install tree.
+@test "install refuses to run while another update holds the lock" {
+    if command -v flock >/dev/null 2>&1; then
+        flock "${MAGIC_TEMP_DIR}.lock" sleep 5 &
+        local holder=$!
+        sleep 0.5
+    else
+        # No flock here (macOS): a stub that reports "held" still proves
+        # the dispatcher takes the lock before doing anything.
+        mkdir -p "$TEST_TEMP_DIR/bin"
+        printf '#!/bin/sh\nexit 1\n' > "$TEST_TEMP_DIR/bin/flock"
+        chmod +x "$TEST_TEMP_DIR/bin/flock"
+        export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    fi
+
+    run "$UPDATE_SCRIPT" install "1.0.8" \
+        "https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/x.tar.gz"
+    [ -n "${holder:-}" ] && kill "$holder" 2>/dev/null || true
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"already running"* ]]
+    [ ! -d "$MAGIC_TEMP_DIR" ]
+}
+
+@test "rollback refuses to run while another update holds the lock" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_TEMP_DIR/bin/flock"
+    chmod +x "$TEST_TEMP_DIR/bin/flock"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    run "$UPDATE_SCRIPT" rollback
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"already running"* ]]
+}
+
 @test "install_update requires version argument" {
     run "$UPDATE_SCRIPT" install
 

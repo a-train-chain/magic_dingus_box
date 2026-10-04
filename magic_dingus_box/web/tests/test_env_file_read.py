@@ -125,6 +125,9 @@ def test_setup_route_refuses_and_never_writes_an_unreadable_env(
         started = []
         monkeypatch.setattr(admin.threading, "Thread",
                             lambda *a, **k: started.append(1))
+        # The setup script now runs as a detached job, not a thread.
+        monkeypatch.setattr(admin.DetachedJobs, "launch",
+                            lambda *a, **k: started.append(1))
 
         env.chmod(0o000)
         if not _can_make_unreadable(env):

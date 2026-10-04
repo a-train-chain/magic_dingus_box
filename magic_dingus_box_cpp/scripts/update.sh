@@ -1354,6 +1354,27 @@ usage() {
     echo ""
 }
 
+# Single-flight for the mutating commands. Two installs (or an install and
+# a rollback) share TEMP_DIR — the second's `rm -rf "$TEMP_DIR"` pulls the
+# first's download out from under it — and race the same rsync --delete over
+# the install tree. The web admin refuses a second job with 409; this lock
+# covers every other way in (a manual run over ssh, a retry script). Held on
+# fd 9 for the life of the script; the kernel drops it on any exit. The
+# lock file sits NEXT TO TEMP_DIR, not inside it, so the rm -rf above never
+# deletes it. Skipped where flock is absent (macOS dev / BATS on a Mac).
+acquire_update_lock() {
+    command -v flock >/dev/null 2>&1 || return 0
+    local lock="${TEMP_DIR%/}.lock"
+    if ! { exec 9>>"$lock"; } 2>/dev/null; then
+        log_warn "Cannot open $lock — continuing without the single-flight lock"
+        return 0
+    fi
+    if ! flock -n 9; then
+        json_response "false" "Another update or rollback is already running"
+        exit 1
+    fi
+}
+
 # Main command dispatcher
 case "${1:-}" in
     check)
@@ -1364,9 +1385,11 @@ case "${1:-}" in
             json_response "false" "Usage: $0 install <version> <download_url>"
             exit 1
         fi
+        acquire_update_lock
         install_update "$2" "$3"
         ;;
     rollback)
+        acquire_update_lock
         rollback
         ;;
     version)

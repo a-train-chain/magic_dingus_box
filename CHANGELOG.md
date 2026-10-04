@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upload endpoint only accepts video files; a malicious package import
   can no longer fill the SD card; pairing codes can no longer be guessed
   in parallel to get around the attempt limit.
+- **Software updates can only install this project's own releases.** A
+  crafted update request could name a version that quietly pointed the
+  box at someone else's download. The box now accepts only a plain
+  version number and only the matching official release.
 
 ### Added
 - **Choose which season to download.** A show's page now suggests the
@@ -42,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for it once more.
 
 ### Fixed
+- **An update, rollback or Movies setup can no longer be cut off halfway.**
+  These ran inside the Content Manager's own service, so anything that
+  restarted it — including the Movies setup itself — stopped them
+  mid-way, which for an update could leave a half-installed box. They
+  now run on their own, the Content Manager keeps showing their progress
+  even after it restarts, and starting a second one while one is running
+  is politely refused instead of letting the two collide.
 - **A broken video no longer freezes the box.** A truncated upload, a bad
   SD-card sector or a format the box can't decode used to stop an
   unattended playlist dead on that video until someone pressed Next. The

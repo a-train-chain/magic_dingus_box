@@ -279,6 +279,97 @@ esac
         assert data["ok"] is True
 
 
+SLOW_UPDATE_SCRIPT = '''#!/bin/bash
+case "$1" in
+    install)
+        echo '{"ok": true, "stage": "downloading", "progress": 10, "message": "Downloading..."}'
+        sleep "${SLOW_SECONDS:-1.5}"
+        echo '{"ok": true, "stage": "complete", "progress": 100, "message": "Update complete!", "new_version": "'"$2"'"}'
+        ;;
+    rollback)
+        sleep "${SLOW_SECONDS:-1.5}"
+        echo '{"ok": true, "stage": "complete", "progress": 100, "message": "Rollback complete!", "version": "1.0.6"}'
+        ;;
+esac
+'''
+
+GOOD_INSTALL = {
+    "version": "1.0.8",
+    "download_url": "https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/release.tar.gz",
+}
+
+
+class TestDetachedOtaJobs:
+    """The OTA job must outlive the web service and be reportable after it.
+
+    magic-dingus-web.service is KillMode=control-group + Restart=always, so a
+    restart kills every child — the old start_new_session=True did not help.
+    Job state now lives on disk, so a restarted Flask answers status polls.
+    """
+
+    @pytest.fixture
+    def slow_script(self, mock_update_script):
+        mock_update_script.write_text(SLOW_UPDATE_SCRIPT)
+        mock_update_script.chmod(0o755)
+        return mock_update_script
+
+    def _poll(self, client, job_id, timeout=10.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            r = client.get(f"/admin/update/status/{job_id}")
+            assert r.status_code == 200, r.get_json()
+            data = r.get_json()["data"]
+            if data["status"] != "running":
+                return data
+            time.sleep(0.1)
+        pytest.fail("job never left running")
+
+    def test_status_survives_a_flask_restart(self, client, slow_script,
+                                             temp_data_dir, auth_headers):
+        from admin import create_app
+
+        r = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r.status_code == 200
+        job_id = r.get_json()["data"]["job_id"]
+
+        # A brand-new app over the same data dir: no in-memory job at all.
+        restarted = create_app(temp_data_dir, config={"TESTING": True})
+        restarted.config["TESTING"] = True
+        data = self._poll(restarted.test_client(), job_id)
+        assert data["status"] == "complete"
+        assert data["progress"] == 100
+        assert data["new_version"] == "1.0.8"
+
+    def test_second_install_while_one_runs_is_409(self, client, slow_script, auth_headers):
+        r1 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r1.status_code == 200
+        r2 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r2.status_code == 409
+        assert "already running" in r2.get_json()["error"]["message"].lower()
+        # And it frees up once the first one finishes.
+        self._poll(client, r1.get_json()["data"]["job_id"])
+        r3 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r3.status_code == 200
+
+    def test_rollback_while_install_runs_is_409(self, client, slow_script, auth_headers):
+        r1 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r1.status_code == 200
+        r2 = client.post("/admin/update/rollback", headers=auth_headers)
+        assert r2.status_code == 409
+
+    def test_busy_is_also_seen_by_a_restarted_flask(self, client, slow_script,
+                                                    temp_data_dir, auth_headers):
+        from admin import create_app
+
+        r1 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r1.status_code == 200
+        restarted = create_app(temp_data_dir, config={"TESTING": True})
+        restarted.config["TESTING"] = True
+        r2 = restarted.test_client().post("/admin/update/install", json=GOOD_INSTALL,
+                                          headers=auth_headers)
+        assert r2.status_code == 409
+
+
 class TestVersion:
     """Tests for /admin/update/version endpoint."""
 

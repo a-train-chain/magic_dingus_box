@@ -22,7 +22,9 @@ try:  # noqa: E402
         movies_drive_devices,
         protected_disk_names,
     )
+    from detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
 except ImportError:  # pragma: no cover - exercised by whichever form runs
+    from .detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
     from .storage_prepare import (
         PROTECTED_MOUNTPOINTS,
         eligible_devices,
@@ -3614,7 +3616,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         ISO-8601 contract). Jobs without `_pruner_ts` are kept forever — by
         design, since adding the field is opt-in at each call site."""
         cutoff = time.time() - _JOB_RETENTION_SECONDS
-        terminal_states = {"complete", "completed", "error", "failed", "cancelled", "canceled"}
+        terminal_states = {"complete", "completed", "success", "error", "failed", "cancelled", "canceled"}
         stale = []
         for jid, job in jobs_dict.items():
             if not isinstance(job, dict):
@@ -4316,8 +4318,71 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # update.sh is at /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/update.sh
     UPDATE_SCRIPT = data_dir.parent / "scripts" / "update.sh"
 
-    # Store for tracking update jobs (in-memory, cleared on restart)
+    # Parse-state cache for update jobs. NOT the source of truth: the job
+    # itself runs detached (detached_jobs.py — its own systemd unit on the
+    # Pi, so a magic-dingus-web restart no longer kills an OTA mid-rsync)
+    # and its progress is re-derived from its on-disk log. A Flask that
+    # restarted mid-job rebuilds this entry from offset 0 on the first poll.
     update_jobs: dict = {}
+    _update_jobs_lock = threading.Lock()
+
+    # OTA install/rollback and Media Browser setup: launched detached, state
+    # on disk outside the install tree (see detached_jobs.default_state_dir).
+    # The launcher is resolved per launch: a test app never spawns systemd
+    # units even on a CI runner that has systemd-run + passwordless sudo.
+    detached = DetachedJobs(
+        _default_job_state_dir(data_dir),
+        mode_resolver=lambda: "popen" if app.testing else "auto")
+
+    # One maintenance job at a time, ACROSS kinds. Two OTAs share update.sh's
+    # TEMP_DIR (/tmp/magic_update — the second's `rm -rf` pulls the first's
+    # download out from under it) and race the same rsync --delete; an OTA
+    # and a Media Browser setup both restart services and rewrite files the
+    # other reads. The lock only serialises check-and-launch inside this
+    # process; "is one running" is answered from disk + liveness, so it also
+    # holds across a Flask restart. update.sh flocks as well, for runs that
+    # don't come through here.
+    _MAINTENANCE_KINDS = ("ota-install", "ota-rollback", "mb-setup")
+    _MAINTENANCE_LABELS = {
+        "ota-install": "A software update",
+        "ota-rollback": "A rollback",
+        "mb-setup": "Media Browser setup",
+    }
+    _maintenance_launch_lock = threading.Lock()
+
+    def _maintenance_busy_response(running_kind=None):
+        label = _MAINTENANCE_LABELS.get(running_kind, "Another maintenance task")
+        resp, status = error_response(
+            "JOB_ALREADY_RUNNING",
+            f"{label} is already running on this box. Wait for it to "
+            "finish, then try again.",
+            status=409)
+        resp.headers["Retry-After"] = "30"
+        return resp, status
+
+    def _maintenance_precheck():
+        """409 response if a maintenance job is running, else None. For
+        routes that must refuse BEFORE side effects (Media Browser setup
+        rewrites services/.env, which a running setup is reading)."""
+        running = detached.active(_MAINTENANCE_KINDS)
+        return _maintenance_busy_response(running[1]) if running else None
+
+    def _launch_maintenance_job(kind: str, argv: list, **kwargs):
+        """Return (job_id, None), or (None, error_response) when another
+        maintenance job is running (409) or the launch failed (500)."""
+        if not _maintenance_launch_lock.acquire(blocking=False):
+            return None, _maintenance_busy_response()
+        try:
+            running = detached.active(_MAINTENANCE_KINDS)
+            if running:
+                return None, _maintenance_busy_response(running[1])
+            try:
+                return detached.launch(kind, argv, **kwargs), None
+            except (OSError, ValueError) as e:
+                return None, error_response(
+                    "INTERNAL_ERROR", f"Could not start the job: {e}", status=500)
+        finally:
+            _maintenance_launch_lock.release()
 
     # One Network Doctor run at a time. Each run is a ~20-45 s probe ladder
     # (curl, DNS, ping) and every GET used to spawn its own — a few open tabs,
@@ -4402,6 +4467,29 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "device_name": get_device_info().get("device_name", "Unknown")
         })
 
+    # `update.sh check` is a GitHub API call (60/hour unauthenticated, per
+    # public IP — shared by every box behind the same router) plus a process
+    # spawn, and the endpoint is a plain GET: a few open tabs, the Settings
+    # tab's post-update verify loop, or a hostile web page making the
+    # browser hit http://<box-ip>:5000/admin/update/check in a loop each
+    # spawned its own. One check at a time; concurrent callers wait for it
+    # and share its answer; a SUCCESSFUL answer is reused briefly. Every
+    # install/rollback start and finish drops the cache, so the verify loop
+    # never sees a pre-update current_version (and both end with a web
+    # restart, which empties it anyway).
+    UPDATE_CHECK_CACHE_SECONDS = 30
+    _update_check_lock = threading.Lock()
+    _update_check_cache: dict = {"ts": 0.0, "body": None}
+
+    def _invalidate_update_check_cache() -> None:
+        _update_check_cache["body"] = None
+
+    def _cached_update_check():
+        body = _update_check_cache["body"]
+        if body is not None and time.monotonic() - _update_check_cache["ts"] < UPDATE_CHECK_CACHE_SECONDS:
+            return jsonify(body), 200
+        return None
+
     @app.get("/admin/update/check")
     def check_for_update():  # type: ignore[no-redef]
         """Check if an update is available from GitHub."""
@@ -4411,7 +4499,22 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 "Update script not found. Run deploy with --build first.",
                 status=500
             )
+        if (cached := _cached_update_check()) is not None:
+            return cached
+        if not _update_check_lock.acquire(timeout=75):
+            resp, status = error_response(
+                "BUSY", "An update check is already running — try again in a moment.",
+                status=429)
+            resp.headers["Retry-After"] = "10"
+            return resp, status
+        try:
+            if (cached := _cached_update_check()) is not None:
+                return cached
+            return _run_update_check()
+        finally:
+            _update_check_lock.release()
 
+    def _run_update_check():
         try:
             result = subprocess.run(
                 [str(UPDATE_SCRIPT), "check"],
@@ -4423,6 +4526,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
             if result.returncode == 0:
                 # Parse JSON output from update script
                 response_data = json.loads(result.stdout)
+                _update_check_cache["body"] = response_data
+                _update_check_cache["ts"] = time.monotonic()
                 return jsonify(response_data), 200
             else:
                 error_msg = strip_ansi(result.stderr) or strip_ansi(result.stdout) or "Unknown error"
@@ -4441,64 +4546,81 @@ def create_app(data_dir: Path, config=None) -> Flask:
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
 
-    def run_update_job(job_id: str, version: str, download_url: str):
-        """Background thread function to run the update installation."""
-        job = update_jobs[job_id]
+    def _new_update_job_view(version: Optional[str]) -> dict:
+        return {
+            'status': 'running',
+            'stage': 'preparing',
+            'progress': 0,
+            'message': 'Starting update...',
+            'version': version,
+            'new_version': None,
+            '_cursor': 0,
+            '_recent': collections.deque(maxlen=20),
+            '_pruner_ts': time.time(),
+        }
 
-        recent_lines: "collections.deque[str]" = collections.deque(maxlen=20)
-        try:
-            # Run update script with install command.
-            # stderr is MERGED into stdout (not a separate pipe): the progress
-            # parser below already ignores any non-JSON line, so mixing the
-            # script's stderr in is harmless — and it removes the classic
-            # dual-pipe deadlock where a chatty stderr fills its 64KB buffer,
-            # blocks the script's write(), and hangs our stdout read forever.
-            # Use start_new_session=True so the process survives web restart.
-            process = subprocess.Popen(
-                [str(UPDATE_SCRIPT), "install", version, download_url],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,  # Line buffered
-                start_new_session=True  # Detach from parent process group
-            )
+    def _refresh_update_job(job_id: str, job: dict) -> None:
+        """Advance `job` with whatever the detached update.sh has written
+        since the last poll (its stdout+stderr, merged, in the job log).
 
-            # Read progress output line by line
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    # Stripped at CAPTURE time: on failure this deque becomes
-                    # job['message'], which the Settings tab renders verbatim
-                    # — the same raw-ANSI-in-the-red-box leak the check
-                    # endpoint already fixed with strip_ansi. The JSON parse
-                    # below is unaffected (progress lines carry no colour).
-                    recent_lines.append(strip_ansi(line))
-                    try:
-                        progress_data = json.loads(line)
-                        job['stage'] = progress_data.get('stage', job['stage'])
-                        job['progress'] = progress_data.get('progress', job['progress'])
-                        job['message'] = progress_data.get('message', job['message'])
-
-                        if progress_data.get('stage') == 'complete':
-                            job['status'] = 'complete'
-                            job['new_version'] = progress_data.get('new_version', version)
-                        elif not progress_data.get('ok', True):
-                            job['status'] = 'error'
-                            job['message'] = progress_data.get('error', {}).get('message', 'Unknown error')
-                    except json.JSONDecodeError:
-                        # Non-JSON output, ignore
-                        pass
-
-            process.wait()
-
-            if process.returncode != 0 and job['status'] != 'complete':
-                tail = "\n".join(recent_lines)
+        Merged is fine: the parser ignores any non-JSON line, exactly as the
+        old in-process pipe reader did. Driven by status polls rather than a
+        reader thread, so there is nothing to lose on a Flask restart — a
+        fresh process just re-parses from byte 0.
+        """
+        if job['status'] in ('complete', 'error') and job.get('_finished'):
+            return
+        result = detached.read(job_id, job['_cursor'])
+        if result is None:
+            return
+        lines, job['_cursor'], state, rc = result
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Stripped at CAPTURE time: on failure this deque becomes
+            # job['message'], which the Settings tab renders verbatim — the
+            # same raw-ANSI-in-the-red-box leak the check endpoint already
+            # fixed with strip_ansi. The JSON parse below is unaffected
+            # (progress lines carry no colour).
+            job['_recent'].append(strip_ansi(line))
+            try:
+                progress_data = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # Non-JSON output, ignore
+            if not isinstance(progress_data, dict):
+                continue
+            job['stage'] = progress_data.get('stage', job['stage'])
+            job['progress'] = progress_data.get('progress', job['progress'])
+            job['message'] = progress_data.get('message', job['message'])
+            if progress_data.get('stage') == 'complete':
+                job['status'] = 'complete'
+                job['new_version'] = progress_data.get('new_version', job.get('version'))
+            elif not progress_data.get('ok', True):
                 job['status'] = 'error'
-                job['message'] = tail[-500:] if tail else 'Update failed'
+                err = progress_data.get('error')
+                job['message'] = (err.get('message', 'Unknown error')
+                                  if isinstance(err, dict) else 'Unknown error')
 
-        except Exception as e:
+        if state == 'running':
+            return
+        job['_finished'] = True
+        job['_pruner_ts'] = time.time()
+        _invalidate_update_check_cache()  # VERSION may have just changed
+        if job['status'] == 'complete':
+            return
+        tail = "\n".join(job['_recent'])
+        if state == 'lost':
             job['status'] = 'error'
-            job['message'] = str(e)
+            job['message'] = ("The update process stopped unexpectedly (was the "
+                              "box restarted?). Check the version shown here, "
+                              "then retry the update or roll back."
+                              + (f"\n\n{tail[-400:]}" if tail else ""))
+        elif job['status'] != 'error':
+            job['status'] = 'error'
+            job['message'] = (tail[-500:] if tail and rc != 0
+                              else 'Update failed' if rc != 0
+                              else 'Update ended without confirming completion')
 
     @app.post("/admin/update/install")
     @require_csrf
@@ -4563,36 +4685,35 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 f"Invalid download URL (must be the v{version} release of "
                 f"the {gh_repo} GitHub repo)")
 
-        # Create job (prune stale terminal-state entries first)
+        # Launch detached (prune stale terminal-state entries first). The
+        # job's id is the detached job's id, so a restarted Flask can find it.
         _prune_terminal_jobs(update_jobs)
-        job_id = str(uuid.uuid4())
-        update_jobs[job_id] = {
-            'status': 'running',
-            'stage': 'preparing',
-            'progress': 0,
-            'message': 'Starting update...',
-            'version': version,
-            'new_version': None,
-            '_pruner_ts': time.time(),
-        }
-
-        # Start update in background thread
-        thread = threading.Thread(
-            target=run_update_job,
-            args=(job_id, version, download_url)
-        )
-        thread.daemon = True
-        thread.start()
+        job_id, err = _launch_maintenance_job(
+            "ota-install", [str(UPDATE_SCRIPT), "install", version, download_url])
+        if err:
+            return err
+        update_jobs[job_id] = _new_update_job_view(version)
+        _invalidate_update_check_cache()
 
         return success_response(data={'job_id': job_id}, message="Update started")
 
     @app.get("/admin/update/status/<job_id>")
     def update_status(job_id):  # type: ignore[no-redef]
-        """Get status of an update job."""
-        if job_id not in update_jobs:
-            return error_response("NOT_FOUND", "Job not found", status=404)
+        """Get status of an update job.
 
-        job = update_jobs[job_id]
+        Answered from the job's on-disk log, so it keeps working after the
+        web service restarts mid-update (the job itself is unaffected — it
+        runs in its own systemd unit). Still 404 for an id we have no record
+        of; the Settings tab treats that as "restarted, verify the version".
+        """
+        job = update_jobs.get(job_id)
+        if job is None:
+            meta = detached.meta(job_id)
+            if not meta or meta.get('kind') != 'ota-install':
+                return error_response("NOT_FOUND", "Job not found", status=404)
+            job = update_jobs.setdefault(job_id, _new_update_job_view(None))
+        with _update_jobs_lock:  # concurrent pollers must not split the cursor
+            _refresh_update_job(job_id, job)
         return success_response(data={
             'status': job['status'],
             'stage': job['stage'],
@@ -4612,32 +4733,59 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 status=500
             )
 
+        # The rollback runs DETACHED (own systemd unit — see detached_jobs.py)
+        # and this request waits on its log. The response contract is
+        # unchanged (synchronous JSON); what changed is that the rollback no
+        # longer dies with us: update.sh restarts magic-dingus-web as its
+        # last act, and anything else restarting the unit mid-rsync used to
+        # kill a half-restored install along with this request.
+        job_id, err = _launch_maintenance_job("ota-rollback", [str(UPDATE_SCRIPT), "rollback"])
+        if err:
+            return err
+        _invalidate_update_check_cache()
+
+        deadline = time.monotonic() + 180  # 3 minute timeout for rollback
+        cursor, lines, state, rc = 0, [], "running", None
         try:
-            result = subprocess.run(
-                [str(UPDATE_SCRIPT), "rollback"],
-                capture_output=True,
-                text=True,
-                timeout=180  # 3 minute timeout for rollback
-            )
-
-            if result.returncode == 0:
-                # Parse the last JSON line of output (completion message)
-                lines = [l for l in result.stdout.strip().split('\n') if l.strip()]
-                if lines:
-                    try:
-                        response_data = json.loads(lines[-1])
-                        return jsonify(response_data), 200
-                    except json.JSONDecodeError:
-                        pass
-                return success_response(message="Rollback completed")
-            else:
-                error_msg = strip_ansi(result.stderr) or "Rollback failed"
-                return error_response("ROLLBACK_FAILED", error_msg, status=500)
-
-        except subprocess.TimeoutExpired:
-            return error_response("TIMEOUT", "Rollback timed out", status=504)
+            while True:
+                result = detached.read(job_id, cursor)
+                if result is None:
+                    return error_response("INTERNAL_ERROR", "Rollback job vanished", status=500)
+                new, cursor, state, rc = result
+                lines += new
+                if state != "running":
+                    break
+                if time.monotonic() > deadline:
+                    # The job carries on in its own unit; only our wait ends.
+                    return error_response("TIMEOUT", "Rollback timed out", status=504)
+                time.sleep(0.25)
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
+        finally:
+            _invalidate_update_check_cache()
+
+        json_lines = []
+        for l in lines:
+            l = l.strip()
+            if l.startswith("{"):
+                try:
+                    parsed = json.loads(l)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    json_lines.append(parsed)
+
+        if state == "exited" and rc == 0:
+            # The last JSON line of output is the completion message.
+            if json_lines:
+                return jsonify(json_lines[-1]), 200
+            return success_response(message="Rollback completed")
+
+        err_obj = json_lines[-1].get("error") if json_lines else None
+        error_msg = (err_obj.get("message") if isinstance(err_obj, dict) else None) \
+            or strip_ansi("\n".join(l for l in lines if not l.startswith("{"))[-500:]) \
+            or ("Rollback process stopped unexpectedly" if state == "lost" else "Rollback failed")
+        return error_response("ROLLBACK_FAILED", error_msg, status=500)
 
     # ===== MEDIA BROWSER (RADARR/PROWLARR/QBIT/GLUETUN) SETUP =====
     #
@@ -5036,34 +5184,48 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "vpn_country": vpn["vpn_country"],
         })
 
-    def _run_media_browser_setup_job(job_id: str):
-        """Background thread: stream setup_services.sh output into the job buffer."""
-        job = media_browser_jobs[job_id]
-        try:
-            process = subprocess.Popen(
-                ["sudo", "-n", str(SETUP_SERVICES_SCRIPT)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                start_new_session=True,
-            )
-            job["process"] = process
+    _mb_jobs_lock = threading.Lock()
 
-            for line in process.stdout:
-                line = line.rstrip("\n")
-                buf = job["log"]
-                buf.append(line)
-                if len(buf) > _MB_LOG_BUFFER_LIMIT:
-                    del buf[: len(buf) - _MB_LOG_BUFFER_LIMIT]
+    def _new_mb_job_view(started_ts: float) -> dict:
+        return {
+            "status": "running",
+            "exit_code": None,
+            "log": [],
+            "started_at": datetime.fromtimestamp(started_ts).isoformat(),
+            "started_ts": started_ts,
+            "_cursor": 0,
+            "_pruner_ts": time.time(),
+        }
 
-            process.wait()
-            job["exit_code"] = process.returncode
-            job["status"] = "success" if process.returncode == 0 else "failed"
-        except Exception as e:
-            job["log"].append(f"[admin.py] setup job crashed: {e}")
-            job["status"] = "failed"
+    def _refresh_media_browser_job(job_id: str, job: dict) -> None:
+        """Pull setup_services.sh's new output from the detached job's log.
+
+        setup_services.sh runs as its own systemd unit (detached_jobs.py):
+        it restarts magic-dingus-web itself (Step: uinput group), which under
+        KillMode=control-group used to kill the script that issued the
+        restart, mid-provisioning. Status is re-derived from the log, so a
+        restarted Flask resumes reporting where the old one stopped.
+        """
+        if job["status"] != "running":
+            return
+        result = detached.read(job_id, job["_cursor"])
+        if result is None:
+            return
+        lines, job["_cursor"], state, rc = result
+        buf = job["log"]
+        buf.extend(lines)
+        if len(buf) > _MB_LOG_BUFFER_LIMIT:
+            del buf[: len(buf) - _MB_LOG_BUFFER_LIMIT]
+        if state == "exited":
+            job["exit_code"] = rc
+            job["status"] = "success" if rc == 0 else "failed"
+        elif state == "lost":
+            buf.append("[admin.py] setup process stopped unexpectedly — "
+                       "safe to run setup again")
             job["exit_code"] = -1
+            job["status"] = "failed"
+        if job["status"] != "running":
+            job["_pruner_ts"] = time.time()
 
     @app.post("/admin/media-browser/setup")
     @require_csrf
@@ -5143,6 +5305,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if (resp := _require_nopasswd_sudo()):
             return resp
 
+        # Refuse BEFORE touching .env: a setup (or OTA) already running is
+        # reading it, and rewriting it underneath is the half of the race
+        # the launch-time check alone cannot prevent.
+        if (resp := _maintenance_precheck()):
+            return resp
+
         # Merge WG vars + sensible defaults into existing .env. An existing
         # .env we cannot READ must abort the request: treating it as empty
         # would rewrite it with only the WireGuard keys and destroy the qBit
@@ -5185,23 +5353,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 status=500,
             )
 
-        # Start the long-running setup script in a background thread
-        # (prune stale terminal-state entries first)
+        # Start the long-running setup script DETACHED, as root (it was
+        # `sudo -n setup_services.sh` before — same privilege, now in its own
+        # cgroup). Prune stale terminal-state entries first.
         _prune_terminal_jobs(media_browser_jobs)
-        job_id = str(uuid.uuid4())
-        media_browser_jobs[job_id] = {
-            "status": "running",
-            "exit_code": None,
-            "log": [],
-            "started_at": datetime.now().isoformat(),
-            "started_ts": time.time(),
-            "process": None,
-            "_pruner_ts": time.time(),
-        }
-        thread = threading.Thread(
-            target=_run_media_browser_setup_job, args=(job_id,), daemon=True
-        )
-        thread.start()
+        job_id, err = _launch_maintenance_job(
+            "mb-setup", [str(SETUP_SERVICES_SCRIPT)], as_root=True)
+        if err:
+            return err
+        media_browser_jobs[job_id] = _new_mb_job_view(time.time())
 
         return success_response(
             data={
@@ -5273,6 +5433,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return resp
         job = media_browser_jobs.get(job_id)
         if not job:
+            # Not in memory — e.g. this Flask restarted mid-setup (which
+            # setup_services.sh itself causes). The job's own record on disk
+            # still knows; rebuild from it.
+            meta = detached.meta(job_id)
+            if meta and meta.get("kind") == "mb-setup":
+                started = meta.get("started_ts")
+                job = media_browser_jobs.setdefault(
+                    job_id, _new_mb_job_view(
+                        started if isinstance(started, (int, float)) else time.time()))
+        if not job:
             return success_response(data={
                 "status": "unknown",
                 "log_lines": [],
@@ -5281,14 +5451,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 "elapsed_sec": 0,
             })
 
-        # If the background thread hasn't yet observed a finished process,
-        # poll the Popen handle defensively to keep status fresh.
-        process = job.get("process")
-        if job["status"] == "running" and process is not None:
-            rc = process.poll()
-            if rc is not None:
-                job["exit_code"] = rc
-                job["status"] = "success" if rc == 0 else "failed"
+        with _mb_jobs_lock:  # concurrent pollers must not split the cursor
+            _refresh_media_browser_job(job_id, job)
 
         log = job["log"]
         tail = log[-_MB_LOG_TAIL_LINES:] if len(log) > _MB_LOG_TAIL_LINES else list(log)

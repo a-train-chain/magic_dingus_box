@@ -16,6 +16,21 @@
 
 set -euo pipefail
 
+# Single-flight. Two concurrent runs (a double-submitted Content Manager
+# setup, or one racing first_boot.sh) rewrite .env, recreate the same
+# containers and set the qBit password against each other. The web admin
+# refuses a second launch with 409; this lock covers every other caller.
+# fd 8 is held for the life of the script and released by the kernel on
+# exit, however it exits. Skipped where flock is absent (macOS dev runs).
+SETUP_LOCK="${MDB_SETUP_LOCK:-/run/lock/mdb-setup-services.lock}"
+if command -v flock >/dev/null 2>&1 && { exec 8>>"$SETUP_LOCK"; } 2>/dev/null; then
+    if ! flock -n 8; then
+        echo "ERROR: setup_services.sh is already running (lock: $SETUP_LOCK)." >&2
+        echo "       Wait for it to finish, then run it again if needed." >&2
+        exit 1
+    fi
+fi
+
 # Resolve our own absolute path NOW, before any `cd` — later steps cd into
 # /opt/magic_dingus_box/services for docker-compose, which breaks any
 # subsequent BASH_SOURCE-relative paths.
