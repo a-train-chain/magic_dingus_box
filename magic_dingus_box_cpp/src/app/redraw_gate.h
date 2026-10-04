@@ -12,9 +12,14 @@
 // HOW (deliberately conservative): the loop still runs every iteration —
 // input, GPIO, phone-remote queues, status file, systemd watchdog — and
 // only the GL draw + eglSwapBuffers + page flip are skipped. Skipping is
-// opt-in per screen: today ONLY the bare main menu (is_static_main_menu)
-// may skip; every other screen asks for continuous drawing exactly as
-// before. Within that state a frame is still drawn when:
+// opt-in per screen (is_static_main_menu): the main menu, the Settings
+// menu when open and idle (SettingsMenuManager::is_static_for_redraw), and
+// the Media Browser screens that opt out of continuous drawing
+// (MbScreen::wants_continuous_redraw: Browse, Search, Library, Detail,
+// SeriesDetail when nothing on them animates). Every other screen — video,
+// games, MB Playback/Queue, the wizard, pairing, keyboard — asks for
+// continuous drawing exactly as before. Within that state a frame is still
+// drawn when:
 //   - any input arrived this iteration (no added input latency);
 //   - the drawn content's signature changed (selection, blink phase,
 //     status text ... — see ContentSignature);

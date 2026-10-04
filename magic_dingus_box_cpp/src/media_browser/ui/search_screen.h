@@ -80,6 +80,11 @@ public:
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). Nothing animates except the 2 Hz caret
+    // blink, which goes in the signature rather than forcing 60 fps.
+    bool wants_continuous_redraw() const override { return false; }
+    uint64_t redraw_signature() const override;
+
     // tmdb_id of the most recently selected result poster. The dispatcher
     // in main.cpp reads this to forward to DetailScreen on transition
     // (same handoff pattern BrowseScreen uses).
@@ -143,6 +148,8 @@ private:
         std::chrono::steady_clock::time_point::min();
 
     std::vector<MovieSearchHit> results_;
+    // Bumped when update() applies a lookup or library result (redraw gate).
+    uint64_t content_epoch_ = 0;
 
     int grid_cursor_ = 0;
     int scroll_row_ = 0;

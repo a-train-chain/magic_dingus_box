@@ -9,6 +9,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "app/redraw_gate.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
@@ -188,6 +189,7 @@ void SearchScreen::run_lib_fetch(uint64_t gen) {
 
 void SearchScreen::apply_pending_lib() {
     if (!lib_result_ready_.exchange(false)) return;
+    ++content_epoch_;  // redraw gate: result chips may change
     LibFetchResult incoming;
     {
         std::lock_guard<std::mutex> lk(lib_result_mtx_);
@@ -277,6 +279,7 @@ void SearchScreen::run_lookup(uint64_t gen, std::string query) {
 
 void SearchScreen::apply_pending_lookup() {
     if (!lookup_result_ready_.exchange(false)) return;
+    ++content_epoch_;  // redraw gate: new results
     std::vector<MovieSearchHit> incoming;
     {
         std::lock_guard<std::mutex> lk(lookup_result_mtx_);
@@ -287,6 +290,27 @@ void SearchScreen::apply_pending_lookup() {
     scroll_row_ = 0;
     lookup_loading_ = false;
     spdlog::info("[SearchScreen] applied lookup: {} results", results_.size());
+}
+
+uint64_t SearchScreen::redraw_signature() const {
+    app::ContentSignature sig;
+    sig.add(content_epoch_);
+    // Phone-remote typing reaches query_ through update(), not input.
+    sig.add(query_);
+    // The "..." debounce placeholder and the loading line.
+    sig.add(last_queried_);
+    sig.add(static_cast<uint64_t>(lookup_loading_));
+    sig.add(static_cast<uint64_t>(lib_loading_));
+    // The caret blinks at 2 Hz while the query is non-empty (render()'s
+    // blink_on, same epoch clock): redraw on each phase flip.
+    if (!query_.empty()) {
+        const auto epoch_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        sig.add(static_cast<uint64_t>(epoch_ms / 500));
+    }
+    return sig.value();
 }
 
 void SearchScreen::update() {

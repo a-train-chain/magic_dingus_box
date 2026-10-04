@@ -1642,6 +1642,10 @@ int main(int /* argc */, char* /* argv */[]) {
     int64_t crt_last_drawn_field = 0;
     bool crt_field_rate_logged = false;
     auto last_present_done = std::chrono::steady_clock::now();
+#ifdef MEDIA_BROWSER_ENABLED
+    // Poster textures uploaded so far (redraw gate: an upload draws).
+    uint64_t mb_artwork_uploads = 0;
+#endif
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -3639,10 +3643,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // playlist state) has run; from here to the present is drawing,
         // plus a tail of non-drawing work (status file, watch checkpoints,
         // stall watchdog, phone-remote queues, reload pokes) that runs
-        // every iteration regardless. Skipping is opt-in: only the bare
-        // main menu (app::is_static_main_menu) may skip, and even there a
-        // frame is drawn on any input, any change in what it shows, and at
-        // least every RedrawGate::kDefaultMaxIdle. See app/redraw_gate.h.
+        // every iteration regardless. Skipping is opt-in: the main menu, an
+        // idle open Settings menu, and idle MB Browse/Search/Library/
+        // Detail/SeriesDetail (app::is_static_main_menu over the activity
+        // flags below) may skip, and even there a frame is drawn on any
+        // input, any change in what it shows, and at least every
+        // RedrawGate::kDefaultMaxIdle. See app/redraw_gate.h.
         bool draw_this_frame = true;
         bool crt_field_rate_this_iteration = false;
         {
@@ -3651,15 +3657,38 @@ int main(int /* argc */, char* /* argv */[]) {
                         state.intro_fading_out;
             act.video = should_render_video || state.video_active ||
                         state.is_switching_playlist || controller.is_playing();
+            bool mb_menu_screen = false;  // MB, not Playback: MB CRT look
+            [[maybe_unused]] bool mb_screen_static = false;
 #ifdef MEDIA_BROWSER_ENABLED
-            act.media_browser =
+            const bool mb_on =
                 state.current_screen == app::AppScreen::MediaBrowser;
+            mb_menu_screen =
+                mb_on && current_mb_screen != media_browser::ui::Screen::Playback;
+            // Poster uploads run HERE, before the decision, not in the
+            // drawing block: a skipped frame must still upload, and an
+            // upload must draw the frame that shows it (counter below).
+            if (mb_menu_screen) {
+                mb_artwork_uploads += ui_renderer.pump_artwork();
+            }
+            // The active MB screen may opt out of continuous drawing
+            // (MbScreen::wants_continuous_redraw — Browse, Search,
+            // Library, Detail, SeriesDetail when idle); the dispatcher's
+            // modals keep it continuous while shown.
+            mb_screen_static = mb_on &&
+                               !active_mb_screen->wants_continuous_redraw() &&
+                               !mb_exit_modal.is_open() &&
+                               !mb_stall_modal.is_active();
+            act.media_browser = mb_on && !mb_screen_static;
 #endif
             // Includes the wizard and pairing screen (both live inside it).
-            // The close animation also only completes inside a render.
-            act.settings_menu = settings_menu.is_active() ||
-                                settings_menu.is_opening() ||
-                                settings_menu.is_closing();
+            // The open/close slide only advances inside a render, so it is
+            // continuous; an open, idle menu may skip
+            // (SettingsMenuManager::is_static_for_redraw).
+            const bool settings_shown = settings_menu.is_active() ||
+                                        settings_menu.is_opening() ||
+                                        settings_menu.is_closing();
+            act.settings_menu =
+                settings_shown && !settings_menu.is_static_for_redraw();
             act.keyboard = keyboard.is_active();
             act.ui_fade = state.is_fading ||
                           state.post_game_fade_start_ms.load() != 0;
@@ -3671,9 +3700,14 @@ int main(int /* argc */, char* /* argv */[]) {
                 state.has_error_message() || state.show_volume_slider ||
                 state.show_seek_bar || state.seek_bar_timer > 0.0 ||
                 menu_hold.button_held || state.is_loading_game;
+            // The MB menu screens draw the Marquee CRT look (mb_* values,
+            // swapped in around render_crt_effects below), not the kiosk's.
             act.crt_time_effects =
-                state.display_settings.flicker_intensity > 0.0f ||
-                state.display_settings.interlacing_intensity > 0.0f;
+                mb_menu_screen
+                    ? (state.display_settings.mb_flicker_intensity > 0.0f ||
+                       state.display_settings.mb_interlacing_intensity > 0.0f)
+                    : (state.display_settings.flicker_intensity > 0.0f ||
+                       state.display_settings.interlacing_intensity > 0.0f);
 
             // What the static menu draws that can change with no input and
             // no activity flag. The blink phase is the one that changes on
@@ -3697,6 +3731,20 @@ int main(int /* argc */, char* /* argv */[]) {
             sig.add(as_u64(state.get_duration()));
             sig.add(static_cast<uint64_t>(state.display_settings.mode));
             sig.add(static_cast<uint64_t>(state.display_settings.bezel_index));
+            // An open, static Settings menu: page, cursor, row labels.
+            if (settings_shown) {
+                sig.add(settings_menu.redraw_signature());
+            }
+#ifdef MEDIA_BROWSER_ENABLED
+            // A static MB screen: which screen, what it shows, posters.
+            if (mb_on) {
+                sig.add(static_cast<uint64_t>(current_mb_screen));
+                sig.add(mb_artwork_uploads);
+                if (mb_screen_static) {
+                    sig.add(active_mb_screen->redraw_signature());
+                }
+            }
+#endif
 
             app::RedrawInputs gate_in;
             gate_in.input_event = input_this_iteration;
@@ -4069,24 +4117,13 @@ int main(int /* argc */, char* /* argv */[]) {
             // when not shown. Task 16.
             mb_stall_modal.render(ui_renderer, mb_w, mb_h);
 
-            // Drain any completed poster fetches and upload them to GL.
-            // Must happen on the GL-owning main thread. Without this
-            // call the background fetcher thread's decoded images would
-            // never make it onto screen.
-            //
-            // SKIP during Playback — texture allocation + GPU upload is
-            // the most expensive non-decode work in the per-frame budget,
-            // and there's no point loading new poster art for a screen
-            // the operator can't see anyway. This shaves CPU+GPU off the
-            // critical path during the GStreamer pipeline's first ~3
-            // seconds (where most QoS frame drops were happening) and
-            // prevents the Pi 4 from accumulating thermal headroom debt
-            // that would otherwise translate into mid-movie throttling.
-            // Pending fetches stay queued and resume the moment the
-            // operator exits playback back to a menu screen.
-            if (current_mb_screen != media_browser::ui::Screen::Playback) {
-                ui_renderer.pump_artwork();
-            }
+            // Poster uploads (ui_renderer.pump_artwork) moved to the redraw
+            // gate block above: they must run on skipped frames too, and an
+            // upload must count as "the picture changed". Same rule as
+            // before — skipped during Playback (texture allocation + GPU
+            // upload is the most expensive non-decode work in the frame
+            // budget, and the operator can't see the posters; pending
+            // fetches resume on the way back to a menu screen).
 
             // CRT effects overlay on Media Browser menu screens (Browse,
             // Library, Search, Detail, Queue, Settings). Same legacy

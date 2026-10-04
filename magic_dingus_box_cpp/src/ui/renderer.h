@@ -144,7 +144,9 @@ public:
     // Called once per frame from the main loop. Drains any completed
     // background fetches and performs the GL uploads. Must run on the
     // GL-owning thread.
-    void pump_artwork();
+    // Returns the number of textures uploaded (the redraw gate draws a
+    // frame when posters land).
+    std::size_t pump_artwork();
 
     // Renders the same seek bar overlay the main UI draws during scrubs.
     // The Media Browser's PlaybackScreen calls this so its scrub feedback

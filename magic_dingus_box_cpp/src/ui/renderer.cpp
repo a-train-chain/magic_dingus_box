@@ -2530,13 +2530,14 @@ void Renderer::mb_draw_poster_fit(const std::string& url,
     draw_textured_quad(tex_id, out_x, out_y, out_w, out_h, alpha_multiplier);
 }
 
-void Renderer::pump_artwork() {
+std::size_t Renderer::pump_artwork() {
     // Only pump if the cache exists. Avoids lazy-init forcing a
     // background thread to start on frames where Media Browser isn't
     // being used.
     if (artwork_cache_) {
-        artwork_cache_->pump();
+        return artwork_cache_->pump();
     }
+    return 0;
 }
 #endif
 

@@ -79,6 +79,17 @@ public:
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). The only animation is the sort/filter
+    // overlay's slide — and that one only advances inside render()
+    // (tick_overlay_animation), so it MUST keep drawing until it lands.
+    // The 2 s refresh rebuilds entries_ even when nothing changed, so the
+    // signature hashes what the visible page actually shows.
+    bool wants_continuous_redraw() const override {
+        return overlay_state_ == OverlayState::SlidingIn ||
+               overlay_state_ == OverlayState::SlidingOut;
+    }
+    uint64_t redraw_signature() const override;
+
     // MediaRef of the poster most recently selected by the user. Consumed
     // by the dispatcher in main.cpp on transition: Detail takes ref.id when
     // kind == Movie, SeriesDetail takes it when kind == Tv (the kind also

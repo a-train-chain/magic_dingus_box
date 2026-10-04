@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <system_error>
 
+#include "app/redraw_gate.h"
 #include "media_browser/library/watch_store.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/service_gate.h"
@@ -2650,6 +2651,51 @@ void SeriesDetailScreen::run_series_poll(uint64_t gen, int sonarr_id,
         // badges standing rather than clearing them on no evidence.
     }
     pending_ready_.store(true, std::memory_order_release);
+}
+
+uint64_t SeriesDetailScreen::redraw_signature() const {
+    app::ContentSignature sig;
+    sig.add(static_cast<uint64_t>(tmdb_done_));
+    sig.add(static_cast<uint64_t>(tmdb_ok_));
+    sig.add(static_cast<uint64_t>(sonarr_done_));
+    sig.add(static_cast<uint64_t>(sonarr_ok_));
+    sig.add(static_cast<uint64_t>(in_library_));
+    sig.add(static_cast<uint64_t>(series_settled_));
+    sig.add(static_cast<uint64_t>(detail_.has_value()));
+    sig.add(static_cast<uint64_t>(series_.has_value()));
+    sig.add(static_cast<uint64_t>(episodes_done_));
+    sig.add(static_cast<uint64_t>(episodes_ok_));
+    sig.add(static_cast<uint64_t>(episodes_.size()));
+    sig.add(static_cast<uint64_t>(episode_watch_.size()));
+    sig.add(static_cast<uint64_t>(mut_in_flight_.load(std::memory_order_acquire)));
+    sig.add(static_cast<uint64_t>(season_del_inflight_));
+    sig.add(static_cast<uint64_t>(season_del_armed_));
+    sig.add(static_cast<uint64_t>(whole_armed_));
+    sig.add(static_cast<uint64_t>(remove_pending_));
+    sig.add(static_cast<uint64_t>(season_chooser_.choosing));
+    sig.add(static_cast<uint64_t>(season_chooser_.index));
+    sig.add(static_cast<uint64_t>(region_));
+    sig.add(static_cast<uint64_t>(focus_));
+    sig.add(static_cast<uint64_t>(season_focus_));
+    sig.add(static_cast<uint64_t>(season_page_));
+    sig.add(static_cast<uint64_t>(episodes_season_));
+    sig.add(static_cast<uint64_t>(episode_focus_));
+    sig.add(static_cast<uint64_t>(episode_page_));
+    sig.add(static_cast<uint64_t>(downloading_seasons_.size()));
+    sig.add(static_cast<uint64_t>(buttons_.size()));
+    for (const auto& b : buttons_) {
+        sig.add(static_cast<uint64_t>(b.action));
+        sig.add(b.label);
+    }
+    sig.add(static_cast<uint64_t>(rows_.size()));
+    for (const auto& row : rows_) {
+        sig.add(static_cast<uint64_t>(row.season_number));
+        sig.add(static_cast<uint64_t>(row.episode_count));
+        sig.add(static_cast<uint64_t>(row.episode_file_count));
+        sig.add(static_cast<uint64_t>(row.monitored));
+        sig.add(static_cast<uint64_t>(row.state));
+    }
+    return sig.value();
 }
 
 void SeriesDetailScreen::update() {

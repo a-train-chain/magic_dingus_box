@@ -13,6 +13,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "app/redraw_gate.h"
 #include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/sonarr/sonarr_client.h"
@@ -298,6 +299,7 @@ void BrowseScreen::run_library_refresh() {
 
 void BrowseScreen::apply_library_pending() {
     if (!lib_result_ready_.load()) return;
+    ++content_epoch_;  // redraw gate: badges / warning line / list may change
     PendingLibrary r;
     {
         std::lock_guard<std::mutex> lk(lib_pending_mtx_);
@@ -564,6 +566,7 @@ void BrowseScreen::apply_foryou_pending() {
     if (foryou_job_->remaining.load(std::memory_order_acquire) != 0) return;
     auto job = std::move(foryou_job_);
     if (job->gen != tmdb_current_gen_.load()) return;  // preempted — discard
+    ++content_epoch_;  // redraw gate: grid or error state is about to change
     std::vector<SeedResult> results;
     {
         std::lock_guard<std::mutex> lk(job->mtx);
@@ -1040,6 +1043,7 @@ void BrowseScreen::run_reload_tv_filter_page(uint64_t gen, TvDiscoverFilter filt
 
 void BrowseScreen::apply_pending() {
     if (!tmdb_result_ready_.exchange(false)) return;
+    ++content_epoch_;  // redraw gate: a page landed (may be same-size swap)
     std::vector<PendingPage> drained;
     {
         std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
@@ -1224,6 +1228,22 @@ void BrowseScreen::update() {
                      genres_.size());
     }
     maybe_load_more_pages();
+}
+
+bool BrowseScreen::wants_continuous_redraw() const {
+    // The filter overlay slides in/out on a clock (SlidingIn/SlidingOut);
+    // tick() in update() ends the slide, so Open/Closed are static.
+    return filter_overlay_.is_visible() && !filter_overlay_.is_input_active();
+}
+
+uint64_t BrowseScreen::redraw_signature() const {
+    // Everything else on screen changes on input or in update(): worker
+    // results (content_epoch_), plus two values read live by render().
+    app::ContentSignature sig;
+    sig.add(content_epoch_);
+    sig.add(static_cast<uint64_t>(tv_mode()));
+    sig.add(static_cast<uint64_t>(tmdb_.has_api_key()));
+    return sig.value();
 }
 
 BrowseScreen::~BrowseScreen() {

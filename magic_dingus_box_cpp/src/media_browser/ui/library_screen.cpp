@@ -16,6 +16,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "app/redraw_gate.h"
 #include "app/settings_persistence.h"
 #include "media_browser/library/watch_store.h"
 #include "media_browser/radarr/radarr_client.h"
@@ -700,6 +701,39 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
+
+uint64_t LibraryScreen::redraw_signature() const {
+    app::ContentSignature sig;
+    sig.add(static_cast<uint64_t>(loaded_));
+    sig.add(static_cast<uint64_t>(radarr_ok_));
+    sig.add(static_cast<uint64_t>(sonarr_ok_));
+    sig.add(static_cast<uint64_t>(entries_.size()));
+    sig.add(static_cast<uint64_t>(view_.size()));
+    sig.add(static_cast<uint64_t>(grid_cursor_));
+    sig.add(static_cast<uint64_t>(scroll_row_));
+    sig.add(static_cast<uint64_t>(overlay_state_));
+    // The visible page: 2 rows (render()'s kVisibleRows) of kGridCols.
+    const int first = scroll_row_ * kGridCols;
+    const int last = std::min(static_cast<int>(view_.size()),
+                              (scroll_row_ + 2) * kGridCols);
+    for (int i = std::max(0, first); i < last; ++i) {
+        const LibraryEntry* en = view_[static_cast<std::size_t>(i)];
+        if (en == nullptr) continue;
+        sig.add(static_cast<uint64_t>(en->ref.kind));
+        sig.add(static_cast<uint64_t>(en->ref.id));
+        sig.add(en->title);
+        sig.add(static_cast<uint64_t>(en->year));
+        sig.add(en->poster_url);
+        sig.add(static_cast<uint64_t>(en->file_count));
+        sig.add(static_cast<uint64_t>(en->downloading));
+        sig.add(static_cast<uint64_t>(en->started));
+        sig.add(static_cast<uint64_t>(stuck_refs_.count(en->ref)));
+        sig.add(static_cast<uint64_t>(importing_refs_.count(en->ref)));
+        sig.add(static_cast<uint64_t>(en->movie != nullptr &&
+                                      file_runtime_suspicious(*en->movie)));
+    }
+    return sig.value();
+}
 
 void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     tick_overlay_animation();

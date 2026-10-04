@@ -21,6 +21,7 @@
 #include <arpa/inet.h>
 
 #include "../app/app_state.h"
+#include "../app/redraw_gate.h"
 #include "../app/settings_persistence.h"
 #ifdef MEDIA_BROWSER_ENABLED
 #include "../media_browser/mb_entry_gate.h"
@@ -486,6 +487,34 @@ void SettingsMenuManager::force_close() {
     is_closing_ = false;
     close_pairing_screen();
     close_controller_wizard();
+}
+
+bool SettingsMenuManager::is_static_for_redraw() const {
+    if (!active_ || is_opening_ || is_closing_) return false;
+    if (pairing_active_ || wizard_active_) return false;
+    if (game_browser_active_) return false;
+    const auto& wifi = utils::WifiManager::instance();
+    if (wifi.is_scanning() || wifi.is_connecting() || wifi.is_forgetting()) {
+        return false;
+    }
+    return true;
+}
+
+uint64_t SettingsMenuManager::redraw_signature() const {
+    app::ContentSignature sig;
+    sig.add(static_cast<uint64_t>(current_submenu_));
+    sig.add(static_cast<uint64_t>(selected_index_));
+    sig.add(static_cast<uint64_t>(scroll_offset_));
+    sig.add(static_cast<uint64_t>(wifi_disconnect_confirm_));
+    sig.add(static_cast<uint64_t>(controller_reset_confirm_));
+    for (const auto* items : {&menu_items_, &submenu_items_}) {
+        sig.add(static_cast<uint64_t>(items->size()));
+        for (const auto& item : *items) {
+            sig.add(item.label);
+            sig.add(item.sublabel);
+        }
+    }
+    return sig.value();
 }
 
 float SettingsMenuManager::get_animation_progress() const {
