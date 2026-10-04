@@ -118,6 +118,138 @@ TEST_CASE("MDB_PI_MODEL_OVERRIDE impersonates a board only when the device tree 
 }
 
 // ---------------------------------------------------------------
+// TEST-ONLY policy override (MDB_PLATFORM_POLICY_OVERRIDE)
+// ---------------------------------------------------------------
+
+namespace {
+// Every HARDWARE field (see the classification table in the header).
+void require_same_hardware(const PlatformProfile& a, const PlatformProfile& b) {
+    REQUIRE(a.model == b.model);
+    REQUIRE(a.model_string == b.model_string);
+    REQUIRE(a.has_analog_audio == b.has_analog_audio);
+    REQUIRE(a.gpiochip_labels == b.gpiochip_labels);
+    REQUIRE(a.rotary_events_per_detent == b.rotary_events_per_detent);
+}
+// Every POLICY field.
+void require_same_policy(const PlatformProfile& a, const PlatformProfile& b) {
+    REQUIRE(a.pause_services_during_movie == b.pause_services_during_movie);
+    REQUIRE(a.trickle_torrents_during_video == b.trickle_torrents_during_video);
+    REQUIRE(a.unsupported_game_systems == b.unsupported_game_systems);
+    REQUIRE(a.unsupported_emulator_cores == b.unsupported_emulator_cores);
+    REQUIRE(a.artwork_cache_budget_bytes == b.artwork_cache_budget_bytes);
+}
+PlatformProfile real_pi5() {
+    PlatformProfile p = profile_for(PiModel::Pi5);
+    p.model_string = "Raspberry Pi 5 Model B Rev 1.1";
+    return p;
+}
+} // namespace
+
+TEST_CASE("policy override unset or empty leaves the profile unchanged") {
+    for (const char* v : {static_cast<const char*>(nullptr), ""}) {
+        PlatformProfile p = apply_policy_override(real_pi5(), v);
+        require_same_hardware(p, real_pi5());
+        require_same_policy(p, real_pi5());
+        REQUIRE(p.policy_override.empty());
+        REQUIRE(p.policy_override_ignored_reason.empty());
+        REQUIRE(policy_override_log_line(p).empty());
+    }
+}
+
+TEST_CASE("policy override pi4 on a Pi 5 switches exactly the policy fields") {
+    PlatformProfile p = apply_policy_override(real_pi5(), "pi4");
+
+    // Hardware stays the real Pi 5's: RP1 GPIO, no jack, 1 event/detent.
+    require_same_hardware(p, real_pi5());
+    REQUIRE(p.model == PiModel::Pi5);
+    REQUIRE(p.gpiochip_labels.front() == "pinctrl-rp1");
+    REQUIRE_FALSE(p.has_analog_audio);
+    REQUIRE(p.rotary_events_per_detent == 1);
+
+    // Policy becomes the Pi 4B's.
+    require_same_policy(p, profile_for(PiModel::Pi4));
+    REQUIRE_FALSE(supports_game_system(p, "n64"));
+    REQUIRE_FALSE(supports_game_system(p, "dreamcast"));
+    REQUIRE_FALSE(supports_emulator_core(p, "flycast_libretro"));
+    REQUIRE(supports_game_system(p, "psx"));
+    REQUIRE(p.artwork_cache_budget_bytes == 64u * 1024u * 1024u);
+    REQUIRE(p.pause_services_during_movie);
+    REQUIRE_FALSE(p.trickle_torrents_during_video);
+
+    REQUIRE(p.policy_override == "pi4");
+    REQUIRE(p.policy_override_ignored_reason.empty());
+}
+
+TEST_CASE("policy override pi4 forces FullPause even with plenty of memory") {
+    // Without the override a Pi 5 with >= 1.5 GiB available trickles;
+    // with it, service_quiet_mode must behave like a Pi 4B (always pause).
+    const long plenty = 3L * 1024 * 1024;  // 3 GiB in KiB
+    REQUIRE(service_quiet_mode(real_pi5(), plenty) == ServiceQuietMode::Trickle);
+    PlatformProfile p = apply_policy_override(real_pi5(), "pi4");
+    REQUIRE(service_quiet_mode(p, plenty) == ServiceQuietMode::FullPause);
+    REQUIRE(service_quiet_mode(p, -1) == ServiceQuietMode::FullPause);
+}
+
+TEST_CASE("policy override with an invalid value is ignored, loudly") {
+    for (const char* v : {"pi5", "PI4", " pi4", "pi4 ", "1", "true"}) {
+        PlatformProfile p = apply_policy_override(real_pi5(), v);
+        require_same_hardware(p, real_pi5());
+        require_same_policy(p, real_pi5());
+        REQUIRE(p.policy_override.empty());
+        REQUIRE_FALSE(p.policy_override_ignored_reason.empty());
+        const std::string line = policy_override_log_line(p);
+        REQUIRE(line.find("IGNORED") != std::string::npos);
+        REQUIRE(line.find("ACTIVE") == std::string::npos);
+    }
+}
+
+TEST_CASE("policy override on an actual Pi 4B is a no-op") {
+    PlatformProfile pi4 = profile_for(PiModel::Pi4);
+    PlatformProfile p = apply_policy_override(pi4, "pi4");
+    require_same_hardware(p, pi4);
+    require_same_policy(p, pi4);
+    REQUIRE(p.policy_override.empty());
+    REQUIRE_FALSE(p.policy_override_ignored_reason.empty());
+}
+
+TEST_CASE("policy override on an unknown board is ignored") {
+    PlatformProfile unk = profile_for(PiModel::Unknown);
+    PlatformProfile p = apply_policy_override(unk, "pi4");
+    require_same_hardware(p, unk);
+    require_same_policy(p, unk);
+    REQUIRE(p.policy_override.empty());
+    REQUIRE_FALSE(p.policy_override_ignored_reason.empty());
+}
+
+TEST_CASE("policy override log line names the real board") {
+    PlatformProfile p = apply_policy_override(real_pi5(), "pi4");
+    const std::string line = policy_override_log_line(p);
+    REQUIRE(line.rfind("PLATFORM POLICY OVERRIDE ACTIVE: running Pi 4B "
+                       "policies on Raspberry Pi 5 Model B Rev 1.1", 0) == 0);
+}
+
+TEST_CASE("detect_platform honors MDB_PLATFORM_POLICY_OVERRIDE on a Pi 5 device tree") {
+    auto path = std::filesystem::temp_directory_path() / "mdb_dt_model_policy";
+    { std::ofstream(path, std::ios::binary) << std::string("Raspberry Pi 5 Model B Rev 1.1\0", 31); }
+
+    unsetenv(kPolicyOverrideEnv);
+    PlatformProfile off = detect_platform(path.string());
+    CHECK(off.policy_override.empty());
+    CHECK(off.model_string == "Raspberry Pi 5 Model B Rev 1.1");
+    CHECK(supports_game_system(off, "n64"));
+
+    setenv(kPolicyOverrideEnv, "pi4", 1);
+    PlatformProfile on = detect_platform(path.string());
+    unsetenv(kPolicyOverrideEnv);
+    std::filesystem::remove(path);
+
+    CHECK(on.model == PiModel::Pi5);
+    CHECK(on.policy_override == "pi4");
+    CHECK_FALSE(supports_game_system(on, "n64"));
+    CHECK(on.gpiochip_labels == off.gpiochip_labels);
+}
+
+// ---------------------------------------------------------------
 // PulseAudio sink resolution
 // ---------------------------------------------------------------
 

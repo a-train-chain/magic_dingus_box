@@ -61,6 +61,54 @@ rules, each earned by a real bug:
 Full background: `scripts/golden_image/CLONING.md` "One image, two
 boards" and `OTA_UPDATE_GUARANTEES.md`.
 
+### Platform policy override (TEST-ONLY, pre-release rehearsal)
+
+`MDB_PLATFORM_POLICY_OVERRIDE=pi4` makes a **Pi 5** run the Pi 4B's
+SOFTWARE POLICIES while keeping its real HARDWARE facts — it exists only
+to rehearse Pi 4B logic before Pi 4B hardware is on the bench. Never
+ship or clone a box with it set: **`verify_box.sh` FAILS** while it is
+present in either unit's Environment, `services/.env`, a running
+process's environment, or `kiosk_status.json`.
+
+- **What switches** (the POLICY rows of the classification table in
+  `platform_profile.h`): N64/Dreamcast systems + cores hidden, 64 MB
+  poster budget, `pause_services_during_movie=true` /
+  `trickle_torrents_during_video=false` (so `service_quiet_mode()` is
+  always FullPause), and in the web admin one concurrent transcode with
+  the ultrafast/CRF 28 encoder tier. **What stays real:** model, GPIO
+  chip, analog-audio availability, rotary pulse rate, and everything
+  probed outside the profile (decoders, sinks, page size, DRM/Vulkan).
+- **Not covered:** board-gated *setup-time* writes — `setup_services.sh`'s
+  Pi 4B preferred-size quality definitions and `first_boot.sh`'s Pi 4 ROM
+  pruning still key on the real device tree (they persist state that
+  would outlive the rehearsal).
+- Only the exact value `pi4` is honored, only on a Pi 5; any other value
+  (or a Pi 4B / unknown board) is ignored with a WARN. Active state logs
+  one WARN `PLATFORM POLICY OVERRIDE ACTIVE: running Pi 4B policies on
+  <model>` and publishes `"platform_policy_override": "pi4"` in
+  `kiosk_status.json` (null otherwise).
+- The kiosk and the web admin each read their OWN unit environment, so
+  set it in BOTH:
+  ```bash
+  # enable
+  for u in magic-dingus-box-cpp magic-dingus-web; do
+    sudo mkdir -p /etc/systemd/system/$u.service.d
+    printf '[Service]\nEnvironment=MDB_PLATFORM_POLICY_OVERRIDE=pi4\n' \
+      | sudo tee /etc/systemd/system/$u.service.d/zz-policy-override.conf
+  done
+  sudo systemctl daemon-reload
+  sudo systemctl restart magic-dingus-web magic-dingus-box-cpp
+  # (or interactively: sudo systemctl edit magic-dingus-box-cpp / magic-dingus-web)
+
+  # disable
+  sudo rm -f /etc/systemd/system/magic-dingus-{box-cpp,web}.service.d/zz-policy-override.conf
+  sudo systemctl daemon-reload
+  sudo systemctl restart magic-dingus-web magic-dingus-box-cpp
+  ```
+  Never disable it with `systemctl revert`: that deletes EVERY drop-in
+  for the unit, including the memory-tuning and audio ones
+  `setup_memory_tuning.sh` / `setup_audio_service.sh` installed.
+
 ## Build Commands
 
 ### C++ Build (on Pi or cross-compile)

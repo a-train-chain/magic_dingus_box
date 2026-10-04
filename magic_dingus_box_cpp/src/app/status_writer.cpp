@@ -108,6 +108,15 @@ void StatusWriter::write_now(const AppState& state) {
     }
     root["text_input"] = text_input;
 
+    // TEST-ONLY MDB_PLATFORM_POLICY_OVERRIDE ("pi4" while a Pi 5 runs the
+    // Pi 4B's software policies, null otherwise). Published so the state
+    // can never ship silently: verify_box.sh FAILS when this is non-null.
+    if (state.platform_profile.policy_override.empty()) {
+        root["platform_policy_override"] = Json::Value::null;
+    } else {
+        root["platform_policy_override"] = state.platform_profile.policy_override;
+    }
+
     Json::StreamWriterBuilder b;
     b["indentation"] = "";
     // Serialize WITHOUT ts first: this is the change-detection key. The

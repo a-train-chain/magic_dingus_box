@@ -64,6 +64,49 @@ esac
 PLAT=$(journalctl -u "$UNIT" -b --no-pager 2>/dev/null | grep -oE "Platform: Raspberry Pi [0-9].*" | tail -1)
 if [[ -n "$PLAT" ]]; then pass "detection: $PLAT"; else warn "no platform log line this boot"; fi
 
+# TEST-ONLY MDB_PLATFORM_POLICY_OVERRIDE (CLAUDE.md "Dual-board contract"):
+# a Pi 5 rehearsing Pi 4B software policy must NEVER be cloned or shipped,
+# so ANY non-empty value is a FAIL — even one the binaries ignore. Four
+# independent sources, because an override can arrive by any of them: the
+# kiosk and web units' Environment= (unit file + every drop-in, which is
+# what `systemctl show` merges), the kiosk's EnvironmentFile (services/.env,
+# which `systemctl show -p Environment` does NOT include), the RUNNING
+# processes' environment, and the kiosk's own report in kiosk_status.json.
+#
+# Pure parser, pinned by tests/local/verify_box_policy_override.bats:
+# prints the override's value from `systemctl show -p Environment --value`
+# output (space-separated, optionally quoted KEY=VAL) or env-file / environ
+# text (one per line, optional `export`). Prints nothing when unset/empty.
+policy_override_in_env() {
+  tr ' \t' '\n\n' <<<"${1:-}" \
+    | sed -nE "s/^[\"']?MDB_PLATFORM_POLICY_OVERRIDE=[\"']?([^\"']*)[\"']?\$/\\1/p" \
+    | tail -1
+}
+OVR_HITS=()
+for _u in "$UNIT" magic-dingus-web.service; do
+  _v=$(policy_override_in_env "$(systemctl show -p Environment --value "$_u" 2>/dev/null)")
+  [[ -n "$_v" ]] && OVR_HITS+=("${_u} Environment=${_v}")
+  _pid=$(systemctl show -p MainPID --value "$_u" 2>/dev/null)
+  if [[ -n "$_pid" && "$_pid" != 0 && -r "/proc/${_pid}/environ" ]]; then
+    _v=$(policy_override_in_env "$(tr '\0' '\n' < "/proc/${_pid}/environ" 2>/dev/null)")
+    [[ -n "$_v" ]] && OVR_HITS+=("${_u} running process=${_v}")
+  fi
+done
+if [[ -r "${BASE}/services/.env" ]]; then
+  _v=$(policy_override_in_env "$(cat "${BASE}/services/.env" 2>/dev/null)")
+  [[ -n "$_v" ]] && OVR_HITS+=("services/.env=${_v}")
+fi
+_v=$(python3 -c "
+import json
+s=json.load(open('${DATA}/kiosk_status.json'))
+print(s.get('platform_policy_override') or '')" 2>/dev/null)
+[[ -n "$_v" ]] && OVR_HITS+=("kiosk_status.json platform_policy_override=${_v}")
+if (( ${#OVR_HITS[@]} )); then
+  fail "TEST-ONLY platform policy override is ON ($(IFS=';'; echo "${OVR_HITS[*]}")) — remove the drop-ins (CLAUDE.md 'Platform policy override'); this box must not be cloned or shipped"
+else
+  pass "no platform policy override (MDB_PLATFORM_POLICY_OVERRIDE unset)"
+fi
+
 ARM_MHZ=$(( $(vcgencmd measure_clock arm 2>/dev/null | cut -d= -f2) / 1000000 ))
 TEMP=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2)
 THROT=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
