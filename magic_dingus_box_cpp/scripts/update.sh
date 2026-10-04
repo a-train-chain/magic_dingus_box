@@ -186,12 +186,23 @@ run_build() {
     # test suite it never runs — real minutes on a Pi, plus a needless
     # GitHub fetch (Catch2) in the update path.
     # Subshells: the cd must not leak into the rest of install_update.
-    if ! (cd "$new_dir" && cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF .. > /dev/null 2>&1); then
+    # Both steps log to build.log beside build/ (outside the build dirs, so
+    # it survives the cleanup below), and a failure prints the tail into the
+    # job log. cmake's output used to go to /dev/null, so a failed configure
+    # reported only "Build failed" — found by the OTA rehearsal.
+    local build_log="${build_dir}.log"
+    if ! (cd "$new_dir" && cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF ..) > "$build_log" 2>&1; then
+        log_error "cmake failed; last lines of $build_log:"
+        tail -n 40 "$build_log" >&2 || true
         rm -rf "$new_dir"
         return 1
     fi
 
-    if ! (cd "$new_dir" && make -j2 2>&1); then    # Reduced to prevent OOM on Pi 4B (1.5GB RAM)
+    # tee keeps make's progress streaming to the job log as before;
+    # pipefail (set at the top) makes the pipeline fail when make does.
+    if ! (cd "$new_dir" && make -j2 2>&1) | tee -a "$build_log"; then    # -j2: prevent OOM on Pi 4B (1.5GB RAM)
+        log_error "make failed; last lines of $build_log:"
+        tail -n 60 "$build_log" >&2 || true
         rm -rf "$new_dir"
         return 1
     fi

@@ -812,6 +812,29 @@ GOOD_URL="https://github.com/a-train-chain/magic_dingus_box/releases/download/v1
     [ ! -e "${build}.old" ]
 }
 
+@test "run_build: a failed cmake/make says WHY in the job log" {
+    # cmake's output used to go to /dev/null: a failed configure reported
+    # only "Build failed" (found by the v1.9.14 -> v1.10.0 OTA rehearsal).
+    install_build_shims
+    printf '#!/bin/sh\necho "CMake Error: missing libfoo" >&2\nexit 1\n' > "$TEST_TEMP_DIR/bin/cmake"
+    load_update_functions
+    SKIP_BUILD=false
+    local build="$MAGIC_BASE_PATH/magic_dingus_box_cpp/build"
+    mkdir -p "$build"
+    run run_build
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"cmake failed"* ]]
+    [[ "$output" == *"CMake Error: missing libfoo"* ]]
+    grep -q "missing libfoo" "${build}.log"
+
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_TEMP_DIR/bin/cmake"
+    export FAKE_MAKE_MODE=fail
+    run run_build
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"make failed"* ]]
+    [[ "$output" == *"error: compile failed"* ]]
+}
+
 @test "run_build never rm -rf's the live build dir before compiling" {
     # The original defect: `rm -rf "$build_dir"` ahead of an 8-10 minute
     # compile. Only build.new / build.old may ever be removed wholesale.
