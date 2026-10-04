@@ -46,8 +46,9 @@ private:
     // Release controllers before launch
     void release_controllers();
     
-    // Detect ALSA device for audio
-    std::string detect_alsa_device();
+    // ALSA device for game audio given the user's audio_output setting
+    // (0=AUTO, 1=HDMI, 2=HEADPHONE) — see retroarch::pick_game_alsa_device.
+    std::string detect_alsa_device(int audio_output);
     
     // Stop GStreamer and cleanup audio resources
     void stop_gstreamer_and_cleanup();

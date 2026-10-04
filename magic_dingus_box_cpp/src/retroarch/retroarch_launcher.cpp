@@ -321,16 +321,9 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     cmd.push_back("--verbose");
 
     // Select ALSA device based on user's audio output preference
-    // audio_output: 0=AUTO, 1=HDMI, 2=HEADPHONE
-    std::string alsa_device;
-    if (audio_output == 2) {
-        // User selected headphone output
-        alsa_device = "sysdefault:CARD=Headphones";
-        std::cout << "Using headphone ALSA device: " << alsa_device << std::endl;
-    } else {
-        // AUTO or HDMI: detect HDMI device (existing behavior)
-        alsa_device = detect_alsa_device();
-    }
+    // audio_output: 0=AUTO, 1=HDMI, 2=HEADPHONE. AUTO follows PulseAudio
+    // to the analog jack when no HDMI port has an audio-capable sink.
+    const std::string alsa_device = detect_alsa_device(audio_output);
 
     // Directories RetroArch writes into. Saves/states come from
     // config::retroarch::*() and may contain spaces (MAGIC_DATA_DIR under
@@ -778,10 +771,16 @@ void RetroArchLauncher::release_controllers() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
-std::string RetroArchLauncher::detect_alsa_device() {
-    // Select the HDMI audio device by PCM NAME via the shared contract
-    // helper (see retroarch::pick_hdmi_alsa_device) — never by card
-    // number, which differs between Pi 4 and Pi 5.
+std::string RetroArchLauncher::detect_alsa_device(int audio_output) {
+    if (audio_output == 2) {
+        const std::string device =
+            retroarch::pick_game_alsa_device(audio_output, "", {}, {});
+        std::cout << "Using headphone ALSA device: " << device << std::endl;
+        return device;
+    }
+    // Select the audio device by PCM NAME via the shared contract helpers
+    // (retroarch::pick_game_alsa_device / pick_hdmi_alsa_device) — never by
+    // card number, which differs between Pi 4 and Pi 5.
     std::string output_l;
     FILE* pipe_l = popen("aplay -L 2>&1", "r");
     if (pipe_l) {
@@ -794,16 +793,21 @@ std::string RetroArchLauncher::detect_alsa_device() {
         std::cerr << "Warning: Failed to execute aplay -L, using legacy default" << std::endl;
     }
     // Which port has the TV: either HDMI port is a valid place to plug it.
+    // eld_cards records which ELDs were readable at all, so AUTO can tell
+    // "no HDMI sink takes audio" from "no evidence" (dev box).
+    std::vector<std::string> eld_cards;
     std::vector<std::string> monitor_cards;
     for (const char* card : {"vc4hdmi0", "vc4hdmi1"}) {
         std::ifstream eld(std::string("/proc/asound/") + card + "/eld#0");
         if (!eld) continue;
+        eld_cards.push_back(card);
         std::stringstream text;
         text << eld.rdbuf();
         if (retroarch::eld_reports_monitor(text.str())) monitor_cards.push_back(card);
     }
-    std::string device = retroarch::pick_hdmi_alsa_device(output_l, monitor_cards);
-    std::cout << "Detected HDMI ALSA device: " << device << std::endl;
+    std::string device = retroarch::pick_game_alsa_device(
+        audio_output, output_l, eld_cards, monitor_cards);
+    std::cout << "Detected game ALSA device: " << device << std::endl;
     return device;
 }
 

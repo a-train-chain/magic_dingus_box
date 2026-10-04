@@ -144,6 +144,26 @@ bool eld_reports_monitor(const std::string& eld_text) {
     return monitor_present == 1 && eld_valid != 0;
 }
 
+std::string pick_game_alsa_device(int audio_output,
+                                  const std::string& aplay_L_output,
+                                  const std::vector<std::string>& eld_readable_cards,
+                                  const std::vector<std::string>& monitor_cards) {
+    static const std::string kHeadphones = "sysdefault:CARD=Headphones";
+    if (audio_output == 2) return kHeadphones;
+    if (audio_output == 0 && !eld_readable_cards.empty() &&
+        monitor_cards.empty()) {
+        // aplay -L prints PCM names at column 0 and descriptions indented,
+        // so the jack counts only when its name is a whole line.
+        std::istringstream in(aplay_L_output);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line == kHeadphones) return kHeadphones;
+        }
+    }
+    return pick_hdmi_alsa_device(aplay_L_output, monitor_cards);
+}
+
 void write_video_config(std::ostream& out, const LaunchOptions& options) {
     const bool vulkan = (options.renderer == Renderer::Vulkan);
 

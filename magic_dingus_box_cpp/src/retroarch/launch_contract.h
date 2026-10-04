@@ -153,6 +153,23 @@ std::string pick_hdmi_alsa_device(const std::string& aplay_L_output,
 // that accepts audio. vc4 reports this as sad_count > 0; HDA-style
 // drivers print monitor_present / eld_valid instead.
 bool eld_reports_monitor(const std::string& eld_text);
+
+// The ALSA device a game's audio goes to. audio_output: 0=AUTO, 1=HDMI,
+// 2=HEADPHONE (app::AudioOutput). `eld_readable_cards` lists the vc4hdmiN
+// cards whose ELD file could be read; `monitor_cards` those whose ELD
+// reports an audio-capable sink (eld_reports_monitor).
+//
+// AUTO mirrors PulseAudio's own choice, which the menus already follow:
+// when ELD is readable and NO HDMI port has an audio-capable sink (a DVI
+// monitor, an HDMI->composite CRT converter, a TV that takes no audio),
+// PulseAudio falls back to the analog jack — so a game must too, when the
+// board has one (`sysdefault:CARD=Headphones` listed; Pi 4B only — a Pi 5
+// has no Headphones card and stays on HDMI). With no ELD readable at all
+// the HDMI pick is unchanged: no evidence is not "no audio sink".
+std::string pick_game_alsa_device(int audio_output,
+                                  const std::string& aplay_L_output,
+                                  const std::vector<std::string>& eld_readable_cards,
+                                  const std::vector<std::string>& monitor_cards);
 // rom_path selects per-title performance overrides (e.g. the THPS4
 // overclock); pass the launch path as-is — matching is filename-based
 // and case-insensitive.

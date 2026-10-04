@@ -954,6 +954,50 @@ TEST_CASE("HDMI ALSA device follows the port the TV is plugged into",
             "sysdefault:CARD=vc4hdmi0");
 }
 
+TEST_CASE("Game audio AUTO follows PulseAudio to the jack when no HDMI sink takes audio",
+          "[retroarch][audio]") {
+    // Pi 4B on a display with no audio (DVI monitor, HDMI->composite CRT
+    // converter): PulseAudio's AUTO falls back to the analog jack, so the
+    // menus play there — and games used to go to silent HDMI regardless.
+    const char* pi4 =
+        "null\n    Discard all samples\n"
+        "sysdefault:CARD=Headphones\n    bcm2835 Headphones, bcm2835 Headphones\n"
+        "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n";
+    const std::vector<std::string> both_eld = {"vc4hdmi0", "vc4hdmi1"};
+
+    // AUTO, ELD readable, no monitor with audio -> the jack.
+    CHECK(retroarch::pick_game_alsa_device(0, pi4, both_eld, {}) ==
+          "sysdefault:CARD=Headphones");
+    // AUTO with an audio-capable TV -> that HDMI port, as before.
+    CHECK(retroarch::pick_game_alsa_device(0, pi4, both_eld, {"vc4hdmi1"}) ==
+          "sysdefault:CARD=vc4hdmi1");
+    // AUTO with NO ELD readable (dev box / unknown): unchanged HDMI pick —
+    // absence of evidence is not "no audio sink".
+    CHECK(retroarch::pick_game_alsa_device(0, pi4, {}, {}) ==
+          "sysdefault:CARD=vc4hdmi0");
+    // Explicit HDMI is honored even with no audio-capable sink.
+    CHECK(retroarch::pick_game_alsa_device(1, pi4, both_eld, {}) ==
+          "sysdefault:CARD=vc4hdmi0");
+    // Explicit headphones, always.
+    CHECK(retroarch::pick_game_alsa_device(2, pi4, both_eld, {"vc4hdmi0"}) ==
+          "sysdefault:CARD=Headphones");
+}
+
+TEST_CASE("Game audio AUTO on a Pi 5 (no Headphones card) stays on HDMI",
+          "[retroarch][audio]") {
+    const char* pi5 =
+        "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n";
+    CHECK(retroarch::pick_game_alsa_device(0, pi5, {"vc4hdmi0", "vc4hdmi1"}, {}) ==
+          "sysdefault:CARD=vc4hdmi0");
+    // "Headphones" in a description line is not the card being listed.
+    const char* decoy =
+        "sysdefault:CARD=vc4hdmi0\n    Headphones-shaped description\n";
+    CHECK(retroarch::pick_game_alsa_device(0, decoy, {"vc4hdmi0"}, {}) ==
+          "sysdefault:CARD=vc4hdmi0");
+}
+
 TEST_CASE("ELD text reports whether a monitor is attached",
           "[retroarch][audio]") {
     // Real /proc/asound/vc4hdmiN/eld#0 from a Pi 5 (2026-10-03). vc4
