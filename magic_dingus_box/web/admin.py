@@ -248,6 +248,54 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text or "").strip()
 
 
+# OTA install inputs. See install_update() for why `version` is load-bearing.
+# re.ASCII + explicit [0-9]: the pattern must not admit non-ASCII digits.
+_OTA_VERSION_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", re.ASCII)
+# A release asset name: a plain filename. No "/", no "%" (so no encoded
+# separators or dot-segments), and it may not be "." or "..".
+_OTA_ASSET_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}", re.ASCII)
+
+
+def _ota_download_url_ok(url: str, repo: str, version: str) -> bool:
+    """True iff `url` is exactly one of the shapes a TAGGED v<version>
+    release of `repo` is served from. Anything else — another repo, another
+    tag, a branch archive, dot-segments, a query — is refused.
+
+    Accepted (all https, exact host, path compared verbatim — a path that
+    normalizes differently from how it is written is rejected outright):
+      github.com/<repo>/releases/download/v<ver>/<asset>   (release asset;
+                                     what `update.sh check` emits first)
+      api.github.com/repos/<repo>/tarball/v<ver>           (tarball_url
+                                     fallback of `update.sh check`)
+      codeload.github.com/<repo>/tar.gz/[refs/tags/]v<ver> (tarball_url's
+                                     redirect target)
+      github.com/<repo>/archive/refs/tags/v<ver>.tar.gz    (UI "Source code")
+    """
+    try:
+        parts = urlsplit(url)
+        if (parts.scheme != "https" or parts.query or parts.fragment
+                or parts.username is not None or parts.password is not None
+                or parts.port is not None):  # .port raises on a bad port
+            return False
+    except ValueError:
+        return False
+    path = parts.path
+    if not path or posixpath.normpath(path) != path:
+        return False
+    tag = f"v{version}"
+    host = parts.hostname or ""
+    if host == "github.com":
+        prefix = f"/{repo}/releases/download/{tag}/"
+        if path.startswith(prefix):
+            return bool(_OTA_ASSET_RE.fullmatch(path[len(prefix):]))
+        return path == f"/{repo}/archive/refs/tags/{tag}.tar.gz"
+    if host == "api.github.com":
+        return path == f"/repos/{repo}/tarball/{tag}"
+    if host == "codeload.github.com":
+        return path in (f"/{repo}/tar.gz/{tag}", f"/{repo}/tar.gz/refs/tags/{tag}")
+    return False
+
+
 def _has_internet(timeout: float = 3.0) -> bool:
     """Best-effort reachability probe, used ONLY to improve an error message.
 
@@ -4473,6 +4521,22 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if not version or not download_url:
             return error_response("VALIDATION_ERROR", "version and download_url required")
 
+        # `version` is NOT an inert label. update.sh interpolates it into
+        # https://api.github.com/repos/<repo>/releases/tags/v${version} to
+        # find the pre-compiled binary, and curl normalizes dot-segments —
+        # so "1.0.8/../../../../attacker/evil/releases/tags/v1" fetched ANOTHER
+        # repo's release metadata and installed ITS binary, while the
+        # download_url below stayed a perfectly valid asset of our own repo.
+        # It is also written verbatim into VERSION. Plain X.Y.Z only (what
+        # `update.sh check` emits as latest_version). [0-9], not \d: Python's
+        # \d matches every Unicode digit; fullmatch, not `$`, which would
+        # accept a trailing newline. update.sh re-checks this independently.
+        if not isinstance(version, str) or not _OTA_VERSION_RE.fullmatch(version):
+            return error_response(
+                "VALIDATION_ERROR", "Invalid version (expected X.Y.Z)")
+        if not isinstance(download_url, str):
+            return error_response("VALIDATION_ERROR", "Invalid download URL")
+
         # Validate the download URL. Pin it to THIS PROJECT's own repo, not
         # just "any github.com URL" — the old prefix check let any device on
         # the LAN POST a download_url pointing at an attacker-owned GitHub
@@ -4483,29 +4547,21 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # A plain string startswith() is NOT enough: curl (which update.sh
         # uses with -L) normalizes RFC-3986 dot-segments before the request,
         # so ".../a-train-chain/magic_dingus_box/../../attacker/repo/x.tar.gz"
-        # would pass a prefix check yet fetch attacker/repo. Parse the URL and
-        # compare the NORMALIZED path segments (same defense the _is_within
-        # filesystem check uses), and match the host exactly.
+        # would pass a prefix check yet fetch attacker/repo. And "anything
+        # under the repo" was still too loose: it accepted a branch archive
+        # or a DIFFERENT tag than `version`, so VERSION could claim one
+        # release while another was installed. The URL must now be exactly
+        # one of the shapes a tagged release of THIS version produces
+        # (`update.sh check` emits the release-asset form, or the API
+        # tarball_url as its fallback), with no dot-segments, query or
+        # fragment, and an asset name drawn from a plain-filename alphabet so
+        # percent-encoded separators (%2F, %2e) cannot ride along.
         gh_repo = os.getenv("MAGIC_GITHUB_REPO", "a-train-chain/magic_dingus_box")
-        # host → required leading path (normalized, no trailing slash yet)
-        host_prefix = {
-            "github.com":         f"/{gh_repo}",
-            "codeload.github.com": f"/{gh_repo}",
-            "api.github.com":     f"/repos/{gh_repo}",
-        }
-        parts = urlsplit(download_url)
-        norm_path = posixpath.normpath(parts.path) if parts.path else ""
-        expected = host_prefix.get(parts.netloc)
-        url_ok = (
-            parts.scheme == "https"
-            and expected is not None
-            # exact repo dir or a descendant path, post-normalization
-            and (norm_path == expected or norm_path.startswith(expected + "/"))
-        )
-        if not url_ok:
+        if not _ota_download_url_ok(download_url, gh_repo, version):
             return error_response(
                 "VALIDATION_ERROR",
-                f"Invalid download URL (must be from the {gh_repo} GitHub repo)")
+                f"Invalid download URL (must be the v{version} release of "
+                f"the {gh_repo} GitHub repo)")
 
         # Create job (prune stale terminal-state entries first)
         _prune_terminal_jobs(update_jobs)
