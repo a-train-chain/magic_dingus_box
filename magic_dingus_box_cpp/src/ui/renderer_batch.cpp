@@ -172,14 +172,23 @@ void Renderer::flush_ui_batch() {
         return;
     }
 
-    // The batch draws under the program/texture it needs, then hands the
-    // GL state back as the immediate path expects it: the UI program bound
-    // (or whatever was), VAO 0, texture 0 on unit 0. Blend, viewport and
-    // framebuffer are untouched — every renderer site that changes them
-    // flushes first, so they are what they were when the geometry was
-    // appended.
-    GLint prev_program = 0;
+    // The batch draws under the program/texture it needs, then hands back
+    // EXACTLY the bindings it found: program, active unit, the unit-0 2D
+    // texture, VAO and array buffer. Flushes run in the middle of upload
+    // sequences (glBindTexture(tex) → flush → glTexImage2D in the QR,
+    // thumbnail and system-logo loaders); leaving texture 0 bound there
+    // sent the upload into texture 0 and drew those images as black boxes.
+    // Blend, viewport and framebuffer are untouched — every renderer site
+    // that changes them flushes first. (glGet* of bindings is client-side
+    // state: no GPU sync.)
+    GLint prev_program = 0, prev_active = GL_TEXTURE0, prev_tex = 0;
+    GLint prev_vao = 0, prev_array_buffer = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &prev_program);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_array_buffer);
 
     // screenSize as the UI program has it NOW — which is what it had when
     // these vertices were appended, because every glUniform2f of it in the
@@ -207,8 +216,10 @@ void Renderer::flush_ui_batch() {
     glBindVertexArray(batch_vao_);
     ++ui_draw_calls_;
     glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(batch_.vertex_count()));
-    glBindVertexArray(0);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindVertexArray(static_cast<GLuint>(prev_vao));
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(prev_array_buffer));
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prev_tex));
+    glActiveTexture(static_cast<GLenum>(prev_active));
     glUseProgram(static_cast<GLuint>(prev_program));
 
     batch_.clear();
