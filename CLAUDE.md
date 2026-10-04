@@ -161,6 +161,7 @@ sudo usermod -a -G video,input $USER
 ### C++ Source Structure (`magic_dingus_box_cpp/src/`)
 
 - **`main.cpp`** - Entry point, main loop: poll input → update state → render video → render UI → swap buffers
+- **`media_browser/mb_host`** - `MediaBrowserHost`: the kiosk side of the Media Browser — owns the MB screens, modals and dispatcher; main.cpp's loop calls it at fixed points (unlock sequence → `handle_input` → redraw-gate inputs → `render` → `tick_watch_state`). main() keeps the service clients/stores and passes references in. Screen-to-screen hand-offs are the pure table in `media_browser/ui/mb_transition.h` (unit-tested).
 - **`platform/`** - Hardware abstraction
   - `drm_display` - DRM/KMS display init, mode setting, CRTC management
   - `gbm_context` - GBM surface for EGL
@@ -171,7 +172,7 @@ sudo usermod -a -G video,input $USER
   - `gst_player` - GStreamer pipeline management, playback control
   - `gst_renderer` - GL texture rendering from GStreamer video frames
 - **`ui/`** - User interface
-  - `renderer` - Immediate-mode 2D renderer (quads, text, alpha blending). Primitives inside a `Renderer::BatchScope` (the whole `render(state)` pass, the MB screen + modals, the toast) accumulate into one CPU vertex batch (`ui_batch.h`, GL side `renderer_batch.cpp`) and are submitted per texture run; every non-batched GL site in `renderer.cpp` calls `flush_ui_batch()` first, so draw order is unchanged. `MDB_BATCH_UI=0` restores one draw per primitive for A/B; the journal logs UI draw calls/frame per minute.
+  - `renderer` - Immediate-mode 2D renderer (quads, text, alpha blending), implemented across `renderer.cpp` (core/primitives), `renderer_shaders`, `renderer_text`, `renderer_main_menu`, `renderer_settings`, `renderer_mb`, `renderer_crt` and `renderer_batch`; private shared bits in `renderer_internal.h`. Primitives inside a `Renderer::BatchScope` (the whole `render(state)` pass, the MB screen + modals, the toast) accumulate into one CPU vertex batch (`ui_batch.h`, GL side `renderer_batch.cpp`) and are submitted per texture run; every non-batched GL site in the `renderer*.cpp` files calls `flush_ui_batch()` first, so draw order is unchanged. `MDB_BATCH_UI=0` restores one draw per primitive for A/B; the journal logs UI draw calls/frame per minute.
   - Redraw gate (`app/redraw_gate.h`, wired in `main.cpp`): render/swap/flip are skipped on iterations where nothing on screen can change — the main menu, an idle open Settings menu (`SettingsMenuManager::is_static_for_redraw`), and MB Browse/Search/Library/Detail/SeriesDetail when idle (`MbScreen::wants_continuous_redraw` + `redraw_signature`). The static menu with CRT flicker/interlacing draws every other vblank (`ui/crt_time.h`). `MDB_REDRAW_GATE=0` disables. A new screen or animation must either keep `wants_continuous_redraw()` true or put its state in the signature.
   - `theme` - Color palette and layout constants
   - `font_manager` - stb_truetype font rasterization → GL textures
