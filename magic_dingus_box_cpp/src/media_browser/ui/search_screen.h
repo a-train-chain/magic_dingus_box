@@ -134,6 +134,10 @@ private:
         std::vector<QualityProfile> profiles;
         std::vector<QueueItem>      queue;
         bool profiles_valid = false;
+        // Radarr answered the library / queue read. A failed read must not
+        // be applied as an empty one (it wiped every chip on a blip).
+        bool library_ok = false;
+        bool queue_ok = false;
     };
 
     RadarrClient& radarr_;

@@ -165,4 +165,31 @@ std::vector<const LibraryEntry*> build_library_view(
     return view;
 }
 
+std::unordered_set<MediaRef> carry_forward_movie_refs(
+        std::unordered_set<MediaRef> fresh,
+        const std::unordered_set<MediaRef>& prev,
+        bool movie_half_ok) {
+    if (movie_half_ok) return fresh;
+    // Drop whatever movie refs this cycle has (none can be trusted), keep
+    // its TV refs, and restore the last good cycle's movie refs.
+    for (auto it = fresh.begin(); it != fresh.end();) {
+        if (it->kind == MediaKind::Movie) {
+            it = fresh.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (const auto& r : prev) {
+        if (r.kind == MediaKind::Movie) fresh.insert(r);
+    }
+    return fresh;
+}
+
+const char* library_empty_message(bool any_entries, bool movies_offline) {
+    if (any_entries) return "No matches for the current filter";
+    if (movies_offline)
+        return "Movie service offline \xE2\x80\x94 retrying\xE2\x80\xA6";
+    return "Library is empty \xE2\x80\x94 add movies from Browse";
+}
+
 }  // namespace media_browser::ui

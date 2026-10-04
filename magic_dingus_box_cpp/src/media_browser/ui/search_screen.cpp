@@ -154,7 +154,14 @@ void SearchScreen::start_lib_fetch() {
 
 void SearchScreen::run_lib_fetch(uint64_t gen) {
     LibFetchResult r;
-    r.library = radarr_.get_library();
+    // CHECKED reads: a failed read used to come back as an empty library /
+    // queue, wiping every IN LIBRARY and DOWNLOADING chip for the visit.
+    // A failure now leaves the flags false and apply_pending_lib keeps the
+    // sets it already has.
+    if (auto lib = radarr_.get_library_checked()) {
+        r.library = std::move(*lib);
+        r.library_ok = true;
+    }
     if (gen != lib_current_gen_.load()) {
         spdlog::info("[SearchScreen] lib gen={} stale after get_library; discarding",
                      gen);
@@ -173,7 +180,12 @@ void SearchScreen::run_lib_fetch(uint64_t gen) {
     }
     // Fetch queue alongside the library so apply_pending_lib() can populate
     // downloading_tmdb_ids_ without an extra HTTP round-trip.
-    r.queue = radarr_.get_queue();
+    if (r.library_ok) {
+        if (auto q = radarr_.get_queue_checked()) {
+            r.queue = std::move(*q);
+            r.queue_ok = true;
+        }
+    }
     if (gen != lib_current_gen_.load()) {
         spdlog::info("[SearchScreen] lib gen={} stale after get_queue; discarding",
                      gen);
@@ -194,6 +206,14 @@ void SearchScreen::apply_pending_lib() {
         std::lock_guard<std::mutex> lk(lib_result_mtx_);
         incoming = std::move(lib_pending_);
     }
+    lib_loading_ = false;
+    if (!incoming.library_ok) {
+        // Radarr did not answer: keep whatever chips the last good fetch
+        // produced (on a first visit there are none — the honest answer).
+        spdlog::info("[SearchScreen] lib fetch failed; keeping {} cached ids",
+                     library_tmdb_ids_.size());
+        return;
+    }
     // Build radarr_id → tmdb_id map for queue cross-reference.
     std::unordered_map<int, int> radarr_to_tmdb;
     library_tmdb_ids_.clear();
@@ -203,12 +223,14 @@ void SearchScreen::apply_pending_lib() {
             radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
         }
     }
-    // Populate the downloading set.
-    downloading_tmdb_ids_.clear();
-    for (const auto& qi : incoming.queue) {
-        auto it = radarr_to_tmdb.find(qi.movie_id);
-        if (it != radarr_to_tmdb.end()) {
-            downloading_tmdb_ids_.insert(it->second);
+    // Populate the downloading set — only from a queue that answered.
+    if (incoming.queue_ok) {
+        downloading_tmdb_ids_.clear();
+        for (const auto& qi : incoming.queue) {
+            auto it = radarr_to_tmdb.find(qi.movie_id);
+            if (it != radarr_to_tmdb.end()) {
+                downloading_tmdb_ids_.insert(it->second);
+            }
         }
     }
     if (incoming.profiles_valid) {

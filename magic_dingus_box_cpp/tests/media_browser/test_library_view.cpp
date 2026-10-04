@@ -986,3 +986,39 @@ TEST_CASE("started flag: movies from the started set, TV always false",
         if (e.ref.kind == MediaKind::Tv) REQUIRE_FALSE(e.started);
     }
 }
+
+// ---- Radarr outage policy (a blip must not read as an empty library) ----
+
+TEST_CASE("library badges: an answered movie half replaces the refs wholesale",
+          "[library_view]") {
+    const std::unordered_set<MediaRef> prev = {movie_ref(1), MediaRef{MediaKind::Tv, 9}};
+    const std::unordered_set<MediaRef> fresh = {movie_ref(2), MediaRef{MediaKind::Tv, 8}};
+    CHECK(mbu::carry_forward_movie_refs(fresh, prev, /*movie_half_ok=*/true) == fresh);
+}
+
+TEST_CASE("library badges: a failed movie half keeps the previous MOVIE refs only",
+          "[library_view]") {
+    // TV refs come from Sonarr, which answered (or not) independently —
+    // they follow this cycle; movie refs are carried forward from the last
+    // good cycle instead of vanishing for the length of the outage.
+    const std::unordered_set<MediaRef> prev = {movie_ref(1), MediaRef{MediaKind::Tv, 9}};
+    const std::unordered_set<MediaRef> fresh = {MediaRef{MediaKind::Tv, 8}};
+    const auto got = mbu::carry_forward_movie_refs(fresh, prev, /*movie_half_ok=*/false);
+    CHECK(got == std::unordered_set<MediaRef>{movie_ref(1), MediaRef{MediaKind::Tv, 8}});
+}
+
+TEST_CASE("library empty-state copy never calls an outage an empty library",
+          "[library_view]") {
+    // Pre-fix: any Radarr blip (and the 20-40 s after every FullPause movie
+    // while the container restarts) painted "Library is empty".
+    const std::string offline = mbu::library_empty_message(
+        /*any_entries=*/false, /*movies_offline=*/true);
+    CHECK(offline.find("empty") == std::string::npos);
+    CHECK(offline.find("offline") != std::string::npos);
+    CHECK(std::string(mbu::library_empty_message(false, false))
+              .find("Library is empty") == 0);
+    CHECK(mbu::library_empty_message(true, false) ==
+          std::string("No matches for the current filter"));
+    CHECK(mbu::library_empty_message(true, true) ==
+          std::string("No matches for the current filter"));
+}

@@ -324,8 +324,13 @@ void QueueScreen::run_refresh() {
                     }
                 }
                 if (tv_lib_stale) {
-                    tv_lib_cache_ = sonarr_->get_library();
-                    tv_lib_cache_at_ = tv_now;
+                    // CHECKED: a failed read keeps the previous snapshot
+                    // (stale titles/posters beat blank ones) and leaves the
+                    // timestamp alone so the next tick retries.
+                    if (auto lib = sonarr_->get_library_checked()) {
+                        tv_lib_cache_ = std::move(*lib);
+                        tv_lib_cache_at_ = tv_now;
+                    }
                 }
 
                 std::unordered_map<int, SeriesRef> series_by_id;
@@ -378,8 +383,15 @@ void QueueScreen::run_refresh() {
         }
     }
     if (lib_stale) {
-        lib_cache_ = radarr_.get_library();
-        lib_cache_at_ = now;
+        // CHECKED: an unchecked read turned a Radarr blip into an EMPTY
+        // snapshot for the full 30 s TTL — the "awaiting release" section
+        // vanished and every queue row lost its poster. A failed read keeps
+        // the previous snapshot and leaves the timestamp alone so the next
+        // tick retries.
+        if (auto lib = radarr_.get_library_checked()) {
+            lib_cache_ = std::move(*lib);
+            lib_cache_at_ = now;
+        }
     }
     const auto& library = lib_cache_;
 
