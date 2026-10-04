@@ -1260,8 +1260,8 @@ bool AutoRedownloadGuard::restore() {
     }
     // Latch the terminal state alongside restore_failed_. Without this,
     // restored_ stays false after a defeated restore, so the destructor
-    // (which runs on EVERY scope exit, not just exceptions — restore_clause()
-    // in series_detail_screen.cpp is on the stack, not a member, so its
+    // (which runs on EVERY scope exit, not just exceptions — restore_guard()
+    // in season_delete.cpp is on the stack, not a member, so its
     // optional<AutoRedownloadGuard> is destroyed right after this explicit
     // call returns) sees "not yet restored" and burns 3 more retries against
     // a flag we already told the owner is stuck off. Worse, if one of those
@@ -1281,8 +1281,8 @@ bool AutoRedownloadGuard::restore() {
 
 AutoRedownloadGuard::~AutoRedownloadGuard() {
     // Backstop for aborts, exceptions, AND the ordinary case where the
-    // worker already called restore() explicitly (restore_clause() in
-    // series_detail_screen.cpp) — restore() is idempotent via restored_, so
+    // worker already called restore() explicitly (restore_guard() in
+    // season_delete.cpp) — restore() is idempotent via restored_, so
     // this never causes a second PUT once the explicit call has settled,
     // win or lose.
     try {
