@@ -3719,8 +3719,16 @@ int main(int /* argc */, char* /* argv */[]) {
                 return static_cast<uint64_t>(static_cast<int64_t>(v));
             };
             app::ContentSignature sig;
-            sig.add(static_cast<uint64_t>(
-                ui_renderer.main_menu_blink_phase(gate_now)));
+            // The Media Browser covers the main menu, so its 2 Hz blink
+            // must not redraw a static MB screen.
+            bool main_menu_visible = true;
+#ifdef MEDIA_BROWSER_ENABLED
+            main_menu_visible = !mb_on;
+#endif
+            if (main_menu_visible) {
+                sig.add(static_cast<uint64_t>(
+                    ui_renderer.main_menu_blink_phase(gate_now)));
+            }
             sig.add(static_cast<uint64_t>(state.selected_index));
             sig.add(static_cast<uint64_t>(state.playlist_scroll_offset));
             sig.add(static_cast<uint64_t>(state.playlists.size()));
