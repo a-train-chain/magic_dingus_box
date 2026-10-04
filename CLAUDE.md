@@ -210,6 +210,50 @@ This guarantees correct compositing without X11/compositor overhead.
   for CRT too. Default changes affect NEW uploads only; existing files
   cannot regain detail they never had.
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
+- **Server: gunicorn, ONE worker, gthread threads** (`web/serve.py`, since
+  2026-10). `magic-dingus-web.service` still runs
+  `python3 -m magic_dingus_box.web.wsgi` — that line is frozen in the field
+  because an OTA never rewrites unit files — and `wsgi.py`'s `__main__`
+  hands over to `serve.main()`, which runs gunicorn when `python3-gunicorn`
+  imports and **falls back to the Werkzeug server** otherwise
+  (`MAGIC_WEB_SERVER=werkzeug` forces it). Rules, each load-bearing:
+  - **`workers` must stay 1.** The uinput virtual gamepad, CSRF tokens,
+    transcode/update job registries, pairing lock, Network Doctor and
+    health single-flights and the live WS connection list are all
+    per-process; two workers = two gamepads and half-working CSRF.
+  - **Threads (default 32, `MAGIC_WEB_THREADS`)** bound concurrency; each
+    connected phone holds one for the life of its WebSocket. Idle
+    keep-alive connections don't hold a thread in gthread.
+  - **`--timeout` (120 s) is a worker heartbeat, not a request deadline**
+    in gthread — multi-GB uploads and all-evening WebSockets are never
+    killed by it. `max_requests=0`: never recycle the worker.
+  - **`create_app()` runs once, in the worker** (the arbiter never imports
+    `admin.py`; `wsgi.py` builds `app` only when imported, not under
+    `__main__`). Its startup work — upload_temp sweep, `/dev/uinput` open —
+    must not run twice. `tests/test_serve.py` boots the real launcher under
+    both servers and asserts this, plus Host/Sec-Fetch-Site checks, a WS
+    reconnect storm and a streamed upload.
+  - Delivery: `install_deps.sh` (fresh installs), `update.sh`
+    `ensure_web_server_dep` (OTA — narrow `apt-get install
+    python3-gunicorn`, never fatal), and `deploy_cpp.sh` (calls the same
+    function). Heartbeat file in `/dev/shm`, not the SD-card `TMPDIR`.
+- **Box health + diagnostics** (Settings tab). `POST /admin/health/run`
+  (CSRF) starts `sudo -n /bin/bash scripts/verify_box.sh [--with-services]`
+  in a single-flight background thread (`box_health.py`; `--with-services`
+  only when the Media Browser is unlocked); `GET /admin/health/status`
+  returns the parsed sections/checks, counts and a plain-language
+  `headline`, cached in `data/box_health_last.json` (wiped by
+  `first_boot.sh` on clones; the OTA's rsync --delete drops it on update,
+  deliberately). `GET|POST /admin/diagnostics/bundle` (`diagnostics.py`)
+  streams a zip of system info, unit status, journal tails, the health
+  result, kiosk_status.json and launcher logs. **Everything in it passes
+  `redact.py`**: exact values from `services/.env` / `flask_secret.key` /
+  the TMDB key file, secret shapes (env assignments, JSON, headers, URL
+  params, JWT, WireGuard keys, long hex), and a whole-line drop for any
+  remaining password/psk/secret/token mention; `kiosk_status.json`'s
+  `text_input.buffer` (the live TV keyboard — Wi-Fi password screen
+  included) is blanked. Never add a file to the bundle without a redaction
+  test; `FORBIDDEN_NAMES` refuses the known credential files outright.
 
 ## Key Dependencies
 

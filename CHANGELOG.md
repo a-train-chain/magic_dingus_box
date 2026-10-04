@@ -43,6 +43,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly as before.
 
 ### Added
+- **"Box Health" in the Content Manager.** Settings now has a Run
+  Health Check button that runs the same checks the box went through
+  before it shipped — picture, sound, games, storage and its own
+  services — and answers in plain words: "Everything looks good" or
+  "2 problems found", with each area expandable to see exactly what was
+  checked. The last result stays on the page, so you can come back to
+  it. If the Movies feature is turned on, you can also include a check
+  of the Movies services.
+- **"Download Diagnostics" for support.** Next to the health check, one
+  button saves a single file with the box's recent logs, its health
+  result and basic system details — the things support asks for first.
+  Passwords, VPN and service keys, Wi-Fi passwords, paired phones and
+  anything being typed on the TV keyboard are never included; anything
+  in a log that looks like a password or key is blanked out.
 - **Choose which season to download.** A show's page now suggests the
   season after the last one you watched or have — "Download Season 5"
   if you've seen the first four — and pressing it lets you turn the knob
@@ -245,6 +259,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (it restarts by itself) instead of the picture or the game.
 
 ### Changed
+- **The Content Manager runs on a proper web server.** It used to run on
+  a simple built-in server meant for development, which started a new
+  worker for every request with no limit. It now uses a production
+  server (gunicorn) with a fixed pool of workers, so a busy page, a
+  phone remote left connected all evening and a big upload can't pile
+  up and slow the box down. Nothing changes in how you use it: same
+  address, phones stay paired, uploads and updates work as before. The
+  update installs the new server by itself; if it can't (for example the
+  box is offline), the Content Manager simply keeps the old server and
+  the next update tries again.
 - **Movie availability appears faster.** Detail's availability check
   asks each source separately and at the same time, instead of waiting
   up to a minute and a half for the slowest one.

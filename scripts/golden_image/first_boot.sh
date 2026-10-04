@@ -581,7 +581,9 @@ fi
 # already wiped). The other files are transient state files that the kiosk
 # / Flask recreate on demand — safe to delete.
 log "[6/7] Wiping Phone Remote per-Pi state (paired phones, sessions, secrets)..."
-for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revocations.txt seek_request.json kiosk_status.json flask_secret.key; do
+# box_health_last.json is the Content Manager's cached Box health verdict —
+# the SOURCE box's, which a clone must not show as its own.
+for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revocations.txt seek_request.json kiosk_status.json flask_secret.key box_health_last.json; do
     if [[ -f "${DATA_DIR}/${f}" ]]; then
         rm -f "${DATA_DIR}/${f}"
         log "    wiped: ${f}"

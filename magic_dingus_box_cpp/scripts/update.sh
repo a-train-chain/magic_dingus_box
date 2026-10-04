@@ -917,6 +917,45 @@ ensure_phone_remote_uinput() {
         || log_warn "Phone Remote uinput setup failed (Phone Remote will be degraded)"
 }
 
+# Content Manager production server (gunicorn). Since the web admin moved
+# off Werkzeug's development server, magic_dingus_box/web/serve.py runs
+# gunicorn whenever python3 can import it and falls back to the old server
+# when it can't — so a box without it still works, just on the old server.
+# This is the ONLY way an already-fielded box ever gets the package:
+# install_deps.sh is not re-run by an OTA once flask-sock exists (i.e. on
+# every box cut from the golden image).
+#
+# Deliberately a narrow apt install of ONE package rather than
+# install_deps.sh, which would apt-update, re-install the whole build
+# toolchain and restart dnsmasq + the port-80 redirect mid-update. Never
+# fatal: a failure (offline, dpkg lock held by unattended-upgrades) only
+# means the box keeps the old server until the next update retries. Runs
+# BEFORE the web restart at the end of install_update, which is what brings
+# the Content Manager up under gunicorn.
+ensure_web_server_dep() {
+    if python3 -c "import gunicorn.workers.gthread" 2>/dev/null; then
+        log "Content Manager: gunicorn present"
+        return 0
+    fi
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: python3-gunicorn install (test mode)"
+        return 0
+    fi
+    log "Content Manager: gunicorn missing; installing python3-gunicorn"
+    local apt_install=(sudo -n env DEBIAN_FRONTEND=noninteractive timeout 300
+                       apt-get -o DPkg::Lock::Timeout=60 install -y
+                       --no-install-recommends python3-gunicorn)
+    # Retry once after refreshing the package lists: a stale list 404s on
+    # a package version the mirror has since replaced.
+    if "${apt_install[@]}" >&2 \
+       || { sudo -n timeout 300 apt-get -o DPkg::Lock::Timeout=60 update >&2 \
+            && "${apt_install[@]}" >&2; }; then
+        log "Content Manager: python3-gunicorn installed"
+    else
+        log_warn "could not install python3-gunicorn (Content Manager keeps its built-in server until the next update)"
+    fi
+}
+
 # A failed install: put the previous version back, then report the outcome
 # as the job's final JSON (the web admin shows its message). Reported AFTER
 # the rollback so the message says what actually happened.
@@ -1488,6 +1527,7 @@ install_update() {
     else
         log "Phone Remote: uinput rule already installed"
     fi
+    ensure_web_server_dep
 
     # RetroArch core bootstrap (idempotent). New releases can reference new
     # emulator cores (v1.7.x added N64 + Dreamcast); the cores are binary
