@@ -55,6 +55,7 @@ import urllib.error
 DATA_DIR = os.environ.get(
     "MAGIC_DATA_DIR", "/opt/magic_dingus_box/magic_dingus_box_cpp/data")
 STATUS_PATH = os.path.join(DATA_DIR, "kiosk_status.json")
+POST_RETURN_SETTLE_S = 2.0
 SECRET_PATH = os.path.join(DATA_DIR, "flask_secret.key")
 PAIRED_PATH = os.path.join(DATA_DIR, "paired_remotes.json")
 LAUNCHER_LOG = os.environ.get(
@@ -159,18 +160,25 @@ def journal_since(cursor_ts: float) -> str:
         return f"(journal read failed: {e})"
 
 
-def launcher_log_cursor() -> int:
+def launcher_log_cursor() -> tuple:
+    # (inode, size): the kiosk ROTATES the log at every launch, so a bare
+    # byte offset into the previous session's file pointed into the middle
+    # of the new one once it grew past that size — the PS1 dynarec check
+    # then skipped the very lines it looks for (false FAIL, 2026-10-03).
     try:
-        return os.path.getsize(LAUNCHER_LOG)
+        st = os.stat(LAUNCHER_LOG)
+        return (st.st_ino, st.st_size)
     except OSError:
-        return 0
+        return (None, 0)
 
 
-def launcher_log_since(cursor: int) -> str:
+def launcher_log_since(cursor: tuple) -> str:
+    ino, offset = cursor
     try:
         with open(LAUNCHER_LOG, errors="replace") as launcher_log:
-            size = os.fstat(launcher_log.fileno()).st_size
-            launcher_log.seek(cursor if 0 <= cursor <= size else 0)
+            st = os.fstat(launcher_log.fileno())
+            same_file = ino is not None and st.st_ino == ino
+            launcher_log.seek(offset if same_file and 0 <= offset <= st.st_size else 0)
             return launcher_log.read()
     except OSError:
         return ""
@@ -247,7 +255,7 @@ def check_ps1_dynarec(log_text: str):
 
 
 def wait_for_kms_takeover(k: Kiosk, launch_started_at: float,
-                          timeout: float, log_cursor: int) -> int:
+                          timeout: float, log_cursor: tuple) -> int:
     """Wait for a fresh marker, failing early if the kiosk cancels launch."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -427,6 +435,11 @@ def test_one_game(k: Kiosk, playlist_idx: int, game_idx: int) -> dict:
         result["returned"] = True
         result["return_ms"] = int((time.time() - t1) * 1000)
         log(f"  returned to menu in {result['return_ms']}ms", Colors.G)
+        # The session-exit hook publishes "menu" before the main loop has
+        # finished its post-game display/GL/audio reset; a press inside
+        # that window opened Settings and then landed a SELECT on the main
+        # menu (Master Shuffle) on a Pi 5, 2026-10-03. Let it settle.
+        time.sleep(POST_RETURN_SETTLE_S)
     except TimeoutError as e:
         result["errors"].append(f"return timeout: {e}")
         log(f"  RETURN FAILED: {e}", Colors.R)
