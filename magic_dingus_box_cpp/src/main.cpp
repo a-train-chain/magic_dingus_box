@@ -62,6 +62,7 @@
 #include "app/playback_stall_watchdog.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
+#include "utils/frame_pacing.h"
 #include "utils/path_resolver.h"
 #include "utils/wifi_manager.h"
 #include "utils/logger.h"
@@ -4879,11 +4880,16 @@ int main(int /* argc */, char* /* argv */[]) {
 #else
         const bool mb_movie_active = false;
 #endif
-        const int target_ms = mb_movie_active ? 33 : 16;
-        if (delta < target_ms) {
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(target_ms - delta));
-        }
+        // Vblank-anchored: sleeps from THIS iteration's present completion
+        // (utils/frame_pacing.h). The old `target - delta` used the
+        // previous iteration's period, so 30 fps flips alternated
+        // 16/33/50 ms.
+        const auto pacing = utils::frame_pacing_for(
+            mb_movie_active ? 30 : 60, static_cast<int>(mode_info.vrefresh));
+        const auto pace_sleep = utils::frame_cap_sleep(
+            pacing, std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - now));
+        if (pace_sleep.count() > 0) std::this_thread::sleep_for(pace_sleep);
     }
     
 #ifdef HAVE_SYSTEMD
