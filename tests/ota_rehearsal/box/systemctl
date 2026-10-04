@@ -1,0 +1,191 @@
+#!/bin/bash
+# systemctl stand-in for the OTA rehearsal container (no systemd as PID 1).
+# Installed at /usr/local/bin/systemctl, which precedes /usr/bin in both
+# PATH and Debian's sudo secure_path, so update.sh's `sudo systemctl ...`
+# and the hook scripts' bare `systemctl ...` both land here.
+#
+# Every call is logged to $SHIM_LOG. Two units are modelled:
+#   magic-dingus-box-cpp.service  property state machine driven by
+#       $STATE/kiosk_mode: active (default: a box with a TV) | fail |
+#       nodisplay (exit 69). A `start` also smoke-runs the REAL installed
+#       binary for 8 s as magic (log: kiosk_smoke_N.log) — evidence it
+#       loads and reaches main(); there is no DRM device in a container, so
+#       its verdict is NOT what the unit state reports.
+#   magic-dingus-web.service  a REAL process: `python3 -u -m
+#       magic_dingus_box.web.wsgi` with the unit's User/WorkingDirectory/
+#       Environment, so restarting it runs whichever web admin is on disk.
+# Power-cut injection: if $STATE/powercut_on holds exactly the argument
+# string of this call, every running `update.sh install` is SIGKILLed first.
+STATE=/run/mdb-shim
+SHIM_LOG=${SHIM_LOG:-/out/systemctl_calls.log}
+KIOSK=magic-dingus-box-cpp.service
+WEB=magic-dingus-web.service
+INSTALL=/opt/magic_dingus_box
+
+ts() { date -u +%H:%M:%S.%3N; }
+echo "$(ts) uid=$(id -u) systemctl $*" >> "$SHIM_LOG" 2>/dev/null
+
+if [[ -f "$STATE/powercut_on" && "$(cat "$STATE/powercut_on")" == "$*" ]]; then
+    echo "$(ts) *** POWER CUT injected at: systemctl $* ***" >> "$SHIM_LOG"
+    rm -f "$STATE/powercut_on"
+    pkill -KILL -f 'scripts/update.sh install' 2>/dev/null
+    exit 137
+fi
+
+# --- argument parsing -------------------------------------------------------
+verb=""; units=(); props=(); value=0; quiet=0
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    a="${args[$i]}"
+    case "$a" in
+        -p|--property) i=$((i + 1)); IFS=, read -r -a p <<<"${args[$i]}"; props+=("${p[@]}") ;;
+        --property=*) IFS=, read -r -a p <<<"${a#*=}"; props+=("${p[@]}") ;;
+        --value) value=1 ;;
+        -q|--quiet) quiet=1 ;;
+        --now|--no-block|--no-pager|--system|-l|--full) ;;
+        -*) ;;
+        *) if [[ -z "$verb" ]]; then verb="$a"; else units+=("$a"); fi ;;
+    esac
+done
+
+# --- kiosk state machine ----------------------------------------------------
+kfile="$STATE/kiosk.state"
+kget() { sed -n "s/^$1=//p" "$kfile" 2>/dev/null | head -1; }
+kset() {
+    local k v tmp
+    tmp="$(mktemp "$STATE/.k.XXXXXX")"
+    [[ -f "$kfile" ]] && cp "$kfile" "$tmp"
+    for kv in "$@"; do
+        k="${kv%%=*}"; v="${kv#*=}"
+        sed -i "/^${k}=/d" "$tmp"; echo "${k}=${v}" >> "$tmp"
+    done
+    chmod 0644 "$tmp"; mv -f "$tmp" "$kfile"
+}
+kiosk_smoke() {
+    local n bin="$INSTALL/magic_dingus_box_cpp/build/magic_dingus_box_cpp"
+    n=$(( $(ls /out/kiosk_smoke_*.log 2>/dev/null | wc -l) + 1 ))
+    (
+        log="/out/kiosk_smoke_${n}.log"
+        { echo "binary: $bin"; sha256sum "$bin" 2>&1; echo "VERSION file: $(cat $INSTALL/VERSION 2>/dev/null)"; echo "---"; } > "$log"
+        cd "$INSTALL" && timeout 8 runuser -u magic -- env HOME=/home/magic "$bin" >> "$log" 2>&1
+        echo "--- exit=$?" >> "$log"
+    ) </dev/null >/dev/null 2>&1 &
+}
+kiosk_start() {
+    local mode now
+    mode="$(cat "$STATE/kiosk_mode" 2>/dev/null || echo active)"
+    now=$(( $(date +%s%N) / 1000 ))
+    kiosk_smoke
+    case "$mode" in
+        active)    kset ActiveState=active SubState=running ExecMainCode=0 ExecMainStatus=0 \
+                        ExecMainStartTimestampMonotonic=$now MainPID=$(( 20000 + RANDOM )) ;;
+        fail)      kset ActiveState=activating SubState=auto-restart ExecMainCode=1 ExecMainStatus=1 \
+                        ExecMainStartTimestampMonotonic=$now MainPID=0 NRestarts=$(( $(kget NRestarts) + 1 )) ;;
+        nodisplay) kset ActiveState=activating SubState=auto-restart ExecMainCode=1 ExecMainStatus=69 \
+                        ExecMainStartTimestampMonotonic=$now MainPID=0 NRestarts=$(( $(kget NRestarts) + 1 )) ;;
+    esac
+}
+
+# --- web admin process ------------------------------------------------------
+web_pid() { cat "$STATE/web.pid" 2>/dev/null; }
+web_alive() { local p; p="$(web_pid)"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
+web_stop() {
+    local p; p="$(web_pid)"
+    [[ -n "$p" ]] || return 0
+    kill -TERM -- "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null
+    for _ in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+    kill -KILL -- "-$p" 2>/dev/null || true
+    rm -f "$STATE/web.pid"
+}
+web_start() {
+    web_alive && return 0
+    runuser -u magic -- mkdir -p "$INSTALL/tmp"            # ExecStartPre
+    local n; n=$(( $(ls /out/web_*.log 2>/dev/null | wc -l) + 1 ))
+    echo "$(ts) web start #$n (VERSION $(cat $INSTALL/VERSION 2>/dev/null))" >> "$SHIM_LOG"
+    # The unit's environment, plus whatever the rehearsal exports for it.
+    ( cd "$INSTALL" && exec setsid runuser -u magic -- env -i \
+        HOME=/home/magic USER=magic LOGNAME=magic PATH=/usr/local/bin:/usr/bin:/bin \
+        PYTHONPATH="$INSTALL" MAGIC_DATA_DIR="$INSTALL/magic_dingus_box_cpp/data" \
+        TMPDIR="$INSTALL/tmp" $(cat "$STATE/web.extra_env" 2>/dev/null) \
+        /usr/bin/python3 -u -m magic_dingus_box.web.wsgi ) </dev/null >> "/out/web_${n}.log" 2>&1 &
+    echo $! > "$STATE/web.pid"
+}
+
+prop() {  # prop <unit> <name>
+    local u="$1" n="$2"
+    if [[ "$u" == "$KIOSK" ]]; then
+        local v; v="$(kget "$n")"
+        case "$n" in
+            ActiveState) echo "${v:-inactive}" ;;
+            SubState) echo "${v:-dead}" ;;
+            NRestarts|MainPID|ExecMainCode|ExecMainStatus|ExecMainStartTimestampMonotonic) echo "${v:-0}" ;;
+            User) echo magic ;;
+            *) echo "$v" ;;
+        esac
+    elif [[ "$u" == "$WEB" ]]; then
+        case "$n" in
+            User) echo magic ;;
+            ActiveState) web_alive && echo active || echo inactive ;;
+            MainPID) web_alive && web_pid || echo 0 ;;
+            *) echo "" ;;
+        esac
+    else
+        case "$n" in ActiveState) echo inactive ;; *) echo "" ;; esac
+    fi
+}
+
+state_of() {
+    if [[ "$1" == "$WEB" ]]; then web_alive && echo active || echo inactive
+    elif [[ "$1" == "$KIOSK" ]]; then prop "$KIOSK" ActiveState
+    else echo inactive; fi
+}
+
+unit_file_exists() { [[ -f "/etc/systemd/system/$1" || -f "/lib/systemd/system/$1" || -f "/usr/lib/systemd/system/$1" ]]; }
+
+rc=0
+case "$verb" in
+    daemon-reload|reset-failed|try-restart|reload-or-restart|reload|mask|unmask|disable) ;;
+    enable)
+        for u in "${units[@]}"; do echo "$u" >> "$STATE/enabled"; done ;;
+    is-enabled)
+        for u in "${units[@]}"; do
+            if grep -qx "$u" "$STATE/enabled" 2>/dev/null; then [[ $quiet == 1 ]] || echo enabled
+            else [[ $quiet == 1 ]] || echo disabled; rc=1; fi
+        done ;;
+    cat)
+        for u in "${units[@]}"; do
+            if unit_file_exists "$u"; then cat "/etc/systemd/system/$u" 2>/dev/null; else rc=1; fi
+        done ;;
+    start|restart)
+        for u in "${units[@]}"; do
+            case "$u" in
+                "$KIOSK") kiosk_start ;;
+                "$WEB")   [[ "$verb" == restart ]] && web_stop; web_start ;;
+            esac
+        done ;;
+    stop)
+        for u in "${units[@]}"; do
+            case "$u" in
+                "$KIOSK") kset ActiveState=inactive SubState=dead MainPID=0 ;;
+                "$WEB")   web_stop ;;
+            esac
+        done ;;
+    is-active)
+        for u in "${units[@]}"; do
+            s="$(state_of "$u")"; [[ $quiet == 1 ]] || echo "$s"
+            [[ "$s" == active ]] || rc=3
+        done ;;
+    is-failed)
+        rc=1 ;;
+    show)
+        for u in "${units[@]}"; do
+            for n in "${props[@]}"; do
+                if [[ $value == 1 ]]; then prop "$u" "$n"; else echo "$n=$(prop "$u" "$n")"; fi
+            done
+        done ;;
+    status)
+        for u in "${units[@]}"; do echo "* $u - $(state_of "$u") (rehearsal shim)"; done ;;
+    *) ;;
+esac
+echo "$(ts)   -> rc=$rc" >> "$SHIM_LOG" 2>/dev/null
+exit $rc

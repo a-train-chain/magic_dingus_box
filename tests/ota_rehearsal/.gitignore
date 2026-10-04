@@ -1,0 +1,2 @@
+# run.sh copies the OLD release's install_deps.sh here only for the image build
+box/.install_deps.old.sh
