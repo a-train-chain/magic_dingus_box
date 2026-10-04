@@ -307,6 +307,12 @@ if(BUILD_KIOSK)
             src/media_browser/ui/mb_exit_modal.cpp
             src/media_browser/ui/stall_prompt_modal.cpp
             src/media_browser/ui/playback_overlay.cpp
+            # The kiosk side of the Media Browser: screens, dispatcher,
+            # render block and watch-state checkpoints, driven from
+            # main.cpp's frame loop. GL/EGL-dependent, so kiosk-only; its
+            # hand-off table (ui/mb_transition.h) is header-only and
+            # unit-tested in test_media_browser_unit.
+            src/media_browser/mb_host.cpp
         )
         # libcurl is required by radarr_client.cpp.
         pkg_check_modules(CURL REQUIRED libcurl)
