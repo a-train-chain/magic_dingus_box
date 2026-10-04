@@ -3893,7 +3893,14 @@ function escapeHtml(str) {
 function escapeJs(str) {
     if (str === null || str === undefined) return '';
     if (typeof str !== 'string') str = String(str);
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    // Callers embed the result in onclick="fn('...')": the HTML parser sees
+    // it BEFORE the JS engine, so a raw " ends the attribute and &#39;
+    // decodes back to '. Emit only \xNN / \uNNNN for anything either
+    // parser acts on — inert as HTML, decoded exactly by JS.
+    return str
+        .replace(/\\/g, '\\\\')
+        .replace(/['"&<>\n\r]/g, c => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+        .replace(/[\u2028\u2029]/g, c => '\\u' + c.charCodeAt(0).toString(16));
 }
 
 // ===== MODAL SUPPORT =====

@@ -120,20 +120,46 @@ Renderer renderer_for_core(const std::string& core_name) {
     return Renderer::Vulkan;
 }
 
-std::string pick_hdmi_alsa_device(const std::string& aplay_L_output) {
+std::string pick_hdmi_alsa_device(const std::string& aplay_L_output,
+                                  const std::vector<std::string>& monitor_cards) {
     // Plain substring checks: `aplay -L` prints one device name per
     // line at column 0, and these exact PCM names cannot appear as a
     // substring of another device name. (The previous implementation
     // used std::regex with a `^` anchor, which only matches the start
     // of the WHOLE string in ECMAScript mode — it never matched, and
     // everything fell through to the card-number fallback.)
-    if (aplay_L_output.find("sysdefault:CARD=vc4hdmi0") != std::string::npos) {
-        return "sysdefault:CARD=vc4hdmi0";
+    static const char* const kCards[] = {"vc4hdmi0", "vc4hdmi1"};
+    auto listed = [&](const std::string& card) {
+        return aplay_L_output.find("sysdefault:CARD=" + card) != std::string::npos;
+    };
+    for (const char* card : kCards) {
+        if (listed(card) && std::find(monitor_cards.begin(), monitor_cards.end(),
+                                      card) != monitor_cards.end()) {
+            return std::string("sysdefault:CARD=") + card;
+        }
     }
-    if (aplay_L_output.find("sysdefault:CARD=vc4hdmi1") != std::string::npos) {
-        return "sysdefault:CARD=vc4hdmi1";
+    for (const char* card : kCards) {
+        if (listed(card)) return std::string("sysdefault:CARD=") + card;
     }
     return "plughw:1,0";
+}
+
+bool eld_reports_monitor(const std::string& eld_text) {
+    // Lines are "key<TABs>value". Read the few keys that matter.
+    std::istringstream in(eld_text);
+    std::string line;
+    int sad_count = -1, monitor_present = -1, eld_valid = -1;
+    while (std::getline(in, line)) {
+        std::istringstream fields(line);
+        std::string key;
+        int value = 0;
+        if (!(fields >> key >> value)) continue;
+        if (key == "sad_count") sad_count = value;
+        else if (key == "monitor_present") monitor_present = value;
+        else if (key == "eld_valid") eld_valid = value;
+    }
+    if (sad_count >= 0) return sad_count > 0;
+    return monitor_present == 1 && eld_valid != 0;
 }
 
 void write_video_config(std::ostream& out, const LaunchOptions& options) {

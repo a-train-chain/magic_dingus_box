@@ -944,7 +944,16 @@ std::string RetroArchLauncher::detect_alsa_device() {
     } else {
         std::cerr << "Warning: Failed to execute aplay -L, using legacy default" << std::endl;
     }
-    std::string device = retroarch::pick_hdmi_alsa_device(output_l);
+    // Which port has the TV: either HDMI port is a valid place to plug it.
+    std::vector<std::string> monitor_cards;
+    for (const char* card : {"vc4hdmi0", "vc4hdmi1"}) {
+        std::ifstream eld(std::string("/proc/asound/") + card + "/eld#0");
+        if (!eld) continue;
+        std::stringstream text;
+        text << eld.rdbuf();
+        if (retroarch::eld_reports_monitor(text.str())) monitor_cards.push_back(card);
+    }
+    std::string device = retroarch::pick_hdmi_alsa_device(output_l, monitor_cards);
     std::cout << "Detected HDMI ALSA device: " << device << std::endl;
     return device;
 }

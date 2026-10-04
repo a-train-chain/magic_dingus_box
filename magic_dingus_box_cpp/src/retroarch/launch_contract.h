@@ -129,13 +129,21 @@ std::vector<std::string> core_input_device_args(
     const std::string& core_name);
 
 // Pick the ALSA device for HDMI game audio from `aplay -L` output.
-// Selects vc4hdmi0 by NAME (the kiosk's display port is HDMI0) instead
-// of by card number: on Pi 4 vc4hdmi0 is ALSA card 1 (behind the
-// Headphones card) but on Pi 5 it is card 0, so the old hardcoded
-// "plughw:1,0" fallback silently routed Pi 5 game audio to the empty
-// HDMI1 port. Falls back to vc4hdmi1, then the legacy default so
-// behavior on non-Pi dev boxes is unchanged.
-std::string pick_hdmi_alsa_device(const std::string& aplay_L_output);
+// Selects by card NAME, never card number: on Pi 4 vc4hdmi0 is ALSA
+// card 1 (behind the Headphones card) but on Pi 5 it is card 0, so the
+// old hardcoded "plughw:1,0" silently routed Pi 5 game audio to the
+// wrong port. `monitor_cards` lists the vc4hdmiN cards whose ELD shows
+// a TV that takes audio (see eld_reports_monitor): the TV may be on
+// EITHER physical port, so a card with a monitor wins over one without.
+// With none known (TV off, dev box) it falls back to name order —
+// vc4hdmi0, vc4hdmi1, then the legacy default.
+std::string pick_hdmi_alsa_device(const std::string& aplay_L_output,
+                                  const std::vector<std::string>& monitor_cards = {});
+
+// True when /proc/asound/<card>/eld#0 text describes an attached sink
+// that accepts audio. vc4 reports this as sad_count > 0; HDA-style
+// drivers print monitor_present / eld_valid instead.
+bool eld_reports_monitor(const std::string& eld_text);
 // rom_path selects per-title performance overrides (e.g. the THPS4
 // overclock); pass the launch path as-is — matching is filename-based
 // and case-insensitive.

@@ -1006,6 +1006,58 @@ TEST_CASE("HDMI ALSA device falls back to vc4hdmi1 then legacy default",
     REQUIRE(retroarch::pick_hdmi_alsa_device("null\n    Discard\n") == "plughw:1,0");
 }
 
+TEST_CASE("HDMI ALSA device follows the port the TV is plugged into",
+          "[retroarch][audio]") {
+    // Either physical port is a valid place to plug the TV. Observed live
+    // 2026-10-03: a Pi 5 with its TV on HDMI1 sent every game's audio to
+    // the empty HDMI0, because vc4hdmi0 always won by name.
+    const char* both =
+        "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n";
+    REQUIRE(retroarch::pick_hdmi_alsa_device(both, {"vc4hdmi1"}) ==
+            "sysdefault:CARD=vc4hdmi1");
+    REQUIRE(retroarch::pick_hdmi_alsa_device(both, {"vc4hdmi0"}) ==
+            "sysdefault:CARD=vc4hdmi0");
+    // Two TVs: the primary port keeps priority.
+    REQUIRE(retroarch::pick_hdmi_alsa_device(both, {"vc4hdmi1", "vc4hdmi0"}) ==
+            "sysdefault:CARD=vc4hdmi0");
+    // No ELD readable (TV off, dev box): name order, exactly as before.
+    REQUIRE(retroarch::pick_hdmi_alsa_device(both, {}) ==
+            "sysdefault:CARD=vc4hdmi0");
+    // A monitor reported on a card ALSA doesn't list is ignored.
+    REQUIRE(retroarch::pick_hdmi_alsa_device(
+                "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0\n", {"vc4hdmi1"}) ==
+            "sysdefault:CARD=vc4hdmi0");
+}
+
+TEST_CASE("ELD text reports whether a monitor is attached",
+          "[retroarch][audio]") {
+    // Real /proc/asound/vc4hdmiN/eld#0 from a Pi 5 (2026-10-03). vc4
+    // prints no monitor_present line; a TV that can take audio is one
+    // whose ELD lists at least one short audio descriptor.
+    const char* connected =
+        "monitor_name\t\tV756-J03\n"
+        "connection_type\t\tHDMI\n"
+        "eld_version\t\t[0x2] CEA-861D or below\n"
+        "speakers\t\t[0x1] FL/FR\n"
+        "sad_count\t\t7\n"
+        "sad0_coding_type\t[0x1] LPCM\n";
+    const char* empty_port =
+        "monitor_name\t\t\n"
+        "connection_type\t\tHDMI\n"
+        "eld_version\t\t[0x0] reserved\n"
+        "speakers\t\t[0x0]\n"
+        "sad_count\t\t0\n";
+    REQUIRE(retroarch::eld_reports_monitor(connected));
+    REQUIRE_FALSE(retroarch::eld_reports_monitor(empty_port));
+    REQUIRE_FALSE(retroarch::eld_reports_monitor(""));
+    // HDA-style kernels print monitor_present/eld_valid instead.
+    REQUIRE(retroarch::eld_reports_monitor(
+        "monitor_present\t\t1\neld_valid\t\t1\n"));
+    REQUIRE_FALSE(retroarch::eld_reports_monitor(
+        "monitor_present\t\t1\neld_valid\t\t0\n"));
+}
+
 TEST_CASE("GL renderer path emits video_driver=gl without Vulkan-only settings",
           "[retroarch][video][gl]") {
     // N64 (GLideN64) and other GL-only cores can't use the kiosk's default

@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for it once more.
 
 ### Fixed
+- **No sound when the TV is plugged into the second HDMI port.** The box
+  assumed the TV was always on the first port and switched the second
+  one's audio off entirely, so a TV on the other port showed the picture
+  with no sound at all — videos, menus and games. Either port now works,
+  and games send their sound to whichever port the TV is on. Boxes that
+  were affected fix themselves after this update.
+- **A video upload in progress is no longer lost when the box is
+  updated from a computer.** The update could clear the folder the
+  Content Manager stores half-received uploads in.
+- **A shared playlist or game pack can no longer run code in the
+  Content Manager.** A file name crafted to look like part of the page
+  could have acted on your behalf once you opened the Games tab —
+  including deleting videos, games or playlists. File names are now
+  always treated as plain text.
 - **A broken video no longer freezes the box.** A truncated upload, a bad
   SD-card sector or a format the box can't decode used to stop an
   unattended playlist dead on that video until someone pressed Next. The

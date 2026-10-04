@@ -79,3 +79,17 @@ PI5_USB_DAC_SINKS='0	alsa_output.platform-107c701400.hdmi.hdmi-stereo	module-als
     grep -q "systemctl --global mask pipewire" "$CPP_DIR/scripts/init_audio.sh"
     grep -q "wireplumber.service" "$CPP_DIR/scripts/init_audio.sh"
 }
+
+@test "init_audio.sh never hides an HDMI port from PulseAudio" {
+    # The TV may be on either HDMI port. A PULSE_IGNORE rule for vc4hdmi1
+    # left a Pi 5 with its TV on HDMI1 with no sound at all (2026-10-03).
+    run grep -E 'PULSE_IGNORE|ENV\{PULSE_IGNORE\}' "$CPP_DIR/scripts/init_audio.sh"
+    [ "$status" -ne 0 ]
+    grep -q 'rm -f "\$UDEV_RULE"' "$CPP_DIR/scripts/init_audio.sh"
+}
+
+@test "Pi 5 TV on HDMI1: hdmi request resolves the HDMI1 sink" {
+    run bash -c "printf '0\talsa_output.platform-107c706400.hdmi.hdmi-stereo\tmodule-alsa-card.c\ts16le 2ch 48000Hz\tIDLE\n' | '$RESOLVER' hdmi"
+    [ "$status" -eq 0 ]
+    [ "$output" = "alsa_output.platform-107c706400.hdmi.hdmi-stereo" ]
+}

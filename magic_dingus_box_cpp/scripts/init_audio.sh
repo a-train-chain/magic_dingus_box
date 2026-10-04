@@ -66,25 +66,21 @@ if systemctl --global is-enabled pipewire-pulse.socket >/dev/null 2>&1 && \
         pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
 fi
 
-# Suppress PulseAudio warnings for the unused HDMI controller. The Pi 4 exposes
-# two HDMI controllers via DT (vc4-hdmi-0, vc4-hdmi-1) but the kiosk only uses
-# HDMI0. The unused vc4-hdmi-1 has no audio profile, so on every kiosk start
-# PulseAudio's module-alsa-card fails to load it and logs:
+# Remove the old "ignore HDMI1" udev rule. It was installed to silence
 #   module-alsa-card.c: Failed to find a working profile.
-#   module.c: Failed to load module "module-alsa-card" (... platform-fef05700.hdmi ...)
-# We tell udev to mark this card with PULSE_IGNORE=1 so module-udev-detect
-# skips it. Idempotent install — only writes/triggers the rule when missing.
+# for whichever HDMI port has nothing plugged in — but it hardcoded HDMI1
+# as "the unused one". The TV may be on EITHER port; with it on HDMI1
+# (observed live on a Pi 5, 2026-10-03) the rule hid the only working
+# sink and the box had no sound at all. That warning is harmless log
+# noise for an empty port; a hidden real port is not. Boxes that
+# installed the rule heal here, before PulseAudio enumerates cards.
 UDEV_RULE=/etc/udev/rules.d/91-pulse-ignore-unused-hdmi.rules
-if [ ! -f "$UDEV_RULE" ]; then
-    echo "Installing udev rule to silence unused-HDMI PulseAudio warnings..."
-    sudo tee "$UDEV_RULE" > /dev/null <<'EORULE'
-# Mark the unused vc4-hdmi-1 ALSA card as PulseAudio-ignored on Pi 4 kiosk.
-# Without this rule, PulseAudio logs "Failed to find a working profile" on
-# every start because no sink is plugged into HDMI1.
-SUBSYSTEM=="sound", KERNEL=="card?", ATTR{id}=="vc4hdmi1", ENV{PULSE_IGNORE}="1"
-EORULE
+if [ -f "$UDEV_RULE" ]; then
+    echo "Removing udev rule that hid the HDMI1 audio port..."
+    sudo rm -f "$UDEV_RULE"
     sudo udevadm control --reload-rules
-    sudo udevadm trigger --subsystem-match=sound
+    sudo udevadm trigger --subsystem-match=sound --action=change
+    sudo udevadm settle --timeout=5 || true
 fi
 
 # Kill any existing PulseAudio and clean up stale socket
