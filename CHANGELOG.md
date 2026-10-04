@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now run on their own, the Content Manager keeps showing their progress
   even after it restarts, and starting a second one while one is running
   is politely refused instead of letting the two collide.
+- **Uploading two videos with the same name keeps both.** If a second
+  copy of a file was uploaded while the first was still converting, the
+  second could silently replace the first. The second one is now saved
+  alongside it with a `_1` added to its name.
 - **A broken video no longer freezes the box.** A truncated upload, a bad
   SD-card sector or a format the box can't decode used to stop an
   unattended playlist dead on that video until someone pressed Next. The

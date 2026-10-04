@@ -3548,6 +3548,34 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # Store for tracking transcoding jobs (in-memory, cleared on restart)
     transcode_jobs: dict = {}
 
+    # Output-name reservations for in-flight uploads. A transcode's output
+    # only appears at its final os.replace — minutes after the request chose
+    # the name — so "pick the first name that doesn't exist() yet" let two
+    # uploads of the same file (two phones, a double-submit, or a second job
+    # queued behind the encoder semaphore) both choose clip.mp4: the second
+    # publish silently replaced the first video. A name is free only if it
+    # is neither on disk NOR held by a job still running; check-and-reserve
+    # happens under one lock. In-memory is enough: a restart kills every
+    # in-flight encode, and nothing on disk is ever a placeholder, so the
+    # kiosk and the library listing only ever see finished videos.
+    _media_name_lock = threading.Lock()
+    _reserved_media_names: set = set()
+
+    def _reserve_media_output(preferred_name: str) -> Path:
+        """Reserve media_dir/<preferred_name> or the first free <stem>_N.mp4."""
+        base = Path(preferred_name).stem
+        with _media_name_lock:
+            name, counter = preferred_name, 1
+            while name in _reserved_media_names or (media_dir / name).exists():
+                name = f"{base}_{counter}.mp4"
+                counter += 1
+            _reserved_media_names.add(name)
+        return media_dir / name
+
+    def _release_media_output(path: Path) -> None:
+        with _media_name_lock:
+            _reserved_media_names.discard(path.name)
+
 
     def _detect_pi_model() -> str:
         """Return 'pi5', 'pi4', or 'unknown' from the device-tree model.
@@ -3715,7 +3743,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # of every *.mp4 glob; same-directory staging guarantees os.replace
         # is an atomic same-filesystem rename wherever media_dir lives.
         # Crashed leftovers are swept at startup alongside upload_temp.
-        staging_path = output_path.with_name(output_path.name + ".part")
+        # The job id in the staging name keeps two encoders from ever sharing
+        # one .part (one's error path used to unlink the other's encode);
+        # the name still ends in .part, so the sweep and globs are unchanged.
+        staging_path = output_path.with_name(
+            f"{output_path.name}.{job_id.replace('-', '')[:12]}.part")
 
         # Build FFmpeg command with the framing filter resolved above
         # (crop = fill the frame, fit = whole frame + black bars).
@@ -3880,6 +3912,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 except Exception:
                     pass
             _TRANSCODE_SEMAPHORE.release()
+            # After the publish (if any): from here the name is protected by
+            # the file existing, or free again because the encode failed.
+            _release_media_output(output_path)
 
     @app.post("/admin/upload-and-transcode")
     @require_csrf
@@ -3921,18 +3956,18 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         # Save to temp location
         temp_input = upload_temp_dir / f"transcode_input_{job_id}_{original_name}"
-        output_name = Path(original_name).stem + ".mp4"
-        output_path = media_dir / output_name
 
-        # Ensure unique output filename
-        counter = 1
-        while output_path.exists():
-            output_name = f"{Path(original_name).stem}_{counter}.mp4"
-            output_path = media_dir / output_name
-            counter += 1
+        # Unique output filename — reserved against in-flight jobs too, not
+        # just files already on disk (see _reserve_media_output).
+        output_path = _reserve_media_output(Path(original_name).stem + ".mp4")
+        output_name = output_path.name
 
         # Save uploaded file
-        f.save(str(temp_input))
+        try:
+            f.save(str(temp_input))
+        except BaseException:
+            _release_media_output(output_path)
+            raise
 
         # Initialize job (prune stale terminal-state entries first)
         _prune_terminal_jobs(transcode_jobs)
@@ -4120,19 +4155,17 @@ def create_app(data_dir: Path, config=None) -> Flask:
             # If original is already .mp4, keep it
             if original_name.lower().endswith('.mp4'):
                 output_name = original_name
-            output_path = media_dir / output_name
-
-            # Ensure unique filename
-            counter = 1
-            base_name = Path(output_name).stem
-            while output_path.exists():
-                output_name = f"{base_name}_{counter}.mp4"
-                output_path = media_dir / output_name
-                counter += 1
+            # Unique filename — reserved against in-flight transcodes too
+            # (see _reserve_media_output); released once the move has
+            # published it, after which the file itself holds the name.
+            output_path = _reserve_media_output(output_name)
+            output_name = output_path.name
 
             # Move file to media folder
-            import shutil
-            shutil.move(str(temp_input), str(output_path))
+            try:
+                shutil.move(str(temp_input), str(output_path))
+            finally:
+                _release_media_output(output_path)
 
             return success_response(data={
                 'action': 'direct',
@@ -4143,16 +4176,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
             }, message="File uploaded directly (already compatible)")
 
         else:
-            # Needs transcoding - start transcode job
-            output_name = Path(original_name).stem + ".mp4"
-            output_path = media_dir / output_name
-
-            # Ensure unique output filename
-            counter = 1
-            while output_path.exists():
-                output_name = f"{Path(original_name).stem}_{counter}.mp4"
-                output_path = media_dir / output_name
-                counter += 1
+            # Needs transcoding - start transcode job. Unique output name,
+            # reserved until the job finishes (see _reserve_media_output).
+            output_path = _reserve_media_output(Path(original_name).stem + ".mp4")
+            output_name = output_path.name
 
             # Initialize job (prune stale terminal-state entries first)
             _prune_terminal_jobs(transcode_jobs)
