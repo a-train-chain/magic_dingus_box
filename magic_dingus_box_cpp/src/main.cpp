@@ -151,8 +151,9 @@ static void reload_menu_overlays(platform::InputManager& input) {
 
 #ifdef MEDIA_BROWSER_ENABLED
 // Persist the in-flight playback position for the active watch identity
-// (resume-on-next-play). ORDERING CONTRACT — called at ALL THREE Playback
-// exit sites in the dispatcher, ALWAYS BEFORE active_mb_screen->leave().
+// (resume-on-next-play). ORDERING CONTRACT — called at BOTH in-UI Playback
+// exits (exit_media_browser() and the sibling-screen transition in the
+// dispatcher) and at shutdown, ALWAYS BEFORE active_mb_screen->leave().
 // Controller::update_state runs at the BOTTOM of the frame loop, and only
 // every other frame, so the position read here is up to 2 frames stale —
 // but it was captured while the pipeline was still playing, which is
@@ -1563,6 +1564,51 @@ int main(int /* argc */, char* /* argv */[]) {
     // and surface a toast. Recovery is silent — operators don't need a
     // notification when things start working again.
     bool prev_vpn_healthy = state.media_browser_vpn_healthy;
+
+    // THE way out of the Media Browser back to the kiosk MainMenu. Four
+    // exits share it — display-mode eviction, the exit modal's commit,
+    // BTN4 long-press, and a screen returning Screen::Exit — and each used
+    // to hand-write the same teardown, so its ordering rules lived in four
+    // places at once:
+    //
+    //   1. Watch-state flush BEFORE leave(). leave() stops the pipeline,
+    //      which zeroes position/duration; flushing after it writes (0, 0)
+    //      over the resume point. See flush_watch_state's contract.
+    //   2. Artwork worker resume. pause() is paired with resume() only in
+    //      the screen-transition branch, so exiting straight from Playback
+    //      would otherwise leave it paused forever (no posters next entry).
+    //      Idempotent — a no-op when not paused.
+    //   3. leave() on the active screen.
+    //   4. Exit modal closed and its result cleared, so a modal open at
+    //      exit cannot linger into the next session. (Only the eviction
+    //      path did this before; a BTN4 long-press with the modal up
+    //      carried it over.)
+    //   5. Main-menu renderable state restored — belt-and-braces companion
+    //      to the same reset at MB entry. Indexes or a stale UI fade
+    //      surviving into MainMenu make the Renderer early-return
+    //      (is_transitioning) or draw at alpha 0: a permanently blank menu.
+    //   6. Dispatcher back on Browse, so the next entry starts fresh, and
+    //      this frame's remaining input dropped so none of it leaks into
+    //      the main UI.
+    auto exit_media_browser = [&](std::vector<platform::InputEvent>& input_events) {
+        if (current_mb_screen == media_browser::ui::Screen::Playback) {
+            flush_watch_state(mb_playback, watch_store, state);
+        }
+        ui_renderer.artwork_cache().resume();
+        active_mb_screen->leave();
+        mb_exit_modal.close();
+        mb_exit_modal.clear_result();
+        state.video_active = false;
+        state.is_switching_playlist = false;
+        state.current_playlist_index = -1;
+        state.current_item_index = -1;
+        state.is_fading = false;
+        state.ui_visible_when_playing = false;
+        state.current_screen = app::AppScreen::MainMenu;
+        current_mb_screen = media_browser::ui::Screen::Browse;
+        active_mb_screen = &mb_browse;
+        input_events.clear();
+    };
 #endif
 
     while (running && !g_shutdown_requested) {
@@ -2076,24 +2122,8 @@ int main(int /* argc */, char* /* argv */[]) {
         // Input events are NOT forwarded to the main input-handling loop
         // below, which prevents stray Menu / DPad / Select events from
         // leaking into the main UI while the Media Browser is active.
-        // Restore the main menu's renderable state on ANY exit from
-        // the Media Browser (used by the display-mode eviction just
-        // below and all three in-band exit paths: exit modal, BTN4
-        // long-press, Screen::Exit). Belt-and-braces
-        // companion to the same reset done at MB entry: if playing-item
-        // indexes or a stale UI fade survive into MainMenu, the
-        // Renderer either early-returns (is_transitioning: indexes set
-        // + no video) or draws at alpha 0 — both look like a
-        // permanently blank main menu. Idempotent; matches the
-        // RetroArch return path's "CRITICAL: Reset playback state".
-        auto reset_main_ui_state = [&state]() {
-            state.video_active = false;
-            state.is_switching_playlist = false;
-            state.current_playlist_index = -1;
-            state.current_item_index = -1;
-            state.is_fading = false;
-            state.ui_visible_when_playing = false;
-        };
+        // Every way OUT goes through exit_media_browser() (defined above
+        // the loop).
 
         // ── Display-mode gate (per-frame invariant): no live MB surface
         // on a canvas that can't host it. The MB screens are authored
@@ -2106,25 +2136,11 @@ int main(int /* argc */, char* /* argv */[]) {
         // mode-change block above then resizes the logical canvas to
         // 640x480 the same frame. Evicting here — before this frame's
         // MB input handling and render — means not a single MB frame is
-        // ever drawn on the small canvas. Teardown mirrors the BTN4
-        // long-press exit path below (flush-before-leave contract), plus
-        // an explicit exit-modal close so a modal open at eviction can't
-        // linger into the next MB session.
+        // ever drawn on the small canvas.
         if (state.current_screen == app::AppScreen::MediaBrowser &&
             !media_browser::display_supports_media_browser(
                 state.display_settings.mode == app::DisplayMode::CRT_NATIVE)) {
-            if (current_mb_screen == media_browser::ui::Screen::Playback) {
-                flush_watch_state(mb_playback, watch_store, state);
-            }
-            ui_renderer.artwork_cache().resume();  // un-stick if evicting Playback
-            active_mb_screen->leave();
-            mb_exit_modal.close();
-            mb_exit_modal.clear_result();
-            reset_main_ui_state();
-            state.current_screen = app::AppScreen::MainMenu;
-            current_mb_screen = media_browser::ui::Screen::Browse;
-            active_mb_screen = &mb_browse;
-            input_events.clear();
+            exit_media_browser(input_events);
             ui::Toast::show(media_browser::kMoviesClosedByDisplaySwitchToast);
             LOG_INFO("Media Browser: evicted to MainMenu — display mode no "
                      "longer provides the 720p logical canvas");
@@ -2291,22 +2307,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 // events to the active screen.
                 auto modal_result = mb_exit_modal.last_result();
                 if (modal_result == media_browser::ui::ExitModal::Result::Exit) {
-                    // Tear down: same path as Screen::Exit.
-                    mb_exit_modal.clear_result();
-                    // Guarantee the artwork worker is running on MB exit.
-                    // pause() is only paired with resume() in the
-                    // screen-transition branch below; exiting via the
-                    // modal/long-press/Screen::Exit paths bypasses that,
-                    // so a Playback->exit would otherwise leave the
-                    // worker paused forever (no posters on next entry).
-                    // resume() is idempotent — a no-op when not paused.
-                    ui_renderer.artwork_cache().resume();
-                    active_mb_screen->leave();
-                    reset_main_ui_state();
-                    state.current_screen = app::AppScreen::MainMenu;
-                    current_mb_screen = media_browser::ui::Screen::Browse;
-                    active_mb_screen = &mb_browse;
-                    input_events.clear();
+                    exit_media_browser(input_events);
                     mb_modal_exited = true;
                 } else if (modal_result == media_browser::ui::ExitModal::Result::Cancel) {
                     mb_exit_modal.clear_result();
@@ -2314,42 +2315,14 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 
             if (btn4_long_press_exit) {
-                // Long-press exit bypasses the screen entirely. Mirror the
-                // Screen::Exit return path below: leave the current screen,
-                // reset dispatcher state, and let the rest of the main loop
-                // run this frame (rendering, etc.) with current_screen flipped
-                // to MainMenu.
-                //
-                // Watch-state flush MUST run BEFORE leave() — leave() stops
-                // the pipeline and zeroes position/duration, so a later
-                // write would clobber the resume point with (0, 0). See
-                // flush_watch_state's contract comment.
-                if (current_mb_screen == media_browser::ui::Screen::Playback) {
-                    flush_watch_state(mb_playback, watch_store, state);
-                }
-                ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
-                active_mb_screen->leave();
-                reset_main_ui_state();
-                state.current_screen = app::AppScreen::MainMenu;
-                current_mb_screen = media_browser::ui::Screen::Browse;
-                active_mb_screen = &mb_browse;
-                input_events.clear();
+                // Long-press exit bypasses the screen entirely; the rest of
+                // the main loop still runs this frame (rendering, etc.) with
+                // current_screen flipped to MainMenu.
+                exit_media_browser(input_events);
             } else if (!mb_modal_exited) {
             auto next = active_mb_screen->handle_input(input_events);
             if (next == media_browser::ui::Screen::Exit) {
-                // Watch-state flush pre-leave(), same rationale as the
-                // long-press site above.
-                if (current_mb_screen == media_browser::ui::Screen::Playback) {
-                    flush_watch_state(mb_playback, watch_store, state);
-                }
-                ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
-                active_mb_screen->leave();
-                reset_main_ui_state();
-                state.current_screen = app::AppScreen::MainMenu;
-                // Reset to Browse so the next entry into the Media Browser
-                // starts fresh on the landing screen.
-                current_mb_screen = media_browser::ui::Screen::Browse;
-                active_mb_screen = &mb_browse;
+                exit_media_browser(input_events);
             } else if (next != current_mb_screen) {
                 // When transitioning into Detail, forward the selected
                 // tmdb_id from whichever source screen produced it so
@@ -2503,8 +2476,8 @@ int main(int /* argc */, char* /* argv */[]) {
                 // BOTTOM of the loop (every other frame), so the read is
                 // up to 2 frames stale but pre-stop-valid; one line later
                 // (post-leave, after stop() zeroes the pipeline) it
-                // reads 0/0 and clobbers the resume point. Third of the
-                // three exit sites; see flush_watch_state.
+                // reads 0/0 and clobbers the resume point. The other
+                // in-UI site is exit_media_browser(); see flush_watch_state.
                 if (current_mb_screen == media_browser::ui::Screen::Playback &&
                     next != media_browser::ui::Screen::Playback) {
                     flush_watch_state(mb_playback, watch_store, state);
@@ -4642,7 +4615,8 @@ int main(int /* argc */, char* /* argv */[]) {
     }
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // FOURTH watch-state flush site. The other three cover deliberate
+    // SHUTDOWN watch-state flush site. The others (exit_media_browser()
+    // and the dispatcher's sibling-screen transition) cover deliberate
     // in-UI exits from Playback; this one covers the process being told
     // to stop while a movie or episode is still on screen.
     //
@@ -4653,7 +4627,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // Without this, the resume point falls back to the last 30-second
     // checkpoint and the box appears to forget where you were.
     //
-    // Ordering is the same contract the other three sites document: this
+    // Ordering is the same contract the other sites document: this
     // MUST run before the cleanup below, because player.cleanup() stops
     // the pipeline and zeroes position — flushing after it would write
     // (0, 0) over a real resume point. flush_watch_state itself no-ops
