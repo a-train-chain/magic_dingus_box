@@ -10,6 +10,7 @@
 #include <memory>
 #include <unordered_map>
 #include "theme.h"               // For Color type
+#include "ui_batch.h"
 #include "pairing_screen_renderer.h"  // For PairedDevice
 
 namespace ui {
@@ -54,6 +55,40 @@ public:
     
     // Set UI alpha (0.0 = fully transparent, 1.0 = fully opaque)
     void set_ui_alpha(float alpha) { ui_alpha_ = alpha; }
+
+    // ── UI draw-call batching (MDB_BATCH_UI; ui/ui_batch.h) ──────────
+    // Inside a BatchScope, draw_quad / draw_text / draw_line /
+    // draw_textured_quad / mb_fill_* accumulate into one CPU vertex batch
+    // that is submitted in a single draw when it must be: texture change,
+    // any non-batched GL work in the renderer (every such site calls
+    // flush_ui_batch() first), or the end of the outermost scope. Outside
+    // a scope every primitive is submitted at once. Draw order is exactly
+    // the immediate path's. MDB_BATCH_UI=0 (read once at construction)
+    // restores the immediate path for A/B comparison.
+    class BatchScope {
+    public:
+        explicit BatchScope(Renderer& r) : r_(r) { ++r_.batch_scope_depth_; }
+        ~BatchScope() {
+            if (--r_.batch_scope_depth_ == 0) r_.flush_ui_batch();
+        }
+        BatchScope(const BatchScope&) = delete;
+        BatchScope& operator=(const BatchScope&) = delete;
+
+    private:
+        Renderer& r_;
+    };
+    // Submits pending batched geometry (no-op when empty). Public so the
+    // main loop can flush before GL work of its own.
+    void flush_ui_batch();
+    bool ui_batching_enabled() const { return batch_enabled_; }
+    // UI renderer glDrawArrays calls since the last take — per-frame
+    // accounting for the journal (and the batching A/B).
+    uint64_t take_ui_draw_calls() {
+        const uint64_t n = ui_draw_calls_;
+        ui_draw_calls_ = 0;
+        return n;
+    }
+    uint64_t ui_draw_calls() const { return ui_draw_calls_; }
 
     // Current content viewport dimensions — the logical coordinate
     // space the projection matrix is set up for. Differs from the
@@ -341,6 +376,34 @@ private:
     // populated frame at 60 Hz); a per-call std::vector here was a
     // malloc/free every call. Not re-entrant, so one buffer is safe.
     std::vector<float> text_scratch_verts_;
+
+    // ── UI batching (renderer_batch.cpp, ui/ui_batch.h) ──────────────
+    // batch_enabled_: MDB_BATCH_UI, read once in the constructor; false =
+    // the immediate path (one draw per primitive), kept for A/B.
+    bool batch_enabled_ = true;
+    int batch_scope_depth_ = 0;
+    UiBatch batch_;
+    uint32_t batch_program_ = 0;
+    uint32_t batch_vao_ = 0;
+    uint32_t batch_vbo_ = 0;
+    uint32_t white_tex_ = 0;  // 1x1 white RGBA: solids when no atlas is current
+    int32_t batch_u_screen_size_loc_ = -1;
+    int32_t batch_u_tex_loc_ = -1;
+    uint64_t ui_draw_calls_ = 0;
+    bool init_batch_gl();
+    void destroy_batch_gl();
+    // Texture + UV a solid fill should sample to join the pending batch.
+    uint32_t solid_texture(float& u, float& v) const;
+    bool is_atlas_texture(uint32_t tex) const;
+    // Before appending geometry that samples `tex`.
+    void batch_reserve(uint32_t tex) {
+        if (batch_.needs_flush_for(tex)) flush_ui_batch();
+    }
+    // After appending: outside any BatchScope a primitive is submitted at
+    // once, exactly like the immediate path.
+    void batch_done() {
+        if (batch_scope_depth_ == 0) flush_ui_batch();
+    }
 
     // Enhanced CRT pipeline — offscreen scene FBO state.
     //   scene_fbo_: GL framebuffer object name (0 when not yet created)

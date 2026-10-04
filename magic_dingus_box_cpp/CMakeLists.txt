@@ -134,6 +134,7 @@ set(VIDEO_SOURCES
 
 set(UI_SOURCES
     src/ui/renderer.cpp
+    src/ui/renderer_batch.cpp
     src/ui/controller_wizard.cpp
     src/ui/controller_wizard_renderer.cpp
     src/ui/pairing_screen.cpp

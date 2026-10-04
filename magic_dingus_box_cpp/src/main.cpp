@@ -1642,6 +1642,17 @@ int main(int /* argc */, char* /* argv */[]) {
     int64_t crt_last_drawn_field = 0;
     bool crt_field_rate_logged = false;
     auto last_present_done = std::chrono::steady_clock::now();
+
+    // UI draw calls per drawn frame (MDB_BATCH_UI A/B), reported per minute.
+    struct {
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        uint64_t frames = 0;
+        uint64_t sum = 0;
+        uint64_t max = 0;
+        bool reported_once = false;
+    } ui_draw_window;
+    LOG_INFO("UI batching: {} (MDB_BATCH_UI=0 restores one draw per primitive)",
+             ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
 #ifdef MEDIA_BROWSER_ENABLED
     // Poster textures uploaded so far (redraw gate: an upload draws).
     uint64_t mb_artwork_uploads = 0;
@@ -4113,6 +4124,13 @@ int main(int /* argc */, char* /* argv */[]) {
             const int mb_w = static_cast<int>(ui_renderer.get_width());
             const int mb_h = static_cast<int>(ui_renderer.get_height());
 
+            {
+            // UI batching scope (MDB_BATCH_UI): the screen and its modals
+            // only draw through Renderer primitives, so they accumulate
+            // into as few draws as their textures allow; the scope's end
+            // flushes before the CRT overlay below.
+            ui::Renderer::BatchScope mb_batch_scope(ui_renderer);
+
             active_mb_screen->render(ui_renderer, mb_w, mb_h);
 
             // "Exit Marquee?" confirm modal — rendered above the active MB
@@ -4124,6 +4142,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // exit modal. is_active() inside render() makes it a no-op
             // when not shown. Task 16.
             mb_stall_modal.render(ui_renderer, mb_w, mb_h);
+            }  // mb_batch_scope — flushed here
 
             // Poster uploads (ui_renderer.pump_artwork) moved to the redraw
             // gate block above: they must run on skipped frames too, and an
@@ -4230,9 +4249,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // lower-right with only a corner visible because (1280-480)/2
         // = 400 logical was being interpreted in 640×480 space.
         glViewport(0, 0, mode.width, mode.height);
-        ui::Toast::render(ui_renderer,
-                          ui_renderer.get_width(),
-                          ui_renderer.get_height());
+        {
+            ui::Renderer::BatchScope toast_batch_scope(ui_renderer);
+            ui::Toast::render(ui_renderer,
+                              ui_renderer.get_width(),
+                              ui_renderer.get_height());
+        }
 #endif
         }  // if (draw_this_frame) — drawing, part 1
 
@@ -4788,7 +4810,15 @@ int main(int /* argc */, char* /* argv */[]) {
 
             // Debug screenshot: read back the finished frame (everything
             // above, post-game fade included) before the swap hands the
-            // buffer to the presenter. No-op unless requested.
+            // buffer to the presenter. No-op unless requested. The frame's
+            // UI draw-call count is logged with it — the batching A/B for
+            // one specific screen.
+            if (screenshot_capture.pending()) {
+                ui_renderer.flush_ui_batch();
+                LOG_INFO("Screenshot frame: {} UI draw calls (UI batching {})",
+                         ui_renderer.ui_draw_calls(),
+                         ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
+            }
             screenshot_capture.capture_before_swap(mode.width, mode.height);
 
             // Swap EGL buffers
@@ -4804,6 +4834,34 @@ int main(int /* argc */, char* /* argv */[]) {
             // Use shared lambda
             present_frame();
             last_present_done = std::chrono::steady_clock::now();
+
+            // UI draw calls per drawn frame, reported per minute (first
+            // window at INFO so the journal alone shows it; DEBUG after).
+            {
+                const uint64_t draws = ui_renderer.take_ui_draw_calls();
+                ui_draw_window.frames++;
+                ui_draw_window.sum += draws;
+                if (draws > ui_draw_window.max) ui_draw_window.max = draws;
+                if (last_present_done - ui_draw_window.start >= std::chrono::seconds(60)) {
+                    if (ui_draw_window.frames > 0) {
+                        const uint64_t avg = ui_draw_window.sum / ui_draw_window.frames;
+                        if (!ui_draw_window.reported_once) {
+                            LOG_INFO("UI draw calls/frame (last 60s): avg {} max {} over {} "
+                                     "frames (UI batching {})",
+                                     avg, ui_draw_window.max, ui_draw_window.frames,
+                                     ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
+                        } else {
+                            LOG_DEBUG("UI draw calls/frame (last 60s): avg {} max {} over {} "
+                                      "frames (UI batching {})",
+                                      avg, ui_draw_window.max, ui_draw_window.frames,
+                                      ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
+                        }
+                        ui_draw_window.reported_once = true;
+                    }
+                    ui_draw_window.start = last_present_done;
+                    ui_draw_window.frames = ui_draw_window.sum = ui_draw_window.max = 0;
+                }
+            }
         }  // if (draw_this_frame) — drawing, part 2
         
         // BARE BONES: Removed periodic audio checks - let MPV handle audio

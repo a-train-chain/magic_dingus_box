@@ -56,7 +56,29 @@ public:
     
     // Get font ascent (distance from baseline to top of tallest glyph)
     int get_ascent() const { return ascent_; }
-    
+
+    // ── Solid fills from the atlas (UI batching, ui/ui_batch.h) ──────
+    // Every atlas page reserves a kWhiteBlock x kWhiteBlock block of full
+    // coverage at its top-left corner, so a solid quad can sample a texel
+    // that reads (1, 1, 1, 1) through the page's swizzle and join the same
+    // batch as the text around it. Glyphs are packed after it.
+    static constexpr int kWhiteBlock = 4;
+    // UV of the block's centre — LINEAR filtering there only ever touches
+    // white texels, so the sample is exactly 1.0. Same on every page.
+    static float white_texel_u() { return 2.0f / static_cast<float>(kAtlasSize); }
+    static float white_texel_v() { return 2.0f / static_cast<float>(kAtlasSize); }
+    bool owns_texture(uint32_t tex) const {
+        if (tex == 0) return false;
+        for (const auto& p : atlas_pages_) {
+            if (p.texture == tex) return true;
+        }
+        return false;
+    }
+    // First atlas page (0 until a glyph has been rasterized).
+    uint32_t first_page_texture() const {
+        return atlas_pages_.empty() ? 0 : atlas_pages_.front().texture;
+    }
+
     // Cleanup
     void cleanup();
     

@@ -39,6 +39,14 @@
 
 namespace ui {
 
+// Every UI renderer draw goes through this, so the per-frame count the
+// journal reports covers both the immediate and the batched path.
+#define UI_DRAW_ARRAYS(...)      \
+    do {                         \
+        ++ui_draw_calls_;        \
+        glDrawArrays(__VA_ARGS__); \
+    } while (0)
+
 // Simple vertex shader for 2D rendering
 static const char* vertex_shader_source = R"(
 #version 300 es
@@ -609,6 +617,7 @@ Renderer::Renderer(uint32_t width, uint32_t height)
     theme_ = std::make_unique<Theme>();
     title_font_manager_ = std::make_unique<FontManager>();
     body_font_manager_ = std::make_unique<FontManager>();
+    batch_enabled_ = ui_batch_enabled_from_env(std::getenv("MDB_BATCH_UI"));
 }
 
 Renderer::~Renderer() {
@@ -619,6 +628,8 @@ void Renderer::reset_gl() {
     // After an external app (like RetroArch) takes over the EGL context,
     // our GL resources are invalid. We need to delete and re-create them.
     std::cout << "UI Renderer: Resetting GL resources after external context takeover" << std::endl;
+    // Batch objects belong to the dead context; pending geometry is dropped.
+    destroy_batch_gl();
     
     // Delete old resources (they may be invalid but try anyway for cleanliness)
     // Program ids are being deleted (and will be recycled by GL) —
@@ -649,20 +660,24 @@ void Renderer::reset_gl() {
         vbo_ = 0;
     }
     if (logo_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &logo_texture_id_);
         logo_texture_id_ = 0;
     }
     if (bezel_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &bezel_texture_id_);
         bezel_texture_id_ = 0;
         current_bezel_path_.clear();
     }
     if (marquee_frame_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &marquee_frame_texture_id_);
         marquee_frame_texture_id_ = 0;
         marquee_frame_loaded_path_.clear();
     }
     if (thumbnail_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &thumbnail_texture_id_);
         thumbnail_texture_id_ = 0;
         current_thumbnail_path_.clear();
@@ -676,6 +691,7 @@ void Renderer::reset_gl() {
     destroy_bloom_fbos();
     for (auto& pair : system_logo_cache_) {
         if (pair.second.texture_id != 0) {
+            flush_ui_batch();
             glDeleteTextures(1, &pair.second.texture_id);
         }
     }
@@ -683,6 +699,7 @@ void Renderer::reset_gl() {
     // QR texture belongs to the dead context too — clear the cache key so
     // the next render_qr_code call rebuilds it in the fresh context.
     if (qr_cache_tex_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &qr_cache_tex_);
         qr_cache_tex_ = 0;
     }
@@ -729,15 +746,18 @@ void Renderer::reset_gl() {
     glGenBuffers(1, &vbo_);
     
     glBindVertexArray(vao_);
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
-    
+
     glBindVertexArray(0);
-    
+
+    init_batch_gl();
+
     // Re-load logo texture using config paths
     unsigned char* data = nullptr;
     int channels;
@@ -754,13 +774,16 @@ void Renderer::reset_gl() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        flush_ui_batch();
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, logo_width_, logo_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
         stbi_image_free(data);
     }
     
     // CRITICAL: Re-enable blending - RetroArch may have disabled it
     // Without this, all UI elements become invisible!
+    flush_ui_batch();
     glEnable(GL_BLEND);
+    flush_ui_batch();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
     std::cout << "UI Renderer: GL resources reset complete (blending enabled)" << std::endl;
@@ -780,6 +803,7 @@ bool Renderer::load_bezel(const std::string& path) {
     
     // Delete old texture if exists
     if (bezel_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &bezel_texture_id_);
         bezel_texture_id_ = 0;
     }
@@ -822,6 +846,7 @@ bool Renderer::load_bezel(const std::string& path) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    flush_ui_batch();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bezel_width_, bezel_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
     
     stbi_image_free(data);
@@ -832,6 +857,7 @@ void Renderer::render_bezel() {
     if (bezel_texture_id_ == 0) return;
     
     // Bind our shader program and set up projection
+    flush_ui_batch();
     glUseProgram(shader_program_);
     
     // Use ORIGINAL screen dimensions for bezel (fullscreen overlay)
@@ -840,6 +866,7 @@ void Renderer::render_bezel() {
     float bezel_h = static_cast<float>(original_height_);
     
     // Set screenSize uniform for the shader (uses screen coords divider)
+    flush_ui_batch();
     glUniform2f(u_screen_size_loc_, bezel_w, bezel_h);
     
     // Render bezel as fullscreen textured quad
@@ -853,6 +880,7 @@ void Renderer::render_bezel() {
         x + bezel_w, y + bezel_h, 1.0f, 1.0f
     };
     
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     
@@ -861,17 +889,20 @@ void Renderer::render_bezel() {
     glUniform1i(u_use_texture_loc_, 1);
     
     // Ensure we are using Texture Unit 0 and tell the shader
+    flush_ui_batch();
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(cached_uniform(shader_program_, "tex"), 0);
     
     // Enable blending for transparent areas of the bezel
+    flush_ui_batch();
     glEnable(GL_BLEND);
+    flush_ui_batch();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
     glBindTexture(GL_TEXTURE_2D, bezel_texture_id_);
     
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -888,9 +919,11 @@ void Renderer::render_post_game_fade(float alpha) {
 
     // Same fullscreen idiom as render_bezel: bind the UI shader and use the
     // ORIGINAL screen dimensions, not the content-viewport ones.
+    flush_ui_batch();
     glUseProgram(shader_program_);
     const float w = static_cast<float>(original_width_);
     const float h = static_cast<float>(original_height_);
+    flush_ui_batch();
     glUniform2f(u_screen_size_loc_, w, h);
 
     float vertices[] = {
@@ -899,17 +932,20 @@ void Renderer::render_post_game_fade(float alpha) {
         0.0f, h,    0.0f, 1.0f,
         w,    h,    1.0f, 1.0f,
     };
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
     glUniform4f(u_color_loc_, 0.0f, 0.0f, 0.0f, alpha);
     glUniform1i(u_use_texture_loc_, 0);
 
+    flush_ui_batch();
     glEnable(GL_BLEND);
+    flush_ui_batch();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 }
 
@@ -946,6 +982,7 @@ bool Renderer::load_marquee_frame(const std::string& path) {
         return false;
     }
     if (marquee_frame_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &marquee_frame_texture_id_);
         marquee_frame_texture_id_ = 0;
     }
@@ -983,6 +1020,7 @@ bool Renderer::load_marquee_frame(const std::string& path) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    flush_ui_batch();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
                  marquee_frame_tile_w_, marquee_frame_tile_h_, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, data);
@@ -993,6 +1031,7 @@ bool Renderer::load_marquee_frame(const std::string& path) {
 void Renderer::render_marquee_frame() {
     if (marquee_frame_texture_id_ == 0) return;
 
+    flush_ui_batch();
     glUseProgram(shader_program_);
 
     // Full-screen overlay using ORIGINAL dimensions, not the (possibly
@@ -1000,13 +1039,17 @@ void Renderer::render_marquee_frame() {
     // owns the whole HDMI canvas.
     const float screen_w = static_cast<float>(original_width_);
     const float screen_h = static_cast<float>(original_height_);
+    flush_ui_batch();
     glUniform2f(u_screen_size_loc_, screen_w, screen_h);
     glUniform4f(u_color_loc_, 1.0f, 1.0f, 1.0f, 1.0f);
     glUniform1i(u_use_texture_loc_, 1);
+    flush_ui_batch();
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(cached_uniform(shader_program_, "tex"), 0);
 
+    flush_ui_batch();
     glEnable(GL_BLEND);
+    flush_ui_batch();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glBindTexture(GL_TEXTURE_2D, marquee_frame_texture_id_);
 
@@ -1016,10 +1059,11 @@ void Renderer::render_marquee_frame() {
         0.0f,     screen_h, 0.0f, 1.0f,
         screen_w, screen_h, 1.0f, 1.0f,
     };
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -1104,6 +1148,7 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
     glGenBuffers(1, &vbo_);
     
     glBindVertexArray(vao_);
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     
     // Vertex attributes: position (2), texCoord (2)
@@ -1113,13 +1158,20 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
     glEnableVertexAttribArray(1);
     
     glBindVertexArray(0);
-    
+
+    init_batch_gl();
+    std::cout << "  UI batching: " << (batch_enabled_ ? "ON" : "OFF")
+              << " (MDB_BATCH_UI=0 disables)" << std::endl;
+
     // Enable blending for transparency
     // Use standard alpha blending for consistent text rendering (same whether over video or not)
+    flush_ui_batch();
     glEnable(GL_BLEND);
+    flush_ui_batch();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
     // Ensure smooth text rendering - disable dithering which can cause blockiness
+    flush_ui_batch();
     glDisable(GL_DITHER);
     
     // Load Logo using config paths
@@ -1146,6 +1198,7 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         
+        flush_ui_batch();
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, logo_width_, logo_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
         // No glGenerateMipmap: min filter is GL_LINEAR, so the mip chain
         // could never be sampled — generating it only cost upload time.
@@ -1160,6 +1213,9 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
 }
 
 void Renderer::render(app::AppState& state) {
+    // One batching scope for the whole UI pass (menu, settings, wizard,
+    // pairing, keyboard); flushed on every return path.
+    BatchScope batch_scope(*this);
     // Debug logging removed for performance - only log errors
     
     // CRITICAL: Don't render UI at all when intro video is showing (even if not ready yet)
@@ -1191,6 +1247,7 @@ void Renderer::render(app::AppState& state) {
             theme_->bg.b / 255.0f,
             1.0f
         );
+        flush_ui_batch();
         glClear(GL_COLOR_BUFFER_BIT);
     }
     // When video is active or loading, we don't clear - mpv already rendered (or will render) the video frame
@@ -1258,11 +1315,16 @@ void Renderer::render(app::AppState& state) {
     
     // CRITICAL: Reset OpenGL state after mpv renders to ensure consistent text rendering
     // mpv may change blending, texture state, etc. that affects UI rendering
+    flush_ui_batch();
     glEnable(GL_BLEND);
+    flush_ui_batch();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    flush_ui_batch();
     glDisable(GL_DITHER);
+    flush_ui_batch();
     glActiveTexture(GL_TEXTURE0);  // Ensure we're using texture unit 0
     
+    flush_ui_batch();
     glUseProgram(shader_program_);
     if (shader_program_ == 0) {
         std::cerr << "ERROR: Shader program is 0!" << std::endl;
@@ -1279,6 +1341,7 @@ void Renderer::render(app::AppState& state) {
             std::cout << "UI Renderer: render() screenSize=" << width_ << "x" << height_ << std::endl;
             logged_screensize = true;
         }
+        flush_ui_batch();
         glUniform2f(screenSizeLoc, static_cast<float>(width_), static_cast<float>(height_));
     }
     
@@ -1420,6 +1483,16 @@ void Renderer::render(app::AppState& state) {
 }
 
 void Renderer::draw_quad(float x, float y, float w, float h, const ui::Color& color, float alpha_multiplier) {
+    if (batch_enabled_) {
+        float su = 0.0f, sv = 0.0f;
+        const uint32_t tex = solid_texture(su, sv);
+        batch_reserve(tex);
+        batch_.quad(tex, x, y, x + w, y + h, su, sv, su, sv,
+                    {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
+                     (color.a / 255.0f) * ui_alpha_ * alpha_multiplier});
+        batch_done();
+        return;
+    }
     float vertices[] = {
         x, y,         0.0f, 0.0f,  // Top-left
         x + w, y,     1.0f, 0.0f,  // Top-right
@@ -1427,6 +1500,7 @@ void Renderer::draw_quad(float x, float y, float w, float h, const ui::Color& co
         x + w, y + h, 1.0f, 1.0f   // Bottom-right
     };
     
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     
@@ -1435,7 +1509,7 @@ void Renderer::draw_quad(float x, float y, float w, float h, const ui::Color& co
     glUniform1i(u_use_texture_loc_, 0);
     
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 }
 
@@ -1462,6 +1536,42 @@ void Renderer::draw_text(const std::string& text, float x, float y, int font_siz
     // colors deliberately do NOT multiply RGB by ui_alpha_ (ui_alpha_ is
     // background transparency, not text dimming; alpha_multiplier is the
     // fade animation, which does apply).
+    if (batch_enabled_) {
+        // Same glyph walk as below, appended to the batch: one batch per
+        // atlas page run, shared with the solids around it.
+        const BatchColor bc{color.r / 255.0f, color.g / 255.0f,
+                            color.b / 255.0f, (color.a / 255.0f) * alpha_multiplier};
+        std::size_t bpos = 0;
+        while (bpos < text.size()) {
+            char32_t c = ::ui::decode_utf8(text, bpos);
+            if (c == 0) break;
+            if (c == U'\n') {
+                int line_height = static_cast<int>(font_size * 1.2f);
+                baseline_y += line_height;
+                current_x = x;
+                continue;
+            }
+            if (c == U' ') {
+                ui::Glyph space_glyph = font_manager->get_glyph_at_size(U' ', font_size);
+                current_x += space_glyph.advance;
+                continue;
+            }
+            ui::Glyph glyph = font_manager->get_glyph_at_size(c, font_size);
+            if (glyph.texture_id == 0) {
+                current_x += glyph.advance;
+                continue;
+            }
+            const float gx0 = current_x + glyph.bearing_x;
+            const float gy0 = baseline_y - glyph.bearing_y;
+            batch_reserve(glyph.texture_id);
+            batch_.quad(glyph.texture_id, gx0, gy0, gx0 + glyph.width, gy0 + glyph.height,
+                        glyph.u0, glyph.v0, glyph.u1, glyph.v1, bc);
+            current_x += glyph.advance;
+        }
+        batch_done();
+        return;
+    }
+
     if (u_color_loc_ >= 0) {
         glUniform4f(u_color_loc_, color.r / 255.0f, color.g / 255.0f,
                     color.b / 255.0f, (color.a / 255.0f) * alpha_multiplier);
@@ -1480,12 +1590,13 @@ void Renderer::draw_text(const std::string& text, float x, float y, int font_siz
     auto flush = [&]() {
         if (verts.empty() || run_texture == 0) return;
         glBindTexture(GL_TEXTURE_2D, run_texture);
+        flush_ui_batch();
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferData(GL_ARRAY_BUFFER,
                      static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                      verts.data(), GL_DYNAMIC_DRAW);
         glBindVertexArray(vao_);
-        glDrawArrays(GL_TRIANGLES, 0,
+        UI_DRAW_ARRAYS(GL_TRIANGLES, 0,
                      static_cast<GLsizei>(verts.size() / 4));
         glBindVertexArray(0);
         verts.clear();
@@ -1567,7 +1678,23 @@ void Renderer::draw_line(float x1, float y1, float x2, float y2, float width, co
         x1 - perp_x, y1 - perp_y,  0.0f, 1.0f,
         x2 - perp_x, y2 - perp_y,  1.0f, 1.0f
     };
+
+    if (batch_enabled_) {
+        float su = 0.0f, sv = 0.0f;
+        const uint32_t tex = solid_texture(su, sv);
+        for (int i = 0; i < 4; ++i) {
+            vertices[i * 4 + 2] = su;
+            vertices[i * 4 + 3] = sv;
+        }
+        batch_reserve(tex);
+        batch_.strip4(tex, vertices,
+                      {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
+                       (color.a / 255.0f) * ui_alpha_ * alpha_multiplier});
+        batch_done();
+        return;
+    }
     
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     
@@ -1576,7 +1703,7 @@ void Renderer::draw_line(float x1, float y1, float x2, float y2, float width, co
     glUniform1i(u_use_texture_loc_, 0);
     
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 }
 
@@ -1697,6 +1824,7 @@ void Renderer::render_title(float text_alpha, bool /* video_active */, bool /* u
             x + w, y + h, 1.0f, 1.0f
         };
         
+        flush_ui_batch();
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
         
@@ -1708,7 +1836,7 @@ void Renderer::render_title(float text_alpha, bool /* video_active */, bool /* u
         glBindTexture(GL_TEXTURE_2D, logo_texture_id_);
         
         glBindVertexArray(vao_);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
         glBindVertexArray(0);
         
         glBindTexture(GL_TEXTURE_2D, 0);
@@ -1851,6 +1979,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             arrow_center_x, arrow_y,                                  0.5f, 1.0f   // Top (pointing up)
         };
         
+        flush_ui_batch();
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
         
@@ -1865,7 +1994,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         }
         
         glBindVertexArray(vao_);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
     }
     
@@ -1944,6 +2073,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
                 x4, y4 - ah, 0, 0,   x4, y4 + ah, 0, 0,   x4 + arrow_w, y4, 0, 0,
             };
 
+            flush_ui_batch();
             glBindBuffer(GL_ARRAY_BUFFER, vbo_);
             glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
             GLint colorLoc = u_color_loc_;
@@ -1954,7 +2084,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             GLint useTextureLoc = u_use_texture_loc_;
             if (useTextureLoc >= 0) glUniform1i(useTextureLoc, 0);
             glBindVertexArray(vao_);
-            glDrawArrays(GL_TRIANGLES, 0, 18);
+            UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 18);
             glBindVertexArray(0);
         } else {
             // Draw channel number for regular playlists
@@ -1990,6 +2120,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
                 left_x, indicator_y,      1.0f, 1.0f   // Left point (pointing left)
             };
             
+            flush_ui_batch();
             glBindBuffer(GL_ARRAY_BUFFER, vbo_);
             glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
             
@@ -2004,7 +2135,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             }
             
             glBindVertexArray(vao_);
-            glDrawArrays(GL_TRIANGLES, 0, 3);  // Draw as triangle
+            UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 3);  // Draw as triangle
             glBindVertexArray(0);
         }
         
@@ -2022,6 +2153,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             arrow_center_x, arrow_y + arrow_size * 1.2f,     0.5f, 1.0f   // Bottom (pointing down)
         };
         
+        flush_ui_batch();
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
         
@@ -2036,7 +2168,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         }
         
         glBindVertexArray(vao_);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
     }
 }
@@ -2224,6 +2356,14 @@ void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
     // Same vertex layout as draw_quad, but switch the shader into
     // textured mode and bind the supplied texture. Mirrors the
     // render_title() logo-drawing idiom.
+    if (batch_enabled_) {
+        batch_reserve(tex_id);
+        batch_.quad(tex_id, x, y, x + w, y + h, 0.0f, 0.0f, 1.0f, 1.0f,
+                    {1.0f, 1.0f, 1.0f, ui_alpha_ * alpha_multiplier});
+        batch_done();
+        return;
+    }
+
     float vertices[] = {
         x, y,         0.0f, 0.0f,
         x + w, y,     1.0f, 0.0f,
@@ -2231,6 +2371,7 @@ void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
         x + w, y + h, 1.0f, 1.0f
     };
 
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
@@ -2240,7 +2381,7 @@ void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
 
     glBindTexture(GL_TEXTURE_2D, tex_id);
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
     // Restore solid-color mode so the next draw_quad doesn't sample
@@ -2277,12 +2418,17 @@ void Renderer::mb_begin_2d_state() {
     // entirely, so without this call gst_renderer.render()'s YUV shader
     // stays bound and every subsequent mb_* draw silently writes to the
     // wrong shader's uniforms. Required before any MB screen draws.
+    flush_ui_batch();
     glEnable(GL_BLEND);
+    flush_ui_batch();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    flush_ui_batch();
     glDisable(GL_DITHER);
+    flush_ui_batch();
     glActiveTexture(GL_TEXTURE0);
 
     if (shader_program_ != 0) {
+        flush_ui_batch();
         glUseProgram(shader_program_);
 
         // Set the screenSize uniform so the shader's NDC conversion
@@ -2299,6 +2445,7 @@ void Renderer::mb_begin_2d_state() {
         // fullscreen glViewport, so original_* is what matches.
         GLint loc = u_screen_size_loc_;
         if (loc >= 0) {
+            flush_ui_batch();
             glUniform2f(loc,
                         static_cast<float>(original_width_),
                         static_cast<float>(original_height_));
@@ -2355,6 +2502,22 @@ void Renderer::mb_fill_star(float cx, float cy, float outer_r,
         vertices[o + 3] = 0.0f;
     }
 
+    if (batch_enabled_) {
+        float su = 0.0f, sv = 0.0f;
+        const uint32_t tex = solid_texture(su, sv);
+        for (int i = 0; i < kVerts; ++i) {
+            vertices[i * 4 + 2] = su;
+            vertices[i * 4 + 3] = sv;
+        }
+        batch_reserve(tex);
+        batch_.fan(tex, vertices, kVerts,
+                   {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
+                    (color.a / 255.0f) * ui_alpha_ * alpha_multiplier});
+        batch_done();
+        return;
+    }
+
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
@@ -2364,7 +2527,7 @@ void Renderer::mb_fill_star(float cx, float cy, float outer_r,
     glUniform1i(u_use_texture_loc_, 0);
 
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_FAN, 0, kVerts);
+    UI_DRAW_ARRAYS(GL_TRIANGLE_FAN, 0, kVerts);
     glBindVertexArray(0);
 }
 
@@ -2421,6 +2584,22 @@ void Renderer::mb_fill_triangle(float x1, float y1, float x2, float y2,
         x3, y3, 0.0f, 0.0f,
     };
 
+    if (batch_enabled_) {
+        float su = 0.0f, sv = 0.0f;
+        const uint32_t tex = solid_texture(su, sv);
+        for (int i = 0; i < 3; ++i) {
+            vertices[i * 4 + 2] = su;
+            vertices[i * 4 + 3] = sv;
+        }
+        batch_reserve(tex);
+        batch_.triangles(tex, vertices, 3,
+                         {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
+                          (color.a / 255.0f) * ui_alpha_ * alpha_multiplier});
+        batch_done();
+        return;
+    }
+
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
@@ -2430,7 +2609,7 @@ void Renderer::mb_fill_triangle(float x1, float y1, float x2, float y2,
     glUniform1i(u_use_texture_loc_, 0);
 
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
+    UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
 }
 
@@ -2759,6 +2938,7 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
                 right_x, indicator_y,               1.0f, 1.0f   // Right point (pointing right)
             };
             
+            flush_ui_batch();
             glBindBuffer(GL_ARRAY_BUFFER, vbo_);
             glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
             
@@ -2773,7 +2953,7 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
             }
             
             glBindVertexArray(vao_);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+            UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 3);
             glBindVertexArray(0);
         }
         
@@ -2942,6 +3122,7 @@ bool Renderer::load_thumbnail(const std::string& rom_path) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            flush_ui_batch();
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, thumbnail_width_,
                          thumbnail_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                          thumb_result_pixels_);
@@ -2969,6 +3150,7 @@ bool Renderer::load_thumbnail(const std::string& rom_path) {
     // scrolling the game list. The thumbnail now appears a frame or two
     // later instead of stalling the frame.
     if (thumbnail_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &thumbnail_texture_id_);
         thumbnail_texture_id_ = 0;
     }
@@ -3123,6 +3305,7 @@ const Renderer::CachedLogo* Renderer::get_system_logo(const std::string& system_
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    flush_ui_batch();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, logo.width, logo.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
     // No glGenerateMipmap: min filter is GL_LINEAR, so the mip chain
     // could never be sampled — generating it only cost upload time.
@@ -3187,6 +3370,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                         thumb_x + draw_w, thumb_y + draw_h, 1.0f, 1.0f
                     };
 
+                    flush_ui_batch();
                     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
@@ -3196,7 +3380,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
 
                     glBindTexture(GL_TEXTURE_2D, thumbnail_texture_id_);
                     glBindVertexArray(vao_);
-                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
                     glBindVertexArray(0);
                     glBindTexture(GL_TEXTURE_2D, 0);
                 } else {
@@ -3238,6 +3422,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                             logo_x + logo_w, logo_y + logo_h, 1.0f, 1.0f
                         };
 
+                        flush_ui_batch();
                         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                         glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
@@ -3248,7 +3433,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
 
                         glBindTexture(GL_TEXTURE_2D, logo->texture_id);
                         glBindVertexArray(vao_);
-                        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                        UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
                         glBindVertexArray(0);
                         glBindTexture(GL_TEXTURE_2D, 0);
                     }
@@ -3281,6 +3466,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                         logo_x + logo_w, logo_y + logo_h, 1.0f, 1.0f
                     };
 
+                    flush_ui_batch();
                     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
@@ -3290,13 +3476,14 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
 
                     glBindTexture(GL_TEXTURE_2D, logo->texture_id);
                     glBindVertexArray(vao_);
-                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    UI_DRAW_ARRAYS(GL_TRIANGLE_STRIP, 0, 4);
                     glBindVertexArray(0);
                     glBindTexture(GL_TEXTURE_2D, 0);
                 }
 
                 // Clear cached thumbnail
                 if (thumbnail_texture_id_ != 0) {
+                    flush_ui_batch();
                     glDeleteTextures(1, &thumbnail_texture_id_);
                     thumbnail_texture_id_ = 0;
                     current_thumbnail_path_.clear();
@@ -3344,6 +3531,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                         right_x, indicator_y,               1.0f, 1.0f
                     };
 
+                    flush_ui_batch();
                     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                     glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
 
@@ -3358,7 +3546,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                     }
 
                     glBindVertexArray(vao_);
-                    glDrawArrays(GL_TRIANGLES, 0, 3);
+                    UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 3);
                     glBindVertexArray(0);
                 }
 
@@ -3403,6 +3591,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
 
         // Clear thumbnail when not viewing games
         if (thumbnail_texture_id_ != 0) {
+            flush_ui_batch();
             glDeleteTextures(1, &thumbnail_texture_id_);
             thumbnail_texture_id_ = 0;
             current_thumbnail_path_.clear();
@@ -3433,6 +3622,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                     right_x, indicator_y,               1.0f, 1.0f
                 };
 
+                flush_ui_batch();
                 glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                 glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
 
@@ -3447,7 +3637,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                 }
 
                 glBindVertexArray(vao_);
-                glDrawArrays(GL_TRIANGLES, 0, 3);
+                UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 3);
                 glBindVertexArray(0);
             }
 
@@ -3594,6 +3784,7 @@ void Renderer::destroy_scene_fbo() {
         scene_fbo_ = 0;
     }
     if (scene_color_tex_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &scene_color_tex_);
         scene_color_tex_ = 0;
     }
@@ -3618,6 +3809,7 @@ void Renderer::ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height) {
     }
 
     glGenFramebuffers(1, &scene_fbo_);
+    flush_ui_batch();
     glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo_);
 
     glGenTextures(1, &scene_color_tex_);
@@ -3626,6 +3818,7 @@ void Renderer::ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height) {
     // headroom — all source content is sRGB-encoded 8-bit. Linear
     // filtering matters because the composite's sub-1px effects
     // (Phase 4 convergence offsets) sample at non-integer coords.
+    flush_ui_batch();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
                  static_cast<GLsizei>(fb_width),
                  static_cast<GLsizei>(fb_height),
@@ -3644,6 +3837,7 @@ void Renderer::ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height) {
                   << std::hex << status << std::dec << "); enhanced CRT "
                   << "pipeline disabled" << std::endl;
         // Restore default framebuffer so subsequent draws still show.
+        flush_ui_batch();
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindTexture(GL_TEXTURE_2D, 0);
         destroy_scene_fbo();
@@ -3721,11 +3915,14 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
     // Bind the FBO and clear it. Caller is expected to set its own
     // viewport for any letterboxed UI/video draw — those calls now
     // target our offscreen texture.
+    flush_ui_batch();
     glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo_);
+    flush_ui_batch();
     glViewport(0, 0,
                static_cast<GLsizei>(scene_fbo_width_),
                static_cast<GLsizei>(scene_fbo_height_));
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    flush_ui_batch();
     glClear(GL_COLOR_BUFFER_BIT);
 
     scene_fbo_active_ = true;
@@ -3770,6 +3967,7 @@ void Renderer::destroy_bloom_fbos() {
         bloom_a_fbo_ = 0;
     }
     if (bloom_a_tex_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &bloom_a_tex_);
         bloom_a_tex_ = 0;
     }
@@ -3778,6 +3976,7 @@ void Renderer::destroy_bloom_fbos() {
         bloom_b_fbo_ = 0;
     }
     if (bloom_b_tex_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &bloom_b_tex_);
         bloom_b_tex_ = 0;
     }
@@ -3830,17 +4029,20 @@ void Renderer::ensure_bloom_fbos(uint32_t base_w, uint32_t base_h) {
 
     if (!build_fbo(a_w, a_h, bloom_a_fbo_, bloom_a_tex_)) {
         std::cerr << "UI Renderer: bloom_a FBO incomplete; halation disabled" << std::endl;
+        flush_ui_batch();
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         destroy_bloom_fbos();
         return;
     }
     if (!build_fbo(b_w, b_h, bloom_b_fbo_, bloom_b_tex_)) {
         std::cerr << "UI Renderer: bloom_b FBO incomplete; halation disabled" << std::endl;
+        flush_ui_batch();
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         destroy_bloom_fbos();
         return;
     }
 
+    flush_ui_batch();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     bloom_a_width_ = a_w; bloom_a_height_ = a_h;
     bloom_b_width_ = b_w; bloom_b_height_ = b_h;
@@ -3922,11 +4124,15 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
         if (bloom_a_fbo_ != 0 && bloom_b_fbo_ != 0) {
             // Pass 1: scene → bloom_a, with soft luma threshold (~0.7)
             //         so only bright pixels feed the bloom.
+            flush_ui_batch();
             glBindFramebuffer(GL_FRAMEBUFFER, bloom_a_fbo_);
+            flush_ui_batch();
             glViewport(0, 0,
                        static_cast<GLsizei>(bloom_a_width_),
                        static_cast<GLsizei>(bloom_a_height_));
+            flush_ui_batch();
             glDisable(GL_BLEND);
+            flush_ui_batch();
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, scene_color_tex_);
             bloom_pass_draw(bloom_downsample_shader_program_, vbo_, vao_,
@@ -3937,10 +4143,13 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
             // Pass 2: bloom_a → bloom_b, no threshold. Just a second
             //         Kawase 5-tap that further softens / widens the
             //         bloom radius.
+            flush_ui_batch();
             glBindFramebuffer(GL_FRAMEBUFFER, bloom_b_fbo_);
+            flush_ui_batch();
             glViewport(0, 0,
                        static_cast<GLsizei>(bloom_b_width_),
                        static_cast<GLsizei>(bloom_b_height_));
+            flush_ui_batch();
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, bloom_a_tex_);
             bloom_pass_draw(bloom_downsample_shader_program_, vbo_, vao_,
@@ -3969,11 +4178,14 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     // set_framebuffer_size() yet (treat 0 as "unset" → original_*).
     const uint32_t fb_w = framebuffer_width_  ? framebuffer_width_  : original_width_;
     const uint32_t fb_h = framebuffer_height_ ? framebuffer_height_ : original_height_;
+    flush_ui_batch();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    flush_ui_batch();
     glViewport(0, 0,
                static_cast<GLsizei>(fb_w),
                static_cast<GLsizei>(fb_h));
 
+    flush_ui_batch();
     glUseProgram(crt_composite_shader_program_);
 
     // Uniform setup mirrors render_crt_effects, plus the scene + bloom textures.
@@ -4011,6 +4223,7 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
                 s.flicker_intensity);
 
     // Bind the scene texture on unit 0 for sampling.
+    flush_ui_batch();
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, scene_color_tex_);
     glUniform1i(cached_uniform(crt_composite_shader_program_, "sceneTexture"), 0);
@@ -4020,6 +4233,7 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     // which we've gated on bloom_built. When bloom is off we still
     // bind unit 1 to texture 0 (no-op default) to keep the sampler
     // valid on drivers that warn about unbound samplers.
+    flush_ui_batch();
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, bloom_built ? bloom_b_tex_ : 0u);
     glUniform1i(cached_uniform(crt_composite_shader_program_, "bloomTexture"), 1);
@@ -4027,6 +4241,7 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     // Composite is opaque (the shader inlines the OVER blend against
     // sceneRGB). Disabling blend avoids accidental further compositing
     // against the default-FB clear color.
+    flush_ui_batch();
     glDisable(GL_BLEND);
 
     // Fullscreen quad over the default-FB extent. The vertex shader
@@ -4041,11 +4256,12 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
         0.0f, static_cast<float>(original_height_), 0.0f, 1.0f
     };
 
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
+    UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
 
     // Restore the rest of the GL state subsequent overlay code expects:
@@ -4054,12 +4270,17 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     //   - no texture pinned to either active unit
     //   - active texture unit returned to 0 (most overlay code assumes
     //     unit 0 is current)
+    flush_ui_batch();
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
+    flush_ui_batch();
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
+    flush_ui_batch();
     glEnable(GL_BLEND);
+    flush_ui_batch();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    flush_ui_batch();
     glUseProgram(shader_program_);
 }
 
@@ -4082,6 +4303,7 @@ void Renderer::render_crt_effects(const app::AppState& state, bool scanlines_ena
         return;
     }
     
+    flush_ui_batch();
     glUseProgram(crt_shader_program_);
     
     // Set uniforms
@@ -4144,18 +4366,21 @@ void Renderer::render_crt_effects(const app::AppState& state, bool scanlines_ena
         0.0f, static_cast<float>(height_), 0.0f, 1.0f
     };
     
+    flush_ui_batch();
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     
     glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
+    UI_DRAW_ARRAYS(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
     
     // Restore standard shader
+    flush_ui_batch();
     glUseProgram(shader_program_);
 }
 
 void Renderer::cleanup() {
+    destroy_batch_gl();
     // Program ids are being deleted (and will be recycled by GL) —
     // cached uniform locations keyed by those ids must go with them.
     uniform_loc_cache_.clear();
@@ -4186,28 +4411,34 @@ void Renderer::cleanup() {
         vbo_ = 0;
     }
     if (logo_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &logo_texture_id_);
         logo_texture_id_ = 0;
     }
     if (bezel_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &bezel_texture_id_);
         bezel_texture_id_ = 0;
     }
     if (marquee_frame_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &marquee_frame_texture_id_);
         marquee_frame_texture_id_ = 0;
     }
     if (thumbnail_texture_id_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &thumbnail_texture_id_);
         thumbnail_texture_id_ = 0;
     }
     for (auto& pair : system_logo_cache_) {
         if (pair.second.texture_id != 0) {
+            flush_ui_batch();
             glDeleteTextures(1, &pair.second.texture_id);
         }
     }
     system_logo_cache_.clear();
     if (qr_cache_tex_ != 0) {
+        flush_ui_batch();
         glDeleteTextures(1, &qr_cache_tex_);
         qr_cache_tex_ = 0;
     }
@@ -4271,6 +4502,7 @@ void Renderer::render_qr_code(const std::string& url, float x, float y, float si
             }
             glBindTexture(GL_TEXTURE_2D, qr_cache_tex_);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            flush_ui_batch();
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, qr_size, qr_size, 0,
                          GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
