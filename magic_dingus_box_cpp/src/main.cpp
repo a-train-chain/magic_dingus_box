@@ -1598,12 +1598,7 @@ int main(int /* argc */, char* /* argv */[]) {
         active_mb_screen->leave();
         mb_exit_modal.close();
         mb_exit_modal.clear_result();
-        state.video_active = false;
-        state.is_switching_playlist = false;
-        state.current_playlist_index = -1;
-        state.current_item_index = -1;
-        state.is_fading = false;
-        state.ui_visible_when_playing = false;
+        app::reset_main_ui_for_media_browser(state);
         state.current_screen = app::AppScreen::MainMenu;
         current_mb_screen = media_browser::ui::Screen::Browse;
         active_mb_screen = &mb_browse;
@@ -2923,8 +2918,6 @@ int main(int /* argc */, char* /* argv */[]) {
                             // thinks video is active before
                             // controller.update_state() catches up.
                             controller.stop();
-                            state.video_active = false;
-                            state.is_switching_playlist = false;
                             // CRITICAL: also clear the playing-item indexes
                             // and any in-flight UI fade. The Renderer's
                             // is_transitioning logic (current_item_index >= 0
@@ -2932,13 +2925,10 @@ int main(int /* argc */, char* /* argv */[]) {
                             // render, and a stale is_fading with a hidden
                             // target zeroes the UI alpha — either one leaves
                             // the main menu permanently BLANK after exiting
-                            // the Media Browser. Same reset the RetroArch
-                            // return path does in Controller (see the
-                            // "CRITICAL: Reset playback state" comment there).
-                            state.current_playlist_index = -1;
-                            state.current_item_index = -1;
-                            state.is_fading = false;
-                            state.ui_visible_when_playing = false;
+                            // the Media Browser. Not stop_to_menu(): the MB
+                            // takes the screen, so the playlist UI is parked
+                            // hidden — see reset_main_ui_for_media_browser.
+                            app::reset_main_ui_for_media_browser(state);
                             // Clear the published now-playing/playlist info
                             // for the phone remote. Controller::update_state's
                             // stop-clear deliberately skips MB sessions (the
@@ -2946,11 +2936,7 @@ int main(int /* argc */, char* /* argv */[]) {
                             // without this the stopped playlist item's title
                             // would ride along in kiosk_status.json for the
                             // whole browse session.
-                            state.now_playing_title.clear();
-                            state.now_playing_subtitle.clear();
-                            state.now_playing_kind.clear();
-                            state.current_playlist_name.clear();
-                            state.current_item_count = 0;
+                            app::clear_now_playing(state);
                             settings_menu.close();
                             state.current_screen = app::AppScreen::MediaBrowser;
                             // Always start on the Browse landing screen.
@@ -3443,6 +3429,13 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
                 
                 // Force video_active to false immediately (don't wait for update_state)
+                //
+                // Deliberately NOT app::stop_to_menu(): this hand-off FADES
+                // the menu in (is_fading=true below), where stop_to_menu
+                // cancels fades and shows the menu at full alpha at once.
+                // The intro never publishes now-playing fields and never
+                // sets is_switching_playlist, so the subset below is the
+                // complete reset for this path.
                 state.video_active = false;
                 state.update_playback_state(0.0, 0.0);
                 state.current_playlist_index = -1;
