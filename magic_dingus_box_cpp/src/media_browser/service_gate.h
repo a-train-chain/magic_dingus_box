@@ -57,4 +57,24 @@ enum class GateResult { Ready, TimedOut, Cancelled };
 GateResult wait_for_service(const ServiceGateHooks& hooks,
                             ServiceGateTiming timing = {});
 
+// What PlaybackScreen's deferred quick-add worker does with its batch once
+// the gate has answered. Pure, so the lifecycle rules are unit-tested.
+//
+//   Add      — Radarr answered and no FullPause session is running.
+//   Requeue  — a FullPause session is active NOW: Radarr is (or is about
+//              to be) stopped for that whole movie. Put the batch back and
+//              exit; that session's leave() restarts the worker. Before
+//              this, a quick second movie made the gate idle out and the
+//              batch was dropped with "Radarr didn't come back".
+//   Regate   — the gate timed out, but a FullPause session began (and has
+//              since ended) during it: the timeout was that movie's pause,
+//              not a dead Radarr. Gate again with a fresh deadline.
+//   Drop     — a genuine timeout: tell the user to add it from Browse.
+//   Abandon  — cancelled (screen shutting down): stop, no toasts.
+enum class DeferredBatchAction { Add, Requeue, Regate, Drop, Abandon };
+
+DeferredBatchAction decide_deferred_batch(GateResult gate,
+                                          bool full_pause_active,
+                                          bool session_began_during_gate);
+
 }  // namespace media_browser

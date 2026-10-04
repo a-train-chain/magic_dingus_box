@@ -237,7 +237,8 @@ std::optional<Movie> RadarrClient::get_movie(int radarr_id) try {
     return {};
 }
 
-bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) try {
+bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
+                             const std::function<bool()>& cancelled) try {
     set_error({});
 
     // Radarr v3 requires the full movie record (title, year, slug, images,
@@ -265,6 +266,13 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
         }
 
         lookup_failure = std::move(lookup.error);
+        if (cancelled && cancelled()) {
+            set_error("Radarr add cancelled for tmdb:" +
+                      std::to_string(tmdb_id));
+            spdlog::info("[radarr] add_movie: metadata retry for tmdb:{} "
+                         "cancelled after {} attempt(s)", tmdb_id, attempt);
+            return false;
+        }
         const auto now = metadata_retry_now();
         if (now >= retry_deadline) break;
 

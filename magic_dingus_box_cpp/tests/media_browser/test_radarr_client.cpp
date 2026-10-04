@@ -330,6 +330,35 @@ TEST_CASE("Radarr add reports the metadata cause and never POSTs after retry exh
           std::string::npos);
 }
 
+TEST_CASE("Radarr add metadata retry stops as soon as the caller cancels",
+          "[radarr][add][retry]") {
+    // Shutdown must not sit out the 45 s VPN-recovery window: the kiosk's
+    // TimeoutStopSec is 20 s and the screen destructor joins this worker.
+    RetryingAddRadarr radarr(/*success_after_ms=*/40000,
+                             /*retry_window_ms=*/45000);
+    int checks = 0;
+    auto cancel_after_two = [&checks, &radarr] {
+        ++checks;
+        return radarr.lookup_calls >= 2;
+    };
+
+    CHECK_FALSE(radarr.add_movie(/*tmdb_id=*/558, /*quality_profile_id=*/7,
+                                 /*monitor=*/true, cancel_after_two));
+    CHECK(radarr.lookup_calls == 2);
+    CHECK(radarr.fake_elapsed_ms <= 1000);
+    CHECK(radarr.post_calls == 0);
+    CHECK(checks >= 1);
+    CHECK(radarr.last_error().find("cancelled") != std::string::npos);
+}
+
+TEST_CASE("Radarr add: a never-true cancel predicate changes nothing",
+          "[radarr][add][retry]") {
+    RetryingAddRadarr radarr(/*success_after_ms=*/2000,
+                             /*retry_window_ms=*/45000);
+    REQUIRE(radarr.add_movie(558, 7, true, [] { return false; }));
+    CHECK(radarr.post_calls == 1);
+}
+
 // ---- grab_release: refused vs. "may have started" ----
 //
 // A manual grab whose POST times out may still have reached Radarr and

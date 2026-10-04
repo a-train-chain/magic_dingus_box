@@ -180,3 +180,45 @@ TEST_CASE("service gate: no ping hook is a programming error reported as TimedOu
     CHECK(mb::wait_for_service(h) == mb::GateResult::TimedOut);
     CHECK(ft.sleeps.empty());  // and it does not spin out the deadline
 }
+
+// ---- decide_deferred_batch: what the deferred quick-add worker does with
+// its batch once the gate has answered. RC finding: a gate that idled out
+// because the NEXT movie's FullPause stopped Radarr again dropped the batch
+// with "Radarr didn't come back".
+
+TEST_CASE("deferred batch: Ready with no movie session adds",
+          "[service_gate][deferred]") {
+    CHECK(mb::decide_deferred_batch(mb::GateResult::Ready, false, false) ==
+          mb::DeferredBatchAction::Add);
+    // A session that began AND ended during the gate is irrelevant once
+    // Radarr answered.
+    CHECK(mb::decide_deferred_batch(mb::GateResult::Ready, false, true) ==
+          mb::DeferredBatchAction::Add);
+}
+
+TEST_CASE("deferred batch: an active FullPause session requeues for its leave()",
+          "[service_gate][deferred]") {
+    CHECK(mb::decide_deferred_batch(mb::GateResult::TimedOut, true, true) ==
+          mb::DeferredBatchAction::Requeue);
+    CHECK(mb::decide_deferred_batch(mb::GateResult::TimedOut, true, false) ==
+          mb::DeferredBatchAction::Requeue);
+    // Radarr answered, but a FullPause is (about to be) stopping it.
+    CHECK(mb::decide_deferred_batch(mb::GateResult::Ready, true, true) ==
+          mb::DeferredBatchAction::Requeue);
+}
+
+TEST_CASE("deferred batch: a session that came and went during the gate re-gates",
+          "[service_gate][deferred]") {
+    CHECK(mb::decide_deferred_batch(mb::GateResult::TimedOut, false, true) ==
+          mb::DeferredBatchAction::Regate);
+}
+
+TEST_CASE("deferred batch: a genuine timeout drops; cancel abandons",
+          "[service_gate][deferred]") {
+    CHECK(mb::decide_deferred_batch(mb::GateResult::TimedOut, false, false) ==
+          mb::DeferredBatchAction::Drop);
+    CHECK(mb::decide_deferred_batch(mb::GateResult::Cancelled, false, false) ==
+          mb::DeferredBatchAction::Abandon);
+    CHECK(mb::decide_deferred_batch(mb::GateResult::Cancelled, true, true) ==
+          mb::DeferredBatchAction::Abandon);
+}

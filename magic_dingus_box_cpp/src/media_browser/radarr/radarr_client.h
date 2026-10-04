@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -68,7 +69,14 @@ public:
     virtual std::optional<Movie> get_movie(int radarr_id);
 
     // Library management
-    virtual bool add_movie(int tmdb_id, int quality_profile_id, bool monitor = true);
+    // `cancelled` (optional) is polled between metadata-lookup attempts:
+    // the lookup may retry for up to metadata_lookup_retry_window_ms
+    // (45 s) waiting out a VPN reconnect, and a worker whose owner is
+    // shutting down must not sit that out (the destructor joins it, and
+    // the unit's TimeoutStopSec is 20 s). Cancelled = false, no POST.
+    virtual bool add_movie(int tmdb_id, int quality_profile_id,
+                           bool monitor = true,
+                           const std::function<bool()>& cancelled = {});
     virtual bool remove_movie(int radarr_id, bool delete_files = false);
     virtual bool trigger_search(int radarr_id);
 

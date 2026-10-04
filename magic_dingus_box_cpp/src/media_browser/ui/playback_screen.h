@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -316,6 +317,14 @@ private:
     std::vector<DeferredAdd> deferred_add_queue_;      // guarded by the mutex
     bool deferred_add_running_ = false;                // guarded by the mutex
     std::atomic<bool> shutting_down_{false};
+    // FullPause session lifecycle as the deferred worker sees it. enter()
+    // bumps the counter and raises the flag for a FullPause session;
+    // leave() lowers the flag BEFORE start_deferred_adds() takes the
+    // mutex, and the worker reads both under that mutex — so a batch it
+    // requeues because a session is active is always restarted by that
+    // session's leave() (see decide_deferred_batch in service_gate.h).
+    std::atomic<bool> full_pause_session_active_{false};
+    std::atomic<std::uint64_t> full_pause_sessions_started_{0};
 
     // Frames remaining during which we suppress end-of-stream detection.
     // Counted down by update(). The state.video_active flag flickers

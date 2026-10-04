@@ -68,7 +68,8 @@ std::optional<Movie> RadarrMockClient::get_movie(int radarr_id) {
     return std::nullopt;
 }
 
-bool RadarrMockClient::add_movie(int tmdb_id, int /*qp*/, bool monitor) {
+bool RadarrMockClient::add_movie(int tmdb_id, int /*qp*/, bool monitor,
+                                 const std::function<bool()>& /*cancelled*/) {
     Movie m;
     m.radarr_id = next_id_++;
     m.tmdb_id = tmdb_id;

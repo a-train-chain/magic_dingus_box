@@ -72,4 +72,14 @@ GateResult wait_for_service(const ServiceGateHooks& hooks,
     }
 }
 
+DeferredBatchAction decide_deferred_batch(GateResult gate,
+                                          bool full_pause_active,
+                                          bool session_began_during_gate) {
+    if (gate == GateResult::Cancelled) return DeferredBatchAction::Abandon;
+    if (full_pause_active) return DeferredBatchAction::Requeue;
+    if (gate == GateResult::Ready) return DeferredBatchAction::Add;
+    if (session_began_during_gate) return DeferredBatchAction::Regate;
+    return DeferredBatchAction::Drop;
+}
+
 }  // namespace media_browser

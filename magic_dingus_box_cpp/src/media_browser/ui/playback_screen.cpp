@@ -219,6 +219,14 @@ void PlaybackScreen::enter() {
     // Decided below with the quiet mode; reset first so an early return
     // never inherits the previous session's verdict.
     session_full_pause_ = false;
+    // A quick-add outcome that landed after the previous session's last
+    // update() belongs to that session — never toast it over this movie.
+    // Only when no worker is running: in_flight_ drops after the worker's
+    // last write, so the string is safe to touch exactly then.
+    if (!quickadd_in_flight_.load(std::memory_order_acquire)) {
+        quickadd_done_.store(false, std::memory_order_release);
+        quickadd_toast_.clear();
+    }
 
     if (movie_path_.empty()) {
         deferred_toast_ = "No movie file path";
@@ -288,6 +296,13 @@ void PlaybackScreen::enter() {
     session_full_pause_ =
         quiet_ != nullptr && quiet_mode == platform::ServiceQuietMode::FullPause;
     session_deferred_adds_.clear();
+    if (session_full_pause_) {
+        // Tell a deferred-add worker still gating on the PREVIOUS movie's
+        // resume that Radarr is about to be stopped again (counter first:
+        // the worker treats "active" as the stronger signal).
+        full_pause_sessions_started_.fetch_add(1, std::memory_order_acq_rel);
+        full_pause_session_active_.store(true, std::memory_order_release);
+    }
 
     // Empty playlist_dir disables the playlist-dir-relative resolution
     // strategy in path_resolver. The path is already host-absolute (passed
@@ -409,7 +424,12 @@ void PlaybackScreen::leave() {
     // Quick-adds deferred during a FullPause session run now — AFTER the
     // resume was queued, so the gate's quiet-idle wait covers it. Never
     // blocks: the worker waits on the gate, not this thread.
-    if (!session_deferred_adds_.empty()) start_deferred_adds();
+    // Lower the session flag FIRST: start_deferred_adds() then takes the
+    // worker mutex, so a worker that requeued its batch because this
+    // session was active is restarted here (it also runs with nothing new
+    // queued this session — the queue may hold such a requeued batch).
+    full_pause_session_active_.store(false, std::memory_order_release);
+    start_deferred_adds();
     session_full_pause_ = false;
 
     // One-shot watch-state carriers die with the session. start_position_
@@ -1237,7 +1257,12 @@ std::string PlaybackScreen::run_quick_add(int tmdb_id) {
     if (qp == 0 && !profiles.empty()) qp = profiles.front().id;
 
     if (qp == 0) return "No quality profile";
-    if (radarr_.add_movie(tmdb_id, qp, /*monitor=*/true)) {
+    // Cancellable: add_movie's metadata lookup may retry for up to 45 s
+    // (VPN recovery), and the destructor joins this worker under a 20 s
+    // TimeoutStopSec.
+    if (radarr_.add_movie(tmdb_id, qp, /*monitor=*/true, [this] {
+            return shutting_down_.load(std::memory_order_acquire);
+        })) {
         return "Added \xe2\x80\x94 searching";
     }
     const std::string err = radarr_.last_error();
@@ -1261,9 +1286,15 @@ void PlaybackScreen::start_deferred_adds() {
     bool spawn = false;
     {
         std::lock_guard<std::mutex> lk(deferred_add_mtx_);
-        for (auto& d : session_deferred_adds_)
-            deferred_add_queue_.push_back(std::move(d));
-        if (!deferred_add_running_) {
+        for (auto& d : session_deferred_adds_) {
+            const int id = d.tmdb_id;
+            // A batch requeued by the worker may already hold this film.
+            const bool dup = std::any_of(
+                deferred_add_queue_.begin(), deferred_add_queue_.end(),
+                [id](const DeferredAdd& q) { return q.tmdb_id == id; });
+            if (!dup) deferred_add_queue_.push_back(std::move(d));
+        }
+        if (!deferred_add_queue_.empty() && !deferred_add_running_) {
             deferred_add_running_ = true;
             spawn = true;
         }
@@ -1307,6 +1338,8 @@ void PlaybackScreen::run_deferred_adds() {
     // empty. The gate is re-run per round so items queued by a LATER
     // session (which stopped Radarr again) also wait for it to come back.
     for (;;) {
+        const std::uint64_t sessions_at_gate_start =
+            full_pause_sessions_started_.load(std::memory_order_acquire);
         ServiceGateHooks hooks;
         if (quiet_ != nullptr) {
             // quiet_ is owned by main.cpp and outlives this screen.
@@ -1321,18 +1354,54 @@ void PlaybackScreen::run_deferred_adds() {
         const GateResult gate = wait_for_service(hooks);
 
         std::vector<DeferredAdd> batch;
+        DeferredBatchAction action = DeferredBatchAction::Abandon;
         {
             std::lock_guard<std::mutex> lk(deferred_add_mtx_);
-            batch.swap(deferred_add_queue_);
-            if (batch.empty() || gate == GateResult::Cancelled) {
+            // Read under the mutex — leave() lowers the flag before taking
+            // it, so a Requeue here is always seen by that leave().
+            const bool active =
+                full_pause_session_active_.load(std::memory_order_acquire);
+            const bool began =
+                full_pause_sessions_started_.load(std::memory_order_acquire) !=
+                sessions_at_gate_start;
+            action = decide_deferred_batch(gate, active, began);
+            if (deferred_add_queue_.empty() ||
+                action == DeferredBatchAction::Abandon) {
                 deferred_add_running_ = false;
                 return;
             }
+            if (action == DeferredBatchAction::Requeue) {
+                // The next movie stopped Radarr again: keep the batch
+                // queued; that session's leave() restarts this worker.
+                spdlog::info("[playback] deferred quick-add: {} item(s) "
+                             "requeued — another movie paused the services",
+                             deferred_add_queue_.size());
+                deferred_add_running_ = false;
+                return;
+            }
+            if (action != DeferredBatchAction::Regate) {
+                batch.swap(deferred_add_queue_);
+            }
         }
-        for (const auto& d : batch) {
+        if (action == DeferredBatchAction::Regate) {
+            spdlog::info("[playback] deferred quick-add: a movie paused the "
+                         "services during the gate — waiting again");
+            continue;
+        }
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            const auto& d = batch[i];
+            if (shutting_down_.load(std::memory_order_acquire)) {
+                // Kiosk stopping: each add can cost seconds and the
+                // destructor is joining us under TimeoutStopSec.
+                spdlog::info("[playback] deferred quick-add: shutting down, "
+                             "{} item(s) not added", batch.size() - i);
+                std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+                deferred_add_running_ = false;
+                return;
+            }
             const std::string name =
                 d.title.empty() ? std::string("Movie") : d.title;
-            if (gate != GateResult::Ready) {
+            if (action == DeferredBatchAction::Drop) {
                 spdlog::warn("[playback] deferred quick-add of tmdb:{} "
                              "dropped: Radarr didn't come back", d.tmdb_id);
                 ::ui::Toast::post("Couldn\xe2\x80\x99t add " + name +
