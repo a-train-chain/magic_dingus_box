@@ -105,6 +105,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # The source tarball IS what OTA installs. Without LFS the one
+          # LFS-tracked asset (data/intro/intro.30fps.mp4) shipped as a
+          # 131-byte pointer and replaced the real fallback intro on every
+          # OTA'd box (found by the v1.9.14→v1.10.0 rehearsal).
+          lfs: true
 
       - name: Extract version
         id: version
@@ -186,6 +192,11 @@ jobs:
           done
           # A secret must never ride along in the source tarball.
           ! grep -qx './services/.env' /tmp/listing.txt || { echo "FATAL: services/.env in tarball"; exit 1; }
+          # No Git LFS pointer may ship in place of a real asset.
+          mkdir -p /tmp/rel && tar -xzf "$T" -C /tmp/rel
+          if grep -rlI --include='*' -m1 '^version https://git-lfs.github.com/spec/v1' /tmp/rel; then
+            echo "FATAL: Git LFS pointer file(s) in $T (checkout lfs: true?)"; exit 1
+          fi
           echo "Tarball layout assertions passed"
 
       - name: Generate SHA256 checksum
