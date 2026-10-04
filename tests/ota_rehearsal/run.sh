@@ -63,7 +63,11 @@ git_archive() {
     while IFS= read -r f; do
         [ -f "${REPO}/${f}" ] && cp "${REPO}/${f}" "${tmp}/${f}"
     done < <(git -C "${REPO}" lfs ls-files -n "$1" 2>/dev/null || true)
-    tar -C "${tmp}" -cf "$2" .
+    # COPYFILE_DISABLE: macOS bsdtar otherwise adds an AppleDouble "._*"
+    # file for every entry with extended attributes — 848 of them landed in
+    # a real Pi's tree during the 2026-10-04 hardware rehearsal. CI builds on
+    # Linux and never produces them.
+    COPYFILE_DISABLE=1 tar -C "${tmp}" -cf "$2" .
     rm -rf "${tmp}"
 }
 

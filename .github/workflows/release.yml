@@ -192,6 +192,10 @@ jobs:
           done
           # A secret must never ride along in the source tarball.
           ! grep -qx './services/.env' /tmp/listing.txt || { echo "FATAL: services/.env in tarball"; exit 1; }
+          # No macOS AppleDouble metadata ("._*") — a tarball repacked on a
+          # Mac carries one per file and the OTA rsync spreads them over
+          # the whole tree (848 on a Pi in the 2026-10-04 rehearsal).
+          ! grep -qE '(^|/)\._' /tmp/listing.txt || { echo "FATAL: AppleDouble ._ files in $T"; exit 1; }
           # No Git LFS pointer may ship in place of a real asset.
           mkdir -p /tmp/rel && tar -xzf "$T" -C /tmp/rel
           if grep -rlI --include='*' -m1 '^version https://git-lfs.github.com/spec/v1' /tmp/rel; then
