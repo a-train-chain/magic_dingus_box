@@ -129,12 +129,20 @@ def test_runner_argv_is_fixed(tmp_path):
     assert r.start() is True
     r.join(5)
     argv, kw = fake.calls[0]
-    assert argv == ["sudo", "-n", "/bin/bash", str(tmp_path / "scripts" / "verify_box.sh")]
-    assert kw["timeout"] == box_health.RUN_TIMEOUT_S
+    # The deadline is enforced as root (timeout(1) inside sudo): a
+    # Python-side kill only reaches sudo, never the root bash under it.
+    assert argv == ["sudo", "-n", "/usr/bin/timeout", "--kill-after=10",
+                    str(box_health.RUN_TIMEOUT_S),
+                    "/bin/bash", str(tmp_path / "scripts" / "verify_box.sh")]
+    # Python's own timeout is only a backstop, strictly later than
+    # timeout(1)'s SIGKILL.
+    assert kw["timeout"] > box_health.RUN_TIMEOUT_S + box_health.KILL_AFTER_S
     r.start(with_services=True)
     r.join(5)
-    assert fake.calls[1][0][-1] == "--with-services"
-    assert fake.calls[1][1]["timeout"] == box_health.RUN_TIMEOUT_WITH_SERVICES_S
+    argv2, kw2 = fake.calls[1]
+    assert argv2[-1] == "--with-services"
+    assert argv2[4] == str(box_health.RUN_TIMEOUT_WITH_SERVICES_S)
+    assert kw2["timeout"] > box_health.RUN_TIMEOUT_WITH_SERVICES_S + box_health.KILL_AFTER_S
 
 
 def test_runner_caches_result(tmp_path):
@@ -185,6 +193,18 @@ def test_runner_handles_timeout_and_missing_script(tmp_path):
     r2.start()
     r2.join(5)
     assert "not installed" in r2.status()["result"]["error"]
+
+
+def test_runner_reports_root_side_timeout(tmp_path):
+    # timeout(1) ended the run: 124 (SIGTERM was enough) or 137 (SIGKILL).
+    for rc in (124, 137):
+        r = _runner(tmp_path, FakeRun(stdout="== Platform ==\n  [PASS] board: x\n", rc=rc))
+        r.start()
+        r.join(5)
+        res = r.status()["result"]
+        assert "did not finish within 3 minutes" in res["error"], rc
+        assert res["passed"] == 1 and res["exit_code"] is None
+        assert res["headline"] == "The health check could not run"
 
 
 def test_runner_redacts_output(tmp_path):
