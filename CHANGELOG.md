@@ -245,6 +245,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (it restarts by itself) instead of the picture or the game.
 
 ### Changed
+- **The Content Manager runs on a proper web server.** It used to run on
+  a simple built-in server meant for development, which started a new
+  worker for every request with no limit. It now uses a production
+  server (gunicorn) with a fixed pool of workers, so a busy page, a
+  phone remote left connected all evening and a big upload can't pile
+  up and slow the box down. Nothing changes in how you use it: same
+  address, phones stay paired, uploads and updates work as before. The
+  update installs the new server by itself; if it can't (for example the
+  box is offline), the Content Manager simply keeps the old server and
+  the next update tries again.
 - **Movie availability appears faster.** Detail's availability check
   asks each source separately and at the same time, instead of waiting
   up to a minute and a half for the slowest one.

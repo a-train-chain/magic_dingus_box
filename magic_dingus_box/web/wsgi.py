@@ -1,21 +1,24 @@
-import os
-from pathlib import Path
-from magic_dingus_box.web.admin import create_app
+"""WSGI entry point for the Content Manager.
 
-# Default data directory
-DATA_DIR = Path(os.getenv("MAGIC_DATA_DIR", "/opt/magic_dingus_box/magic_dingus_box_cpp/data"))
+`python3 -m magic_dingus_box.web.wsgi` is what magic-dingus-web.service
+runs on every box — and because an OTA never rewrites unit files, that
+command line is effectively frozen in the field. So the __main__ path here
+is the launcher: it hands over to serve.main(), which runs gunicorn when
+installed and falls back to the Werkzeug server otherwise.
 
-app = create_app(DATA_DIR)
+The app object is built ONLY on import (e.g. `gunicorn ...wsgi:app` by
+hand). Under __main__ it must not be: create_app() opens /dev/uinput and
+sweeps upload_temp, and serve.main() builds the app itself in the process
+that will serve it — building it here too would run that startup twice.
+"""
+try:
+    from magic_dingus_box.web import serve
+except ImportError:  # pragma: no cover - flat layout
+    import serve  # type: ignore[no-redef]
+
+DATA_DIR = serve.data_dir()
 
 if __name__ == "__main__":
-    # threaded=True is REQUIRED, not an optimization: the Phone Remote's
-    # WebSocket route (flask-sock) runs a while-True receive loop for the
-    # whole life of the connection. Werkzeug's default is threaded=False —
-    # ONE worker — so a single connected phone remote used to occupy the
-    # only worker and every other request (playlist edits, uploads,
-    # pairing a second phone, the whole Content Manager) hung until that
-    # phone disconnected. With no WS heartbeat a phone that dropped off
-    # WiFi uncleanly could hold the worker for hours (kernel TCP-keepalive
-    # timescale). flask-sock's own docs call out that threading must be
-    # enabled for exactly this reason.
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    raise SystemExit(serve.main())
+else:
+    app = serve.build_app()

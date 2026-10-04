@@ -91,7 +91,7 @@ The kiosk engine must build and run on **both Raspberry Pi 4B and Raspberry Pi 5
 
 Plus header-only deps fetched at build time: `stb_truetype.h`, `stb_image.h`, `spdlog` (via CMake `FetchContent`), `Catch2` (test targets only).
 
-The web admin requires Python 3 with Flask, PyYAML, flask-sock (phone remote WebSocket) and python3-evdev (phone remote virtual gamepad); service launched by [`magic_dingus_box_cpp/systemd/magic-dingus-web.service`](magic_dingus_box_cpp/systemd/magic-dingus-web.service).
+The web admin requires Python 3 with Flask, PyYAML, flask-sock (phone remote WebSocket), python3-evdev (phone remote virtual gamepad) and python3-gunicorn (production WSGI server, gthread worker; the launcher falls back to Werkzeug's server when it is absent, and OTA installs it via `update.sh`'s `ensure_web_server_dep`); service launched by [`systemd/magic-dingus-web.service`](systemd/magic-dingus-web.service).
 
 ## License
 

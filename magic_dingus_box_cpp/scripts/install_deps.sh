@@ -43,6 +43,7 @@ sudo apt install -y \
   gstreamer1.0-gl \
   gstreamer1.0-libav \
   python3-evdev \
+  python3-gunicorn \
   python3-pip \
   auditd \
   dnsmasq \
@@ -54,6 +55,13 @@ sudo apt install -y \
 # stock Raspberry Pi OS image happens to ship it; nothing else kept that
 # true for a future base image, and the failure is silent (first boot falls
 # back to a weaker path).
+
+# python3-gunicorn is the Content Manager's production web server (gthread
+# worker — the server flask-sock documents for the Phone Remote WebSocket).
+# magic_dingus_box/web/serve.py falls back to Werkzeug's development server
+# when it is missing, so it is not fatal — but fielded boxes get it from
+# update.sh's ensure_web_server_dep, not from here (an OTA does not re-run
+# this script once flask-sock is present).
 
 # auditd powers the library-deletion tripwire (scripts/data/
 # audit-mdb-sweeper.rules, installed by setup_services.sh). It earned its

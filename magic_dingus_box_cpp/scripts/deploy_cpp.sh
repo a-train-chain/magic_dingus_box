@@ -308,6 +308,11 @@ rsync -avz --checksum \
     "${CPP_DIR}/../systemd/magic-dingus-web.service" \
     "${PI_HOST}:${PI_DIR}/systemd/"
 
+# The Content Manager runs under gunicorn when python3-gunicorn is
+# installed (Werkzeug fallback otherwise — see web/serve.py). Same
+# installer the OTA uses, so the two paths cannot disagree.
+ssh "${PI_HOST}" "bash -c 'source ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh && ensure_web_server_dep'" 2>&1 \
+    | sed 's/^/  /'
 ssh "${PI_HOST}" bash <<EOF
 sudo cp ${PI_DIR}/systemd/magic-dingus-web.service /etc/systemd/system/
 sudo systemctl daemon-reload
