@@ -5,7 +5,7 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.10.0] - 2026-10-04
 
 ### Security
 - **The Content Manager can no longer be used to take over a box from
@@ -67,6 +67,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for it once more.
 
 ### Fixed
+- **The menu comes back when a playlist ends.** A playlist set not to
+  loop (the default for new playlists) used to leave the TV black when it
+  finished, with the menu invisible until the box was restarted. The same
+  happened when every video in a playlist failed to play, and when a new
+  playlist failed to load while another was playing. The menu, and any
+  "couldn't play" message, now always comes back.
+- **Trimmed clips stop where you trimmed them.** A playlist item with an
+  end time played on to the end of the file; it now moves on at the end
+  time you set.
+- **The volume no longer jumps at the start of each video.** It stays
+  where you set it.
+- **Buttons pressed right after quitting a game land where you expect.**
+  A press in the moment the menu was coming back could open Settings and
+  then start Master Shuffle instead. The box now waits until the menu is
+  really back before it listens.
+- **Master Shuffle no longer misbehaves with empty playlists,** and going
+  back through its history skips videos whose playlist was removed.
+- **The CRT look keeps flickering properly on boxes left on for days.**
+  The scan-line effect used to slow down and freeze after a few days of
+  uptime.
+- **Forgetting a Wi-Fi network can no longer freeze the screen** while the
+  box talks to the network service.
+- **Movie and TV services with a quoted key in their settings now
+  connect.** A key written with quote marks around it was sent with the
+  quotes and refused.
 - **Sound no longer gets cut off every time the box's main program
   restarts.** The part of the box that plays sound used to be switched
   on by the main program and was forcibly killed whenever that program
@@ -259,6 +284,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (it restarts by itself) instead of the picture or the game.
 
 ### Changed
+- **The menus use less power and run cooler.** The box now redraws the
+  main menu, Settings and the Movies browsing screens only when something
+  on them changes (with the CRT look on, the menu draws at the effect's own
+  30 frames a second instead of 60), and draws each screen in far fewer
+  steps. Nothing looks different.
+- **Movie posters use a fraction of the memory.** Grids load small posters
+  and only the detail page loads the large one, leaving more memory for
+  playback, especially on a Raspberry Pi 4B.
 - **The Content Manager runs on a proper web server.** It used to run on
   a simple built-in server meant for development, which started a new
   worker for every request with no limit. It now uses a production
@@ -286,6 +319,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   up that one time).
 
 ### For operators
+- **The update TO 1.10.0 is installed by each box's previous updater.**
+  The new safeguards (power-cut recovery, TV-off updates, the faster web
+  server package) protect updates from 1.10.0 onward. For this one update:
+  keep the TV on, don't power the box off while it says "Installing", and
+  quit any game first. Boxes pick up the web server package and the new
+  sound service on their own; nothing to do by hand.
 - **Cloning can't damage the source box.** If the source box rebooted
   partway through a clone, its first-boot cleanup ran on the source
   itself and wiped its saves, pairings and settings. It now recognises
