@@ -10,6 +10,7 @@
 #   ./update.sh check              # Check for updates (returns JSON)
 #   ./update.sh install <ver> <url> # Install specific version
 #   ./update.sh rollback           # Rollback to previous version
+#   ./update.sh channel [stable|beta]  # Show or set the update channel
 #
 # ============================================================================
 # OPERATOR-CONTENT PRESERVATION CONTRACT — READ BEFORE EDITING THE rsync CALLS
@@ -41,6 +42,32 @@ TEMP_DIR="${MAGIC_TEMP_DIR:-/tmp/magic_update}"
 GITHUB_REPO="${MAGIC_GITHUB_REPO:-a-train-chain/magic_dingus_box}"  # same override admin.py honors (forks)
 GITHUB_API="${MAGIC_GITHUB_API:-https://api.github.com/repos/${GITHUB_REPO}/releases/latest}"
 VERSION_FILE="${INSTALL_DIR}/VERSION"
+
+# Update channel — "stable" (default) or "beta". See
+# magic_dingus_box_cpp/docs/RELEASING.md and OTA_UPDATE_GUARANTEES.md
+# "Update channels".
+#
+#   stable  asks GitHub for releases/latest, which by GitHub's own rules
+#           NEVER returns a prerelease or a draft. Byte-for-byte the request
+#           every updater before the channel feature makes.
+#   beta    asks for the recent-releases LIST and takes the highest SemVer
+#           among stable AND prerelease (-beta.N) releases, so a beta box
+#           moves onto the final stable the moment it ships.
+#
+# The file lives under <install>/config/, which every OTA rsync excludes
+# (/config/*) and deploy_cpp.sh never syncs — so an update or a rollback
+# can never flip it. Absent, unreadable or anything but exactly "beta"
+# means stable. Setting stable REMOVES the file: absence is the default, so
+# there is nothing left to ship in an image. first_boot.sh deletes it on
+# every clone and prepare_for_cloning.sh refuses to clone a beta box.
+CHANNEL_FILE="${MAGIC_CHANNEL_FILE:-${INSTALL_DIR}/config/update_channel}"
+GITHUB_RELEASES_API="${MAGIC_GITHUB_RELEASES_API:-https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20}"
+
+# The ONE version grammar the OTA path accepts: X.Y.Z, optionally followed
+# by a SemVer prerelease of exactly the form -beta.N. admin.py's
+# _OTA_VERSION_RE and release.yml's tag check carry the same rule. [0-9],
+# not [[:digit:]], so the locale cannot widen it.
+VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$'
 
 # "An install is mid-flight" marker. Written once the backup is complete and
 # BEFORE the kiosk is stopped; removed only after a verified start (or a
@@ -520,10 +547,11 @@ get_binary_url() {
     local version="${1#v}"   # Strip optional leading "v" (bug #1 fix)
     local arch=$(get_device_arch)
 
-    # Never interpolate anything but X.Y.Z into the API URL below (curl
-    # would normalize a "/../" in it onto another repo). install_update()
-    # already enforces this; an empty result means "build from source".
-    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 0
+    # Never interpolate anything but X.Y.Z[-beta.N] into the API URL below
+    # (curl would normalize a "/../" in it onto another repo).
+    # install_update() already enforces this; an empty result means "build
+    # from source". releases/tags/<tag> serves prereleases too.
+    version_valid "$version" || return 0
 
     (
         set +e +o pipefail   # Bug #2 fix: tolerate grep no-match
@@ -547,16 +575,207 @@ get_current_version() {
     fi
 }
 
-# Compare semantic versions (returns 0 if v1 < v2, 1 if v1 >= v2)
-version_lt() {
-    local v1="$1"
-    local v2="$2"
+# ---------------------------------------------------------------------------
+# Versions — SemVer precedence, pure bash (no sort -V, no subprocess tools).
+#
+# `sort -V` was the comparator until the beta channel. It is wrong for
+# prereleases in exactly the direction that matters: it sorts 1.10.1 BEFORE
+# 1.10.1-beta.1 (a bare string sorts before its own extensions), so a beta
+# box would never have been offered the final release it was testing. SemVer
+# says a prerelease has LOWER precedence than its release:
+#   1.10.0 < 1.10.1-beta.1 < 1.10.1-beta.2 < 1.10.1-beta.10 < 1.10.1
+# Every field compares numerically, at any length (no 64-bit overflow, no
+# octal surprise on a leading zero). Pinned case-by-case in test_update.bats.
+# ---------------------------------------------------------------------------
 
-    # Sort versions and check if v1 comes first
-    if [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" = "$v1" ] && [ "$v1" != "$v2" ]; then
-        return 0  # v1 < v2
+# version_valid V — true iff V is X.Y.Z or X.Y.Z-beta.N.
+version_valid() {
+    [[ "${1:-}" =~ $VERSION_RE ]]
+}
+
+# version_is_prerelease V — true iff V carries a -beta.N suffix.
+version_is_prerelease() {
+    [[ "${1:-}" == *-beta.* ]]
+}
+
+# _num_cmp A B — compare two digit strings numerically; prints -1, 0 or 1.
+# Leading zeros are stripped and lengths compared first, so the result is
+# exact for any length and never touches shell arithmetic.
+_num_cmp() {
+    local a="${1#"${1%%[!0]*}"}" b="${2#"${2%%[!0]*}"}"
+    a="${a:-0}"; b="${b:-0}"
+    if [ "${#a}" -ne "${#b}" ]; then
+        if [ "${#a}" -lt "${#b}" ]; then echo -1; else echo 1; fi
+    elif [[ "$a" < "$b" ]]; then echo -1
+    elif [[ "$a" > "$b" ]]; then echo 1
+    else echo 0
     fi
-    return 1  # v1 >= v2
+}
+
+# version_cmp A B — SemVer precedence of two VALID versions; prints -1 (A<B),
+# 0 (equal) or 1 (A>B). Returns 2 and prints nothing if either is invalid.
+version_cmp() {
+    version_valid "${1:-}" && version_valid "${2:-}" || return 2
+    local a_core="${1%%-*}" b_core="${2%%-*}" a_pre="" b_pre="" c i
+    version_is_prerelease "$1" && a_pre="${1##*-beta.}"
+    version_is_prerelease "$2" && b_pre="${2##*-beta.}"
+    local -a a_f b_f
+    IFS=. read -r -a a_f <<<"$a_core"
+    IFS=. read -r -a b_f <<<"$b_core"
+    for i in 0 1 2; do
+        c=$(_num_cmp "${a_f[$i]}" "${b_f[$i]}")
+        if [ "$c" != 0 ]; then echo "$c"; return 0; fi
+    done
+    # Same X.Y.Z: a release outranks any of its prereleases.
+    if [ -z "$a_pre" ] && [ -z "$b_pre" ]; then echo 0
+    elif [ -z "$a_pre" ]; then echo 1
+    elif [ -z "$b_pre" ]; then echo -1
+    else _num_cmp "$a_pre" "$b_pre"
+    fi
+}
+
+# version_lt CURRENT CANDIDATE — true (0) iff CANDIDATE is an upgrade.
+#   - An unparseable CANDIDATE is never an upgrade (never offer garbage).
+#   - An unparseable CURRENT (VERSION missing reads as 0.0.0; a corrupted
+#     VERSION reads as junk) IS upgradeable to any valid candidate — an
+#     update is the repair for a box that cannot say what it runs.
+#   - Equal versions are not an upgrade, and neither is a lower one: no
+#     channel ever offers a downgrade.
+version_lt() {
+    version_valid "${2:-}" || return 1
+    version_valid "${1:-}" || return 0
+    [ "$(version_cmp "$1" "$2")" = "-1" ]
+}
+
+# ---------------------------------------------------------------------------
+# Update channel (see CHANNEL_FILE above)
+# ---------------------------------------------------------------------------
+
+# read_update_channel — prints "beta" or "stable". Only the exact word
+# "beta" (surrounding whitespace ignored) selects beta; anything else —
+# absent file, unreadable file, typo, garbage — is stable.
+read_update_channel() {
+    local c=""
+    if [ -r "$CHANNEL_FILE" ]; then
+        c=$(head -c 64 "$CHANNEL_FILE" 2>/dev/null | tr -d '[:space:]') || c=""
+    fi
+    if [ "$c" = "beta" ]; then echo beta; else echo stable; fi
+}
+
+# write_update_channel stable|beta — beta writes the file atomically;
+# stable removes it (absence IS stable). Returns 2 on an unknown channel.
+write_update_channel() {
+    case "${1:-}" in
+        stable)
+            rm -f "$CHANNEL_FILE" "${CHANNEL_FILE}.tmp" 2>/dev/null || true
+            [ ! -e "$CHANNEL_FILE" ]
+            ;;
+        beta)
+            mkdir -p "$(dirname "$CHANNEL_FILE")" || return 1
+            printf 'beta\n' > "${CHANNEL_FILE}.tmp" || return 1
+            mv -f "${CHANNEL_FILE}.tmp" "$CHANNEL_FILE"
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
+# `update.sh channel [stable|beta]` — print the current channel, or set it
+# and print the result. Human chatter goes to stderr; stdout is exactly one
+# word, which is what admin.py and verify_box.sh parse.
+channel_command() {
+    if [ $# -eq 0 ] || [ -z "${1:-}" ]; then
+        read_update_channel
+        return 0
+    fi
+    case "$1" in
+        stable|beta) ;;
+        *)
+            log_error "Unknown update channel '$1' (expected: stable or beta)"
+            return 2
+            ;;
+    esac
+    if ! write_update_channel "$1"; then
+        log_error "Could not update $CHANNEL_FILE"
+        return 1
+    fi
+    if [ "$1" = "beta" ]; then
+        log_warn "Update channel: beta — this box will be offered pre-release builds. Never ship a unit on beta."
+    else
+        log "Update channel: stable"
+    fi
+    read_update_channel
+}
+
+# fetch_beta_release — prints ONE release object (GitHub's JSON shape) for
+# the highest-precedence non-draft release in the recent-releases list, or
+# emits a json_response error and returns 1. Selection is version_cmp's,
+# never list order (a hotfix published after a beta must not outrank it by
+# date). Python only decodes JSON here; it never compares versions.
+fetch_beta_release() {
+    local list
+    list=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+        --connect-timeout 10 \
+        --max-time 30 \
+        "$GITHUB_RELEASES_API" 2>/dev/null) || {
+        json_response "false" "Failed to connect to GitHub"
+        return 1
+    }
+    if [ -z "$list" ]; then
+        json_response "false" "Empty response from GitHub"
+        return 1
+    fi
+    if echo "$list" | grep -q '"message".*API rate limit'; then
+        json_response "false" "GitHub API rate limit exceeded. Try again later."
+        return 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        json_response "false" "The beta update channel needs python3 to read the release list"
+        return 1
+    fi
+
+    local tags
+    tags=$(printf '%s' "$list" | python3 -c '
+import json, sys
+try:
+    rels = json.load(sys.stdin)
+except ValueError:
+    sys.exit(3)
+if not isinstance(rels, list):
+    sys.exit(3)
+for r in rels:
+    if isinstance(r, dict) and not r.get("draft") and isinstance(r.get("tag_name"), str):
+        print(r["tag_name"])
+' 2>/dev/null) || {
+        json_response "false" "Could not parse the release list from GitHub"
+        return 1
+    }
+
+    local best="" tag v
+    while IFS= read -r tag; do
+        [[ "$tag" == v* ]] || continue
+        v="${tag#v}"
+        version_valid "$v" || continue
+        if [ -z "$best" ] || [ "$(version_cmp "$best" "$v")" = "-1" ]; then
+            best="$v"
+        fi
+    done <<<"$tags"
+
+    if [ -z "$best" ]; then
+        json_response "false" "No releases found on GitHub"
+        return 1
+    fi
+    log "Beta channel: highest release in the list is v$best"
+
+    printf '%s' "$list" | python3 -c '
+import json, sys
+tag = sys.argv[1]
+for r in json.load(sys.stdin):
+    if isinstance(r, dict) and r.get("tag_name") == tag and not r.get("draft"):
+        print(json.dumps(r, indent=2, ensure_ascii=False))
+        break
+' "v$best" 2>/dev/null
 }
 
 # Check for available updates from GitHub
@@ -583,18 +802,35 @@ check_update() {
     local current_version
     current_version=$(get_current_version)
 
+    local channel
+    channel=$(read_update_channel)
+
     log "Current version: $current_version"
+    log "Update channel: $channel"
     log "Checking GitHub for updates..."
 
-    # Fetch latest release info from GitHub API
     local response
-    response=$(curl -s -H "Accept: application/vnd.github.v3+json" \
-        --connect-timeout 10 \
-        --max-time 30 \
-        "$GITHUB_API" 2>/dev/null) || {
-        json_response "false" "Failed to connect to GitHub"
-        return 1
-    }
+    if [ "$channel" = "beta" ]; then
+        # Beta: highest SemVer across the recent-releases list (stable AND
+        # prerelease). fetch_beta_release emits its own JSON error.
+        response=$(fetch_beta_release) || {
+            [ -n "$response" ] && echo "$response"
+            return 1
+        }
+    else
+        # Stable: releases/latest — the exact request every updater before
+        # the channel feature makes. GitHub never returns a prerelease or a
+        # draft from this endpoint, which is what keeps betas off customer
+        # boxes. The stable path never touches the list endpoint (pinned by
+        # test_update.bats).
+        response=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            "$GITHUB_API" 2>/dev/null) || {
+            json_response "false" "Failed to connect to GitHub"
+            return 1
+        }
+    fi
 
     if [ -z "$response" ]; then
         json_response "false" "Empty response from GitHub"
@@ -613,6 +849,13 @@ check_update() {
 
     if [ -z "$latest_version" ]; then
         json_response "false" "Could not parse latest version from GitHub"
+        return 1
+    fi
+
+    # Only the OTA version grammar may go any further: the value lands in
+    # this JSON verbatim and is what admin.py posts back to `install`.
+    if ! version_valid "$latest_version"; then
+        json_response "false" "Unrecognized release version on GitHub (expected X.Y.Z or X.Y.Z-beta.N)"
         return 1
     fi
 
@@ -639,8 +882,15 @@ check_update() {
     published_at=$(echo "$response" | grep -o '"published_at": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
 
     # Determine if update is available
+    # version_lt never offers a downgrade on either channel: a box on
+    # 1.10.1-beta.2 switched back to stable sees 1.10.0 as NOT an update and
+    # simply waits for the next stable (1.10.1 or later).
     local update_available="false"
-    if version_lt "$current_version" "$latest_version"; then
+    if [ "$channel" = "stable" ] && version_is_prerelease "$latest_version"; then
+        # releases/latest cannot return a prerelease unless someone
+        # hand-cleared the flag on a -beta tag. Never offer it on stable.
+        log_warn "releases/latest is a prerelease (v$latest_version) — not offered on the stable channel"
+    elif version_lt "$current_version" "$latest_version"; then
         update_available="true"
         log "Update available: $current_version -> $latest_version"
     else
@@ -664,7 +914,8 @@ check_update() {
         "download_url": "$download_url",
         "release_notes": "$release_notes",
         "published_at": "$published_at",
-        "has_backup": $has_backup
+        "has_backup": $has_backup,
+        "channel": "$channel"
     }
 }
 EOF
@@ -1089,11 +1340,11 @@ install_update() {
     # normalizes dot-segments — so "1.0.8/../../../../attacker/evil/..."
     # fetched ANOTHER repo's release metadata and installed its binary. It
     # is also written verbatim into VERSION. admin.py enforces the same
-    # X.Y.Z rule; this is the independent second check (defense in depth —
-    # the script is also runnable by hand). [0-9], not [[:digit:]], so the
-    # locale cannot widen it.
-    if [[ ! "$target_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        json_response "false" "Invalid version (expected X.Y.Z)"
+    # X.Y.Z[-beta.N] rule; this is the independent second check (defense in
+    # depth — the script is also runnable by hand). VERSION_RE uses [0-9],
+    # not [[:digit:]], so the locale cannot widen it.
+    if ! version_valid "$target_version"; then
+        json_response "false" "Invalid version (expected X.Y.Z or X.Y.Z-beta.N)"
         return 1
     fi
 
@@ -2096,9 +2347,11 @@ usage() {
     echo "  rollback                 Rollback to previous version"
     echo "  recover                  Undo an install interrupted by power loss (boot-time)"
     echo "  version                  Show current version"
+    echo "  channel [stable|beta]    Show (no argument) or set the update channel"
     echo ""
     echo "Examples:"
     echo "  $0 check"
+    echo "  $0 channel beta          # this box gets pre-release builds (owner boxes only)"
     echo "  $0 install 1.0.1 https://github.com/.../release.tar.gz"
     echo "  $0 rollback"
     echo ""
@@ -2155,6 +2408,10 @@ case "${1:-}" in
         ;;
     version)
         echo "$(get_current_version)"
+        ;;
+    channel)
+        # No lock: a one-word file written atomically, read once per check.
+        channel_command "${2:-}"
         ;;
     --help|-h|help)
         usage

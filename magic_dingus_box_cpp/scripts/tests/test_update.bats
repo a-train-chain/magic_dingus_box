@@ -32,6 +32,10 @@ setup() {
 
 # Teardown - runs after each test
 teardown() {
+    # A fake GitHub left running by a failed channel test (see below).
+    if [ -n "${FAKE_GH_PID:-}" ]; then
+        kill "$FAKE_GH_PID" 2>/dev/null || true
+    fi
     # Clean up temp directory
     if [ -n "$TEST_TEMP_DIR" ] && [ -d "$TEST_TEMP_DIR" ]; then
         rm -rf "$TEST_TEMP_DIR"
@@ -83,6 +87,7 @@ test_version_lt() {
 
     # Source the script to get the function
     source "$UPDATE_SCRIPT" 2>/dev/null || true
+    set +u +o pipefail
 
     if version_lt "$v1" "$v2"; then
         [ "$expected" = "true" ]
@@ -92,49 +97,107 @@ test_version_lt() {
 }
 
 @test "version_lt: 1.0.0 < 1.0.1" {
-    # Test version comparison using sort -V (same logic as update.sh)
-    # version_lt returns 0 (true) if v1 < v2
-    v1="1.0.0"
-    v2="1.0.1"
-    if [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" = "$v1" ] && [ "$v1" != "$v2" ]; then
-        result="true"
-    else
-        result="false"
-    fi
-    [ "$result" = "true" ]
+    test_version_lt 1.0.0 1.0.1 true
 }
 
 @test "version_lt: 1.0.1 >= 1.0.0" {
-    v1="1.0.1"
-    v2="1.0.0"
-    if [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" = "$v1" ] && [ "$v1" != "$v2" ]; then
-        result="true"
-    else
-        result="false"
-    fi
-    [ "$result" = "false" ]
+    test_version_lt 1.0.1 1.0.0 false
 }
 
 @test "version_lt: 1.0.0 >= 1.0.0 (equal versions)" {
-    v1="1.0.0"
-    v2="1.0.0"
-    if [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" = "$v1" ] && [ "$v1" != "$v2" ]; then
-        result="true"
-    else
-        result="false"
-    fi
-    [ "$result" = "false" ]
+    test_version_lt 1.0.0 1.0.0 false
 }
 
 @test "version_lt: 1.9.0 < 1.10.0 (numeric comparison)" {
-    v1="1.9.0"
-    v2="1.10.0"
-    if [ "$(printf '%s\n' "$v1" "$v2" | sort -V | head -n1)" = "$v1" ] && [ "$v1" != "$v2" ]; then
-        result="true"
-    else
-        result="false"
-    fi
-    [ "$result" = "true" ]
+    test_version_lt 1.9.0 1.10.0 true
+}
+
+# SemVer precedence for the beta channel. These call update.sh's OWN
+# version_cmp (the four tests above used to re-run a private copy of the old
+# `sort -V` pipeline, which tested nothing in the script). sort -V put
+# 1.10.1 BEFORE 1.10.1-beta.1, so a beta box would never have been offered
+# the release it was testing.
+#
+# Table: <a> <b> <expected version_cmp a b>
+VERSION_CMP_CASES='
+1.0.0           1.0.1           -1
+1.0.1           1.0.0           1
+1.0.0           1.0.0           0
+1.9.0           1.10.0          -1
+1.10.0          1.9.0           1
+2.0.0           1.99.99         1
+1.10.0          1.10.1-beta.1   -1
+1.10.1-beta.1   1.10.0          1
+1.10.1-beta.1   1.10.1-beta.2   -1
+1.10.1-beta.2   1.10.1-beta.1   1
+1.10.1-beta.2   1.10.1-beta.10  -1
+1.10.1-beta.10  1.10.1-beta.9   1
+1.10.1-beta.9   1.10.1          -1
+1.10.1          1.10.1-beta.99  1
+1.10.1-beta.3   1.10.1-beta.3   0
+1.10.1-beta.1   1.11.0          -1
+1.11.0-beta.1   1.10.1          1
+01.2.3          1.2.3           0
+1.2.3-beta.01   1.2.3-beta.1    0
+99999999999999999999.0.0 100000000000000000000.0.0 -1
+'
+
+@test "version_cmp: SemVer precedence table (numeric, prerelease < its release)" {
+    load_update_functions
+    local a b want got bad=0
+    while read -r a b want; do
+        [ -n "$a" ] || continue
+        got=$(version_cmp "$a" "$b")
+        if [ "$got" != "$want" ]; then
+            echo "version_cmp $a $b: got '$got', want '$want'"; bad=1
+        fi
+    done <<<"$VERSION_CMP_CASES"
+    [ "$bad" -eq 0 ]
+}
+
+@test "version_lt agrees with version_cmp on every table row" {
+    load_update_functions
+    local a b want is_lt bad=0
+    while read -r a b want; do
+        [ -n "$a" ] || continue
+        if version_lt "$a" "$b"; then is_lt=yes; else is_lt=no; fi
+        if { [ "$want" = -1 ] && [ "$is_lt" = no ]; } || { [ "$want" != -1 ] && [ "$is_lt" = yes ]; }; then
+            echo "version_lt $a $b = $is_lt, but version_cmp want=$want"; bad=1
+        fi
+    done <<<"$VERSION_CMP_CASES"
+    [ "$bad" -eq 0 ]
+}
+
+@test "version_cmp: invalid input returns 2 and prints nothing" {
+    load_update_functions
+    local v
+    for v in "" "1.0" "v1.0.0" "1.0.0-rc.1" "1.0.0-beta" "1.0.0-beta.x" \
+             "1.0.0-beta.1.2" "1.0.0-alpha.1" "1.0.0 " "1.0.0/../x" "1.0.0;x" "١.0.0"; do
+        run version_cmp "$v" "1.0.0"
+        [ "$status" -eq 2 ] || { echo "accepted: '$v'"; false; }
+        [ -z "$output" ]
+        ! version_valid "$v" || { echo "version_valid accepted '$v'"; false; }
+    done
+}
+
+@test "version_valid: accepts exactly X.Y.Z and X.Y.Z-beta.N" {
+    load_update_functions
+    version_valid 1.10.0
+    version_valid 1.10.1-beta.1
+    version_valid 0.0.0
+    version_valid 10.20.30-beta.400
+}
+
+@test "version_lt: never offers a garbage target, always offers a repair to a garbage current" {
+    load_update_functions
+    ! version_lt 1.0.0 "1.0.1-rc1"
+    ! version_lt 1.0.0 ""
+    version_lt "junk" 1.0.0
+    version_lt "0.0.0" 1.0.0
+}
+
+@test "update.sh no longer compares versions with sort -V" {
+    ! grep -nE '^[^#]*sort -V' "$UPDATE_SCRIPT"
 }
 
 # =============================================================================
@@ -1380,4 +1443,352 @@ seed_audio_rollback() {
     rollback_internal 2>/dev/null
     rollback >/dev/null 2>&1
     [ "$(wc -l < "$TEST_TEMP_DIR/retire.log")" -eq 2 ]
+}
+
+# =============================================================================
+# UPDATE CHANNEL TESTS (stable / beta) — the channel file
+# =============================================================================
+# config/update_channel under the install root. /config/* is excluded from
+# every OTA rsync, so neither an update nor a rollback can flip it.
+
+@test "channel: absent file reads as stable" {
+    run "$UPDATE_SCRIPT" channel
+    [ "$status" -eq 0 ]
+    [ "$output" = "stable" ]
+}
+
+@test "channel: lives at <install>/config/update_channel" {
+    load_update_functions
+    [ "$CHANNEL_FILE" = "$MAGIC_BASE_PATH/config/update_channel" ]
+}
+
+@test "channel: only the exact word beta selects beta; anything else is stable" {
+    mkdir -p "$MAGIC_BASE_PATH/config"
+    local f="$MAGIC_BASE_PATH/config/update_channel" content
+    for content in "beta" "beta\n" "  beta  \n" "\nbeta\n"; do
+        printf "$content" > "$f"
+        run "$UPDATE_SCRIPT" channel
+        [ "$output" = "beta" ] || { echo "'$content' -> '$output'"; false; }
+    done
+    for content in "" "stable" "Beta" "BETA" "betas" "beta1" "dev" "beta stable"; do
+        printf "$content" > "$f"
+        run "$UPDATE_SCRIPT" channel
+        [ "$status" -eq 0 ]
+        [ "$output" = "stable" ] || { echo "'$content' -> '$output'"; false; }
+    done
+}
+
+@test "channel: an unreadable file reads as stable" {
+    [ "$(id -u)" -ne 0 ] || skip "root reads anything"
+    mkdir -p "$MAGIC_BASE_PATH/config"
+    echo beta > "$MAGIC_BASE_PATH/config/update_channel"
+    chmod 000 "$MAGIC_BASE_PATH/config/update_channel"
+    run "$UPDATE_SCRIPT" channel
+    chmod 644 "$MAGIC_BASE_PATH/config/update_channel"
+    [ "$output" = "stable" ]
+}
+
+@test "channel beta: writes the file (creating config/) and prints beta" {
+    [ ! -d "$MAGIC_BASE_PATH/config" ]
+    run "$UPDATE_SCRIPT" channel beta
+    [ "$status" -eq 0 ]
+    [ "${lines[${#lines[@]}-1]}" = "beta" ]
+    [ "$(cat "$MAGIC_BASE_PATH/config/update_channel")" = "beta" ]
+    [ ! -e "$MAGIC_BASE_PATH/config/update_channel.tmp" ]
+    run "$UPDATE_SCRIPT" channel
+    [ "$output" = "beta" ]
+}
+
+@test "channel stable: REMOVES the file (absence is the default)" {
+    mkdir -p "$MAGIC_BASE_PATH/config"
+    echo beta > "$MAGIC_BASE_PATH/config/update_channel"
+    run "$UPDATE_SCRIPT" channel stable
+    [ "$status" -eq 0 ]
+    [ "${lines[${#lines[@]}-1]}" = "stable" ]
+    [ ! -e "$MAGIC_BASE_PATH/config/update_channel" ]
+    # Idempotent on a box that is already stable.
+    run "$UPDATE_SCRIPT" channel stable
+    [ "$status" -eq 0 ]
+}
+
+@test "channel: an unknown channel is refused and the file is untouched" {
+    mkdir -p "$MAGIC_BASE_PATH/config"
+    echo beta > "$MAGIC_BASE_PATH/config/update_channel"
+    run "$UPDATE_SCRIPT" channel nightly
+    [ "$status" -eq 2 ]
+    [ "$(cat "$MAGIC_BASE_PATH/config/update_channel")" = "beta" ]
+}
+
+@test "channel: stdout is exactly one word (admin.py and verify_box.sh parse it)" {
+    out=$("$UPDATE_SCRIPT" channel beta 2>/dev/null)
+    [ "$out" = "beta" ]
+    out=$("$UPDATE_SCRIPT" channel 2>/dev/null)
+    [ "$out" = "beta" ]
+    out=$("$UPDATE_SCRIPT" channel stable 2>/dev/null)
+    [ "$out" = "stable" ]
+}
+
+@test "usage lists the channel command" {
+    run "$UPDATE_SCRIPT" --help
+    [[ "$output" == *"channel [stable|beta]"* ]]
+}
+
+# =============================================================================
+# CHECK ON BOTH CHANNELS — against the rehearsal's fake GitHub
+# =============================================================================
+# tests/ota_rehearsal/box/fake_github.py in plain-HTTP mode on an ephemeral
+# port. It logs every request, which is how "the stable path never asks for
+# the release LIST" is proven rather than assumed.
+
+FAKE_GH="$SCRIPT_DIR/../../../tests/ota_rehearsal/box/fake_github.py"
+FAKE_REPO="a-train-chain/magic_dingus_box"
+
+# fake_release VER STAMP — a release dir with the three assets release.yml
+# uploads; STAMP (touch -t) sets its published_at, i.e. its list position.
+fake_release() {
+    local d="$FAKE_GH_RELEASES/v$1"
+    mkdir -p "$d"
+    echo "source $1" > "$d/magic-dingus-box-$1.tar.gz"
+    echo "sum $1" > "$d/checksum.sha256"
+    echo "bin $1" > "$d/magic_dingus_box_cpp-arm64-$1.tar.gz"
+    touch -t "$2" "$d"/*
+}
+
+# fake_control LATEST [DRAFTS_JSON]
+fake_control() {
+    printf '{"latest": "%s", "drafts": %s}\n' "$1" "${2:-[]}" > "$FAKE_GH_CONTROL"
+}
+
+start_fake_github() {
+    command -v python3 >/dev/null || skip "python3 required"
+    export FAKE_GH_RELEASES="$TEST_TEMP_DIR/gh/release"
+    export FAKE_GH_CONTROL="$TEST_TEMP_DIR/gh/control.json"
+    export FAKE_GH_LOG="$TEST_TEMP_DIR/gh/requests.jsonl"
+    export FAKE_GH_REPO="$FAKE_REPO"
+    mkdir -p "$FAKE_GH_RELEASES"
+    : > "$FAKE_GH_LOG"
+    local portfile="$TEST_TEMP_DIR/gh/port"
+    python3 "$FAKE_GH" --http "$portfile" > "$TEST_TEMP_DIR/gh/server.log" 2>&1 3>&- &
+    FAKE_GH_PID=$!
+    local i
+    for i in $(seq 1 100); do
+        [ -s "$portfile" ] && break
+        sleep 0.05
+    done
+    [ -s "$portfile" ] || { cat "$TEST_TEMP_DIR/gh/server.log"; return 1; }
+    local port
+    port=$(tr -d '[:space:]' < "$portfile")
+    export MAGIC_GITHUB_API="http://127.0.0.1:${port}/repos/${FAKE_REPO}/releases/latest"
+    export MAGIC_GITHUB_RELEASES_API="http://127.0.0.1:${port}/repos/${FAKE_REPO}/releases?per_page=20"
+}
+
+stop_fake_github() {
+    [ -n "${FAKE_GH_PID:-}" ] && kill "$FAKE_GH_PID" 2>/dev/null
+    wait "${FAKE_GH_PID:-}" 2>/dev/null || true
+}
+
+# Release history used by most tests below. Published order (oldest first):
+# 1.10.0, 1.10.1-beta.1, 1.10.1-beta.2, then a 1.9.15 hotfix published LAST
+# — so "newest in the list" and "highest version" deliberately disagree.
+seed_release_history() {
+    fake_release 1.10.0        202609010000
+    fake_release 1.10.1-beta.1 202609100000
+    fake_release 1.10.1-beta.2 202609200000
+    fake_release 1.9.15        202609300000
+    fake_control 1.10.0
+}
+
+# jfield JSON KEY — data.KEY from update.sh's check JSON.
+jfield() {
+    python3 -c 'import json,sys; v=json.loads(sys.argv[1])["data"][sys.argv[2]]; print(json.dumps(v) if isinstance(v,bool) else v)' "$1" "$2"
+}
+
+list_requests()   { grep -c "\"path\": \"/repos/${FAKE_REPO}/releases?" "$FAKE_GH_LOG" || true; }
+latest_requests() { grep -c "\"path\": \"/repos/${FAKE_REPO}/releases/latest\"" "$FAKE_GH_LOG" || true; }
+
+set_box() {  # set_box VERSION CHANNEL
+    echo "$1" > "$MAGIC_BASE_PATH/VERSION"
+    if [ "$2" = beta ]; then
+        mkdir -p "$MAGIC_BASE_PATH/config"; echo beta > "$MAGIC_BASE_PATH/config/update_channel"
+    else
+        rm -f "$MAGIC_BASE_PATH/config/update_channel"
+    fi
+}
+
+@test "check (stable): offers releases/latest and NEVER requests the list endpoint" {
+    start_fake_github
+    seed_release_history
+    set_box 1.9.0 stable
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    [ "$status" -eq 0 ]
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" latest_version)" = "1.10.0" ]
+    [ "$(jfield "$json" update_available)" = "true" ]
+    [ "$(jfield "$json" channel)" = "stable" ]
+    [ "$(jfield "$json" download_url)" = "https://github.com/${FAKE_REPO}/releases/download/v1.10.0/magic-dingus-box-1.10.0.tar.gz" ]
+    [ "$(latest_requests)" -eq 1 ]
+    [ "$(list_requests)" -eq 0 ]
+    # Nothing but releases/latest was asked of the API.
+    [ "$(grep -c '"path"' "$FAKE_GH_LOG")" -eq 1 ]
+}
+
+@test "check (stable): the request is the pre-channel one (GITHUB_API default unchanged)" {
+    load_update_functions
+    unset MAGIC_GITHUB_API
+    GITHUB_REPO="$FAKE_REPO"
+    [ "${MAGIC_GITHUB_API:-https://api.github.com/repos/${GITHUB_REPO}/releases/latest}" = \
+      "https://api.github.com/repos/${FAKE_REPO}/releases/latest" ]
+    grep -q 'GITHUB_API="${MAGIC_GITHUB_API:-https://api.github.com/repos/${GITHUB_REPO}/releases/latest}"' "$UPDATE_SCRIPT"
+}
+
+@test "check (stable): a box on a beta switched back to stable is offered NO downgrade" {
+    start_fake_github
+    seed_release_history
+    set_box 1.10.1-beta.2 stable
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    [ "$status" -eq 0 ]
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" latest_version)" = "1.10.0" ]
+    [ "$(jfield "$json" update_available)" = "false" ]
+    [ "$(list_requests)" -eq 0 ]
+}
+
+@test "check (stable): ...and takes the next stable once it ships" {
+    start_fake_github
+    seed_release_history
+    fake_release 1.10.1 202610010000
+    fake_control 1.10.1
+    set_box 1.10.1-beta.2 stable
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" update_available)" = "true" ]
+    [ "$(jfield "$json" latest_version)" = "1.10.1" ]
+}
+
+@test "check (stable): a mis-flagged -beta tag at releases/latest is never offered" {
+    start_fake_github
+    seed_release_history
+    fake_control 1.10.1-beta.2   # as if someone cleared the prerelease flag
+    set_box 1.10.0 stable
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    [ "$status" -eq 0 ]
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" update_available)" = "false" ]
+}
+
+@test "check (beta): highest SemVer across stable+prerelease, not newest-published" {
+    start_fake_github
+    seed_release_history
+    set_box 1.10.0 beta
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    [ "$status" -eq 0 ]
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" latest_version)" = "1.10.1-beta.2" ]
+    [ "$(jfield "$json" update_available)" = "true" ]
+    [ "$(jfield "$json" channel)" = "beta" ]
+    [ "$(jfield "$json" download_url)" = "https://github.com/${FAKE_REPO}/releases/download/v1.10.1-beta.2/magic-dingus-box-1.10.1-beta.2.tar.gz" ]
+    [ "$(list_requests)" -eq 1 ]
+    [ "$(latest_requests)" -eq 0 ]
+    grep -q '"path": "/repos/'"${FAKE_REPO}"'/releases?per_page=20"' "$FAKE_GH_LOG"
+}
+
+@test "check (beta): ignores drafts, even when they are the highest version" {
+    start_fake_github
+    seed_release_history
+    fake_release 1.11.0 202610020000
+    fake_control 1.10.0 '["1.11.0"]'
+    set_box 1.10.0 beta
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" latest_version)" = "1.10.1-beta.2" ]
+}
+
+@test "check (beta): moves onto the final stable when it ships" {
+    start_fake_github
+    seed_release_history
+    fake_release 1.10.1 202610010000
+    set_box 1.10.1-beta.2 beta
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" latest_version)" = "1.10.1" ]
+    [ "$(jfield "$json" update_available)" = "true" ]
+}
+
+@test "check (beta): already on the highest beta -> up to date" {
+    start_fake_github
+    seed_release_history
+    set_box 1.10.1-beta.2 beta
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" update_available)" = "false" ]
+}
+
+@test "check (beta): a pulled (deleted) beta is no longer offered" {
+    start_fake_github
+    seed_release_history
+    rm -rf "$FAKE_GH_RELEASES/v1.10.1-beta.2"
+    set_box 1.10.0 beta
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    json=$(echo "$output" | sed -n '/^{/,/^}/p')
+    [ "$(jfield "$json" latest_version)" = "1.10.1-beta.1" ]
+}
+
+@test "check (beta): only drafts in the list -> a clean JSON error" {
+    start_fake_github
+    fake_release 1.11.0 202610020000
+    fake_control "" '["1.11.0"]'
+    set_box 1.10.0 beta
+    run "$UPDATE_SCRIPT" check
+    stop_fake_github
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'"ok": false'* ]]
+    [[ "$output" == *"No releases found"* ]]
+}
+
+@test "check (beta): an unparseable list -> a clean JSON error" {
+    load_update_functions
+    curl() { echo 'this is not json'; }
+    mkdir -p "$MAGIC_BASE_PATH/config"; echo beta > "$MAGIC_BASE_PATH/config/update_channel"
+    run check_update
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'"ok": false'* ]]
+    [[ "$output" == *"Could not parse the release list"* ]]
+}
+
+# =============================================================================
+# BETA VERSIONS THROUGH THE INSTALL GATES
+# =============================================================================
+
+@test "install_update accepts an X.Y.Z-beta.N version past validation" {
+    run "$UPDATE_SCRIPT" install "1.10.1-beta.1" "https://evil.com/x.tar.gz"
+    [ "$status" -ne 0 ]
+    # Refused for the URL, NOT for the version.
+    [[ "$output" == *"Invalid download URL"* ]]
+    [[ "$output" != *"Invalid version"* ]]
+}
+
+@test "install_update still rejects other prerelease shapes" {
+    local v
+    for v in "1.10.1-rc.1" "1.10.1-beta" "1.10.1-beta.1/../../x" "1.10.1-BETA.1"; do
+        run "$UPDATE_SCRIPT" install "$v" \
+            "https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.10.1/x.tar.gz"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"Invalid version"* ]] || { echo "accepted $v"; false; }
+    done
+}
+
+@test "get_binary_url looks a beta up by its full tag" {
+    load_update_functions
+    curl() { echo "$*" >> "$TEST_TEMP_DIR/curl.log"; echo '{}'; }
+    get_binary_url "v1.10.1-beta.1" >/dev/null
+    grep -q "releases/tags/v1.10.1-beta.1" "$TEST_TEMP_DIR/curl.log"
 }
