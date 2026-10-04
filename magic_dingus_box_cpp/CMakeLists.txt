@@ -114,6 +114,7 @@ set(PLATFORM_SOURCES
     src/platform/drm_display.cpp
     src/platform/gbm_context.cpp
     src/platform/egl_context.cpp
+    src/platform/frame_presenter.cpp
     src/platform/input_manager.cpp
     src/platform/gpio_manager.cpp
     src/platform/platform_profile.cpp
@@ -165,11 +166,13 @@ set(APP_SOURCES
     src/app/playback_stall_watchdog.cpp
     src/app/playback_reset.cpp
     src/app/auto_advance.cpp
+    src/app/redraw_gate.cpp
 )
 
 set(UTILS_SOURCES
     src/utils/config.cpp
     src/utils/path_resolver.cpp
+    src/utils/services_env.cpp
     src/utils/stb_image_impl.cpp
     src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
@@ -689,6 +692,8 @@ if(UI_TEST_SOURCES)
         src/utils/config.cpp
         # controller_wizard.cpp stamps captured_at through this.
         src/utils/time_format.cpp
+        # settings_menu.cpp's open() re-probes WIREGUARD_PRIVATE_KEY.
+        src/utils/services_env.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -714,6 +719,8 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # in no test target, so their end-of-item logic lives here.
         src/app/playback_reset.cpp
         src/app/auto_advance.cpp
+        # The main loop's redraw gate (draw vs skip per iteration).
+        src/app/redraw_gate.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp
@@ -758,7 +765,9 @@ endif()
 # other.
 file(GLOB UTILS_TEST_SOURCES "tests/utils/*.cpp")
 if(UTILS_TEST_SOURCES)
-    add_executable(test_utils_unit ${UTILS_TEST_SOURCES} src/utils/time_format.cpp)
+    add_executable(test_utils_unit ${UTILS_TEST_SOURCES}
+        src/utils/time_format.cpp
+        src/utils/services_env.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)

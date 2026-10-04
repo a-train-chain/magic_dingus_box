@@ -3,6 +3,7 @@
 #include "../utils/config.h"
 #include "../utils/fsync_util.h"
 #include "../utils/logger.h"
+#include "../utils/services_env.h"
 #include <json/json.h>
 #include <fstream>
 #include <iostream>
@@ -47,28 +48,11 @@ app::AppState::DisplaySettings::MbLibraryFilter mb_library_filter_from_string(co
     return R::All;
 }
 
-// Reads /opt/magic_dingus_box/services/.env if present and returns true
-// iff WIREGUARD_PRIVATE_KEY is set to a non-empty value. Failure-closed:
-// missing file or any I/O error returns false.
+// True iff services/.env sets WIREGUARD_PRIVATE_KEY to a non-empty value.
+// Failure-closed: a missing file or any I/O error reads as false.
 bool read_vpn_configured_from_services_env() {
-    static constexpr const char* kEnvPath = "/opt/magic_dingus_box/services/.env";
-    std::ifstream f(kEnvPath);
-    if (!f) return false;
-    std::string line;
-    while (std::getline(f, line)) {
-        // Match WIREGUARD_PRIVATE_KEY=<non-empty>. Ignore quoted/unquoted form.
-        constexpr std::string_view kKey = "WIREGUARD_PRIVATE_KEY=";
-        if (line.rfind(kKey, 0) != 0) continue;
-        std::string val = line.substr(kKey.size());
-        // Strip surrounding quotes and whitespace.
-        auto trim = [](std::string& s) {
-            while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '"' || s.front() == '\'')) s.erase(s.begin());
-            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t' || s.back()  == '"' || s.back()  == '\'')) s.pop_back();
-        };
-        trim(val);
-        return !val.empty();
-    }
-    return false;
+    return !utils::read_env_value(utils::kServicesEnvPath,
+                                  "WIREGUARD_PRIVATE_KEY").empty();
 }
 
 }  // namespace

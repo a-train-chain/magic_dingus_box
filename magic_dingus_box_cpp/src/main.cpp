@@ -4,6 +4,7 @@
 #include "platform/input_manager.h"
 #include "platform/gpio_manager.h"
 #include "platform/platform_profile.h"
+#include "platform/frame_presenter.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
@@ -62,10 +63,12 @@
 #include "app/playback_stall_watchdog.h"
 #include "app/playback_reset.h"
 #include "app/auto_advance.h"
+#include "app/redraw_gate.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
 #include "utils/path_resolver.h"
+#include "utils/services_env.h"
 #include "utils/wifi_manager.h"
 #include "utils/logger.h"
 #include "ui/virtual_keyboard.h"
@@ -132,19 +135,6 @@ using namespace app;
 
 namespace fs = std::filesystem;
 
-struct PageFlipContext {
-    bool waiting_for_flip;
-};
-
-static void page_flip_handler(int /*fd*/, unsigned int /*frame*/,
-                              unsigned int /*sec*/, unsigned int /*usec*/,
-                              void *data) {
-    PageFlipContext *ctx = (PageFlipContext*)data;
-    if (ctx) {
-        ctx->waiting_for_flip = false;
-    }
-}
-
 // Rebuild the per-model kiosk MENU-navigation overlays from the captured
 // profile store and hand them to InputManager. Called once at startup and
 // again whenever the Controller Setup wizard closes, so a pad the operator
@@ -163,8 +153,9 @@ static void reload_menu_overlays(platform::InputManager& input) {
 
 #ifdef MEDIA_BROWSER_ENABLED
 // Persist the in-flight playback position for the active watch identity
-// (resume-on-next-play). ORDERING CONTRACT — called at ALL THREE Playback
-// exit sites in the dispatcher, ALWAYS BEFORE active_mb_screen->leave().
+// (resume-on-next-play). ORDERING CONTRACT — called at BOTH in-UI Playback
+// exits (exit_media_browser() and the sibling-screen transition in the
+// dispatcher) and at shutdown, ALWAYS BEFORE active_mb_screen->leave().
 // Controller::update_state runs at the BOTTOM of the frame loop, and only
 // every other frame, so the position read here is up to 2 frames stale —
 // but it was captured while the pipeline was still playing, which is
@@ -779,26 +770,14 @@ int main(int /* argc */, char* /* argv */[]) {
     //   3. Parse /opt/magic_dingus_box/services/.env directly (fallback
     //      for when systemd env propagation isn't set up)
     // Otherwise we fall back to RadarrMockClient for dev machines.
-    auto read_env_file_key = [](const std::string& path, const std::string& key) -> std::string {
-        std::ifstream f(path);
-        if (!f) return "";
-        std::string line;
-        const std::string prefix = key + "=";
-        while (std::getline(f, line)) {
-            if (line.rfind(prefix, 0) == 0) {
-                std::string v = line.substr(prefix.size());
-                while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ')) v.pop_back();
-                return v;
-            }
-        }
-        return "";
-    };
+    // (Step 3 for every client below goes through utils::read_env_value —
+    // see utils/services_env.h for the quoting rules.)
 
     std::unique_ptr<media_browser::RadarrClient> radarr_owned;
     std::string radarr_key;
     if (const char* rk = std::getenv("MDB_RADARR_API_KEY"); rk && *rk) radarr_key = rk;
     else if (const char* rk2 = std::getenv("RADARR_API_KEY"); rk2 && *rk2) radarr_key = rk2;
-    else radarr_key = read_env_file_key("/opt/magic_dingus_box/services/.env", "RADARR_API_KEY");
+    else radarr_key = utils::read_env_value(utils::kServicesEnvPath, "RADARR_API_KEY");
 
     if (!radarr_key.empty()) {
         media_browser::RadarrClient::Config radarr_cfg;
@@ -847,7 +826,7 @@ int main(int /* argc */, char* /* argv */[]) {
     std::string sonarr_key;
     if (const char* sk = std::getenv("MDB_SONARR_API_KEY"); sk && *sk) sonarr_key = sk;
     else if (const char* sk2 = std::getenv("SONARR_API_KEY"); sk2 && *sk2) sonarr_key = sk2;
-    else sonarr_key = read_env_file_key("/opt/magic_dingus_box/services/.env", "SONARR_API_KEY");
+    else sonarr_key = utils::read_env_value(utils::kServicesEnvPath, "SONARR_API_KEY");
 
     if (!sonarr_key.empty()) {
         media_browser::SonarrClient::Config sonarr_cfg;
@@ -941,8 +920,8 @@ int main(int /* argc */, char* /* argv */[]) {
         } else if (const char* k2 = std::getenv("PROWLARR_API_KEY"); k2 && *k2) {
             prowlarr_key = k2;
         } else {
-            prowlarr_key = read_env_file_key(
-                "/opt/magic_dingus_box/services/.env", "PROWLARR_API_KEY");
+            prowlarr_key = utils::read_env_value(
+                utils::kServicesEnvPath, "PROWLARR_API_KEY");
         }
 
         if (!prowlarr_key.empty()) {
@@ -1516,262 +1495,13 @@ int main(int /* argc */, char* /* argv */[]) {
 
     std::cout << "Entering main loop..." << std::endl;
 
-    // Frame presentation context - encapsulates all GBM/DRM state
-    // Using a struct instead of static variables allows proper cleanup and reset
-    struct FrameContext {
-        std::unordered_map<uint32_t, uint32_t> fb_cache;  // bo_handle -> fb_id
-        struct gbm_bo* previous_bo = nullptr;             // Buffer from previous frame
-        uint32_t previous_bo_handle = 0;
-        uint32_t current_fb_id = 0;
-        bool first_frame = true;
-        int force_setcrtc_frames = 0;      // Force SetCrtc for multiple frames after reset
-        int consecutive_buffer_failures = 0;  // Track consecutive buffer lock failures
-        int page_flip_failures = 0;           // Track page flip failures
-        int successful_page_flips = 0;        // Track successful page flips for counter reset
-
-        // Reset all state for display recovery
-        void reset(int drm_fd, struct gbm_surface* gbm_surface) {
-            // Clean up framebuffers
-            for (auto& pair : fb_cache) {
-                drmModeRmFB(drm_fd, pair.second);
-            }
-            fb_cache.clear();
-
-            // Release GBM buffer
-            if (previous_bo && gbm_surface) {
-                gbm_surface_release_buffer(gbm_surface, previous_bo);
-            }
-            previous_bo = nullptr;
-            previous_bo_handle = 0;
-            current_fb_id = 0;
-
-            // Reset flags
-            first_frame = true;
-            force_setcrtc_frames = 10;  // Force SetCrtc for stability after reset
-            consecutive_buffer_failures = 0;
-            page_flip_failures = 0;
-            successful_page_flips = 0;
-        }
-    };
-
-    FrameContext frame_ctx;
-
-    // Frame presentation lambda
-    // Encapsulates GBM/DRM logic to be shared between main loop and loading callback
+    // Scan-out of each rendered frame (GBM buffer -> DRM fb -> SetCrtc /
+    // page flip). See platform/frame_presenter.h for the lifecycle. The
+    // lambda keeps one name for both callers (main loop + game-loading
+    // progress callback) and reads `mode` live, as the old inline code did.
+    platform::FramePresenter frame_presenter(display, egl, mode_info);
     auto present_frame = [&]() {
-        // Double buffering strategy (GBM pools typically have only 2-3 buffers):
-        // - previous_bo: previous frame (release after we've presented next frame)
-        // - current bo: being presented now
-
-        // Release the previous buffer BEFORE locking a new one
-        // This ensures GBM pool has an available buffer
-        // We release after 1 frame delay (previous frame is safe after we present next)
-        if (frame_ctx.previous_bo != nullptr) {
-            // CRITICAL: DO NOT remove framebuffer from cache when releasing GBM buffer
-            // The framebuffer should stay in cache so we can reuse it if the buffer cycles back
-            // Only remove framebuffers that are definitely no longer needed (old entries in cache)
-
-            // CRITICAL: Release the GBM buffer BEFORE locking a new one
-            // This prevents GBM from trying to allocate new buffers
-            // Validate that previous_bo is actually different from what we're about to lock
-            gbm_surface_release_buffer(egl.get_gbm_surface(), frame_ctx.previous_bo);
-            frame_ctx.previous_bo = nullptr;
-            frame_ctx.previous_bo_handle = 0;
-        }
-
-        // Clean up old framebuffers that are no longer in use
-        // Keep only framebuffers for buffers we might reuse (limit cache to 4 for better stability)
-        constexpr size_t MAX_FB_CACHE = 4;
-        while (frame_ctx.fb_cache.size() > MAX_FB_CACHE) {
-            // Remove oldest entry if it's not the current framebuffer
-            auto oldest = frame_ctx.fb_cache.begin();
-            uint32_t old_fb_id = oldest->second;
-            if (old_fb_id != frame_ctx.current_fb_id) {
-                drmModeRmFB(display.get_fd(), old_fb_id);
-            }
-            frame_ctx.fb_cache.erase(oldest);
-        }
-
-        // Now lock the front buffer (should succeed since we just released one)
-        struct gbm_bo* bo = gbm_surface_lock_front_buffer(egl.get_gbm_surface());
-        if (!bo) {
-            frame_ctx.consecutive_buffer_failures++;
-            std::cerr << "Failed to lock front buffer! GPU memory may be exhausted." << std::endl;
-            std::cerr << "  Consecutive failures: " << frame_ctx.consecutive_buffer_failures << std::endl;
-            std::cerr << "  This usually means GBM buffer pool is exhausted." << std::endl;
-
-            // If we've had too many consecutive failures, force recovery
-            if (frame_ctx.consecutive_buffer_failures > 5) {
-                std::cerr << "CRITICAL: Too many consecutive buffer failures - attempting recovery" << std::endl;
-                // Force cleanup of all cached framebuffers
-                for (auto& pair : frame_ctx.fb_cache) {
-                    if (pair.second != frame_ctx.current_fb_id) {
-                        drmModeRmFB(display.get_fd(), pair.second);
-                    }
-                }
-                frame_ctx.fb_cache.clear();
-                // Re-add current framebuffer if we have one
-                if (frame_ctx.current_fb_id != 0) {
-                    // We can't recover the handle, so we'll lose this framebuffer
-                    // But it's better than freezing
-                }
-                if (frame_ctx.previous_bo != nullptr) {
-                    gbm_surface_release_buffer(egl.get_gbm_surface(), frame_ctx.previous_bo);
-                    frame_ctx.previous_bo = nullptr;
-                    frame_ctx.previous_bo_handle = 0;
-                }
-                frame_ctx.consecutive_buffer_failures = 0;  // Reset counter after recovery
-                std::cerr << "Recovery complete - cleared framebuffer cache" << std::endl;
-            }
-
-            // Sleep a bit and try again next frame
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            return;
-        }
-
-        // Successfully locked buffer - reset failure counter
-        frame_ctx.consecutive_buffer_failures = 0;
-
-        uint32_t bo_handle = gbm_bo_get_handle(bo).u32;
-        uint32_t fb_id = 0;
-
-        // Check if we already have a framebuffer for this buffer handle
-        auto it = frame_ctx.fb_cache.find(bo_handle);
-        if (it != frame_ctx.fb_cache.end()) {
-            // Reuse existing framebuffer
-            fb_id = it->second;
-        } else {
-            // Create new framebuffer for this buffer
-            uint32_t handles[4] = {0};
-            uint32_t strides[4] = {0};
-            uint32_t offsets[4] = {0};
-
-            handles[0] = bo_handle;
-            strides[0] = gbm_bo_get_stride(bo);
-            offsets[0] = 0;
-
-            // Use the format we set when creating the GBM surface (GBM_FORMAT_XRGB8888)
-            uint32_t format = GBM_FORMAT_XRGB8888;
-
-            // Try AddFB2 first (modern API)
-            int ret = drmModeAddFB2(display.get_fd(), mode.width, mode.height, format,
-                                    handles, strides, offsets, &fb_id, 0);
-            if (ret != 0) {
-                // Fallback to AddFB (legacy API)
-                ret = drmModeAddFB(display.get_fd(), mode.width, mode.height, 24, 32,
-                                  strides[0], handles[0], &fb_id);
-                if (ret != 0 && frame_ctx.first_frame) {
-                    std::cerr << "AddFB2 failed (ret=" << ret << "), AddFB also failed (ret=" << ret << ")" << std::endl;
-                }
-            }
-
-            if (ret == 0 && fb_id != 0) {
-                // Cache the framebuffer (cache is cleaned up above, so just add it)
-                frame_ctx.fb_cache[bo_handle] = fb_id;
-            } else {
-                std::cerr << "ERROR: Failed to create DRM framebuffer (ret=" << ret << "): " << strerror(errno) << std::endl;
-                std::cerr << "  width=" << mode.width << ", height=" << mode.height << std::endl;
-                std::cerr << "  stride=" << strides[0] << ", handle=" << handles[0] << std::endl;
-                std::cerr << "  fb_cache size=" << frame_ctx.fb_cache.size() << std::endl;
-                gbm_surface_release_buffer(egl.get_gbm_surface(), bo);
-                return;  // Skip this frame if framebuffer creation failed
-            }
-        }
-
-        frame_ctx.current_fb_id = fb_id;
-        
-        // Present the framebuffer
-        if (fb_id != 0) {
-            if (frame_ctx.first_frame || frame_ctx.force_setcrtc_frames > 0) {
-                // Use SetCrtc for first frame and for several frames after reset
-                // This helps stabilize after RetroArch returns control
-                uint32_t connector_id = display.get_connector_id();
-                if (frame_ctx.first_frame) {
-                    std::cout << "Setting initial CRTC: fb_id=" << fb_id << ", crtc_id=" << display.get_crtc_id() << std::endl;
-                }
-                int ret = drmModeSetCrtc(display.get_fd(), display.get_crtc_id(), fb_id, 0, 0,
-                                       &connector_id, 1, &mode_info);
-                if (ret == 0) {
-                    if (frame_ctx.first_frame) {
-                        std::cout << "Initial CRTC set successfully!" << std::endl;
-                        frame_ctx.first_frame = false;
-                    }
-                    if (frame_ctx.force_setcrtc_frames > 0) {
-                        frame_ctx.force_setcrtc_frames--;
-                    }
-                } else {
-                    std::cerr << "Failed to set CRTC (ret=" << ret << "): " << strerror(errno) << std::endl;
-                }
-            } else {
-                // Subsequent frames: use page flip
-                // Static: persists across frames intentionally for DRM page flip callback
-                static PageFlipContext flip_ctx;
-                flip_ctx.waiting_for_flip = true;
-
-                int ret = drmModePageFlip(display.get_fd(), display.get_crtc_id(), fb_id,
-                                         DRM_MODE_PAGE_FLIP_EVENT, &flip_ctx);
-                if (ret != 0) {
-                    // Page flip failed - increment counter and log periodically
-                    frame_ctx.page_flip_failures++;
-                    int err = errno;
-                    if (frame_ctx.page_flip_failures % 10 == 0 || frame_ctx.page_flip_failures < 5) {
-                        std::cerr << "Warning: Page flip failed (ret=" << ret << ", errno=" << err << ": " << strerror(err) << ")" << std::endl;
-                        std::cerr << "  (Failures: " << frame_ctx.page_flip_failures << ", Successes: " << frame_ctx.successful_page_flips << ")" << std::endl;
-                    }
-
-                    // If page flip fails, fall back to SetCrtc
-                    uint32_t connector_id = display.get_connector_id();
-                    ret = drmModeSetCrtc(display.get_fd(), display.get_crtc_id(), fb_id, 0, 0,
-                                       &connector_id, 1, &mode_info);
-                    if (ret != 0) {
-                        std::cerr << "Failed to set CRTC: " << strerror(errno) << std::endl;
-                    }
-                } else {
-                    // Page flip succeeded - wait for flip to complete
-                    drmEventContext evctx = {};
-                    evctx.version = 2;
-                    evctx.page_flip_handler = page_flip_handler;
-
-                    fd_set fds;
-                    FD_ZERO(&fds);
-                    FD_SET(display.get_fd(), &fds);
-
-                    // Wait with timeout (e.g. 100ms) to avoid hanging if event is lost
-                    struct timeval timeout;
-                    timeout.tv_sec = 0;
-                    timeout.tv_usec = 100000; // 100ms
-
-                    while (flip_ctx.waiting_for_flip) {
-                        int sret = select(display.get_fd() + 1, &fds, NULL, NULL, &timeout);
-                        if (sret > 0) {
-                            drmHandleEvent(display.get_fd(), &evctx);
-                        } else {
-                            // Timeout or error
-                            if (sret == 0) std::cerr << "Warning: Page flip wait timed out" << std::endl;
-                            break;
-                        }
-                    }
-
-                    // Reset failure counter periodically
-                    frame_ctx.successful_page_flips++;
-                    if (frame_ctx.successful_page_flips >= 100) {
-                        // Reset page flip failure counter every 100 successful flips
-                        if (frame_ctx.page_flip_failures > 0) {
-                            std::cout << "Page flip recovery: " << frame_ctx.page_flip_failures
-                                      << " failures in last " << frame_ctx.successful_page_flips << " frames" << std::endl;
-                        }
-                        frame_ctx.page_flip_failures = 0;
-                        frame_ctx.successful_page_flips = 0;
-                    }
-                }
-            }
-        }
-
-        // Save this buffer to be released on the next frame
-        // After we present the next frame, this one will be safe to release
-        // We only keep 2 buffers: current (being scanned) and previous (just finished)
-        frame_ctx.previous_bo = bo;
-        frame_ctx.previous_bo_handle = bo_handle;
+        frame_presenter.present(mode.width, mode.height);
     };
     
     // Initialize resolution rendering state
@@ -1847,7 +1577,57 @@ int main(int /* argc */, char* /* argv */[]) {
     // and surface a toast. Recovery is silent — operators don't need a
     // notification when things start working again.
     bool prev_vpn_healthy = state.media_browser_vpn_healthy;
+
+    // THE way out of the Media Browser back to the kiosk MainMenu. Four
+    // exits share it — display-mode eviction, the exit modal's commit,
+    // BTN4 long-press, and a screen returning Screen::Exit — and each used
+    // to hand-write the same teardown, so its ordering rules lived in four
+    // places at once:
+    //
+    //   1. Watch-state flush BEFORE leave(). leave() stops the pipeline,
+    //      which zeroes position/duration; flushing after it writes (0, 0)
+    //      over the resume point. See flush_watch_state's contract.
+    //   2. Artwork worker resume. pause() is paired with resume() only in
+    //      the screen-transition branch, so exiting straight from Playback
+    //      would otherwise leave it paused forever (no posters next entry).
+    //      Idempotent — a no-op when not paused.
+    //   3. leave() on the active screen.
+    //   4. Exit modal closed and its result cleared, so a modal open at
+    //      exit cannot linger into the next session. (Only the eviction
+    //      path did this before; a BTN4 long-press with the modal up
+    //      carried it over.)
+    //   5. Main-menu renderable state restored — belt-and-braces companion
+    //      to the same reset at MB entry. Indexes or a stale UI fade
+    //      surviving into MainMenu make the Renderer early-return
+    //      (is_transitioning) or draw at alpha 0: a permanently blank menu.
+    //   6. Dispatcher back on Browse, so the next entry starts fresh, and
+    //      this frame's remaining input dropped so none of it leaks into
+    //      the main UI.
+    auto exit_media_browser = [&](std::vector<platform::InputEvent>& input_events) {
+        if (current_mb_screen == media_browser::ui::Screen::Playback) {
+            flush_watch_state(mb_playback, watch_store, state);
+        }
+        ui_renderer.artwork_cache().resume();
+        active_mb_screen->leave();
+        mb_exit_modal.close();
+        mb_exit_modal.clear_result();
+        app::reset_main_ui_for_media_browser(state);
+        state.current_screen = app::AppScreen::MainMenu;
+        current_mb_screen = media_browser::ui::Screen::Browse;
+        active_mb_screen = &mb_browse;
+        input_events.clear();
+    };
 #endif
+
+    // Skips render/swap/flip on iterations where the picture cannot have
+    // changed — today only on the bare main menu. See app/redraw_gate.h.
+    // Read once: MDB_REDRAW_GATE=0 (systemd drop-in Environment=) restores
+    // draw-every-iteration without a rebuild.
+    app::RedrawGate redraw_gate(
+        app::redraw_gate_enabled_from_env(std::getenv("MDB_REDRAW_GATE")));
+    LOG_INFO("Redraw gate: {} (idle main menu skips unchanged frames; "
+             "MDB_REDRAW_GATE=0 disables)",
+             redraw_gate.enabled() ? "ON" : "OFF");
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -1944,7 +1724,12 @@ int main(int /* argc */, char* /* argv */[]) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
-        
+
+        // The redraw gate must draw the iteration that rebuilds the display
+        // below: its clear is swapped but not presented until the next drawn
+        // frame. (Read before the block, which clears the flag.)
+        const bool display_reset_this_iteration = state.reset_display;
+
         // Check for display reset signal (e.g. after returning from RetroArch)
         if (state.reset_display) {
             std::cout << "Resetting display state after external application..." << std::endl;
@@ -1966,7 +1751,7 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 
             // Reset all frame presentation state (framebuffers, GBM buffers, counters)
-            frame_ctx.reset(display.get_fd(), egl.get_gbm_surface());
+            frame_presenter.reset();
             state.reset_display = false;
             
             // CRITICAL: Re-make EGL context current after RetroArch released it
@@ -2048,7 +1833,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // letterbox, bezel) and defer ONLY the mode switch. The
             // setting is already persisted by the settings menu, so a
             // restart completes it. Doing the full teardown here
-            // (frame_ctx.reset + GBM/EGL recreate + reset_gl on both
+            // (frame_presenter.reset + GBM/EGL recreate + reset_gl on both
             // renderers + re-snapshot mode_info) is possible, but it is
             // by far the riskiest change available here and buys only the
             // avoidance of one restart.
@@ -2225,6 +2010,10 @@ int main(int /* argc */, char* /* argv */[]) {
             auto gpio_events = gpio.poll();
             input_events.insert(input_events.end(), gpio_events.begin(), gpio_events.end());
         }
+        // For the redraw gate: ANY input draws this iteration. Captured
+        // before the unlock-sequence detector and the MB dispatcher
+        // consume events, so a swallowed press still counts.
+        const bool input_this_iteration = !input_events.empty();
 
 #ifdef MEDIA_BROWSER_ENABLED
         // Feed the Media Browser unlock sequence detector. Chord wins over
@@ -2360,24 +2149,8 @@ int main(int /* argc */, char* /* argv */[]) {
         // Input events are NOT forwarded to the main input-handling loop
         // below, which prevents stray Menu / DPad / Select events from
         // leaking into the main UI while the Media Browser is active.
-        // Restore the main menu's renderable state on ANY exit from
-        // the Media Browser (used by the display-mode eviction just
-        // below and all three in-band exit paths: exit modal, BTN4
-        // long-press, Screen::Exit). Belt-and-braces
-        // companion to the same reset done at MB entry: if playing-item
-        // indexes or a stale UI fade survive into MainMenu, the
-        // Renderer either early-returns (is_transitioning: indexes set
-        // + no video) or draws at alpha 0 — both look like a
-        // permanently blank main menu. Idempotent; matches the
-        // RetroArch return path's "CRITICAL: Reset playback state".
-        auto reset_main_ui_state = [&state]() {
-            state.video_active = false;
-            state.is_switching_playlist = false;
-            state.current_playlist_index = -1;
-            state.current_item_index = -1;
-            state.is_fading = false;
-            state.ui_visible_when_playing = false;
-        };
+        // Every way OUT goes through exit_media_browser() (defined above
+        // the loop).
 
         // ── Display-mode gate (per-frame invariant): no live MB surface
         // on a canvas that can't host it. The MB screens are authored
@@ -2390,25 +2163,11 @@ int main(int /* argc */, char* /* argv */[]) {
         // mode-change block above then resizes the logical canvas to
         // 640x480 the same frame. Evicting here — before this frame's
         // MB input handling and render — means not a single MB frame is
-        // ever drawn on the small canvas. Teardown mirrors the BTN4
-        // long-press exit path below (flush-before-leave contract), plus
-        // an explicit exit-modal close so a modal open at eviction can't
-        // linger into the next MB session.
+        // ever drawn on the small canvas.
         if (state.current_screen == app::AppScreen::MediaBrowser &&
             !media_browser::display_supports_media_browser(
                 state.display_settings.mode == app::DisplayMode::CRT_NATIVE)) {
-            if (current_mb_screen == media_browser::ui::Screen::Playback) {
-                flush_watch_state(mb_playback, watch_store, state);
-            }
-            ui_renderer.artwork_cache().resume();  // un-stick if evicting Playback
-            active_mb_screen->leave();
-            mb_exit_modal.close();
-            mb_exit_modal.clear_result();
-            reset_main_ui_state();
-            state.current_screen = app::AppScreen::MainMenu;
-            current_mb_screen = media_browser::ui::Screen::Browse;
-            active_mb_screen = &mb_browse;
-            input_events.clear();
+            exit_media_browser(input_events);
             ui::Toast::show(media_browser::kMoviesClosedByDisplaySwitchToast);
             LOG_INFO("Media Browser: evicted to MainMenu — display mode no "
                      "longer provides the 720p logical canvas");
@@ -2575,22 +2334,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 // events to the active screen.
                 auto modal_result = mb_exit_modal.last_result();
                 if (modal_result == media_browser::ui::ExitModal::Result::Exit) {
-                    // Tear down: same path as Screen::Exit.
-                    mb_exit_modal.clear_result();
-                    // Guarantee the artwork worker is running on MB exit.
-                    // pause() is only paired with resume() in the
-                    // screen-transition branch below; exiting via the
-                    // modal/long-press/Screen::Exit paths bypasses that,
-                    // so a Playback->exit would otherwise leave the
-                    // worker paused forever (no posters on next entry).
-                    // resume() is idempotent — a no-op when not paused.
-                    ui_renderer.artwork_cache().resume();
-                    active_mb_screen->leave();
-                    reset_main_ui_state();
-                    state.current_screen = app::AppScreen::MainMenu;
-                    current_mb_screen = media_browser::ui::Screen::Browse;
-                    active_mb_screen = &mb_browse;
-                    input_events.clear();
+                    exit_media_browser(input_events);
                     mb_modal_exited = true;
                 } else if (modal_result == media_browser::ui::ExitModal::Result::Cancel) {
                     mb_exit_modal.clear_result();
@@ -2598,42 +2342,14 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 
             if (btn4_long_press_exit) {
-                // Long-press exit bypasses the screen entirely. Mirror the
-                // Screen::Exit return path below: leave the current screen,
-                // reset dispatcher state, and let the rest of the main loop
-                // run this frame (rendering, etc.) with current_screen flipped
-                // to MainMenu.
-                //
-                // Watch-state flush MUST run BEFORE leave() — leave() stops
-                // the pipeline and zeroes position/duration, so a later
-                // write would clobber the resume point with (0, 0). See
-                // flush_watch_state's contract comment.
-                if (current_mb_screen == media_browser::ui::Screen::Playback) {
-                    flush_watch_state(mb_playback, watch_store, state);
-                }
-                ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
-                active_mb_screen->leave();
-                reset_main_ui_state();
-                state.current_screen = app::AppScreen::MainMenu;
-                current_mb_screen = media_browser::ui::Screen::Browse;
-                active_mb_screen = &mb_browse;
-                input_events.clear();
+                // Long-press exit bypasses the screen entirely; the rest of
+                // the main loop still runs this frame (rendering, etc.) with
+                // current_screen flipped to MainMenu.
+                exit_media_browser(input_events);
             } else if (!mb_modal_exited) {
             auto next = active_mb_screen->handle_input(input_events);
             if (next == media_browser::ui::Screen::Exit) {
-                // Watch-state flush pre-leave(), same rationale as the
-                // long-press site above.
-                if (current_mb_screen == media_browser::ui::Screen::Playback) {
-                    flush_watch_state(mb_playback, watch_store, state);
-                }
-                ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
-                active_mb_screen->leave();
-                reset_main_ui_state();
-                state.current_screen = app::AppScreen::MainMenu;
-                // Reset to Browse so the next entry into the Media Browser
-                // starts fresh on the landing screen.
-                current_mb_screen = media_browser::ui::Screen::Browse;
-                active_mb_screen = &mb_browse;
+                exit_media_browser(input_events);
             } else if (next != current_mb_screen) {
                 // When transitioning into Detail, forward the selected
                 // tmdb_id from whichever source screen produced it so
@@ -2787,8 +2503,8 @@ int main(int /* argc */, char* /* argv */[]) {
                 // BOTTOM of the loop (every other frame), so the read is
                 // up to 2 frames stale but pre-stop-valid; one line later
                 // (post-leave, after stop() zeroes the pipeline) it
-                // reads 0/0 and clobbers the resume point. Third of the
-                // three exit sites; see flush_watch_state.
+                // reads 0/0 and clobbers the resume point. The other
+                // in-UI site is exit_media_browser(); see flush_watch_state.
                 if (current_mb_screen == media_browser::ui::Screen::Playback &&
                     next != media_browser::ui::Screen::Playback) {
                     flush_watch_state(mb_playback, watch_store, state);
@@ -3234,8 +2950,6 @@ int main(int /* argc */, char* /* argv */[]) {
                             // thinks video is active before
                             // controller.update_state() catches up.
                             controller.stop();
-                            state.video_active = false;
-                            state.is_switching_playlist = false;
                             // CRITICAL: also clear the playing-item indexes
                             // and any in-flight UI fade. The Renderer's
                             // is_transitioning logic (current_item_index >= 0
@@ -3243,13 +2957,10 @@ int main(int /* argc */, char* /* argv */[]) {
                             // render, and a stale is_fading with a hidden
                             // target zeroes the UI alpha — either one leaves
                             // the main menu permanently BLANK after exiting
-                            // the Media Browser. Same reset the RetroArch
-                            // return path does in Controller (see the
-                            // "CRITICAL: Reset playback state" comment there).
-                            state.current_playlist_index = -1;
-                            state.current_item_index = -1;
-                            state.is_fading = false;
-                            state.ui_visible_when_playing = false;
+                            // the Media Browser. Not stop_to_menu(): the MB
+                            // takes the screen, so the playlist UI is parked
+                            // hidden — see reset_main_ui_for_media_browser.
+                            app::reset_main_ui_for_media_browser(state);
                             // Clear the published now-playing/playlist info
                             // for the phone remote. Controller::update_state's
                             // stop-clear deliberately skips MB sessions (the
@@ -3257,11 +2968,7 @@ int main(int /* argc */, char* /* argv */[]) {
                             // without this the stopped playlist item's title
                             // would ride along in kiosk_status.json for the
                             // whole browse session.
-                            state.now_playing_title.clear();
-                            state.now_playing_subtitle.clear();
-                            state.now_playing_kind.clear();
-                            state.current_playlist_name.clear();
-                            state.current_item_count = 0;
+                            app::clear_now_playing(state);
                             settings_menu.close();
                             state.current_screen = app::AppScreen::MediaBrowser;
                             // Always start on the Browse landing screen.
@@ -3483,11 +3190,16 @@ int main(int /* argc */, char* /* argv */[]) {
                         }
                     }
 
-                    // If load failed, clear the flag and restore UI state
+                    // If load failed, the old video is already stopped:
+                    // land on the menu. stop_to_menu, not the three flags
+                    // this used to clear — current_playlist_index /
+                    // current_item_index were set to the NEW playlist above,
+                    // and indexes set with no video is the Renderer's
+                    // "between items" early-out, so the menu AND the error
+                    // banner just raised stayed blank until another press.
+                    // (An empty message leaves that banner in place.)
                     if (!load_success) {
-                        state.is_switching_playlist = false;
-                        state.ui_visible_when_playing = true;
-                        state.video_active = false;
+                        app::stop_to_menu(state);
                         std::cerr << "Playlist switch failed - flag cleared, ready for retry" << std::endl;
                     }
                     // Otherwise, the flag will be cleared when the new video becomes active
@@ -3754,6 +3466,13 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
                 
                 // Force video_active to false immediately (don't wait for update_state)
+                //
+                // Deliberately NOT app::stop_to_menu(): this hand-off FADES
+                // the menu in (is_fading=true below), where stop_to_menu
+                // cancels fades and shows the menu at full alpha at once.
+                // The intro never publishes now-playing fields and never
+                // sets is_switching_playlist, so the subset below is the
+                // complete reset for this path.
                 state.video_active = false;
                 state.update_playback_state(0.0, 0.0);
                 state.current_playlist_index = -1;
@@ -3901,8 +3620,103 @@ int main(int /* argc */, char* /* argv */[]) {
             last_render_decision = should_render_video;
         }
 
+        // ── Redraw gate ──────────────────────────────────────────────────
+        // Everything above (input, settings/wizard pumps, pipeline and
+        // playlist state) has run; from here to the present is drawing,
+        // plus a tail of non-drawing work (status file, watch checkpoints,
+        // stall watchdog, phone-remote queues, reload pokes) that runs
+        // every iteration regardless. Skipping is opt-in: only the bare
+        // main menu (app::is_static_main_menu) may skip, and even there a
+        // frame is drawn on any input, any change in what it shows, and at
+        // least every RedrawGate::kDefaultMaxIdle. See app/redraw_gate.h.
+        bool draw_this_frame = true;
+        {
+            app::MainMenuActivity act;
+            act.intro = !state.intro_complete || state.showing_intro_video ||
+                        state.intro_fading_out;
+            act.video = should_render_video || state.video_active ||
+                        state.is_switching_playlist || controller.is_playing();
+#ifdef MEDIA_BROWSER_ENABLED
+            act.media_browser =
+                state.current_screen == app::AppScreen::MediaBrowser;
+#endif
+            // Includes the wizard and pairing screen (both live inside it).
+            // The close animation also only completes inside a render.
+            act.settings_menu = settings_menu.is_active() ||
+                                settings_menu.is_opening() ||
+                                settings_menu.is_closing();
+            act.keyboard = keyboard.is_active();
+            act.ui_fade = state.is_fading ||
+                          state.post_game_fade_start_ms.load() != 0;
+            // Toast::post()'s mailbox drains inside Toast::render, hence
+            // has_pending(). The volume slider appears 300 ms into a BTN4
+            // hold with no new input — hence button_held.
+            act.transient_overlay =
+                ui::Toast::is_active() || ui::Toast::has_pending() ||
+                state.has_error_message() || state.show_volume_slider ||
+                state.show_seek_bar || state.seek_bar_timer > 0.0 ||
+                menu_hold.button_held || state.is_loading_game;
+            act.crt_time_effects =
+                state.display_settings.flicker_intensity > 0.0f ||
+                state.display_settings.interlacing_intensity > 0.0f;
 
-        
+            // What the static menu draws that can change with no input and
+            // no activity flag. The blink phase is the one that changes on
+            // its own (2 Hz); the rest catch background state changes (a
+            // web-admin playlist reload, a status line) without waiting for
+            // the idle safety net.
+            const auto gate_now = std::chrono::steady_clock::now();
+            auto as_u64 = [](double v) {
+                return static_cast<uint64_t>(static_cast<int64_t>(v));
+            };
+            app::ContentSignature sig;
+            sig.add(static_cast<uint64_t>(
+                ui_renderer.main_menu_blink_phase(gate_now)));
+            sig.add(static_cast<uint64_t>(state.selected_index));
+            sig.add(static_cast<uint64_t>(state.playlist_scroll_offset));
+            sig.add(static_cast<uint64_t>(state.playlists.size()));
+            sig.add(static_cast<uint64_t>(state.current_playlist_index));
+            sig.add(static_cast<uint64_t>(state.current_item_index));
+            sig.add(state.status_text);
+            sig.add(as_u64(state.get_position()));
+            sig.add(as_u64(state.get_duration()));
+            sig.add(static_cast<uint64_t>(state.display_settings.mode));
+            sig.add(static_cast<uint64_t>(state.display_settings.bezel_index));
+
+            app::RedrawInputs gate_in;
+            gate_in.input_event = input_this_iteration;
+            gate_in.video_frame = act.video;
+            gate_in.animation_active = act.ui_fade || act.transient_overlay;
+            gate_in.screen_requests_continuous = !app::is_static_main_menu(act);
+            gate_in.forced = display_reset_this_iteration;
+            gate_in.content_signature = sig.value();
+            draw_this_frame = redraw_gate.should_draw(gate_in, gate_now);
+
+            // Per-minute counts at DEBUG (file log only). The first window
+            // goes to INFO as well, so `journalctl -u magic-dingus-box-cpp`
+            // alone shows whether the gate is actually skipping on a box.
+            if (auto report = redraw_gate.take_report(gate_now)) {
+                static bool first_report = true;
+                if (first_report) {
+                    first_report = false;
+                    LOG_INFO("Redraw gate: drew {} / skipped {} iterations in the last {}s",
+                             report->drawn, report->skipped,
+                             app::RedrawGate::kReportInterval.count());
+                } else {
+                    LOG_DEBUG("Redraw gate: drew {} / skipped {} iterations in the last {}s",
+                              report->drawn, report->skipped,
+                              app::RedrawGate::kReportInterval.count());
+                }
+            }
+        }
+
+        // Drawing, part 1: video, main UI, CRT composite, bezel, Media
+        // Browser, toast. Body deliberately NOT re-indented under this `if`
+        // (same convention as the MB dispatcher's `else if
+        // (!mb_modal_exited)` above) so the gate's diff stays reviewable;
+        // the closing brace is marked.
+        if (draw_this_frame) {
+
         // Clear screen in these cases:
         // 1. Intro video not ready yet
         // 2. No video should be rendered (after intro completes, during UI)
@@ -4318,6 +4132,7 @@ int main(int /* argc */, char* /* argv */[]) {
                           ui_renderer.get_width(),
                           ui_renderer.get_height());
 #endif
+        }  // if (draw_this_frame) — drawing, part 1
 
         // ── Phone-remote: derive screen mode + 5 Hz status write ─────────────
         // Derives screen_mode for the four "live main-loop" states.
@@ -4837,45 +4652,51 @@ int main(int /* argc */, char* /* argv */[]) {
         //
         // -1 is the "requested" sentinel from prepare_kiosk_state_after_game;
         // the clock starts at the FIRST FRAME WE ACTUALLY DRAW, not when the
-        // request was made — the reset_display work (frame_ctx/EGL/GStreamer
+        // request was made — the reset_display work (frame_presenter/EGL/GStreamer
         // re-init) between the two can eat 200ms+, and a wall-clock start
         // would leave the fade mostly over before the first frame rendered.
-        {
-            int64_t fade_start = state.post_game_fade_start_ms.load();
-            if (fade_start != 0) {
-                constexpr int64_t kPostGameFadeMs = 250;
-                const int64_t now_ms =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count();
-                if (fade_start < 0) {
-                    state.post_game_fade_start_ms.store(now_ms);
-                    fade_start = now_ms;
-                }
-                const int64_t elapsed = now_ms - fade_start;
-                if (elapsed >= kPostGameFadeMs) {
-                    state.post_game_fade_start_ms.store(0);
-                } else {
-                    glViewport(0, 0, mode.width, mode.height);
-                    ui_renderer.render_post_game_fade(
-                        1.0f - static_cast<float>(elapsed) /
-                                   static_cast<float>(kPostGameFadeMs));
+        //
+        // Drawing, part 2 — skipped with part 1 by the redraw gate. The
+        // fade's own clock (the -1 sentinel above) therefore also starts at
+        // the first DRAWN frame; the gate always draws while it is pending.
+        if (draw_this_frame) {
+            {
+                int64_t fade_start = state.post_game_fade_start_ms.load();
+                if (fade_start != 0) {
+                    constexpr int64_t kPostGameFadeMs = 250;
+                    const int64_t now_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+                    if (fade_start < 0) {
+                        state.post_game_fade_start_ms.store(now_ms);
+                        fade_start = now_ms;
+                    }
+                    const int64_t elapsed = now_ms - fade_start;
+                    if (elapsed >= kPostGameFadeMs) {
+                        state.post_game_fade_start_ms.store(0);
+                    } else {
+                        glViewport(0, 0, mode.width, mode.height);
+                        ui_renderer.render_post_game_fade(
+                            1.0f - static_cast<float>(elapsed) /
+                                       static_cast<float>(kPostGameFadeMs));
+                    }
                 }
             }
-        }
 
-        // Swap EGL buffers
-        if (!egl.swap_buffers()) {
-            std::cerr << "Failed to swap buffers!" << std::endl;
-        }
-        
-        if (frame_count == 0) {
-            std::cout << "  Buffers swapped, locking front buffer..." << std::endl;
-        }
-        
-        // Present the GBM buffer to the display using page flip
-        // Use shared lambda
-        present_frame();
+            // Swap EGL buffers
+            if (!egl.swap_buffers()) {
+                std::cerr << "Failed to swap buffers!" << std::endl;
+            }
+
+            if (frame_count == 0) {
+                std::cout << "  Buffers swapped, locking front buffer..." << std::endl;
+            }
+
+            // Present the GBM buffer to the display using page flip
+            // Use shared lambda
+            present_frame();
+        }  // if (draw_this_frame) — drawing, part 2
         
         // BARE BONES: Removed periodic audio checks - let MPV handle audio
         
@@ -4907,7 +4728,10 @@ int main(int /* argc */, char* /* argv */[]) {
         // Vblank-anchored: sleeps from THIS iteration's present completion
         // (utils/frame_pacing.h). The old `target - delta` used the
         // previous iteration's period, so 30 fps flips alternated
-        // 16/33/50 ms.
+        // 16/33/50 ms. An iteration the redraw gate skipped never blocked
+        // on a flip, so the min_iteration floor is what paces it: ~one
+        // refresh per iteration, keeping input polling at frame cadence
+        // without spinning a core.
         const auto pacing = utils::frame_pacing_for(
             mb_movie_active ? 30 : 60, static_cast<int>(mode_info.vrefresh));
         const auto pace_sleep = utils::frame_cap_sleep(
@@ -4926,7 +4750,8 @@ int main(int /* argc */, char* /* argv */[]) {
     }
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // FOURTH watch-state flush site. The other three cover deliberate
+    // SHUTDOWN watch-state flush site. The others (exit_media_browser()
+    // and the dispatcher's sibling-screen transition) cover deliberate
     // in-UI exits from Playback; this one covers the process being told
     // to stop while a movie or episode is still on screen.
     //
@@ -4937,7 +4762,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // Without this, the resume point falls back to the last 30-second
     // checkpoint and the box appears to forget where you were.
     //
-    // Ordering is the same contract the other three sites document: this
+    // Ordering is the same contract the other sites document: this
     // MUST run before the cleanup below, because player.cleanup() stops
     // the pipeline and zeroes position — flushing after it would write
     // (0, 0) over a real resume point. flush_watch_state itself no-ops
@@ -4960,6 +4785,8 @@ int main(int /* argc */, char* /* argv */[]) {
     gst_renderer.cleanup();
     player.cleanup();
     input.cleanup();
+    // Before egl/gbm: the buffer it still holds belongs to their surface.
+    frame_presenter.shutdown();
     egl.cleanup();
     gbm.cleanup();
     display.cleanup();

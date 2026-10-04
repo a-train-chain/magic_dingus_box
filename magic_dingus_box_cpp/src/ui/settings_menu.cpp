@@ -5,6 +5,7 @@
 #include "toast.h"
 #include "virtual_keyboard.h"
 #include "../utils/config.h"
+#include "../utils/services_env.h"
 #include "../utils/wifi_manager.h"
 #include "../platform/platform_profile.h"
 #include "../retroarch/controller_profile.h"
@@ -371,23 +372,9 @@ void SettingsMenuManager::open() {
         // on each open so the UI reflects current state without
         // requiring a kiosk restart.
         if (app_state_) {
-            std::ifstream f("/opt/magic_dingus_box/services/.env");
-            bool found = false;
-            if (f) {
-                std::string line;
-                while (std::getline(f, line)) {
-                    constexpr std::string_view kKey = "WIREGUARD_PRIVATE_KEY=";
-                    if (line.rfind(kKey, 0) != 0) continue;
-                    std::string val = line.substr(kKey.size());
-                    while (!val.empty() && (val.back() == ' ' || val.back() == '\t' ||
-                                            val.back() == '"' || val.back() == '\'')) val.pop_back();
-                    while (!val.empty() && (val.front() == ' ' || val.front() == '\t' ||
-                                            val.front() == '"' || val.front() == '\'')) val.erase(val.begin());
-                    found = !val.empty();
-                    break;
-                }
-            }
-            app_state_->media_browser_vpn_configured = found;
+            app_state_->media_browser_vpn_configured =
+                !utils::read_env_value(utils::kServicesEnvPath,
+                                       "WIREGUARD_PRIVATE_KEY").empty();
 
             // Is the movie drive attached? The library lives on an
             // external drive mounted at STORAGE_ROOT (/mnt/ssd); without
