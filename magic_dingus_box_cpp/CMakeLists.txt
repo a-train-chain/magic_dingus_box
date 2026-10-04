@@ -740,6 +740,12 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # (controller.cpp is in no test target).
         src/app/shuffle_queue.cpp
         src/app/playlist_cursor.cpp
+        # settings.json load/save against real temp files (round-trip,
+        # wrong-typed quarantine). Pulls jsoncpp + spdlog, linked below.
+        src/app/settings_persistence.cpp
+        src/app/mb_filter_persistence.cpp
+        src/utils/config.cpp
+        src/utils/services_env.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp
@@ -747,9 +753,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # gate) — pure logic, no Linux-only deps.
         src/platform/platform_profile.cpp
     )
-    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS})
-    target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS})
-    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES})
+    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES}
+        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only)
     target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
