@@ -1,0 +1,43 @@
+# Field-state strip for rehearsing an OTA FROM v1.9.14 (hw_rehearsal.sh step 5).
+#
+# After the downgrade, the box runs the v1.9.14 tree but still carries the
+# SYSTEM state that later deploys/OTAs installed outside the tree — state a
+# real v1.9.14 field box never had. This list removes it, so the rehearsal
+# updates a box that looks like the customer's, not like the dev bench.
+#
+# hw_rehearsal.sh ALSO derives entries from git and merges them in:
+#   unit      every unit file in NEW's systemd/ dirs that OLD lacks
+#   old-unit  every unit file both trees ship but NEW changed (OTA never
+#             reinstalls unit files, so a field box has OLD's copy)
+#   dropin    every /etc/systemd/system/<unit>.d/<x>.conf path NEW's scripts
+#             mention that OLD's scripts do not
+# The explicit lines below duplicate the derived ones on purpose (the
+# derivation is a grep heuristic; this list is the reviewed source of truth)
+# and add what git cannot see: packages, user config, OLD-script reruns.
+#
+# Directives: unit <name> | old-unit <tree path> | dropin <abs path> |
+#             file <abs path> | package <deb> | pulse-client-conf | run <tree path>
+# Every path the strip touches is journaled and, after the final deploy, put
+# back from the pre-rehearsal snapshot if deploy_cpp.sh did not rewrite it.
+
+# PulseAudio as its own unit (2026-10) + the OTA power-loss recovery oneshot
+unit magic-dingus-audio.service
+unit magic-dingus-ota-recovery.service
+
+# setup_audio_service.sh / setup_memory_tuning.sh drop-ins newer than v1.9.14
+dropin /etc/systemd/system/magic-dingus-box-cpp.service.d/audio-service.conf
+dropin /etc/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf
+dropin /etc/systemd/system/magic-dingus-storage-attach.service.d/mdb-timeout.conf
+dropin /etc/systemd/system/magic-dingus-smoke-test.service.d/mdb-timeout.conf
+dropin /etc/systemd/system/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf
+
+# The Content Manager's gunicorn (ensure_web_server_dep, newer than v1.9.14):
+# the NEW install must bring it in itself.
+package python3-gunicorn
+
+# audio_service.sh's `autospawn = no` client.conf (marker-tagged; only ours)
+pulse-client-conf
+
+# v1.9.14's own memory-tuning hook, so memory-protect.conf carries v1.9.14's
+# content (MemoryLow only — no OOMScoreAdjust) as it does on a field box
+run magic_dingus_box_cpp/scripts/setup_memory_tuning.sh
