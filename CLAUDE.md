@@ -36,15 +36,16 @@ rules, each earned by a real bug:
    The Pi 5 (2 GB, software-decodes everything comfortably, runs
    N64/DC) is the roomy target — if it fits the Pi 4, it fits both.
 4. **New system dependencies go in THREE places or they will bite:**
-   `scripts/install_deps.sh` (on-Pi builds), the apt list in
+   `magic_dingus_box_cpp/scripts/install_deps.sh` (on-Pi builds), the apt list in
    `.github/workflows/release.yml` (the CI release binary), and the
    README dependency list. An OPTIONAL CMake dep that silently changes
    runtime behavior is a trap — libsystemd being absent in CI compiled
    out sd_notify and made systemd kill a perfectly healthy binary on
    every box (caught live, v1.7.2). If a capability is load-bearing,
    either make the dep REQUIRED or add a release-blocking `strings`
-   assertion to the workflow next to the existing three (aarch64,
-   READY=1, prowlarr).
+   assertion to the workflow next to the existing ones (aarch64,
+   READY=1, prowlarr, HAVE_GPIOD, /connect?code=). The same checks run
+   on every push in test-local.yml's `kiosk-build` job.
 5. **`config.txt` model-specific settings live under `[pi4]` / `[pi5]`
    conditional sections, never `[all]`.** Current split: `[pi5]` has
    `v3d_freq=1000` + `kernel=kernel8.img` (4 KB pages — flycast dies
@@ -53,7 +54,7 @@ rules, each earned by a real bug:
    and the CI binary's glibc. Anything older can neither build nor run
    the kiosk (v1.6.4 was the last Bookworm release).
 7. **Before a release that touches the platform layer**, run the Mac
-   suites (all 8), and validate on real hardware of BOTH boards when the
+   suites (all 9 with Media Browser ON, 8 with it OFF), and validate on real hardware of BOTH boards when the
    change plausibly differs between them — the sd_notify failure was
    invisible in every off-Pi test.
 
@@ -167,6 +168,7 @@ This guarantees correct compositing without X11/compositor overhead.
 ### Audio System
 
 - PulseAudio for routing (HDMI/Headphone/Auto selection)
+- **The TV may be on EITHER HDMI port.** Never hide, ignore or prefer a port by name: the empty port's "Failed to find a working profile" log line is harmless; a hidden real port is a silent box (a `PULSE_IGNORE` rule for vc4hdmi1 did exactly that on a Pi 5, 2026-10-03 — `init_audio.sh` now removes it). Games pick the card whose ELD lists audio descriptors (`retroarch::eld_reports_monitor`); `verify_box.sh` fails a box whose default sink is `auto_null`.
 - `init_audio.sh` configures PulseAudio default sink BEFORE app starts
 - Runtime one-shot `apply_output()` moves active GStreamer stream to correct sink
 - Per-game volume offset for RetroArch (dB conversion from system volume)
@@ -224,7 +226,7 @@ YAML files in `data/playlists/`. Item types accepted by the loader:
 
 Prefer `local` when authoring — that's the canonical default and what `playlist_loader` produces when serializing. The schema is enforced inline in `magic_dingus_box_cpp/src/app/playlist_loader.cpp`; no JSON Schema file is tracked.
 
-See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema reference.
+`magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` exists only in some local checkouts (that directory is git-ignored), so treat `playlist_loader.cpp` as the schema of record.
 
 ## Controls
 
@@ -232,7 +234,8 @@ See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema reference.
 - **DPad/Axis X**: Navigate playlists
 - **A/Enter/Space**: Select playlist item
 - **Z**: Play/Pause
-- **L/R Triggers**: Seek ±10s
+- **L/R Triggers**: previous / next item while a playlist plays (shuffle history in Master Shuffle); seek ±10s otherwise
+- **PS-style pads**: Cross = select, Circle = settings, Triangle = play/pause, L1/R1 = previous/next (`input_manager.cpp` `map_button_to_action`)
 - **C-Stick**: Seek ±5s
 - **Rotary Encoder**: Velocity-sensitive video seeking with progress bar
 - **B**: Settings menu
@@ -245,7 +248,7 @@ See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema reference.
 
 ## RetroArch Cores
 
-10 cores installed via `--cores` flag (`scripts/install_cores.sh`). OTA also self-heals cores: `update.sh` scans the box's live playlists for referenced `emulator_core` values and runs `install_cores.sh` if any `.so` is missing from the runtime cores dir.
+10 cores installed via `--cores` flag (`magic_dingus_box_cpp/scripts/install_cores.sh`) — the 9 systems below, plus `parallel_n64_libretro` as the N64 backup. OTA also self-heals cores: `update.sh` scans the box's live playlists for referenced `emulator_core` values and runs `install_cores.sh` if any `.so` is missing from the runtime cores dir.
 
 | System | Core | Notes |
 |--------|------|-------|
@@ -306,7 +309,7 @@ grid after its last season was deleted (2026-08-22).
 - **Pi 5**: has NO hardware H.264 decoder (BCM2712 dropped the block); the rank promotions are no-ops there and playbin falls through to `avdec_h264` (libav software, ~20% CPU for 1080p on the A76s — validate headroom on the 2GB board)
 - `v4l2slh265dec` (V4L2 stateless hardware HEVC, both boards) is **disabled** — SAND pixel-format negotiation bug with GStreamer 1.22-era Bookworm; falls back to `avdec_h265` (software, ~30-50% of one core for 1080p 8-bit Main profile). NOTE (2026-07-22): production Pis actually run **Trixie** with GStreamer 1.26, where the SAND fix landed — the disable is now conservative and re-testable (see CLONING.md "HEVC experiment")
 - AV1 has no hardware decoder; software-decode at 1080p+ is unwatchable
-- Required system package: `gstreamer1.0-libav` (codified in `scripts/install_deps.sh`)
+- Required system package: `gstreamer1.0-libav` (codified in `magic_dingus_box_cpp/scripts/install_deps.sh`)
 
 ### Playback contention guard (torrents vs. the video pipeline) — memory-gated
 
@@ -348,7 +351,7 @@ catch-up).
   mid-movie must never leave downloads silently capped. Best-effort:
   qBit may still be down at kiosk start; failures log, never block.
 - `PlaybackScreen::leave()` clears only what enter() set
-  (`qbit_alt_limited_by_us_` / `qbit_was_paused_by_us_` are the consent
+  (`app::MovieQuietMode::Consent` in `movie_quiet_mode.h` is the consent
   records) — an operator's own alt-limits or manual pauses are never
   flipped.
 - **Box-side half of the same fix** (`setup_memory_tuning.sh`, run by
@@ -763,16 +766,14 @@ on **every shipped unit**, silently: the phone could not resolve the
 host, so no request ever reached the server and `pairing_audit.log`
 stayed empty with nothing to diagnose from. If pairing ever fails again,
 check that log first — entries mean the phone reached the box (a code or
-auth problem); no entries mean it never arrived (address or network). Phone scans → opens `/pair?code=NNNNNN` → backend writes a paired-device record + sets HMAC-signed cookie. Pairings persist in `data/paired_remotes.json` (excluded from deploy rsync). The Flask process's HMAC secret lives in `data/flask_secret.key` (also excluded — wiping it would invalidate all paired phones).
+auth problem); no entries mean it never arrived (address or network). Phone scans → opens `/connect?code=NNNNNN` (the Connect a Device landing page, which hands the code to `/?pair=`) → backend writes a paired-device record + sets HMAC-signed cookie. Pairings persist in `data/paired_remotes.json` (excluded from deploy rsync). The Flask process's HMAC secret lives in `data/flask_secret.key` (also excluded — wiping it would invalidate all paired phones).
 
 ## Additional Documentation
 
-Extensive docs in `magic_dingus_box_cpp/docs/`. (A `.gitignore` rule matches this directory, but ~20 of these files were committed before it existed and ARE tracked — `git ls-files magic_dingus_box_cpp/docs/` is the truth. Treat the tracked ones as normal repo files: edits to them commit and ship.)
-- `ARCHITECTURE.md` - System design
-- `DISPLAY_MODES_USAGE.md` - CRT/Modern TV modes
-- `RETROARCH_INTEGRATION.md` - Emulator setup
-- `WEB_UI_GUIDE.md` - Web admin usage
-- `DATA_SYNC_GUIDE.md` - Content synchronization
-- `PLAYLIST_FORMAT.md` - Playlist YAML schema
-- `GAME_CONTROLS.md` - Input mapping details
+Docs live in `magic_dingus_box_cpp/docs/`. A `.gitignore` rule matches that directory, so most files there exist only in some local checkouts; `git ls-files magic_dingus_box_cpp/docs/` lists the ~20 that were committed before the rule and ARE tracked (edits to them commit and ship). Tracked and current enough to rely on:
+- `DEPLOYMENT_GUIDE.md` - Deploy workflow (its Pi 4/Bookworm framing predates the Trixie floor and Pi 5 units)
+- `MEDIA_BROWSER_*` - Media Browser design, service setup, VPN setup, user guide
 - `USB_CONNECTION_GUIDE.md` - USB Ethernet Gadget setup
+- `superpowers/` (both under `magic_dingus_box_cpp/docs/` and the root `docs/`) - dated specs and implementation plans per feature
+
+Local-only (not in git; may be stale): `PLAYLIST_FORMAT.md`, `DISPLAY_MODES_USAGE.md`, `GAME_CONTROLS.md`, `DATA_SYNC_GUIDE.md`, `WEB_UI_GUIDE.md`. When they disagree with code, the code wins.

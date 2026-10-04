@@ -11,7 +11,8 @@ Magic Dingus Box has two halves:
 
 1. **Retro gaming + video playback** — always works, no internet
    required after setup. Plays NES / SNES / Genesis / PS1 / PCE /
-   Atari 7800 / Arcade games via RetroArch, plus local videos and
+   Atari 7800 / Arcade games via RetroArch (plus N64 / Dreamcast on
+   Pi 5), plus local videos and
    YouTube clips.
 
 2. **Movie Media Browser** — discovers and downloads movies via a
@@ -33,7 +34,7 @@ working WireGuard config (web admin) before the feature appears.
 | [`magic_dingus_box/web/`](magic_dingus_box/web/) | Flask Content Manager web admin (LAN-only). Playlist editing, video uploads, ROM management, OTA updates, Media Browser provisioning. |
 | [`scripts/golden_image/`](scripts/golden_image/) | Live SD-card cloning toolchain. Produces `.img.gz` files from a running source Pi without removing the SD card. Includes the on-Pi `first_boot.sh` that resets per-Pi state on flashed clones. |
 | [`tests/`](tests/) | Two-tier test suite (local-tier bats run anywhere; pi-tier bats run from a dev machine against a Pi over SSH). |
-| [`magic_dingus_box_cpp/services/`](magic_dingus_box_cpp/services/) | Media Browser companion-services compose stack (Radarr + Prowlarr + qBittorrent + Gluetun VPN + FlareSolverr). Optional, gated behind a chord-sequence unlock. |
+| [`magic_dingus_box_cpp/services/`](magic_dingus_box_cpp/services/) | Media Browser companion-services compose stack (Radarr + Sonarr + Prowlarr + qBittorrent + Gluetun VPN + Byparr). Optional, gated behind a chord-sequence unlock. |
 | [`CHANGELOG.md`](CHANGELOG.md) / [`VERSION`](VERSION) | Release history (Keep-a-Changelog format) and the single-source version pin used by OTA. |
 | [`OTA_UPDATE_GUARANTEES.md`](OTA_UPDATE_GUARANTEES.md) | The contract describing what an OTA update preserves vs. replaces — read before editing any rsync `--exclude` list. |
 | [`CLAUDE.md`](CLAUDE.md) | Architecture notes and project conventions (also serves as agent guidance). |
@@ -41,7 +42,7 @@ working WireGuard config (web admin) before the feature appears.
 ## What it does
 
 - **Plays curated video playlists** at full-screen with a configurable CRT-effect shader pipeline (scanlines, aperture-grille mask, RGB convergence + phosphor glow, luma-driven halation) — opt-in via `Settings → Display → CRT Engine: Enhanced`.
-- **Launches retro-game ROMs** via RetroArch with per-core controller mappings for 7 systems: NES, SNES, Genesis/Mega Drive, PC Engine, Atari 7800, PlayStation 1, and arcade (FBNeo). Auto-saves SRAM and save states on exit, auto-loads on next launch.
+- **Launches retro-game ROMs** via RetroArch with per-core controller mappings for 9 systems: NES, SNES, Genesis/Mega Drive, PC Engine, Atari 7800, PlayStation 1, arcade (FBNeo), plus Nintendo 64 and Dreamcast on Raspberry Pi 5 (hidden on a Pi 4B). Auto-saves SRAM and save states on exit, auto-loads on next launch.
 - **Routes input** from rotary encoder, GPIO buttons, and USB controllers (currently supports an N64-style USB adapter and PlayStation-style pads with an internal `controller_detector` distinguishing the two).
 - **Routes audio** through PulseAudio with selectable HDMI / 3.5mm headphone output and a per-game RetroArch volume offset.
 - **Updates over the air** from GitHub Releases via [`magic_dingus_box_cpp/scripts/update.sh`](magic_dingus_box_cpp/scripts/update.sh), with backup + rollback support and a documented preservation contract for operator content.
@@ -90,7 +91,7 @@ The kiosk engine must build and run on **both Raspberry Pi 4B and Raspberry Pi 5
 
 Plus header-only deps fetched at build time: `stb_truetype.h`, `stb_image.h`, `spdlog` (via CMake `FetchContent`), `Catch2` (test targets only).
 
-The web admin requires Python 3 + Flask only; service launched by [`magic_dingus_box_cpp/systemd/magic-dingus-web.service`](magic_dingus_box_cpp/systemd/magic-dingus-web.service).
+The web admin requires Python 3 with Flask, PyYAML, flask-sock (phone remote WebSocket) and python3-evdev (phone remote virtual gamepad); service launched by [`magic_dingus_box_cpp/systemd/magic-dingus-web.service`](magic_dingus_box_cpp/systemd/magic-dingus-web.service).
 
 ## License
 
