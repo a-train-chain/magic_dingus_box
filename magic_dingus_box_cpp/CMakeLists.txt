@@ -170,6 +170,8 @@ set(APP_SOURCES
     src/app/redraw_gate.cpp
     src/app/post_game_gate.cpp
     src/app/audio_router.cpp
+    src/app/shuffle_queue.cpp
+    src/app/playlist_cursor.cpp
 )
 
 set(UTILS_SOURCES
@@ -734,6 +736,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # PulseAudio routing (fake pactl runner in the tests) + its runner.
         src/app/audio_router.cpp
         src/utils/subprocess.cpp
+        # Shuffle / Master Shuffle / sequential next-previous decisions
+        # (controller.cpp is in no test target).
+        src/app/shuffle_queue.cpp
+        src/app/playlist_cursor.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp

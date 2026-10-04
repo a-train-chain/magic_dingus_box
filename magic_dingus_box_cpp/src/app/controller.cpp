@@ -3,6 +3,8 @@
 #include "game_launch_validation.h"
 #include "playback_reset.h"
 #include "auto_advance.h"
+#include "playlist_cursor.h"
+#include "shuffle_queue.h"
 #include "../video/video_player.h"
 #include "../video/gst_player.h"
 #include "../utils/path_resolver.h"
@@ -956,54 +958,30 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
     int playlist_size = static_cast<int>(playlist.items.size());
     
     if (state.shuffle) {
-        // Shuffle mode: Use queue-based selection (Fisher-Yates)
-        // Ensures all videos play once before reshuffling
-        if (playlist_size <= 1) {
-            next_index = 0;
-        } else {
-            // Check if playlist changed (need to regenerate queue)
-            if (state.shuffle_queue_playlist_id != state.current_playlist_index) {
-                state.shuffle_queue.clear();  // Force regeneration
-                state.shuffle_queue_playlist_id = state.current_playlist_index;
-            }
-            
-            // Get next shuffled index (will generate queue if needed)
-            next_index = get_next_shuffled_index(state, playlist_size);
-            
-            // If we got the same video we're currently on (shouldn't happen often),
-            // get another one
-            if (next_index == state.current_item_index && state.shuffle_queue_position < playlist_size) {
-                next_index = get_next_shuffled_index(state, playlist_size);
-            }
-        }
+        // Shuffle mode: every item plays once before any repeats, never the
+        // same item twice in a row (app/shuffle_queue.h).
+        next_index = shuffle::next_shuffled_index(
+            state.shuffle_queue, state.shuffle_queue_position,
+            state.shuffle_queue_playlist_id, state.current_playlist_index,
+            playlist_size, state.current_item_index, rng_);
     } else {
-        // Sequential mode
-        next_index = state.current_item_index + 1;
-        
-        // Check if we've reached the end of the playlist
-        if (next_index >= playlist_size) {
-            // Per-playlist loop wins for VIDEO playlists; game playlists keep
-            // the global setting, since the `loop:` key is meaningless for them
-            // (selecting a game hands off to RetroArch rather than running
-            // through the video pipeline).
-            const bool effective_loop = playlist.is_game_playlist()
-                                            ? state.playlist_loop
-                                            : playlist.loop;
-            if (effective_loop) {
-                // Loop back to start
-                next_index = 0;
-            } else {
-                // Stop playback if looping is disabled. Back to the menu,
-                // NOT "cursor to item 0": indexes left >= 0 with no video
-                // read as a between-items transition and the renderer drew
-                // nothing until reboot. Nothing needs the cursor — starting
-                // a playlist from the menu always loads item 0 itself.
-                std::cout << "Playlist finished and looping disabled. Stopping playback." << std::endl;
-                stop();
-                stop_to_menu(state);
-                return;
-            }
+        // Sequential mode. Per-playlist loop wins for VIDEO playlists; game
+        // playlists keep the global setting (app/playlist_cursor.h).
+        const auto step = cursor::sequential_next(
+            state.current_item_index, playlist_size,
+            cursor::effective_loop(playlist, state.playlist_loop));
+        if (step.stop_to_menu) {
+            // Stop playback if looping is disabled. Back to the menu,
+            // NOT "cursor to item 0": indexes left >= 0 with no video
+            // read as a between-items transition and the renderer drew
+            // nothing until reboot. Nothing needs the cursor — starting
+            // a playlist from the menu always loads item 0 itself.
+            std::cout << "Playlist finished and looping disabled. Stopping playback." << std::endl;
+            stop();
+            stop_to_menu(state);
+            return;
         }
+        next_index = step.index;
     }
     
     int old_index = state.current_item_index;
@@ -1023,13 +1001,10 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
                   << ": " << load_result.error() << ", skipping..." << std::endl;
         state.last_advanced_item_index = -1;  // Reset advance flag to allow retry
 
-        int attempts = 0;
-        int max_attempts = static_cast<int>(playlist.items.size());
         bool found = false;
-
-        while (attempts < max_attempts && !found) {
-            state.current_item_index = (state.current_item_index + 1) % playlist.items.size();
-            if (state.current_item_index == old_index) break; // Wrapped around, give up
+        for (int candidate : cursor::retry_order(state.current_item_index, old_index,
+                                                 static_cast<int>(playlist.items.size()))) {
+            state.current_item_index = candidate;
 
             // Defensive null guard. player_ is set at construction and not
             // reassigned anywhere, but an emulated-game retry path can have
@@ -1043,11 +1018,10 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
             auto retry = load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
             if (retry) {
                 found = true;
-            } else {
-                std::cerr << "Warning: Also failed item " << (state.current_item_index + 1)
-                          << ": " << retry.error() << std::endl;
+                break;
             }
-            attempts++;
+            std::cerr << "Warning: Also failed item " << (state.current_item_index + 1)
+                      << ": " << retry.error() << std::endl;
         }
 
         if (!found) {
@@ -1092,7 +1066,8 @@ void Controller::load_previous_item(AppState& state, const std::string& playlist
     
     // Move to previous item (loop back to end if at start)
     int old_index = state.current_item_index;
-    state.current_item_index = (state.current_item_index - 1 + playlist.items.size()) % playlist.items.size();
+    state.current_item_index = cursor::previous_index(
+        state.current_item_index, static_cast<int>(playlist.items.size()));
     
     // Set advance flags BEFORE loading to prevent multiple advances
     // Mark that we've advanced from the old index
@@ -1111,7 +1086,8 @@ void Controller::load_previous_item(AppState& state, const std::string& playlist
         state.last_advanced_item_index = -1;  // Reset advance flag to allow retry
         // Try previous item if there are more
         if (playlist.items.size() > 1) {
-            state.current_item_index = (state.current_item_index - 1 + playlist.items.size()) % playlist.items.size();
+            state.current_item_index = cursor::previous_index(
+                state.current_item_index, static_cast<int>(playlist.items.size()));
             if (state.current_item_index != old_index) {  // Only if we have another item
                 load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
             }
@@ -1140,6 +1116,43 @@ utils::Result<> Controller::initialize_retroarch_launcher() {
     return utils::Result<>::ok();
 }
 
+namespace {
+std::vector<int> playlist_sizes_of(const AppState& state) {
+    std::vector<int> sizes;
+    sizes.reserve(state.playlists.size());
+    for (const auto& pl : state.playlists) {
+        sizes.push_back(static_cast<int>(pl.items.size()));
+    }
+    return sizes;
+}
+}  // namespace
+
+void Controller::master_shuffle_advance(AppState& state, const std::string& playlist_directory) {
+    // Remember what is being left so PREV can come back to it (the virtual
+    // row and unset indices are filtered inside record_history).
+    shuffle::record_history(state.shuffle_history, state.current_playlist_index,
+                            state.current_item_index);
+    play_random_global_video(state, playlist_directory);
+}
+
+void Controller::master_shuffle_back(AppState& state, const std::string& playlist_directory) {
+    // Walk back past entries a playlist reload invalidated, rather than
+    // letting a stale one swallow the press.
+    const auto prev = shuffle::pop_valid_history(state.shuffle_history,
+                                                 playlist_sizes_of(state));
+    if (!prev) {
+        // No history - pick another random video
+        play_random_global_video(state, playlist_directory);
+        return;
+    }
+    state.current_playlist_index = prev->first;
+    state.current_item_index = prev->second;
+    state.last_advanced_item_index = -1;
+    state.last_advanced_duration = 0.0;
+    state.playback_started_ = false;
+    load_playlist_item(state, state.playlists[prev->first], prev->second, playlist_directory);
+}
+
 void Controller::play_random_global_video(AppState& state, const std::string& playlist_directory, int depth) {
     if (depth > 5) {
         std::cerr << "Error: play_random_global_video exceeded max retry depth" << std::endl;
@@ -1151,27 +1164,28 @@ void Controller::play_random_global_video(AppState& state, const std::string& pl
         return;
     }
 
-    // Get next item from master shuffle queue (will generate if needed)
-    auto [playlist_index, item_index] = get_next_master_shuffled_item(state);
-    
-    // Validate the selection
-    if (playlist_index < 0 || playlist_index >= static_cast<int>(state.playlists.size())) {
-        std::cerr << "Error: Invalid playlist index from master shuffle queue" << std::endl;
-        // Regenerate and retry
+    // Get next item from master shuffle queue (will generate if needed).
+    // nullopt = no source playlist has a single item; the old code indexed
+    // element 0 of the empty queue here.
+    const std::vector<int> playlist_sizes = playlist_sizes_of(state);
+    const auto pick = shuffle::next_master_item(
+        state.master_shuffle_queue, state.master_shuffle_queue_position,
+        playlist_sizes, rng_);
+    if (!pick) {
+        std::cerr << "Warning: Master Shuffle has no videos to play" << std::endl;
+        return;
+    }
+    const auto [playlist_index, item_index] = *pick;
+
+    // A queue built before a playlist reload can name items that no longer
+    // exist: regenerate and retry.
+    if (!shuffle::is_valid_source_entry(*pick, playlist_sizes)) {
+        std::cerr << "Error: Stale entry in master shuffle queue; regenerating" << std::endl;
         state.master_shuffle_queue.clear();
         play_random_global_video(state, playlist_directory, depth + 1);
         return;
     }
-    
     const auto& playlist = state.playlists[playlist_index];
-    
-    if (item_index < 0 || item_index >= static_cast<int>(playlist.items.size())) {
-        std::cerr << "Error: Invalid item index from master shuffle queue" << std::endl;
-        // Regenerate and retry
-        state.master_shuffle_queue.clear();
-        play_random_global_video(state, playlist_directory, depth + 1);
-        return;
-    }
 
     std::cout << "Master Shuffle: playlist " << playlist_index 
               << " (" << playlist.title << "), item " << item_index 
@@ -1194,80 +1208,6 @@ void Controller::play_random_global_video(AppState& state, const std::string& pl
         // Skip this item and try next (error already logged by load_playlist_item)
         play_random_global_video(state, playlist_directory, depth + 1);
     }
-}
-
-// Generate a shuffled queue of indices for the current playlist
-// Uses Fisher-Yates shuffle to randomize order
-void Controller::generate_shuffle_queue(AppState& state, int playlist_size) {
-    // Create sequential indices
-    state.shuffle_queue.clear();
-    state.shuffle_queue.reserve(playlist_size);
-    for (int i = 0; i < playlist_size; ++i) {
-        state.shuffle_queue.push_back(i);
-    }
-
-    // Fisher-Yates shuffle
-    std::shuffle(state.shuffle_queue.begin(), state.shuffle_queue.end(), rng_);
-    
-    // Reset position to start
-    state.shuffle_queue_position = 0;
-    
-    std::cout << "Generated new shuffle queue with " << playlist_size << " items" << std::endl;
-}
-
-// Get the next index from the shuffle queue, regenerating if exhausted
-int Controller::get_next_shuffled_index(AppState& state, int playlist_size) {
-    // Check if queue is empty or exhausted
-    if (state.shuffle_queue.empty() || 
-        state.shuffle_queue_position >= static_cast<int>(state.shuffle_queue.size()) ||
-        static_cast<int>(state.shuffle_queue.size()) != playlist_size) {
-        // Generate new queue
-        generate_shuffle_queue(state, playlist_size);
-    }
-    
-    // Get next index and advance position
-    int index = state.shuffle_queue[state.shuffle_queue_position];
-    state.shuffle_queue_position++;
-    
-    return index;
-}
-
-// Generate a shuffled queue for Master Shuffle (all items from all playlists)
-void Controller::generate_master_shuffle_queue(AppState& state) {
-    state.master_shuffle_queue.clear();
-
-    // Collect all items from all playlists (skip playlist 0 which is Master Shuffle itself)
-    for (size_t playlist_idx = 1; playlist_idx < state.playlists.size(); ++playlist_idx) {
-        const auto& playlist = state.playlists[playlist_idx];
-        for (size_t item_idx = 0; item_idx < playlist.items.size(); ++item_idx) {
-            state.master_shuffle_queue.emplace_back(static_cast<int>(playlist_idx), static_cast<int>(item_idx));
-        }
-    }
-
-    // Fisher-Yates shuffle
-    std::shuffle(state.master_shuffle_queue.begin(), state.master_shuffle_queue.end(), rng_);
-    
-    // Reset position to start
-    state.master_shuffle_queue_position = 0;
-    
-    std::cout << "Generated new master shuffle queue with " << state.master_shuffle_queue.size() 
-              << " items from " << (state.playlists.size() - 1) << " playlists" << std::endl;
-}
-
-// Get the next item from the master shuffle queue, regenerating if exhausted
-std::pair<int, int> Controller::get_next_master_shuffled_item(AppState& state) {
-    // Check if queue is empty or exhausted
-    if (state.master_shuffle_queue.empty() || 
-        state.master_shuffle_queue_position >= static_cast<int>(state.master_shuffle_queue.size())) {
-        // Generate new queue
-        generate_master_shuffle_queue(state);
-    }
-    
-    // Get next item and advance position
-    auto item = state.master_shuffle_queue[state.master_shuffle_queue_position];
-    state.master_shuffle_queue_position++;
-    
-    return item;
 }
 
 } // namespace app

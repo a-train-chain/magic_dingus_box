@@ -260,22 +260,10 @@ public:
     std::vector<std::pair<int, int>> master_shuffle_queue;
     int master_shuffle_queue_position = 0;
 
-    // Shuffle history for "Previous" in master shuffle (max 10)
+    // Shuffle history for "Previous" in master shuffle — written and read
+    // only through app::shuffle::record_history / pop_valid_history
+    // (app/shuffle_queue.h), which own the cap and the validity rules.
     std::deque<std::pair<int, int>> shuffle_history;
-
-    void push_shuffle_history(int playlist_idx, int item_idx) {
-        shuffle_history.push_back({playlist_idx, item_idx});
-        if (shuffle_history.size() > 10) shuffle_history.pop_front();
-    }
-
-    bool pop_shuffle_history(int& playlist_idx, int& item_idx) {
-        if (shuffle_history.empty()) return false;
-        auto [p, i] = shuffle_history.back();
-        shuffle_history.pop_back();
-        playlist_idx = p;
-        item_idx = i;
-        return true;
-    }
 
     // Master Volume Control
     int master_volume = 100; // 0-100%

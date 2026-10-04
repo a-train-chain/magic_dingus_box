@@ -732,14 +732,9 @@ int main(int /* argc */, char* /* argv */[]) {
                       << " failed (" << why << ") — skipping to next item"
                       << std::endl;
             if (state.master_shuffle_active) {
-                // > 0: index 0 is the virtual Master Shuffle row — see the
-                // NEXT handler.
-                if (state.current_playlist_index > 0 &&
-                    state.current_item_index >= 0) {
-                    state.push_shuffle_history(state.current_playlist_index,
-                                               state.current_item_index);
-                }
-                controller.play_random_global_video(state, playlist_directory);
+                // Records the failed item in the PREV history (the virtual
+                // row is filtered there), then picks the next random video.
+                controller.master_shuffle_advance(state, playlist_directory);
             } else {
                 controller.load_next_item(state, playlist_directory);
             }
@@ -3300,19 +3295,16 @@ int main(int /* argc */, char* /* argv */[]) {
                     // Don't allow if we're switching playlists
                     if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
                         if (state.master_shuffle_active) {
-                            // In Master Shuffle, NEXT triggers another random video
-                            // Save current position to shuffle history for "Previous" support.
-                            // Index 0 is the VIRTUAL Master Shuffle row (one dummy
-                            // item, no file), never a real source playlist — the
-                            // reload path parks current_playlist_index there when a
-                            // source playlist is deleted mid-playback. Recording it
-                            // would make a later PREV try to load the dummy item,
-                            // which fails after the caller has already cleared
-                            // playback_started_ and stalls auto-advance.
-                            if (state.current_playlist_index > 0 && state.current_item_index >= 0) {
-                                state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
-                            }
-                            controller.play_random_global_video(state, playlist_directory);
+                            // In Master Shuffle, NEXT triggers another random video,
+                            // saving the current one to the shuffle history for
+                            // "Previous". Index 0 is the VIRTUAL Master Shuffle row
+                            // (one dummy item, no file), never a real source
+                            // playlist — the reload path parks
+                            // current_playlist_index there when a source playlist is
+                            // deleted mid-playback; record_history refuses it (see
+                            // app/shuffle_queue.h for why recording it stalled
+                            // auto-advance).
+                            controller.master_shuffle_advance(state, playlist_directory);
                         } else {
                             controller.load_next_item(state, playlist_directory);
                         }
@@ -3330,24 +3322,9 @@ int main(int /* argc */, char* /* argv */[]) {
                     // Don't allow if we're switching playlists
                     if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
                         if (state.master_shuffle_active) {
-                            // In Master Shuffle, PREV goes back through shuffle history
-                            int prev_playlist, prev_item;
-                            if (state.pop_shuffle_history(prev_playlist, prev_item)) {
-                                if (prev_playlist >= 0 && prev_playlist < static_cast<int>(state.playlists.size())) {
-                                    const auto& pl = state.playlists[prev_playlist];
-                                    if (prev_item >= 0 && prev_item < static_cast<int>(pl.items.size())) {
-                                        state.current_playlist_index = prev_playlist;
-                                        state.current_item_index = prev_item;
-                                        state.last_advanced_item_index = -1;
-                                        state.last_advanced_duration = 0.0;
-                                        state.playback_started_ = false;
-                                        controller.load_playlist_item(state, pl, prev_item, playlist_directory);
-                                    }
-                                }
-                            } else {
-                                // No history - pick another random video
-                                controller.play_random_global_video(state, playlist_directory);
-                            }
+                            // In Master Shuffle, PREV goes back through shuffle
+                            // history (random pick when it is empty).
+                            controller.master_shuffle_back(state, playlist_directory);
                         } else {
                             controller.load_previous_item(state, playlist_directory);
                         }
@@ -3578,13 +3555,9 @@ int main(int /* argc */, char* /* argv */[]) {
                     state.last_advanced_duration = adv.duration;
                     // Note: load_next_item handles errors internally (skips broken files)
                     if (state.master_shuffle_active) {
-                        // Save current position to shuffle history before auto-advancing.
-                        // > 0, not >= 0: index 0 is the virtual Master Shuffle row —
-                        // see the matching note on the NEXT handler above.
-                        if (state.current_playlist_index > 0 && state.current_item_index >= 0) {
-                            state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
-                        }
-                        controller.play_random_global_video(state, playlist_directory);
+                        // Saves the current item to the shuffle history first
+                        // (virtual row excluded — see the NEXT handler above).
+                        controller.master_shuffle_advance(state, playlist_directory);
                     } else {
                         controller.load_next_item(state, playlist_directory);
                     }
