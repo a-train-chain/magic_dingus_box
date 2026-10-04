@@ -237,6 +237,23 @@ This guarantees correct compositing without X11/compositor overhead.
     `ensure_web_server_dep` (OTA — narrow `apt-get install
     python3-gunicorn`, never fatal), and `deploy_cpp.sh` (calls the same
     function). Heartbeat file in `/dev/shm`, not the SD-card `TMPDIR`.
+- **Box health + diagnostics** (Settings tab). `POST /admin/health/run`
+  (CSRF) starts `sudo -n /bin/bash scripts/verify_box.sh [--with-services]`
+  in a single-flight background thread (`box_health.py`; `--with-services`
+  only when the Media Browser is unlocked); `GET /admin/health/status`
+  returns the parsed sections/checks, counts and a plain-language
+  `headline`, cached in `data/box_health_last.json` (wiped by
+  `first_boot.sh` on clones; the OTA's rsync --delete drops it on update,
+  deliberately). `GET|POST /admin/diagnostics/bundle` (`diagnostics.py`)
+  streams a zip of system info, unit status, journal tails, the health
+  result, kiosk_status.json and launcher logs. **Everything in it passes
+  `redact.py`**: exact values from `services/.env` / `flask_secret.key` /
+  the TMDB key file, secret shapes (env assignments, JSON, headers, URL
+  params, JWT, WireGuard keys, long hex), and a whole-line drop for any
+  remaining password/psk/secret/token mention; `kiosk_status.json`'s
+  `text_input.buffer` (the live TV keyboard — Wi-Fi password screen
+  included) is blanked. Never add a file to the bundle without a redaction
+  test; `FORBIDDEN_NAMES` refuses the known credential files outright.
 
 ## Key Dependencies
 

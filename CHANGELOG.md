@@ -43,6 +43,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly as before.
 
 ### Added
+- **"Box Health" in the Content Manager.** Settings now has a Run
+  Health Check button that runs the same checks the box went through
+  before it shipped — picture, sound, games, storage and its own
+  services — and answers in plain words: "Everything looks good" or
+  "2 problems found", with each area expandable to see exactly what was
+  checked. The last result stays on the page, so you can come back to
+  it. If the Movies feature is turned on, you can also include a check
+  of the Movies services.
+- **"Download Diagnostics" for support.** Next to the health check, one
+  button saves a single file with the box's recent logs, its health
+  result and basic system details — the things support asks for first.
+  Passwords, VPN and service keys, Wi-Fi passwords, paired phones and
+  anything being typed on the TV keyboard are never included; anything
+  in a log that looks like a password or key is blanked out.
 - **Choose which season to download.** A show's page now suggests the
   season after the last one you watched or have — "Download Season 5"
   if you've seen the first four — and pressing it lets you turn the knob

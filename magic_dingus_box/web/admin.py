@@ -23,8 +23,14 @@ try:  # noqa: E402
         protected_disk_names,
     )
     from detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
+    import box_health
+    import diagnostics
+    from redact import Redactor
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
+    from . import box_health
+    from . import diagnostics
+    from .redact import Redactor
     from .storage_prepare import (
         PROTECTED_MOUNTPOINTS,
         eligible_devices,
@@ -4652,6 +4658,74 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 status=500)
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
+
+    # ===== BOX HEALTH (verify_box.sh) + DIAGNOSTICS BUNDLE =====
+    #
+    # Box health runs the box's own pre-ship acceptance test and shows its
+    # verdict in plain language — the same answer a technician gets over
+    # SSH, without SSH. The diagnostics bundle is the zip support asks for
+    # first. Neither is behind the Media Browser gate (games-only boxes
+    # need support too); only the optional --with-services sweep is, since
+    # it inspects the Movies stack. See box_health.py / diagnostics.py.
+    install_dir = data_dir.parent.parent
+
+    def _known_secrets() -> list:
+        return diagnostics.known_secret_values(
+            install_dir, data_dir, extra_paths=[_tmdb_key_file()])
+
+    health_runner = box_health.HealthRunner(
+        script=data_dir.parent / "scripts" / "verify_box.sh",
+        cache_path=data_dir / box_health.CACHE_NAME,
+        redactor_factory=lambda: Redactor(_known_secrets()),
+    )
+    app.config["HEALTH_RUNNER"] = health_runner
+
+    @app.post("/admin/health/run")
+    @require_csrf
+    def health_run():  # type: ignore[no-redef]
+        body = request.get_json(silent=True) or {}
+        with_services = body.get("with_services") is True
+        if with_services and not _media_browser_unlocked():
+            return _media_browser_locked_response()
+        runner = app.config["HEALTH_RUNNER"]
+        started = runner.start(with_services=with_services)
+        data = runner.status()
+        data["already_running"] = not started
+        return success_response(
+            data=data,
+            message="Health check started" if started else "A health check is already running")
+
+    @app.get("/admin/health/status")
+    def health_status():  # type: ignore[no-redef]
+        data = app.config["HEALTH_RUNNER"].status()
+        data["services_check_available"] = _media_browser_unlocked()
+        return success_response(data=data)
+
+    _diag_lock = threading.Lock()
+
+    @app.route("/admin/diagnostics/bundle", methods=["GET", "POST"])
+    def diagnostics_bundle():  # type: ignore[no-redef]
+        # Read-only, but it shells out ~25 times; one build at a time.
+        if not _diag_lock.acquire(blocking=False):
+            resp, status = error_response(
+                "BUSY", "A diagnostics file is already being prepared — try "
+                "again in a moment.", status=429)
+            resp.headers["Retry-After"] = "15"
+            return resp, status
+        try:
+            builder = diagnostics.BundleBuilder(
+                data_dir=data_dir, install_dir=install_dir,
+                known_secrets=_known_secrets())
+            handle = diagnostics.build_to_tempfile(builder)
+        except Exception as e:
+            return error_response(
+                "INTERNAL_ERROR", f"Could not build the diagnostics file: {type(e).__name__}",
+                status=500)
+        finally:
+            _diag_lock.release()
+        name = diagnostics.bundle_filename(get_device_info().get("device_name", "box"))
+        return send_file(handle, mimetype="application/zip", as_attachment=True,
+                         download_name=name, max_age=0)
 
     @app.get("/admin/update/version")
     def get_version():  # type: ignore[no-redef]

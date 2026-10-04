@@ -824,6 +824,35 @@
                 </div>
             </div>
 
+            <!-- Box health: runs the box's own acceptance test
+                 (verify_box.sh) and shows the verdict in plain language.
+                 The diagnostics download sits here because it is the next
+                 thing to reach for when the verdict is bad. -->
+            <div class="settings-section-mobile">
+                <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-health"/></svg> Box Health</div>
+                <div class="section-body">
+                    <p class="settings-description">
+                        Checks the picture, sound, games, storage and the box's
+                        own services, the same way it was checked before it
+                        shipped. Takes about 30 seconds.
+                    </p>
+                    <label id="boxHealthServicesRow" class="settings-description" style="display: none; margin-bottom: 0.5rem;">
+                        <input type="checkbox" id="boxHealthWithServices">
+                        Also check the Movies services (takes a few minutes)
+                    </label>
+                    <div class="update-actions">
+                        <button class="btn-primary" id="boxHealthBtn" onclick="runBoxHealth()">Run Health Check</button>
+                        <button class="btn-secondary" id="diagBundleBtn" onclick="downloadDiagnostics()">Download Diagnostics</button>
+                    </div>
+                    <div id="boxHealthVerdict" class="restore-status" style="display: none; margin-top: 0.75rem;"></div>
+                    <div id="boxHealthDetails" style="display: none; margin-top: 0.5rem; font-size: 0.85rem;"></div>
+                    <p class="settings-description" style="margin-top: 0.75rem; font-size: 0.8rem;">
+                        The diagnostics file is for support: logs and settings
+                        with passwords, keys and paired phones left out.
+                    </p>
+                </div>
+            </div>
+
             <div class="settings-section-mobile">
                 <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-health"/></svg> System Health</div>
                 <div class="section-body">

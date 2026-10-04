@@ -950,6 +950,7 @@ function updateMobileSettingsView() {
         if (mobileHealthInfo) {
             refreshHealthInfo();
         }
+        loadBoxHealth();
     } else {
         mobileStatusText.textContent = 'Not connected';
         mobileDeviceStatus.classList.remove('connected');
@@ -6328,6 +6329,159 @@ async function runNetworkDoctor() {
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = 'Run Network Test'; }
     }
+}
+
+// ===== BOX HEALTH + DIAGNOSTICS =====
+//
+// Runs the box's own pre-ship acceptance test (verify_box.sh) in the
+// background and shows its verdict in plain language, with each section
+// expandable. The last result is cached on the box, so the card shows it
+// again after a reload without re-running anything.
+let _boxHealthPoll = null;
+
+function _boxHealthAge(iso) {
+    if (!iso) return '';
+    const t = Date.parse(iso);
+    if (isNaN(t)) return '';
+    const mins = Math.round((Date.now() - t) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 48) return `${hrs} h ago`;
+    return new Date(t).toLocaleDateString();
+}
+
+function _renderBoxHealth(status) {
+    const verdictEl = document.getElementById('boxHealthVerdict');
+    const detailsEl = document.getElementById('boxHealthDetails');
+    const btn = document.getElementById('boxHealthBtn');
+    const svcRow = document.getElementById('boxHealthServicesRow');
+    if (!verdictEl || !detailsEl) return;
+    if (svcRow) svcRow.style.display = status.services_check_available ? 'block' : 'none';
+
+    if (status.running) {
+        if (btn) { btn.disabled = true; btn.textContent = 'Checking… (~30s)'; }
+        verdictEl.style.display = 'block';
+        verdictEl.className = 'restore-status loading';
+        verdictEl.textContent = status.running_with_services
+            ? 'Checking the box and its Movies services — this can take a few minutes…'
+            : 'Checking the box…';
+        return;
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Run Health Check'; }
+
+    const r = status.result;
+    if (!r) {
+        verdictEl.style.display = 'none';
+        detailsEl.style.display = 'none';
+        return;
+    }
+    const bad = r.error || r.failed > 0;
+    verdictEl.style.display = 'block';
+    verdictEl.className = 'restore-status ' + (bad ? 'error' : 'success');
+    const age = _boxHealthAge(r.finished_at);
+    let sub = '';
+    if (r.error) {
+        sub = escapeHtml(r.error);
+    } else if (r.failed > 0) {
+        sub = 'Open the sections marked ✗ below to see what needs attention.';
+    } else if (r.warnings > 0) {
+        sub = 'Notes (!) are usually expected — for example no movie drive plugged in.';
+    }
+    verdictEl.innerHTML =
+        `<strong>${escapeHtml(r.headline || '')}</strong>` +
+        (sub ? `<br>${sub}` : '') +
+        (age ? `<br><span style="opacity: 0.8; font-size: 0.8rem;">Checked ${escapeHtml(age)}` +
+               `${r.with_services ? ' (including Movies services)' : ''}</span>` : '');
+
+    const sections = Array.isArray(r.sections) ? r.sections : [];
+    if (!sections.length) { detailsEl.style.display = 'none'; return; }
+    const icon = { pass: '✓', fail: '✗', warn: '!' };
+    const color = { pass: 'var(--success)', fail: 'var(--error)', warn: 'var(--accent)' };
+    detailsEl.style.display = 'block';
+    detailsEl.innerHTML = sections.map(s => {
+        const checks = s.checks || [];
+        const fails = checks.filter(c => c.level === 'fail').length;
+        const warns = checks.filter(c => c.level === 'warn').length;
+        const mark = fails ? 'fail' : (warns ? 'warn' : 'pass');
+        const tally = fails ? `${fails} problem${fails > 1 ? 's' : ''}`
+                    : warns ? `${warns} note${warns > 1 ? 's' : ''}` : 'all good';
+        const rows = checks.map(c =>
+            `<div style="padding: 0.15rem 0 0.15rem 1rem;">` +
+            `<span style="color: ${color[c.level] || 'inherit'};">${icon[c.level] || '•'}</span> ` +
+            `${escapeHtml(c.text)}` +
+            (c.details && c.details.length
+                ? `<pre style="margin: 0.25rem 0 0 1rem; font-size: 0.75rem; white-space: pre-wrap;">${escapeHtml(c.details.join('\n'))}</pre>`
+                : '') +
+            `</div>`).join('');
+        return `<details style="padding: 0.2rem 0;"${fails ? ' open' : ''}>` +
+               `<summary style="cursor: pointer;">` +
+               `<span style="color: ${color[mark]};">${icon[mark]}</span> ` +
+               `${escapeHtml(s.name)} <span style="opacity: 0.75;">— ${tally}</span></summary>` +
+               rows + `</details>`;
+    }).join('');
+}
+
+async function loadBoxHealth() {
+    if (!currentDevice) return;
+    try {
+        const status = await apiGet(`${currentDevice.url}/admin/health/status`);
+        _renderBoxHealth(status);
+        if (status.running && !_boxHealthPoll) {
+            _boxHealthPoll = setInterval(_pollBoxHealth, 2000);
+        }
+    } catch (e) {
+        console.warn('Box health status unavailable:', e.message || e);
+    }
+}
+
+async function _pollBoxHealth() {
+    if (!currentDevice) { clearInterval(_boxHealthPoll); _boxHealthPoll = null; return; }
+    try {
+        const status = await apiGet(`${currentDevice.url}/admin/health/status`);
+        _renderBoxHealth(status);
+        if (!status.running) { clearInterval(_boxHealthPoll); _boxHealthPoll = null; }
+    } catch (e) {
+        // Transient (e.g. the web service restarting) — keep polling.
+    }
+}
+
+async function runBoxHealth() {
+    if (!currentDevice) return;
+    const verdictEl = document.getElementById('boxHealthVerdict');
+    const withSvc = document.getElementById('boxHealthWithServices');
+    try {
+        if (!csrfToken) await fetchCsrfToken();
+        const status = await apiPost(`${currentDevice.url}/admin/health/run`,
+            { with_services: !!(withSvc && withSvc.checked &&
+                                 withSvc.closest('label').style.display !== 'none') });
+        _renderBoxHealth(status);
+        if (!_boxHealthPoll) _boxHealthPoll = setInterval(_pollBoxHealth, 2000);
+    } catch (e) {
+        if (verdictEl) {
+            verdictEl.style.display = 'block';
+            verdictEl.className = 'restore-status error';
+            verdictEl.textContent = `Could not start the health check: ${e.message}`;
+        }
+    }
+}
+
+function downloadDiagnostics() {
+    if (!currentDevice) return;
+    const btn = document.getElementById('diagBundleBtn');
+    if (btn) {
+        // The box takes ~10 s to gather everything before the download
+        // starts; say so instead of looking dead.
+        btn.disabled = true;
+        btn.textContent = 'Preparing… (~10s)';
+        setTimeout(() => { btn.disabled = false; btn.textContent = 'Download Diagnostics'; }, 12000);
+    }
+    const link = document.createElement('a');
+    link.href = `${currentDevice.url}/admin/diagnostics/bundle`;
+    link.download = '';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 }
 
 let _reconfArmTimer = null;
