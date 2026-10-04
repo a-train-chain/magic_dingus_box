@@ -166,6 +166,7 @@ set(APP_SOURCES
     src/app/playback_stall_watchdog.cpp
     src/app/playback_reset.cpp
     src/app/auto_advance.cpp
+    src/app/redraw_gate.cpp
 )
 
 set(UTILS_SOURCES
@@ -716,6 +717,8 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # in no test target, so their end-of-item logic lives here.
         src/app/playback_reset.cpp
         src/app/auto_advance.cpp
+        # The main loop's redraw gate (draw vs skip per iteration).
+        src/app/redraw_gate.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp
