@@ -3996,9 +3996,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     @app.get("/admin/transcode-status/<job_id>")
     def transcode_status(job_id):  # type: ignore[no-redef]
-        """Get status of a transcoding job."""
+        """Get status of a transcoding job.
+
+        Jobs are in-memory on purpose: the ffmpeg encode runs inside this
+        service and dies with it (and its .part is swept at startup), so a
+        job cannot outlive a restart. The 404 is therefore final, and says
+        so — manager.js turns it into "upload it again" rather than polling.
+        """
         if job_id not in transcode_jobs:
-            return error_response("NOT_FOUND", "Job not found", status=404)
+            return error_response(
+                "NOT_FOUND",
+                "Job not found — the box may have restarted while converting. "
+                "Please upload the file again.",
+                status=404)
 
         job = transcode_jobs[job_id]
         return success_response(data={

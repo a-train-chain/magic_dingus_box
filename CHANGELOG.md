@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy of a file was uploaded while the first was still converting, the
   second could silently replace the first. The second one is now saved
   alongside it with a `_1` added to its name.
+- **Uploads no longer hang forever if the box restarts mid-conversion.**
+  The progress bar used to sit frozen; it now says the box restarted and
+  asks you to upload that video again.
 - **A broken video no longer freezes the box.** A truncated upload, a bad
   SD-card sector or a format the box can't decode used to stop an
   unattended playlist dead on that video until someone pressed Next. The

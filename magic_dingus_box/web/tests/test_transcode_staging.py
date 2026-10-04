@@ -205,6 +205,20 @@ def test_same_name_uploads_never_overwrite_each_other(
     assert list(media.glob("*.part")) == []
 
 
+def test_unknown_job_is_a_404_the_uploader_can_act_on(client):
+    """Transcode jobs are in-memory and their encoder dies with the web
+    service, so after a restart the job is gone for good. manager.js keys
+    its "failed — upload it again" handling on exactly this 404 +
+    NOT_FOUND; it used to read the missing .data as "still running" and
+    poll forever."""
+    resp = client.get("/admin/transcode-status/0f0e0d0c-lost-after-restart")
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "NOT_FOUND"
+    assert "restart" in body["error"]["message"].lower()
+
+
 def test_name_is_released_after_the_job_finishes(
         client, temp_data_dir: Path, slow_echo_bin):
     """A finished job's reservation must not leak: deleting its output and
