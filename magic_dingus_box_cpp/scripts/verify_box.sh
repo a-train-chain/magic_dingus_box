@@ -468,11 +468,17 @@ fi
 # ---------------------------------------------------------------------
 if (( RUN_SERVICES )); then
   header "Service stack (verify_services.sh)"
-  if bash "${APP}/scripts/verify_services.sh" >/tmp/vs.log 2>&1; then
+  # A fresh file per run: a fixed /tmp/vs.log left root-owned by one
+  # `sudo verify_box.sh` made every later NON-sudo run fail this check
+  # before verify_services.sh even started (the redirect itself failed),
+  # while the stale log said "All 15 checks PASSED" (2026-10-04).
+  VS_LOG="$(mktemp "${TMPDIR:-/tmp}/verify_services.XXXXXX")" || VS_LOG=/dev/null
+  if bash "${APP}/scripts/verify_services.sh" >"$VS_LOG" 2>&1; then
     pass "verify_services.sh passed"
+    [[ "$VS_LOG" == /dev/null ]] || rm -f "$VS_LOG"
   else
-    fail "verify_services.sh failed — see /tmp/vs.log"
-    tail -12 /tmp/vs.log | sed 's/^/         /'
+    fail "verify_services.sh failed — see $VS_LOG"
+    tail -12 "$VS_LOG" | sed 's/^/         /'
   fi
 fi
 
