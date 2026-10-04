@@ -206,7 +206,7 @@ struct AppState {
     int sm_game_playlist_index = -1;        // which game playlist is open
     int sm_selected_game_index = -1;        // cursor within a playlist's games
 
-    double original_volume;  // Store original volume when video starts (for dimming when UI is visible)
+    double original_volume;  // Stream level when the current video started (intro fade-out ramps from it)
     std::string current_file;
     int current_playlist_index;  // Index of playlist currently playing (-1 if none)
     int current_item_index;  // Index of item currently playing (-1 if none)
@@ -420,8 +420,8 @@ public:
     // Post-game menu fade-up. 0 = idle. -1 = fade REQUESTED, set by
     // prepare_kiosk_state_after_game (which runs only on the post-handover
     // exit path — NOT the game-session exit hook, which also fires on
-    // validation early-returns where the display was never released and a
-    // fade would black-flash the still-visible menu). >0 = steady_clock
+    // launch failures where the display was never released and a fade
+    // would black-flash the still-visible menu). >0 = steady_clock
     // time_since_epoch in ms of the first frame the render loop actually
     // drew: the loop stamps the sentinel on first sight, so the fade covers
     // 250ms of RENDERED frames even when frame_ctx/EGL/GStreamer re-init

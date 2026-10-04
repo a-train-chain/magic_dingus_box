@@ -60,6 +60,8 @@
 #include "app/settings_persistence.h"
 #include "app/status_writer.h"
 #include "app/playback_stall_watchdog.h"
+#include "app/playback_reset.h"
+#include "app/auto_advance.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/path_resolver.h"
@@ -746,9 +748,7 @@ int main(int /* argc */, char* /* argv */[]) {
                       << std::endl;
             // Same end state as load_next_item's all-items-failed branch.
             controller.stop();
-            state.video_active = false;
-            state.ui_visible_when_playing = true;
-            state.set_error("Couldn't play these videos");
+            app::stop_to_menu(state, "Couldn't play these videos");
         }
     };
     
@@ -3390,11 +3390,11 @@ int main(int /* argc */, char* /* argv */[]) {
                     // Reset advance flags when switching playlists to prevent issues
                     state.last_advanced_item_index = -1;
                     state.last_advanced_duration = 0.0;
-                    state.original_volume = 100.0;  // Reset to default, will be captured when new video starts
-                    
-                    // Restore volume to 100% before stopping (in case UI was visible and volume was dimmed)
-                    controller.set_volume(100.0);
-                    
+                    // No volume reset here: nothing dims the stream any more,
+                    // and forcing 100% blasted the outgoing video at full
+                    // level until stop() landed. load_file re-applies the
+                    // user's volume to the new stream.
+
                     controller.stop();
                     // Wait longer to ensure stop completes and buffers are released
                     // Increased delay to prevent race conditions and buffer export errors
@@ -3766,39 +3766,37 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
 
-        // Auto-advance to next item in playlist when current video ends
+        // Auto-advance to next item in playlist when current video ends.
+        // "Ends" honors the item's `end:` trim (decide_auto_advance) — the
+        // old full-file comparison played every trimmed item to EOF.
         if (state.video_active && state.current_playlist_index >= 0 && state.current_item_index >= 0) {
             // Snapshot the (position, duration) pair so the whole advance
             // decision sees a consistent view rather than reading the
             // mutex-protected fields multiple times.
-            const double adv_position = state.get_position();
-            const double adv_duration = state.get_duration();
-            // Check if video has ended (position >= duration with small tolerance)
-            // Only advance once per item (check that we haven't already advanced from this item)
-            if (adv_duration > 0.0 && adv_position >= adv_duration - 0.5) {
-                // Video has ended - advance to next item
-                // Only advance if we haven't already advanced from this item
-                // Check that we haven't already advanced from this specific item index
-                // AND that playback has actually started (prevents double-trigger from stale state)
-                bool can_advance = false;
-                if (state.master_shuffle_active) {
-                    // In Master Shuffle we always advance to a new random video
-                    // BUT we must ensure the new video has actually started playing
-                    // to avoid double-triggering on stale state from the previous video
-                    can_advance = state.playback_started_;
-                } else {
-                    // Normal playlist advance logic
-                    // Advance when video ends, even if menu overlay is visible
-                    can_advance = (state.current_item_index != state.last_advanced_item_index &&
-                                   state.playback_started_);
+            app::AutoAdvanceInput adv;
+            adv.position = state.get_position();
+            adv.duration = state.get_duration();
+            if (state.current_playlist_index < static_cast<int>(state.playlists.size())) {
+                const auto& adv_pl = state.playlists[state.current_playlist_index];
+                if (state.current_item_index < static_cast<int>(adv_pl.items.size())) {
+                    adv.item_end = adv_pl.items[state.current_item_index].end;
                 }
+            }
+            adv.playback_started = state.playback_started_;
+            adv.master_shuffle = state.master_shuffle_active;
+            adv.current_item = state.current_item_index;
+            adv.last_advanced_item = state.last_advanced_item_index;
 
-                if (can_advance) {
+            switch (app::decide_auto_advance(adv)) {
+                case app::AutoAdvance::Advance:
                     std::cout << "Auto-advancing from item " << state.current_item_index
-                              << " at position " << adv_position << "/" << adv_duration << std::endl;
-                    // Set flag BEFORE calling load_next_item to prevent race conditions
+                              << " at position " << adv.position << "/"
+                              << app::effective_end(adv.duration, adv.item_end) << std::endl;
+                    // Set flag BEFORE calling load_next_item to prevent race
+                    // conditions. The REAL duration: update_state compares it
+                    // to the new file's duration to detect the next item loaded.
                     state.last_advanced_item_index = state.current_item_index;
-                    state.last_advanced_duration = adv_duration;
+                    state.last_advanced_duration = adv.duration;
                     // Note: load_next_item handles errors internally (skips broken files)
                     if (state.master_shuffle_active) {
                         // Save current position to shuffle history before auto-advancing.
@@ -3811,22 +3809,23 @@ int main(int /* argc */, char* /* argv */[]) {
                     } else {
                         controller.load_next_item(state, playlist_directory);
                     }
-                } else if (adv_position >= adv_duration - 0.5) {
+                    break;
+                case app::AutoAdvance::Held:
                     if (!state.master_shuffle_active) {
                         std::cout << "NOT auto-advancing: item=" << state.current_item_index
                                   << ", last_advanced=" << state.last_advanced_item_index
                                   << ", playback_started=" << state.playback_started_ << std::endl;
                     }
-                }
-            } else {
-                // Reset the flags when video is playing normally (not at end)
-                // Reset unconditionally when we're well away from the end
-                // This allows auto-advance to work even after manual navigation
-                if (adv_position < adv_duration - 1.0) {
+                    break;
+                case app::AutoAdvance::ResetGuard:
+                    // Well away from the end: re-arm the once-per-item guard,
+                    // so auto-advance works even after manual navigation.
+                    // Master Shuffle stays active - only exits when user selects a different playlist
                     state.last_advanced_item_index = -1;
                     state.last_advanced_duration = 0.0;
-                    // Master Shuffle stays active - only exits when user selects a different playlist
-                }
+                    break;
+                case app::AutoAdvance::None:
+                    break;
             }
         }
         
@@ -4678,13 +4677,7 @@ int main(int /* argc */, char* /* argv */[]) {
                                     // box is power-cycled.
                                     state.master_shuffle_active = false;
                                     controller.stop();
-                                    state.video_active = false;
-                                    state.update_playback_state(0.0, 0.0);
-                                    state.ui_visible_when_playing = true;
-                                    state.current_playlist_index = -1;
-                                    state.current_item_index = -1;
-                                    state.fade_start_time =
-                                        std::chrono::steady_clock::now();
+                                    app::stop_to_menu(state);
                                 }
 
                                 // The auto-advance guard is an item index

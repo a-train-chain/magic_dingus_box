@@ -1,13 +1,19 @@
 #include "controller.h"
 #include "game_launch_recovery.h"
+#include "game_launch_validation.h"
+#include "playback_reset.h"
+#include "auto_advance.h"
 #include "../video/video_player.h"
 #include "../video/gst_player.h"
 #include "../utils/path_resolver.h"
 #include "../retroarch/retroarch_launcher.h"
+#include "../retroarch/launch_contract.h"
 #include "../platform/drm_display.h"
 #include "app_state.h"
 
 #include <sstream>
+#include <csignal>
+#include <vector>
 #include <iomanip>
 #include <iostream>
 #include <filesystem>
@@ -338,16 +344,12 @@ void Controller::update_state(AppState& state) {
     
     // Check if video has ended (for auto-advancing to next item in playlist)
     bool video_ended = false;
-    // An item's `end` trims playback short: treat it as the effective duration
-    // so the existing auto-advance path fires there instead of at the real end
-    // of the file. Clamped to the real duration, because an `end` past the end
-    // of the media would otherwise never be reached and would hang the item.
+    // An item's `end` trims playback short. Same effective end main.cpp's
+    // auto-advance uses (see auto_advance.h), so "ended" means one thing.
     double effective_duration = cur_duration;
     {
         const PlaylistItem* cur = current_item(state);
-        if (cur && cur->end > 0.0 && cur->end < cur_duration) {
-            effective_duration = cur->end;
-        }
+        if (cur) effective_duration = effective_end(cur_duration, cur->end);
     }
     if (state.video_active && effective_duration > 0.0) {
         // Check if we're at or past the end (with small tolerance for rounding)
@@ -404,15 +406,14 @@ void Controller::update_state(AppState& state) {
         }
     }
     
-           // Capture original volume when video becomes active (only once)
+           // Record the stream's level when video becomes active (the intro
+           // fade-out ramps down from it). Read only — load_file already
+           // applied the user's volume. This used to set_volume(100.0) first,
+           // a leftover from UI-dimming that no longer exists: original_volume
+           // never left 100, so every new video jumped the stream to 100%
+           // over the user's master volume.
            if (!was_active && state.video_active) {
-               // Only capture if it hasn't been set yet (default is 100.0)
-               // Also ensure volume is at 100% when capturing (in case it was dimmed from previous playlist)
-               if (state.original_volume == 100.0) {
-                   // Restore volume to 100% first to ensure we capture the correct original volume
-                   set_volume(100.0);
-                   state.original_volume = get_volume();
-               }
+               state.original_volume = get_volume();
                std::cout << "Video playback started: duration=" << cur_duration << "s, volume=" << state.original_volume << "%" << std::endl;
 
                // Mark intro as ready when video actually starts playing
@@ -585,98 +586,42 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             return utils::Result<>::fail(error);
         }
     } else if (item.source_type == "emulated_game") {
-        // Bracket the whole session — validation early-returns included —
-        // with the hooks installed via set_game_session_hooks. The end
-        // hook re-enables the systemd watchdog and joins the GPIO poll
-        // thread, so it MUST fire on every exit path; the guard makes
-        // that hold for exceptions too.
-        if (game_session_begin_) game_session_begin_(item);
-        struct GameSessionEndGuard {
-            const std::function<void()>& end;
-            ~GameSessionEndGuard() { if (end) end(); }
-        } game_session_end_guard{game_session_end_};
-
         // Handle RetroArch game launch
         std::cout << "Launching RetroArch game: " << item.title << std::endl;
         std::cout << "  Core: " << item.emulator_core << std::endl;
         std::cout << "  System: " << item.emulator_system << std::endl;
         std::cout << "  Path: " << item.path << std::endl;
 
-        // Get core name from playlist item
-        std::string core_name = item.emulator_core;
-        if (core_name.empty()) {
-            std::string error = "No emulator_core specified for game: " + item.title;
-            std::cerr << "Error: " << error << std::endl;
-            return utils::Result<>::fail(error);
+        // Validate BEFORE the session hooks: the begin hook pauses every
+        // torrent and stops the arr containers (GameQuietMode), and the end
+        // hook undoes it — a missing ROM or core used to churn the whole
+        // service stack for a game that never ran. Validation touches
+        // nothing (filesystem reads only), so nothing needs the hooks yet.
+        auto validated = validate_game_launch(
+            item, playlist_directory, [](const std::string& core) {
+                return retroarch::RetroArchLauncher::find_core_dir(core).has_value();
+            });
+        if (!validated) {
+            std::cerr << "Error: " << validated.error() << std::endl;
+            return utils::Result<>::fail(validated.error());
         }
-        
-        // Resolve "auto" core based on system.
-        //
-        // Keep in sync with ROM_CORE_MAP in magic_dingus_box/web/static/manager.js.
-        // These two lists drifted apart: the web admin wrote emulator_core:
-        // 'auto' for any system it did not know, and this resolver knew the same
-        // seven systems, so an N64 ROM added from the ROM library produced a
-        // playlist entry that looked correct everywhere until the user selected
-        // it and got "Could not resolve auto core for system: n64".
-        // Note the names here carry no _libretro suffix; the playlist YAML does.
-        if (core_name == "auto") {
-            std::string system = item.emulator_system;
-            if (system == "genesis") {
-                core_name = "genesis_plus_gx";
-            } else if (system == "snes") {
-                core_name = "snes9x2010";
-            } else if (system == "nes") {
-                core_name = "nestopia";
-            } else if (system == "ps1" || system == "psx") {
-                core_name = "pcsx_rearmed";
-            } else if (system == "atari7800") {
-                core_name = "prosystem";
-            } else if (system == "pcengine") {
-                core_name = "mednafen_pce_fast";
-            } else if (system == "arcade") {
-                core_name = "fbneo";
-            } else if (system == "n64") {
-                // Both mupen64plus_next and parallel_n64 are installed; next is
-                // the one the emulator smoke test exercises and the one the
-                // shipped N64 playlist uses.
-                core_name = "mupen64plus_next";
-            } else if (system == "dreamcast") {
-                core_name = "flycast";
-            } else {
-                std::string error = "Could not resolve auto core for system: " + system;
-                std::cerr << "Error: " << error << std::endl;
-                return utils::Result<>::fail(error);
-            }
-            std::cout << "Resolved auto core for " << system << " -> " << core_name << std::endl;
-        }
-        
-        // Validate ROM path is not empty
-        if (item.path.empty()) {
-            std::string error = "No ROM path specified for game: " + item.title;
-            std::cerr << "Error: " << error << std::endl;
-            return utils::Result<>::fail(error);
+        const std::string core_name = validated.get().core_name;
+        const std::string resolved_rom_path = validated.get().rom_path;
+        if (core_name != item.emulator_core) {
+            std::cout << "Resolved auto core for " << item.emulator_system
+                      << " -> " << core_name << std::endl;
         }
 
-        // Resolve full ROM path
-        std::string resolved_rom_path = utils::resolve_video_path(item.path, playlist_directory);
-
-        // Check if ROM exists
-        if (!fs::exists(resolved_rom_path)) {
-            std::string error = "ROM file does not exist: " + resolved_rom_path;
-            std::cerr << "Error: " << error << std::endl;
-            return utils::Result<>::fail(error);
-        }
-        
-        // The core must be installed BEFORE anything is torn down. Found
-        // late, it cost a stopped video, a released DRM master and input
-        // grab, and a dark screen while RetroArch failed to load it. Same
-        // search order as the launcher (system libretro dir, then user).
-        if (!retroarch::RetroArchLauncher::find_core_dir(core_name)) {
-            std::string error = "Emulator core not installed: " +
-                                retroarch::libretro_core_name(core_name);
-            std::cerr << "Error: " << error << std::endl;
-            return utils::Result<>::fail(error);
-        }
+        // Bracket the rest of the session with the hooks installed via
+        // set_game_session_hooks. The end hook re-enables the systemd
+        // watchdog and joins the GPIO poll thread, so once begin has fired
+        // it MUST fire on every exit path; the guard makes that hold for
+        // exceptions too.
+        if (game_session_begin_) game_session_begin_(item);
+        struct GameSessionEndGuard {
+            const std::function<void()>& end;
+            ~GameSessionEndGuard() { if (end) end(); }
+        } game_session_end_guard{game_session_end_};
 
         // Look for overlay/bezel (optional)
         std::string overlay_path;
@@ -822,17 +767,42 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         // frame reads as frame 1 of a deliberate fade instead of a hang.
 
         // CRITICAL: Ensure RetroArch is truly dead before we try to take back control
-        // This prevents "zombie" processes from holding onto DRM/Input resources
+        // This prevents "zombie" processes from holding onto DRM/Input resources.
+        // TERM first with a bounded grace, KILL only as the fallback: this
+        // was an unconditional `pkill -9 retroarch`, which on a mid-game
+        // kiosk stop could land while RetroArch was writing its auto
+        // save-state/SRAM. Normally nothing is left (the launcher script
+        // now waits for RetroArch), so this costs one pgrep.
         std::cout << "RetroArch exited. Ensuring process termination..." << std::endl;
         {
-            pid_t pid = fork();
-            if (pid == 0) {
-                int devnull = open("/dev/null", O_WRONLY);
-                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                execlp("pkill", "pkill", "-9", "retroarch", nullptr);
-                _exit(127);
+            auto run_quiet = [](std::vector<const char*> argv) -> int {
+                argv.push_back(nullptr);
+                pid_t pid = fork();
+                if (pid == 0) {
+                    int devnull = open("/dev/null", O_WRONLY);
+                    if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+                    execvp(argv[0], const_cast<char* const*>(argv.data()));
+                    _exit(127);
+                }
+                if (pid < 0) return -1;
+                int s = 0;
+                if (waitpid(pid, &s, 0) < 0) return -1;
+                return WIFEXITED(s) ? WEXITSTATUS(s) : -1;
+            };
+            retroarch::StragglerOps ops;
+            ops.running = [&] { return run_quiet({"pgrep", "-x", "retroarch"}) == 0; };
+            ops.signal = [&](int sig) {
+                run_quiet({"pkill", sig == SIGKILL ? "-KILL" : "-TERM", "-x", "retroarch"});
+            };
+            ops.sleep = [](std::chrono::milliseconds d) { std::this_thread::sleep_for(d); };
+            // 5 s fits inside TimeoutStopSec=20 alongside the rest of the stop.
+            const auto reaped = retroarch::reap_retroarch_stragglers(
+                ops, std::chrono::milliseconds(5000), std::chrono::milliseconds(100));
+            if (reaped == retroarch::StragglerResult::Terminated) {
+                std::cout << "Straggling RetroArch exited after SIGTERM" << std::endl;
+            } else if (reaped == retroarch::StragglerResult::Killed) {
+                std::cerr << "RetroArch ignored SIGTERM for 5 s; SIGKILLed" << std::endl;
             }
-            if (pid > 0) { int s; waitpid(pid, &s, 0); }
         }
         
         // Fixed settle before re-acquiring DRM master, so RetroArch has fully
@@ -1067,13 +1037,14 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
                 // Loop back to start
                 next_index = 0;
             } else {
-                // Stop playback if looping is disabled
+                // Stop playback if looping is disabled. Back to the menu,
+                // NOT "cursor to item 0": indexes left >= 0 with no video
+                // read as a between-items transition and the renderer drew
+                // nothing until reboot. Nothing needs the cursor — starting
+                // a playlist from the menu always loads item 0 itself.
                 std::cout << "Playlist finished and looping disabled. Stopping playback." << std::endl;
                 stop();
-                // Reset to start for next play, but don't load it
-                state.current_item_index = 0;
-                state.video_active = false;
-                state.ui_visible_when_playing = true; // Show UI when stopped
+                stop_to_menu(state);
                 return;
             }
         }
@@ -1124,12 +1095,12 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
         }
 
         if (!found) {
-            // All items failed - stop and show UI
+            // All items failed - stop and show UI. Return so the UI
+            // visibility restore below can't re-hide the menu.
             std::cerr << "All playlist items failed to load, stopping." << std::endl;
             stop();
-            state.video_active = false;
-            state.ui_visible_when_playing = true;
-            state.set_error("No playable content in playlist");
+            stop_to_menu(state, "No playable content in playlist");
+            return;
         }
     }
 

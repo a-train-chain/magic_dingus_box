@@ -1,6 +1,7 @@
 #pragma once
 
 #include "video_player.h"
+#include "deferred_start.h"
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 #include <string>
@@ -127,6 +128,10 @@ private:
     gint64 pending_seek_target_ns_ = 0;
     GstSeekFlags pending_seek_snap_ = GST_SEEK_FLAG_SNAP_NEAREST;
     std::chrono::steady_clock::time_point seek_started_at_{};
+
+    // load_file(start > 0)'s seek, held until update_state()'s poll sees
+    // the pipeline prerolled (render-thread-only, like the fields above).
+    DeferredStart deferred_start_;
 
     // Clamp + store the absolute target, then either fire immediately
     // (no seek in flight) or queue it behind the in-flight seek.

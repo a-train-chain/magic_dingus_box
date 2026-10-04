@@ -188,6 +188,8 @@ private:
     // State for async operations
     bool was_scanning_;
     bool was_connecting_;
+    bool was_forgetting_ = false;  // armed by the confirm action, cleared by update()
+    std::string forgetting_ssid_;  // for the outcome toast (worker clears its copy)
     bool wifi_disconnect_confirm_ = false;
     // Two-press confirm for "Reset Controller Setup", same idiom as
     // wifi_disconnect_confirm_ above (and cleared in the same places).

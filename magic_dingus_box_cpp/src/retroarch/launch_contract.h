@@ -188,4 +188,26 @@ StartupStatus wait_for_startup(
 bool terminate_process_group(pid_t launcher_pid,
                              std::chrono::milliseconds grace);
 
+// Post-game safety net for a RetroArch that outlived its launcher. It used
+// to be an unconditional `pkill -9 retroarch`, which on a mid-game kiosk
+// stop landed while RetroArch was still writing its auto save-state/SRAM.
+// Now: SIGTERM, poll up to `grace` for it to exit on its own (saving on the
+// way), and SIGKILL only if it is still there. I/O is injected so the
+// escalation is testable; the kiosk wires it to pgrep/pkill.
+struct StragglerOps {
+    std::function<bool()> running;
+    std::function<void(int signal)> signal;
+    std::function<void(std::chrono::milliseconds)> sleep;
+};
+
+enum class StragglerResult {
+    None,        // nothing was running; no signal sent
+    Terminated,  // exited within the grace period after SIGTERM
+    Killed,      // still running after the grace period; SIGKILLed
+};
+
+StragglerResult reap_retroarch_stragglers(const StragglerOps& ops,
+                                          std::chrono::milliseconds grace,
+                                          std::chrono::milliseconds poll);
+
 }  // namespace retroarch

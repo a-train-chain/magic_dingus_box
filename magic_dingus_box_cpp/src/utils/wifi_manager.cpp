@@ -34,6 +34,7 @@ WifiManager::~WifiManager() {
     if (scan_thread_.joinable()) scan_thread_.join();
     if (connect_thread_.joinable()) connect_thread_.join();
     if (status_thread_.joinable()) status_thread_.join();
+    if (forget_thread_.joinable()) forget_thread_.join();
 }
 
 bool WifiManager::initialize() {
@@ -123,6 +124,14 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
     // Atomic claim — see scan_networks_async() for rationale on CAS.
     bool expected = false;
     if (!is_connecting_.compare_exchange_strong(expected, true)) return;
+    // A forget is deleting profiles right now; connecting on top of it
+    // races the same NetworkManager state. Back off (the mirror check is in
+    // forget_network_async — if both lose the race, both back off: safe).
+    if (is_forgetting_) {
+        std::cout << "WifiManager: connect refused — forget in progress" << std::endl;
+        is_connecting_ = false;
+        return;
+    }
 
     // Capture the target SSID so the UI can render "Connecting to <SSID>..."
     // immediately, before the worker thread even fires off nmcli. Cleared at
@@ -454,8 +463,62 @@ bool WifiManager::forget_network(const std::string& ssid) {
     return deleted;
 }
 
+bool WifiManager::forget_network_async(const std::string& ssid) {
+    if (ssid.empty()) return false;
+    bool expected = false;
+    if (!is_forgetting_.compare_exchange_strong(expected, true)) return false;
+    if (is_connecting_) {
+        std::cout << "WifiManager: forget refused — connect in progress" << std::endl;
+        is_forgetting_ = false;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        forgetting_ssid_ = ssid;
+    }
+    // Instant join: the CAS above proves the previous worker finished.
+    if (forget_thread_.joinable()) forget_thread_.join();
+    try {
+        forget_thread_ = std::thread([this, ssid]() {
+            last_forget_ok_ = forget_network(ssid);
+            {
+                std::lock_guard<std::mutex> lock(error_mutex_);
+                forgetting_ssid_.clear();
+            }
+            // Released LAST so a reader that sees the falling edge also
+            // sees the result.
+            is_forgetting_.store(false, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        {
+            std::lock_guard<std::mutex> lock(error_mutex_);
+            forgetting_ssid_.clear();
+        }
+        is_forgetting_ = false;
+        return false;
+    }
+    return true;
+}
+
+std::string WifiManager::get_forgetting_ssid() const {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    return forgetting_ssid_;
+}
+
+void WifiManager::set_command_runner_for_tests(CommandRunner runner) {
+    std::lock_guard<std::mutex> lock(runner_mutex_);
+    command_runner_ = std::move(runner);
+}
+
 std::string WifiManager::exec_command_argv(const std::vector<std::string>& args, int timeout_seconds) {
     if (args.empty()) return "";
+
+    CommandRunner runner;
+    {
+        std::lock_guard<std::mutex> lock(runner_mutex_);
+        runner = command_runner_;
+    }
+    if (runner) return runner(args, timeout_seconds);
 
     int pipefd[2];
     if (pipe(pipefd) == -1) return "";

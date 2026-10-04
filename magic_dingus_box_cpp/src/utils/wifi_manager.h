@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <string>
 #include <vector>
 #include <future>
@@ -97,8 +98,26 @@ public:
     // continuity until the refresh lands.
     void invalidate_status_cache();
 
-    // Forget network
+    // Forget network. SYNCHRONOUS: two `sudo nmcli` calls bounded at 15 s
+    // each — never call it from the render thread (systemd WatchdogSec=10
+    // kills a kiosk stuck there). UI code uses forget_network_async().
     bool forget_network(const std::string& ssid);
+
+    // forget_network() on a tracked worker. Returns false and does nothing
+    // for an empty SSID or while a forget OR a connect is in flight — both
+    // rewrite NetworkManager profiles, so they never overlap. The outcome
+    // is read after is_forgetting() falls: last_forget_succeeded().
+    bool forget_network_async(const std::string& ssid);
+    bool is_forgetting() const { return is_forgetting_; }
+    std::string get_forgetting_ssid() const;
+    bool last_forget_succeeded() const { return last_forget_ok_; }
+
+    // Test seam: when set, replaces every nmcli/which subprocess. Lets the
+    // Mac suite fake NetworkManager (including a hung one) without forking
+    // `sudo`. Never set in the kiosk. Pass nullptr to restore real exec.
+    using CommandRunner =
+        std::function<std::string(const std::vector<std::string>& args, int timeout_seconds)>;
+    void set_command_runner_for_tests(CommandRunner runner);
 
 private:
     WifiManager();
@@ -132,6 +151,14 @@ private:
     std::thread scan_thread_;
     std::thread connect_thread_;
     std::thread status_thread_;
+    std::thread forget_thread_;
+
+    std::atomic<bool> is_forgetting_{false};
+    std::atomic<bool> last_forget_ok_{false};
+    std::string forgetting_ssid_;  // guarded by error_mutex_
+
+    std::mutex runner_mutex_;
+    CommandRunner command_runner_;  // test seam; empty in the kiosk
 
     // get_status_cached state — snapshot under status_mutex_, refresh
     // single-flighted by the CAS on status_refreshing_.
