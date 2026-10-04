@@ -978,6 +978,69 @@ ensure_web_server_dep() {
     return 0
 }
 
+# Rollback hygiene for PulseAudio-as-its-own-unit (magic-dingus-audio,
+# shipped 2026-10). Rolling back to a release that predates it restores an
+# init_audio.sh that starts PulseAudio itself and relies on libpulse
+# AUTOSPAWN to recover when it dies — but audio_service.sh's `run` wrote
+# ~/.config/pulse/client.conf with `autospawn = no`, which nothing in the
+# old tree ever removes, so the rolled-back box would lose that recovery.
+# The unit and the kiosk drop-in that Wants= it would also linger (inert —
+# the unit's ConditionPathExists= points at the now-missing audio_service.sh
+# — but the restored kiosk unit should run exactly as it shipped).
+#
+# Runs only when the restored tree has no audio_service.sh; a rollback to
+# any release that has it is a no-op. A rollback performed by an OLDER
+# update.sh (e.g. v1.9.14's) cannot get this; it only reaches rollbacks run
+# by this script or a later one. Never fails the rollback. The marker must
+# equal CLIENT_CONF_MARKER in audio_service.sh (pinned by test_update.bats),
+# so only our own file is ever removed.
+#
+# Test seams: MAGIC_AUDIO_HOME (the audio user's home; required in test
+# mode, where nothing else is touched), MAGIC_SYSTEMD_DIR (/etc/systemd/system).
+AUDIO_CLIENT_CONF_MARKER="# magic-dingus-audio: written by audio_service.sh"
+retire_audio_service_if_absent() {
+    if [ -f "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/audio_service.sh" ]; then
+        return 0
+    fi
+
+    local audio_home="${MAGIC_AUDIO_HOME:-}"
+    if [ -z "$audio_home" ] && [ "$SKIP_SYSTEMCTL" != "true" ]; then
+        audio_home="$(getent passwd magic 2>/dev/null | cut -d: -f6)" || true
+        [ -n "$audio_home" ] || audio_home="/home/magic"
+    fi
+    if [ -n "$audio_home" ]; then
+        local conf="${audio_home}/.config/pulse/client.conf"
+        if [ -f "$conf" ] && grep -qF "$AUDIO_CLIENT_CONF_MARKER" "$conf" 2>/dev/null; then
+            if rm -f "$conf" 2>/dev/null || sudo -n rm -f "$conf" 2>/dev/null; then
+                log "Removed $conf (autospawn = no) — the restored release relies on PulseAudio autospawn"
+            else
+                log_warn "could not remove $conf (PulseAudio autospawn stays off)"
+            fi
+        fi
+    fi
+
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: audio unit retirement (test mode)"
+        return 0
+    fi
+    local sd_dir="${MAGIC_SYSTEMD_DIR:-/etc/systemd/system}"
+    if [ ! -f "${sd_dir}/magic-dingus-audio.service" ]; then
+        return 0
+    fi
+    log "Restored release predates magic-dingus-audio.service; disabling it"
+    # --no-reload: both rollback paths daemon-reload before starting the
+    # kiosk (and at boot nothing here may block on the manager).
+    run_systemctl disable --no-reload magic-dingus-audio.service >/dev/null 2>&1 \
+        || log_warn "could not disable magic-dingus-audio.service"
+    local block_flag=""
+    [ "$BOOT_RECOVERY" = "true" ] && block_flag="--no-block"
+    run_systemctl $block_flag stop magic-dingus-audio.service 2>/dev/null \
+        || log_warn "could not stop magic-dingus-audio.service"
+    sudo -n rm -f "${sd_dir}/magic-dingus-box-cpp.service.d/audio-service.conf" 2>/dev/null \
+        || log_warn "could not remove the kiosk's audio-service.conf drop-in"
+    return 0
+}
+
 # A failed install: put the previous version back, then report the outcome
 # as the job's final JSON (the web admin shows its message). Reported AFTER
 # the rollback so the message says what actually happened.
@@ -1825,6 +1888,10 @@ rollback_internal() {
     # copy.
     ensure_compose_file
 
+    # A restored release without the audio unit gets its autospawn back
+    # (see retire_audio_service_if_absent).
+    retire_audio_service_if_absent
+
     # Put the /usr/local/bin helpers + usb0 dnsmasq conf back in step with
     # the restored tree (they are copies OF the tree; see
     # refresh_out_of_tree_files). Before this, a rollback left them at the
@@ -1963,6 +2030,9 @@ rollback() {
 
     # See rollback_internal: the backup can predate the compose repair.
     ensure_compose_file
+
+    # See rollback_internal: undo the audio unit's autospawn=no.
+    retire_audio_service_if_absent
 
     # See rollback_internal: helpers outside the tree follow the tree.
     refresh_out_of_tree_files

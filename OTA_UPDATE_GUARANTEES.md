@@ -60,7 +60,14 @@ idempotent, and never able to fail the script. Examples: the kiosk's
 port-80 redirect is `try-restart`ed by `setup_network_hardening.sh`; the
 PulseAudio unit (`magic-dingus-audio.service`) and the kiosk drop-in that
 orders the kiosk after it are installed by `setup_audio_service.sh`, which
-`setup_memory_tuning.sh` calls.
+`setup_memory_tuning.sh` calls. The reverse direction: when a rollback
+(internal, user-initiated or boot recovery) restores a tree without
+`audio_service.sh`, `update.sh`'s `retire_audio_service_if_absent` removes
+our marker-tagged `~/.config/pulse/client.conf` (`autospawn = no`), disables
+and stops the audio unit and removes the kiosk drop-in, so the restored
+release's PulseAudio autospawn recovery works again. Only rollbacks run by
+this `update.sh` or a later one get this — a rollback to v1.9.14 performed
+by v1.9.14's own updater leaves the `client.conf` behind.
 
 ## What's PRESERVED — the contract
 

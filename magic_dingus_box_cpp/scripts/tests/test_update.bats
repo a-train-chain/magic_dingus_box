@@ -1258,3 +1258,103 @@ setup_web_dep() {
 @test "deploy_cpp.sh installs the web dep through the same function" {
     grep -q 'update.sh && ensure_web_server_dep' "$SCRIPT_DIR/../deploy_cpp.sh"
 }
+
+# =============================================================================
+# Rollback to a release without magic-dingus-audio.service
+# =============================================================================
+
+AUDIO_MARKER_LINE='# magic-dingus-audio: written by audio_service.sh'
+
+# $1 = "with" / "without" audio_service.sh in the BACKUP (the restored tree)
+seed_audio_rollback() {
+    seed_installed_tree
+    echo "new" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/audio_service.sh"
+    mkdir -p "$MAGIC_BACKUP_DIR"
+    cp -R "$MAGIC_BASE_PATH/." "$MAGIC_BACKUP_DIR/"
+    echo "1.0.7" > "$MAGIC_BACKUP_DIR/VERSION"
+    if [ "$1" = "without" ]; then
+        rm -f "$MAGIC_BACKUP_DIR/magic_dingus_box_cpp/scripts/audio_service.sh"
+    fi
+    export MAGIC_AUDIO_HOME="$TEST_TEMP_DIR/home"
+    mkdir -p "$MAGIC_AUDIO_HOME/.config/pulse"
+    printf '%s\nautospawn = no\n' "$AUDIO_MARKER_LINE" > "$MAGIC_AUDIO_HOME/.config/pulse/client.conf"
+}
+
+@test "audio rollback: the marker matches audio_service.sh's CLIENT_CONF_MARKER" {
+    grep -qF "CLIENT_CONF_MARKER=\"${AUDIO_MARKER_LINE}\"" "$SCRIPT_DIR/../audio_service.sh"
+    grep -qF "AUDIO_CLIENT_CONF_MARKER=\"${AUDIO_MARKER_LINE}\"" "$UPDATE_SCRIPT"
+}
+
+@test "audio rollback (internal): to a tree without audio_service.sh removes our client.conf" {
+    seed_audio_rollback without
+    load_update_functions
+    rollback_internal 2>/dev/null
+    [ ! -f "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/audio_service.sh" ]
+    [ ! -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback (boot recover path): removes our client.conf too" {
+    seed_audio_rollback without
+    printf 'target=1.0.8\nfrom=1.0.7\n' > "${MAGIC_BACKUP_DIR}.ota_in_progress"
+    run "$UPDATE_SCRIPT" recover
+    [ "$status" -eq 0 ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.7" ]
+    [ ! -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback (user-initiated): to a tree without audio_service.sh removes our client.conf" {
+    seed_audio_rollback without
+    load_update_functions
+    rollback >/dev/null 2>&1
+    [ ! -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback: a tree that still has audio_service.sh keeps client.conf" {
+    seed_audio_rollback with
+    load_update_functions
+    rollback_internal 2>/dev/null
+    [ -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback: a client.conf we did not write is never removed" {
+    seed_audio_rollback without
+    printf 'autospawn = no\n' > "$MAGIC_AUDIO_HOME/.config/pulse/client.conf"
+    load_update_functions
+    rollback_internal 2>/dev/null
+    [ -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback: disables + stops the unit and removes the kiosk drop-in" {
+    seed_audio_rollback without
+    load_update_functions
+    rm -f "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/audio_service.sh"
+    SKIP_SYSTEMCTL=false
+    export MAGIC_SYSTEMD_DIR="$TEST_TEMP_DIR/sd"
+    mkdir -p "$MAGIC_SYSTEMD_DIR/magic-dingus-box-cpp.service.d"
+    touch "$MAGIC_SYSTEMD_DIR/magic-dingus-audio.service" \
+          "$MAGIC_SYSTEMD_DIR/magic-dingus-box-cpp.service.d/audio-service.conf"
+    SUDO_LOG="$TEST_TEMP_DIR/sudo.log"
+    sudo() { echo "$*" >> "$SUDO_LOG"; [ "$1" = "-n" ] && shift; "$@"; }
+    systemctl() { return 0; }
+    run retire_audio_service_if_absent
+    [ "$status" -eq 0 ]
+    grep -qx 'systemctl disable --no-reload magic-dingus-audio.service' "$SUDO_LOG"
+    grep -qx 'systemctl stop magic-dingus-audio.service' "$SUDO_LOG"
+    [ ! -f "$MAGIC_SYSTEMD_DIR/magic-dingus-box-cpp.service.d/audio-service.conf" ]
+    [ ! -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+
+    # Boot recovery never blocks on the stop job.
+    : > "$SUDO_LOG"
+    BOOT_RECOVERY=true
+    run retire_audio_service_if_absent
+    grep -qx 'systemctl --no-block stop magic-dingus-audio.service' "$SUDO_LOG"
+}
+
+@test "audio rollback: both rollback paths call retire_audio_service_if_absent" {
+    seed_audio_rollback without
+    load_update_functions
+    retire_audio_service_if_absent() { echo retired >> "$TEST_TEMP_DIR/retire.log"; }
+    rollback_internal 2>/dev/null
+    rollback >/dev/null 2>&1
+    [ "$(wc -l < "$TEST_TEMP_DIR/retire.log")" -eq 2 ]
+}
