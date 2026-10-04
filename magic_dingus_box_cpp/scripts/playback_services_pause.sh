@@ -69,6 +69,41 @@ COMPOSE_DIR="${COMPOSE_DIR:-/opt/magic_dingus_box/services}"
 # timeout puts worst-case wall time at ~3 s — comfortable headroom.
 STOP_TIMEOUT_S=2
 
+# Shared compose lock (same path/fd as gluetun_cascade_restart.sh,
+# storage_attach.sh, migrate_hardlink_layout.sh, clear_radarr_cooldowns.py):
+# one actor at a time starts/stops/recreates the stack's containers, so a
+# watcher's `compose up -d` can no longer revive a container this script is
+# stopping, nor a storage re-link race our start. The kiosk calls this from
+# a worker thread, and its two quiet-mode workers only wait 20 s for each
+# other — so the wait here is bounded to 20 s, after which we proceed
+# without the lock (the pre-lock behavior) rather than stall playback.
+# Returns 0 = held, 1 = timed out, 2 = no flock / lock file unusable.
+MDB_COMPOSE_LOCK="${MDB_COMPOSE_LOCK:-/run/lock/mdb-compose.lock}"
+LOCK_WAIT_S=20
+compose_lock() {
+    command -v flock >/dev/null 2>&1 || return 2
+    if [ ! -e "$MDB_COMPOSE_LOCK" ]; then
+        (umask 000; : >> "$MDB_COMPOSE_LOCK") 2>/dev/null
+    fi
+    [ -r "$MDB_COMPOSE_LOCK" ] || return 2
+    exec 9<"$MDB_COMPOSE_LOCK" || return 2
+    flock -w "$1" 9 || return 1
+}
+
+# Marker goes down BEFORE the lock wait on pause, so a watcher holding the
+# lock (which re-checks the marker inside it) already honors this pause,
+# and a Content Manager status poll racing the stop window reads "paused".
+# Timestamp content is for debugging only; only existence matters.
+if [ "$ACTION" = "pause" ]; then
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$PAUSE_MARKER" 2>/dev/null || true
+fi
+
+lock_rc=0
+compose_lock "$LOCK_WAIT_S" || lock_rc=$?
+if [ "$lock_rc" = "1" ]; then
+    echo "[playback-services] compose lock busy for ${LOCK_WAIT_S}s — proceeding without it" >&2
+fi
+
 # Filter to only containers that actually exist on this Pi.
 EXISTING=()
 for c in "${CONTAINERS[@]}"; do
@@ -78,19 +113,17 @@ for c in "${CONTAINERS[@]}"; do
 done
 
 if [ ${#EXISTING[@]} -eq 0 ]; then
-    # Still clear the marker on unpause: covers a stack that was reset
+    # Clear the marker on unpause: covers a stack that was reset
     # (containers removed) while paused, so no stale marker outlives the
-    # containers it described.
-    [ "$ACTION" = "unpause" ] && rm -f "$PAUSE_MARKER"
+    # containers it described. On pause, nothing was stopped, so the
+    # marker written above describes nothing either.
+    rm -f "$PAUSE_MARKER"
     echo "[playback-services] no media browser containers on this Pi — nothing to do"
     exit 0
 fi
 
 if [ "$ACTION" = "pause" ]; then
-    # Marker goes down BEFORE the stop so a Content Manager status poll
-    # racing the ~3 s stop window already reads "paused". Timestamp
-    # content is for debugging only; only existence matters.
-    date -u +%Y-%m-%dT%H:%M:%SZ > "$PAUSE_MARKER" 2>/dev/null || true
+    # (Marker already written above, before the lock wait.)
     # Parallel stop. `docker stop` is a no-op on already-stopped
     # containers and also works on paused containers (Docker unpauses
     # them first internally). `|| true` swallows benign warnings so

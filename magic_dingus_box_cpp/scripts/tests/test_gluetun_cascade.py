@@ -45,13 +45,30 @@ DOCKER_STUB = """#!/bin/bash
 echo "$@" >> "$DOCKER_LOG"
 case "$1" in
     events)
-        printf '2026-07-31T00:00:00 start\\n'
+        printf '%s\\n' "${EVENTS_LINE:-2026-07-31T00:00:00 start}"
         ;;
     inspect)
-        # Pause script: bare `inspect NAME` (existence) and
-        # `inspect -f {{.State.Running}} NAME` (health). Cascade's
-        # unhealthy branch never runs in these tests.
-        echo "${INSPECT_RUNNING:-true}"
+        # Convergence pass: `inspect NAME --format '{{.State.Status}} ...'`
+        # answers from STATE_<name> ("running healthy" by default; the
+        # literal "absent" makes inspect fail like a missing container).
+        # Everything else — the pause script's bare `inspect NAME` and
+        # `inspect -f {{.State.Running}} NAME`, and gluetun's health — is
+        # INSPECT_RUNNING.
+        name=""; fmt=""
+        for a in "$@"; do
+            case "$a" in
+                mdb_*) name="$a" ;;
+                *State.Status*) fmt=status ;;
+            esac
+        done
+        if [ "$fmt" = status ]; then
+            var="STATE_${name}"
+            val="${!var:-running healthy}"
+            [ "$val" = absent ] && exit 1
+            echo "$val"
+        else
+            echo "${INSPECT_RUNNING:-true}"
+        fi
         ;;
 esac
 exit 0
@@ -80,7 +97,14 @@ class StubDockerTestCase(unittest.TestCase):
             DOCKER_LOG=str(self.log),
             COMPOSE_DIR=str(self.compose_dir),
             STABILIZE_SLEEP="0",
+            # The periodic convergence loop would outlive the script and
+            # hold the captured pipes open; the healthy-event branch runs
+            # the same pass synchronously and is what these tests drive.
+            CONVERGE_INTERVAL_S="0",
+            CASCADE_STATE_DIR=str(tmp / "cascade_state"),
+            MDB_COMPOSE_LOCK=str(tmp / "compose.lock"),
         )
+        self.state_dir = tmp / "cascade_state"
         MARKER.unlink(missing_ok=True)
         self.addCleanup(lambda: MARKER.unlink(missing_ok=True))
         self.addCleanup(self._tmp.cleanup)
@@ -196,6 +220,84 @@ class CascadeBlindStartTests(StubDockerTestCase):
         self.assertFalse(
             [l for l in self.log_lines() if l.startswith("restart ")],
             self.log_lines())
+
+
+class CascadeConvergeTests(StubDockerTestCase):
+    # Pre-2026-10 the healthy branch only logged, so a dependent that was
+    # removed, left "Created" by a boot whose `compose up` was killed by
+    # the unit timeout, or wedged unhealthy stayed down until a reboot.
+    HEALTHY = {"EVENTS_LINE": "2026-10-03T00:00:00 health_status: healthy",
+               "INSPECT_RUNNING": "healthy"}
+
+    def setUp(self):
+        super().setUp()
+        (self.compose_dir / ".env").write_text("X=1\n")
+
+    def converge(self, **states):
+        env = dict(self.HEALTHY)
+        env.update({f"STATE_mdb_{k}": v for k, v in states.items()})
+        result = self.run_script(CASCADE, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def test_created_dependent_is_brought_up(self):
+        self.converge(radarr="created", byparr="absent")
+        ups = [l for l in self.compose_lines() if " up -d " in l]
+        self.assertEqual(len(ups), 1, self.compose_lines())
+        self.assertTrue(ups[0].endswith("up -d radarr byparr"), ups)
+
+    def test_all_running_is_a_no_op(self):
+        self.converge()
+        self.assertEqual(self.compose_lines(), [])
+        self.assertFalse(
+            [l for l in self.log_lines() if l.startswith("restart ")])
+
+    def test_marker_keeps_paused_containers_down(self):
+        MARKER.write_text("2026-10-03T00:00:00Z\n")
+        self.converge(radarr="exited", sonarr="exited",
+                      prowlarr="exited", byparr="exited",
+                      qbittorrent="exited")
+        ups = [l for l in self.compose_lines() if " up -d " in l]
+        self.assertEqual(len(ups), 1, self.compose_lines())
+        self.assertTrue(ups[0].endswith("up -d qbittorrent"), ups)
+
+    def test_newly_unhealthy_only_starts_the_clock(self):
+        self.converge(radarr="running unhealthy")
+        self.assertTrue((self.state_dir / "unhealthy_since.radarr").exists())
+        self.assertNotIn("restart mdb_radarr", self.log_lines())
+
+    def test_confirmed_unhealthy_is_restarted(self):
+        self.state_dir.mkdir()
+        (self.state_dir / "unhealthy_since.byparr").write_text("0\n")
+        self.converge(byparr="running unhealthy")
+        self.assertIn("restart mdb_byparr", self.log_lines())
+        self.assertFalse((self.state_dir / "unhealthy_since.byparr").exists())
+
+    def test_recovered_clears_the_clock(self):
+        self.state_dir.mkdir()
+        (self.state_dir / "unhealthy_since.radarr").write_text("0\n")
+        self.converge(radarr="running healthy")
+        self.assertFalse((self.state_dir / "unhealthy_since.radarr").exists())
+        self.assertNotIn("restart mdb_radarr", self.log_lines())
+
+    def test_paused_unhealthy_is_never_restarted(self):
+        MARKER.write_text("2026-10-03T00:00:00Z\n")
+        self.state_dir.mkdir()
+        (self.state_dir / "unhealthy_since.radarr").write_text("0\n")
+        self.converge(radarr="running unhealthy")
+        self.assertNotIn("restart mdb_radarr", self.log_lines())
+
+    def test_no_action_while_gluetun_unhealthy(self):
+        env = {"EVENTS_LINE": "2026-10-03T00:00:00 health_status: healthy",
+               "INSPECT_RUNNING": "starting", "STATE_mdb_radarr": "exited"}
+        result = self.run_script(CASCADE, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.compose_lines(), [])
+
+    def test_reset_stack_without_env_is_left_alone(self):
+        (self.compose_dir / ".env").unlink()
+        self.converge(radarr="absent")
+        self.assertEqual(self.compose_lines(), [])
 
 
 if __name__ == "__main__":

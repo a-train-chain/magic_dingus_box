@@ -43,6 +43,39 @@ LOG_TAG="mdb-storage-attach"
 
 log() { logger -t "$LOG_TAG" -- "$1" 2>/dev/null; echo "[$LOG_TAG] $1"; }
 
+# Set by playback_services_pause.sh while the kiosk has Radarr/Sonarr/
+# Prowlarr/Byparr stopped for a movie or game (same path everywhere).
+PAUSE_MARKER="${PAUSE_MARKER:-/tmp/mdb_playback_services_paused}"
+
+# Shared compose lock (same path/fd as gluetun_cascade_restart.sh,
+# playback_services_pause.sh, migrate_hardlink_layout.sh,
+# clear_radarr_cooldowns.py): one actor at a time starts/stops/recreates the
+# stack's containers. Bounded wait; magic-dingus-storage-attach.service's
+# TimeoutStartSec (600) covers this wait plus the rm (120) and up (300).
+# Returns 0 = held, 1 = timed out, 2 = no flock / lock file unusable.
+MDB_COMPOSE_LOCK="${MDB_COMPOSE_LOCK:-/run/lock/mdb-compose.lock}"
+LOCK_WAIT_S=120
+compose_lock() {
+    command -v flock >/dev/null 2>&1 || return 2
+    if [ ! -e "$MDB_COMPOSE_LOCK" ]; then
+        (umask 000; : >> "$MDB_COMPOSE_LOCK") 2>/dev/null
+    fi
+    [ -r "$MDB_COMPOSE_LOCK" ] || return 2
+    exec 9<"$MDB_COMPOSE_LOCK" || return 2
+    flock -w "$1" 9 || return 1
+}
+
+# Pure decision: which re-created services may be STARTED?
+#   $1 1 if the playback pause marker is present, else 0
+# Paused Radarr/Sonarr are re-created stopped; qBittorrent always starts.
+relink_start_set() {
+    if [[ "$1" == "1" ]]; then
+        echo "qbittorrent"
+    else
+        echo "radarr sonarr qbittorrent"
+    fi
+}
+
 # Pure decision: is one container's bind live, stale, or unknown?
 #   $1 token written on the drive ("" if the write failed)
 #   $2 what the container read back through its bind
@@ -137,14 +170,25 @@ main() {
         exit 0
     fi
 
-    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx mdb_radarr; then
-        log "mdb_radarr not running — stack start will pick up the mount"
+    # Either storage-bound container running is enough to probe. Checking
+    # Radarr alone skipped the re-link whenever the drive came back during a
+    # movie or game: the kiosk's playback pause has Radarr stopped, while
+    # qBittorrent keeps running — and keeps downloading onto the SD card.
+    if [[ "$(container_state mdb_radarr)" != running && "$(container_state mdb_qbittorrent)" != running ]]; then
+        log "mdb_radarr and mdb_qbittorrent not running — stack start will pick up the mount"
         exit 0
     fi
 
     # downloads/ must exist on the drive for the qBit probe (setup creates it;
     # a freshly formatted drive may not have it yet).
     install -d -o magic -g magic "${STORAGE_ROOT}/downloads" 2>/dev/null || true
+
+    # Hold the shared compose lock across probe + re-create so a cascade
+    # restart, convergence pass or playback pause cannot interleave with the
+    # rm/up below. Bounded: after LOCK_WAIT_S we proceed without it.
+    local lock_rc=0
+    compose_lock "$LOCK_WAIT_S" || lock_rc=$?
+    (( lock_rc == 1 )) && log "compose lock busy for ${LOCK_WAIT_S}s — proceeding without it"
 
     read -r radarr_v qbit_v <<< "$(probe_binds)"
     log "bind probe: radarr(/library)=${radarr_v} qbittorrent(/downloads)=${qbit_v}"
@@ -178,9 +222,23 @@ main() {
         # can take tens of seconds after a reconnect). Give it room, and never
         # discard the error — swallowing stderr here once turned a one-line
         # diagnosis into a debugging session.
+        #
+        # Playback pause (marker checked here, inside the lock): Radarr and
+        # Sonarr are stopped for a movie/game and must STAY stopped. They are
+        # still removed and re-created — with `create`, which starts nothing —
+        # so the kiosk's unpause `docker start` brings them back on the drive
+        # instead of on the stale placeholder. Only qBittorrent is started.
+        local start_set create_set=""
+        read -r -a start_set <<< "$(relink_start_set "$([[ -f "$PAUSE_MARKER" ]] && echo 1 || echo 0)")"
+        [[ ${#start_set[@]} -lt 3 ]] && create_set="radarr sonarr"
+        [[ -n "$create_set" ]] && log "playback pause active — re-creating radarr/sonarr stopped, starting ${start_set[*]} only"
         out=$(cd "$COMPOSE_DIR" && {
                 timeout 120 docker compose rm -s -f radarr sonarr qbittorrent 2>&1
-                timeout 300 docker compose up -d radarr sonarr qbittorrent 2>&1
+                timeout 300 docker compose up -d "${start_set[@]}" 2>&1 || exit $?
+                if [[ -n "$create_set" ]]; then
+                    # shellcheck disable=SC2086  # two fixed service names
+                    timeout 120 docker compose create $create_set 2>&1
+                fi
               })
         rc=$?
         if (( rc == 0 )); then
