@@ -6517,18 +6517,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         if request.method == "POST":
             nickname = (request.form.get("nickname") or "").strip()[:40] or "Phone"
-            # Update the entry in paired_remotes.json — atomic temp+rename so
-            # concurrent reads from the StatusBroadcaster's reap_revocations
-            # tick can never see a torn write.
-            try:
-                data = json.loads(paired_path.read_text())
-            except (FileNotFoundError, json.JSONDecodeError):
-                data = {"schema": 1, "devices": []}
-            for d in data["devices"]:
-                if d["id"] == device_id:
-                    d["nickname"] = nickname
-                    break
-            _atomic_write_text(paired_path, json.dumps(data, indent=2))
+            # Through devices.py, under its lock: an atomic rename alone kept
+            # the file whole but not CURRENT — this read-modify-write could
+            # write back a copy read before a concurrent pairing (or the
+            # StatusBroadcaster's revocation reap) committed, undoing it.
+            remote_devices.rename_device(paired_path, device_id, nickname)
             target = request.args.get("tab", "remote")
             return redirect(f"/?tab={target}", code=303)
 

@@ -204,19 +204,16 @@ def reap_revocations(data_dir: Path) -> int:
     if not paired.exists():
         rev_path.unlink(missing_ok=True)
         return 0
+    # Through devices.py: the shared lock (no lost update against a pairing
+    # or nickname save on another thread) and its fsync'd unique-tempfile
+    # save — this used a fixed "<name>.tmp" with no fsync, the exact pattern
+    # _save_atomic replaced everywhere else.
     try:
-        data = json.loads(paired.read_text())
-    except (OSError, json.JSONDecodeError):
+        removed = devices_mod.revoke_many(paired, ids)
+    except ValueError:
         # Malformed paired_remotes.json — leave the queue in place so the
         # operator can investigate; don't silently drop the revocation.
         return 0
-    before = len(data.get("devices", []))
-    data["devices"] = [d for d in data.get("devices", []) if d.get("id") not in ids]
-    removed = before - len(data["devices"])
-    if removed > 0:
-        tmp = paired.parent / (paired.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        os.replace(tmp, paired)
     # Save committed (or no-op if no matches) — now safe to consume the queue.
     rev_path.unlink(missing_ok=True)
     return removed
