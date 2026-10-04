@@ -9,9 +9,6 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <fcntl.h>
 
 namespace app {
 
@@ -22,7 +19,7 @@ enum class DisplayMode {
 };
 
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
-// ALSA `amixer numid=3` method — see apply_output() below. Sink names are
+// ALSA `amixer numid=3` method — see app/audio_router.h. Sink names are
 // resolved at runtime against the sinks that actually exist on this board
 // (they embed SoC bus addresses that differ between Pi 4 and Pi 5).
 // AUTO and HDMI both resolve to the HDMI sink; HEADPHONE resolves to an
@@ -711,101 +708,20 @@ public:
             }
         }
         
-        // Capture stdout of a 3-arg pactl invocation via fork/execlp —
-        // no shell anywhere (see the injection note in apply_output).
-        static std::string capture_pactl(const char* a1, const char* a2,
-                                         const char* a3) {
-            int pipefd[2];
-            if (pipe(pipefd) != 0) return {};
-            pid_t pid = fork();
-            if (pid == 0) {
-                close(pipefd[0]);
-                dup2(pipefd[1], STDOUT_FILENO);
-                int devnull = open("/dev/null", O_WRONLY);
-                if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-                close(pipefd[1]);
-                execlp("pactl", "pactl", a1, a2, a3, nullptr);
-                _exit(127);
-            }
-            close(pipefd[1]);
-            std::string out;
-            if (pid > 0) {
-                char buf[256];
-                ssize_t n;
-                while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-                    out.append(buf, static_cast<size_t>(n));
-                }
-                int s;
-                waitpid(pid, &s, 0);
-            }
-            close(pipefd[0]);
-            return out;
-        }
-
-        // Resolve the PulseAudio sink for the current output setting by
-        // querying the sinks that actually exist on this board. Sink
-        // names embed SoC bus addresses that differ between Pi 4 and
-        // Pi 5 (and USB DACs), so nothing is hardcoded: HEADPHONE finds
-        // an analog sink (falling back to HDMI when the board has no
-        // jack); AUTO/HDMI find an HDMI sink. Empty string when
-        // PulseAudio is unreachable or has no sinks.
-        std::string resolve_output_sink() const {
-            std::string sinks = capture_pactl("list", "short", "sinks");
-            auto want = (output == AudioOutput::HEADPHONE)
-                ? platform::SinkChoice::Analog
-                : platform::SinkChoice::Hdmi;
-            return platform::resolve_sink(sinks, want).value_or("");
-        }
-
-        // Apply the audio output setting via PulseAudio
-        // Pi 4B uses PulseAudio, not the old ALSA numid=3 method
-        void apply_output() const {
-            std::string sink_name = resolve_output_sink();
-            if (sink_name.empty()) {
-                // No usable sink (PA not up yet, or no cards) — leave
-                // the PulseAudio default alone rather than pointing it
-                // at a sink that doesn't exist.
-                return;
-            }
-
-            // Set default sink via fork/execlp.
-            pid_t pid = fork();
-            if (pid == 0) {
-                int devnull = open("/dev/null", O_WRONLY);
-                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                execlp("pactl", "pactl", "set-default-sink", sink_name.c_str(), nullptr);
-                _exit(127);
-            }
-            if (pid > 0) { int s; waitpid(pid, &s, 0); }
-
-            // Move active streams to the new sink. Previously this used
-            // /bin/sh -c with sink_name interpolated into a pipeline — safe
-            // when sink_name was a hardcoded constant but a shell-injection
-            // landmine now that it comes from pactl output. Enumerate
-            // sink-input IDs via pactl with a pipe(2)-captured stdout, then
-            // execlp pactl move-sink-input directly per ID. No shell anywhere.
-            std::string list_out = capture_pactl("list", "short", "sink-inputs");
-
-            // Each line is "<id>\t<sink>\t..." — extract the leading numeric ID.
-            std::istringstream iss(list_out);
-            std::string line;
-            while (std::getline(iss, line)) {
-                std::string id;
-                for (char c : line) {
-                    if (c >= '0' && c <= '9') id += c;
-                    else break;
-                }
-                if (id.empty()) continue;
-                pid_t mv_pid = fork();
-                if (mv_pid == 0) {
-                    int devnull = open("/dev/null", O_WRONLY);
-                    if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                    execlp("pactl", "pactl", "move-sink-input", id.c_str(), sink_name.c_str(), nullptr);
-                    _exit(127);
-                }
-                if (mv_pid > 0) { int s; waitpid(mv_pid, &s, 0); }
-            }
-        }
+        // PulseAudio routing for the current output setting. Defined in
+        // app/audio_router.cpp, which owns every pactl call (bounded — these
+        // run on the render thread) and is unit-tested with a fake runner.
+        //
+        // resolve_output_sink(): the sink this setting maps to among the
+        // sinks that actually exist on this board — names embed SoC bus
+        // addresses that differ between Pi 4 and Pi 5 (and USB DACs), so
+        // nothing is hardcoded. "" when PulseAudio is unreachable.
+        //
+        // apply_output(): make that sink the default and move every live
+        // stream onto it. Returns the sink applied ("" = none usable, the
+        // default left alone).
+        std::string resolve_output_sink() const;
+        std::string apply_output() const;
         
         // Get volume offset label for display
         std::string get_volume_offset_label() const {
@@ -823,11 +739,8 @@ public:
             else retroarch_volume_offset_db = 0.0f;
         }
         
-        // Cycle through audio output options
-        void cycle_output() {
-            output = next_output(output, analog_audio_available);
-            apply_output();
-        }
+        // Cycle through audio output options (and apply — audio_router.cpp)
+        void cycle_output();
     } audio_settings;
     
     // Detected board profile (Pi 4B vs Pi 5) — set once at startup in

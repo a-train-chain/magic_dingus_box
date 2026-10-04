@@ -169,6 +169,7 @@ set(APP_SOURCES
     src/app/auto_advance.cpp
     src/app/redraw_gate.cpp
     src/app/post_game_gate.cpp
+    src/app/audio_router.cpp
 )
 
 set(UTILS_SOURCES
@@ -699,6 +700,8 @@ if(UI_TEST_SOURCES)
         src/utils/services_env.cpp
         # wifi_manager.cpp runs nmcli through it.
         src/utils/subprocess.cpp
+        # settings_menu.cpp's Audio Output row calls cycle_output().
+        src/app/audio_router.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -728,6 +731,9 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/redraw_gate.cpp
         # The return-from-game input/status window.
         src/app/post_game_gate.cpp
+        # PulseAudio routing (fake pactl runner in the tests) + its runner.
+        src/app/audio_router.cpp
+        src/utils/subprocess.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp

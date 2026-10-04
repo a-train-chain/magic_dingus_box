@@ -1792,13 +1792,14 @@ int main(int /* argc */, char* /* argv */[]) {
             // Restore audio output after RetroArch
             // 1. Set PulseAudio default sink (for any non-GStreamer streams)
             std::cout << "Restoring audio output after display reset..." << std::endl;
-            state.audio_settings.apply_output();
+            // apply_output() returns the sink it resolved — reused below
+            // instead of listing the sinks a second time on this thread.
+            const std::string pulse_device = state.audio_settings.apply_output();
 
             // 2. Set pulsesink device directly on GStreamer pipeline
             // This bypasses PulseAudio default sink which can be overridden by
             // module-switch-on-port-available or module-default-device-restore
             {
-                std::string pulse_device = state.audio_settings.resolve_output_sink();
                 if (!pulse_device.empty()) {
                     player.set_audio_device(pulse_device);
                 }
