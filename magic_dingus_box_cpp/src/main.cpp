@@ -63,6 +63,7 @@
 #include "app/playback_stall_watchdog.h"
 #include "app/playback_reset.h"
 #include "app/auto_advance.h"
+#include "app/redraw_gate.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
@@ -1595,6 +1596,16 @@ int main(int /* argc */, char* /* argv */[]) {
     };
 #endif
 
+    // Skips render/swap/flip on iterations where the picture cannot have
+    // changed — today only on the bare main menu. See app/redraw_gate.h.
+    // Read once: MDB_REDRAW_GATE=0 (systemd drop-in Environment=) restores
+    // draw-every-iteration without a rebuild.
+    app::RedrawGate redraw_gate(
+        app::redraw_gate_enabled_from_env(std::getenv("MDB_REDRAW_GATE")));
+    LOG_INFO("Redraw gate: {} (idle main menu skips unchanged frames; "
+             "MDB_REDRAW_GATE=0 disables)",
+             redraw_gate.enabled() ? "ON" : "OFF");
+
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
         // gone for good, but the loop would keep pinging the watchdog and
@@ -1690,7 +1701,12 @@ int main(int /* argc */, char* /* argv */[]) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
-        
+
+        // The redraw gate must draw the iteration that rebuilds the display
+        // below: its clear is swapped but not presented until the next drawn
+        // frame. (Read before the block, which clears the flag.)
+        const bool display_reset_this_iteration = state.reset_display;
+
         // Check for display reset signal (e.g. after returning from RetroArch)
         if (state.reset_display) {
             std::cout << "Resetting display state after external application..." << std::endl;
@@ -1971,6 +1987,10 @@ int main(int /* argc */, char* /* argv */[]) {
             auto gpio_events = gpio.poll();
             input_events.insert(input_events.end(), gpio_events.begin(), gpio_events.end());
         }
+        // For the redraw gate: ANY input draws this iteration. Captured
+        // before the unlock-sequence detector and the MB dispatcher
+        // consume events, so a swallowed press still counts.
+        const bool input_this_iteration = !input_events.empty();
 
 #ifdef MEDIA_BROWSER_ENABLED
         // Feed the Media Browser unlock sequence detector. Chord wins over
@@ -3577,8 +3597,103 @@ int main(int /* argc */, char* /* argv */[]) {
             last_render_decision = should_render_video;
         }
 
+        // ── Redraw gate ──────────────────────────────────────────────────
+        // Everything above (input, settings/wizard pumps, pipeline and
+        // playlist state) has run; from here to the present is drawing,
+        // plus a tail of non-drawing work (status file, watch checkpoints,
+        // stall watchdog, phone-remote queues, reload pokes) that runs
+        // every iteration regardless. Skipping is opt-in: only the bare
+        // main menu (app::is_static_main_menu) may skip, and even there a
+        // frame is drawn on any input, any change in what it shows, and at
+        // least every RedrawGate::kDefaultMaxIdle. See app/redraw_gate.h.
+        bool draw_this_frame = true;
+        {
+            app::MainMenuActivity act;
+            act.intro = !state.intro_complete || state.showing_intro_video ||
+                        state.intro_fading_out;
+            act.video = should_render_video || state.video_active ||
+                        state.is_switching_playlist || controller.is_playing();
+#ifdef MEDIA_BROWSER_ENABLED
+            act.media_browser =
+                state.current_screen == app::AppScreen::MediaBrowser;
+#endif
+            // Includes the wizard and pairing screen (both live inside it).
+            // The close animation also only completes inside a render.
+            act.settings_menu = settings_menu.is_active() ||
+                                settings_menu.is_opening() ||
+                                settings_menu.is_closing();
+            act.keyboard = keyboard.is_active();
+            act.ui_fade = state.is_fading ||
+                          state.post_game_fade_start_ms.load() != 0;
+            // Toast::post()'s mailbox drains inside Toast::render, hence
+            // has_pending(). The volume slider appears 300 ms into a BTN4
+            // hold with no new input — hence button_held.
+            act.transient_overlay =
+                ui::Toast::is_active() || ui::Toast::has_pending() ||
+                state.has_error_message() || state.show_volume_slider ||
+                state.show_seek_bar || state.seek_bar_timer > 0.0 ||
+                menu_hold.button_held || state.is_loading_game;
+            act.crt_time_effects =
+                state.display_settings.flicker_intensity > 0.0f ||
+                state.display_settings.interlacing_intensity > 0.0f;
 
-        
+            // What the static menu draws that can change with no input and
+            // no activity flag. The blink phase is the one that changes on
+            // its own (2 Hz); the rest catch background state changes (a
+            // web-admin playlist reload, a status line) without waiting for
+            // the idle safety net.
+            const auto gate_now = std::chrono::steady_clock::now();
+            auto as_u64 = [](double v) {
+                return static_cast<uint64_t>(static_cast<int64_t>(v));
+            };
+            app::ContentSignature sig;
+            sig.add(static_cast<uint64_t>(
+                ui_renderer.main_menu_blink_phase(gate_now)));
+            sig.add(static_cast<uint64_t>(state.selected_index));
+            sig.add(static_cast<uint64_t>(state.playlist_scroll_offset));
+            sig.add(static_cast<uint64_t>(state.playlists.size()));
+            sig.add(static_cast<uint64_t>(state.current_playlist_index));
+            sig.add(static_cast<uint64_t>(state.current_item_index));
+            sig.add(state.status_text);
+            sig.add(as_u64(state.get_position()));
+            sig.add(as_u64(state.get_duration()));
+            sig.add(static_cast<uint64_t>(state.display_settings.mode));
+            sig.add(static_cast<uint64_t>(state.display_settings.bezel_index));
+
+            app::RedrawInputs gate_in;
+            gate_in.input_event = input_this_iteration;
+            gate_in.video_frame = act.video;
+            gate_in.animation_active = act.ui_fade || act.transient_overlay;
+            gate_in.screen_requests_continuous = !app::is_static_main_menu(act);
+            gate_in.forced = display_reset_this_iteration;
+            gate_in.content_signature = sig.value();
+            draw_this_frame = redraw_gate.should_draw(gate_in, gate_now);
+
+            // Per-minute counts at DEBUG (file log only). The first window
+            // goes to INFO as well, so `journalctl -u magic-dingus-box-cpp`
+            // alone shows whether the gate is actually skipping on a box.
+            if (auto report = redraw_gate.take_report(gate_now)) {
+                static bool first_report = true;
+                if (first_report) {
+                    first_report = false;
+                    LOG_INFO("Redraw gate: drew {} / skipped {} iterations in the last {}s",
+                             report->drawn, report->skipped,
+                             app::RedrawGate::kReportInterval.count());
+                } else {
+                    LOG_DEBUG("Redraw gate: drew {} / skipped {} iterations in the last {}s",
+                              report->drawn, report->skipped,
+                              app::RedrawGate::kReportInterval.count());
+                }
+            }
+        }
+
+        // Drawing, part 1: video, main UI, CRT composite, bezel, Media
+        // Browser, toast. Body deliberately NOT re-indented under this `if`
+        // (same convention as the MB dispatcher's `else if
+        // (!mb_modal_exited)` above) so the gate's diff stays reviewable;
+        // the closing brace is marked.
+        if (draw_this_frame) {
+
         // Clear screen in these cases:
         // 1. Intro video not ready yet
         // 2. No video should be rendered (after intro completes, during UI)
@@ -3994,6 +4109,7 @@ int main(int /* argc */, char* /* argv */[]) {
                           ui_renderer.get_width(),
                           ui_renderer.get_height());
 #endif
+        }  // if (draw_this_frame) — drawing, part 1
 
         // ── Phone-remote: derive screen mode + 5 Hz status write ─────────────
         // Derives screen_mode for the four "live main-loop" states.
@@ -4516,42 +4632,48 @@ int main(int /* argc */, char* /* argv */[]) {
         // request was made — the reset_display work (frame_presenter/EGL/GStreamer
         // re-init) between the two can eat 200ms+, and a wall-clock start
         // would leave the fade mostly over before the first frame rendered.
-        {
-            int64_t fade_start = state.post_game_fade_start_ms.load();
-            if (fade_start != 0) {
-                constexpr int64_t kPostGameFadeMs = 250;
-                const int64_t now_ms =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count();
-                if (fade_start < 0) {
-                    state.post_game_fade_start_ms.store(now_ms);
-                    fade_start = now_ms;
-                }
-                const int64_t elapsed = now_ms - fade_start;
-                if (elapsed >= kPostGameFadeMs) {
-                    state.post_game_fade_start_ms.store(0);
-                } else {
-                    glViewport(0, 0, mode.width, mode.height);
-                    ui_renderer.render_post_game_fade(
-                        1.0f - static_cast<float>(elapsed) /
-                                   static_cast<float>(kPostGameFadeMs));
+        //
+        // Drawing, part 2 — skipped with part 1 by the redraw gate. The
+        // fade's own clock (the -1 sentinel above) therefore also starts at
+        // the first DRAWN frame; the gate always draws while it is pending.
+        if (draw_this_frame) {
+            {
+                int64_t fade_start = state.post_game_fade_start_ms.load();
+                if (fade_start != 0) {
+                    constexpr int64_t kPostGameFadeMs = 250;
+                    const int64_t now_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+                    if (fade_start < 0) {
+                        state.post_game_fade_start_ms.store(now_ms);
+                        fade_start = now_ms;
+                    }
+                    const int64_t elapsed = now_ms - fade_start;
+                    if (elapsed >= kPostGameFadeMs) {
+                        state.post_game_fade_start_ms.store(0);
+                    } else {
+                        glViewport(0, 0, mode.width, mode.height);
+                        ui_renderer.render_post_game_fade(
+                            1.0f - static_cast<float>(elapsed) /
+                                       static_cast<float>(kPostGameFadeMs));
+                    }
                 }
             }
-        }
 
-        // Swap EGL buffers
-        if (!egl.swap_buffers()) {
-            std::cerr << "Failed to swap buffers!" << std::endl;
-        }
-        
-        if (frame_count == 0) {
-            std::cout << "  Buffers swapped, locking front buffer..." << std::endl;
-        }
-        
-        // Present the GBM buffer to the display using page flip
-        // Use shared lambda
-        present_frame();
+            // Swap EGL buffers
+            if (!egl.swap_buffers()) {
+                std::cerr << "Failed to swap buffers!" << std::endl;
+            }
+
+            if (frame_count == 0) {
+                std::cout << "  Buffers swapped, locking front buffer..." << std::endl;
+            }
+
+            // Present the GBM buffer to the display using page flip
+            // Use shared lambda
+            present_frame();
+        }  // if (draw_this_frame) — drawing, part 2
         
         // BARE BONES: Removed periodic audio checks - let MPV handle audio
         
@@ -4583,7 +4705,10 @@ int main(int /* argc */, char* /* argv */[]) {
         // Vblank-anchored: sleeps from THIS iteration's present completion
         // (utils/frame_pacing.h). The old `target - delta` used the
         // previous iteration's period, so 30 fps flips alternated
-        // 16/33/50 ms.
+        // 16/33/50 ms. An iteration the redraw gate skipped never blocked
+        // on a flip, so the min_iteration floor is what paces it: ~one
+        // refresh per iteration, keeping input polling at frame cadence
+        // without spinning a core.
         const auto pacing = utils::frame_pacing_for(
             mb_movie_active ? 30 : 60, static_cast<int>(mode_info.vrefresh));
         const auto pace_sleep = utils::frame_cap_sleep(

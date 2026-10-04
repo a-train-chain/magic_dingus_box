@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <string>
 #include <thread>
@@ -233,6 +234,15 @@ public:
     // possibly-letterboxed content viewport); caller sets glViewport first.
     void render_post_game_fade(float alpha);
 
+    // Phase of the main menu's selected-row indicator blink: increments
+    // every 500 ms, indicator drawn on even phases. Public so the main
+    // loop's redraw gate (app/redraw_gate.h) can redraw the otherwise
+    // static menu exactly when the blink flips, and not in between.
+    int64_t main_menu_blink_phase(std::chrono::steady_clock::time_point now) const {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   now - blink_epoch_).count() / 500;
+    }
+
     // Marquee wood-grain frame — the "TV cabinet" outer 30px border.
     // Used ONLY when the kiosk is on Marquee (Media Browser) screens. Other
     // surfaces (main playlist, settings, RetroArch handoff) keep their
@@ -280,6 +290,12 @@ public:
 #endif
 
 private:
+    // Epoch of main_menu_blink_phase(). A member (was a function-local
+    // static in render_playlist_list) so the redraw gate reads the same
+    // phase the renderer draws.
+    std::chrono::steady_clock::time_point blink_epoch_ =
+        std::chrono::steady_clock::now();
+
     uint32_t width_;
     uint32_t height_;
     uint32_t original_width_;   // Store original screen dimensions for reset

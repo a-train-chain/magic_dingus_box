@@ -27,6 +27,11 @@ void Toast::post(std::string message) {
     g_posted.push_back(std::move(message));
 }
 
+bool Toast::has_pending() {
+    std::lock_guard<std::mutex> lk(g_post_mtx);
+    return !g_posted.empty();
+}
+
 namespace {
 constexpr int FADE_IN_MS = 300;
 constexpr int HOLD_MS = 2400;

@@ -29,6 +29,12 @@ public:
     // still on screen keep their own worker -> drain -> show() idiom.
     static void post(std::string message);
 
+    // Thread-safe: true while a post()ed message waits for render() to show
+    // it. The main loop's redraw gate only renders when something can
+    // change, and the mailbox drains INSIDE render() — this is how a queued
+    // toast gets its frame instead of waiting for the gate's idle timer.
+    static bool has_pending();
+
     // Render the current toast (if any). No-op when no toast or when
     // the toast has expired.
     static void render(Renderer& r, int screen_w, int screen_h);
@@ -36,7 +42,9 @@ public:
     // Clear any active toast immediately.
     static void clear();
 
-    // Test-only: returns true if a toast is active right now.
+    // True while a toast is on screen (fading in, holding or fading out).
+    // Tests use it, and the main loop's redraw gate keeps drawing while it
+    // holds.
     static bool is_active();
 
 private:

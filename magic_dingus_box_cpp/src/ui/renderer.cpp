@@ -1812,11 +1812,11 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
     // background_alpha is no longer used in this function (highlight bar uses fixed alpha)
     // Removed to eliminate unused variable warning
     
-    // Get current time for blinking indicator (time-based, matching Python: 500ms)
-    static auto last_blink_time = std::chrono::steady_clock::now();
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_blink_time).count();
-    bool indicator_visible = (elapsed_ms / 500) % 2 == 0;  // Blink every 500ms (matching Python)
+    // Blinking indicator (time-based, matching Python: 500ms). The phase
+    // comes from main_menu_blink_phase() so the redraw gate sees the same
+    // flips this draws.
+    bool indicator_visible =
+        main_menu_blink_phase(std::chrono::steady_clock::now()) % 2 == 0;
     
     // Calculate if we need to show scroll arrows
     int total_playlists = static_cast<int>(playlists.size());
