@@ -89,13 +89,25 @@ def test_heartbeat_dir_prefers_ram():
     assert serve._heartbeat_dir(lambda p: False, lambda p, m: True) is None
 
 
-def test_options_are_valid_gunicorn_settings():
-    gunicorn_config = pytest.importorskip("gunicorn.config")
-    cfg = gunicorn_config.Config()
-    for key, value in serve.gunicorn_options({}).items():
-        assert key in cfg.settings, key
-        cfg.set(key, value)
-    assert cfg.worker_class_str == "gthread"
+def test_options_are_valid_gunicorn_settings(tmp_path):
+    pytest.importorskip("gunicorn.config")
+    # In a fresh interpreter started from tmp_path: gunicorn.config computes
+    # its chdir default (strip()ped cwd) once at IMPORT, so a checkout whose
+    # path ends in a space ("magic_dingus_box ") can't build a Config()
+    # in-process. Production runs from /opt/magic_dingus_box.
+    code = (
+        "import gunicorn.config as gc\n"
+        "from magic_dingus_box.web import serve\n"
+        "cfg = gc.Config()\n"
+        "for k, v in serve.gunicorn_options({}).items():\n"
+        "    assert k in cfg.settings, k\n"
+        "    cfg.set(k, v)\n"
+        "assert cfg.worker_class_str == 'gthread'\n"
+    )
+    env = dict(os.environ, PYTHONPATH=str(REPO_ROOT), PWD=str(tmp_path))
+    result = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path),
+                            env=env, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
 
 
 # ------------------------------------------------------------ integration
@@ -168,7 +180,10 @@ def live_server(tmp_path, request):
     with open(log, "wb") as out:
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "magic_dingus_box.web.wsgi"],
-            cwd=str(REPO_ROOT), env=env, stdout=out, stderr=subprocess.STDOUT)
+            # Not REPO_ROOT: gunicorn strip()s its chdir setting (default =
+            # cwd), so a checkout whose path ends in a space ("magic_dingus_box ")
+            # fails "can't chdir". The package resolves via PYTHONPATH.
+            cwd=str(tmp_path), env=env, stdout=out, stderr=subprocess.STDOUT)
     base = f"http://127.0.0.1:{port}"
     deadline = time.time() + 30
     while time.time() < deadline:
