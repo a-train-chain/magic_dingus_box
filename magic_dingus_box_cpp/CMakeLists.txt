@@ -135,7 +135,16 @@ set(VIDEO_SOURCES
 )
 
 set(UI_SOURCES
+    # ui::Renderer is implemented across these TUs by responsibility
+    # (core / shaders / text / main menu / settings / Media Browser /
+    # CRT); shared private bits live in src/ui/renderer_internal.h.
     src/ui/renderer.cpp
+    src/ui/renderer_shaders.cpp
+    src/ui/renderer_text.cpp
+    src/ui/renderer_main_menu.cpp
+    src/ui/renderer_settings.cpp
+    src/ui/renderer_mb.cpp
+    src/ui/renderer_crt.cpp
     src/ui/renderer_batch.cpp
     src/ui/controller_wizard.cpp
     src/ui/controller_wizard_renderer.cpp
