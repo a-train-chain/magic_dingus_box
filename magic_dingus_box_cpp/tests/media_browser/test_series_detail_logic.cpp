@@ -728,3 +728,112 @@ TEST_CASE("action row: the chooser label replaces the primary label, same action
     CHECK(b.action == Action::NextSeason);
     CHECK(b.label == "\xE2\x80\xB9 Season 6 \xC2\xB7 ~20 GB \xE2\x80\xBA");
 }
+
+TEST_CASE("poll downloading set: a failed queue read is NO evidence, not an empty queue",
+          "[series_detail]") {
+    // A failed read must not flip every downloading season to None — that
+    // made them eligible in the season chooser and invited duplicate
+    // searches. nullopt in, nullopt out: the caller keeps its prior set.
+    CHECK_FALSE(downloading_seasons_from_queue(std::nullopt, 7).has_value());
+
+    SECTION("an answered empty queue really is an empty set") {
+        const auto got = downloading_seasons_from_queue(
+            std::vector<SonarrQueueItem>{}, 7);
+        REQUIRE(got.has_value());
+        CHECK(got->empty());
+    }
+    SECTION("only this series' rows count, deduped by season") {
+        SonarrQueueItem a; a.series_id = 7; a.season_number = 2;
+        SonarrQueueItem b; b.series_id = 7; b.season_number = 2;
+        SonarrQueueItem c; c.series_id = 9; c.season_number = 3;
+        SonarrQueueItem d; d.series_id = 7; d.season_number = 4;
+        const auto got = downloading_seasons_from_queue(
+            std::vector<SonarrQueueItem>{a, b, c, d}, 7);
+        REQUIRE(got.has_value());
+        CHECK(*got == std::unordered_set<int>{2, 4});
+    }
+}
+
+TEST_CASE("season-end intent: waits for Sonarr, then for a FRESH answer",
+          "[series_detail][season_end]") {
+    // The FullPause shape: playback just ended, Sonarr is still restarting,
+    // and the page's series_ is a pre-playback snapshot. Starting now fails
+    // ("couldn't monitor season") or refuses ("didn't apply") for a season
+    // that IS downloadable — the old immediate path's two failure modes.
+    DeferredStartInputs in;
+    in.has_series = true;
+    in.settled = true;
+    in.want_eligible = true;
+
+    SECTION("gate pending -> wait") {
+        in.gate = DeferredGate::Pending;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Wait);
+    }
+    SECTION("gate ready but only the pre-playback snapshot -> wait") {
+        in.gate = DeferredGate::Ready;
+        in.fresh_answer = false;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Wait);
+    }
+    SECTION("gate ready + fresh, settled, eligible record -> start") {
+        in.gate = DeferredGate::Ready;
+        in.fresh_answer = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Start);
+    }
+    SECTION("an unsettled fresh record waits rather than refusing") {
+        // series_settled_ can read false right after Sonarr comes back; the
+        // old path turned that into "Season update didn't apply".
+        in.gate = DeferredGate::Ready;
+        in.fresh_answer = true;
+        in.settled = false;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Wait);
+    }
+    SECTION("a mutation already running waits its turn") {
+        in.gate = DeferredGate::Ready;
+        in.fresh_answer = true;
+        in.mutation_in_flight = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Wait);
+    }
+}
+
+TEST_CASE("season-end intent: drift and outage are said out loud",
+          "[series_detail][season_end]") {
+    DeferredStartInputs in;
+    in.gate = DeferredGate::Ready;
+    in.fresh_answer = true;
+    in.has_series = true;
+    in.settled = true;
+
+    SECTION("fresh rows say the season is no longer downloadable") {
+        in.want_eligible = false;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Drifted);
+    }
+    SECTION("the record vanished") {
+        in.has_series = false;
+        in.want_eligible = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Drifted);
+    }
+    SECTION("the gate timed out -> services down, whatever else is true") {
+        in.gate = DeferredGate::TimedOut;
+        in.want_eligible = true;
+        CHECK(decide_deferred_season_start(in) ==
+              DeferredStartStep::ServicesDown);
+    }
+    SECTION("deadline with no fresh answer -> services down") {
+        in.fresh_answer = false;
+        in.want_eligible = true;
+        in.past_deadline = true;
+        CHECK(decide_deferred_season_start(in) ==
+              DeferredStartStep::ServicesDown);
+    }
+    SECTION("deadline while still unsettled -> drift, not a silent wait") {
+        in.settled = false;
+        in.want_eligible = true;
+        in.past_deadline = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Drifted);
+    }
+    SECTION("deadline does not override a start that is ready right now") {
+        in.want_eligible = true;
+        in.past_deadline = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Start);
+    }
+}

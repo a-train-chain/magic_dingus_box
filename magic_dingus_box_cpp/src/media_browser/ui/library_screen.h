@@ -159,6 +159,12 @@ private:
     // "Sonarr offline" warning line so the gap is explained rather than
     // silently reading as "your shows vanished".
     bool sonarr_ok_ = true;
+    // False when Radarr did not answer the last refresh's library read.
+    // library_ then still holds the LAST GOOD movie list (never an empty
+    // one — a failed read used to paint "Library is empty" on every blip
+    // and for the 20-40 s after every FullPause movie), and render() says
+    // so on the stats row.
+    bool radarr_ok_ = true;
     // Latch so the "could not format the 30-day cutoff" warning logs once
     // rather than on every rebuild_view() — which runs ~every 2s while this
     // screen is open. See rebuild_view().
@@ -202,6 +208,12 @@ private:
         std::unordered_set<MediaRef> stuck;
         std::unordered_set<MediaRef> importing;
         bool sonarr_ok = false;
+        // Radarr answered the library read (`library` is real). False =>
+        // apply_pending keeps the previous library_.
+        bool radarr_ok = false;
+        // ...and the queue read too, so the movie badge refs are real.
+        // False => carry_forward_movie_refs keeps the previous movie refs.
+        bool radarr_queue_ok = false;
     };
     std::mutex            pending_mtx_;
     PendingResult         pending_;
@@ -210,6 +222,22 @@ private:
     std::thread           refresh_worker_;
     std::chrono::steady_clock::time_point last_refresh_at_{};
     static constexpr int  kRefreshIntervalMs = 2000;  // library churns slowly
+
+    // Full-movie-list cache — WORKER-thread only (one refresh worker at a
+    // time, serialized by refresh_in_flight_), QueueScreen's lib_cache_
+    // pattern. The 2 s cadence used to re-download and re-parse the
+    // heaviest Radarr response every tick. Now the light queue read runs
+    // every tick and the list is refetched only when: the cache is older
+    // than kMovieListTtlMs, the set of queued movie ids changed since the
+    // last fetch (an item LEAVING the queue is an import finishing — the
+    // case the live cadence exists for), or enter() asked for a fresh one
+    // (force_movie_list_ — the user may have just added/removed a movie).
+    std::vector<Movie>    movie_list_cache_;
+    bool                  movie_list_cache_valid_ = false;
+    std::chrono::steady_clock::time_point movie_list_cache_at_{};
+    std::unordered_set<int> movie_list_cache_queue_ids_;
+    std::atomic<bool>     force_movie_list_{true};
+    static constexpr int  kMovieListTtlMs = 10000;
 
     // Header stats line cache ("N titles · X GB used · Y GB free").
     // Rebuilt at most every 5s in render() — computing it per frame cost a

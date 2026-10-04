@@ -246,10 +246,6 @@ private:
         std::optional<TmdbMovieDetail> detail;
         std::vector<Movie>             library;
         std::vector<QualityProfile>    profiles;
-        // Captured from radarr_.last_error() at the time get_library()
-        // returned an empty list. Mirrors the sync path's reachability
-        // heuristic (empty + clean error == empty library, not failure).
-        std::string                    radarr_library_error;
         bool detail_ok   = false;
         bool library_ok  = false;
         bool profiles_ok = false;
@@ -325,6 +321,17 @@ private:
     std::atomic<bool> add_done_{false};
     bool add_ok_ = false;
     int add_tmdb_id_ = -1;                 // render-thread only
+
+    // Async Search Again — same shape again. trigger_search is a 5 s-
+    // timeout POST that ran on the render thread (WatchdogSec=10). The
+    // outcome is banner'd when the same movie is still on screen, and a
+    // failure is toasted either way.
+    void drain_search_result();
+    std::thread search_worker_;
+    std::atomic<bool> search_in_flight_{false};
+    std::atomic<bool> search_done_{false};
+    bool search_ok_ = false;
+    int search_radarr_id_ = -1;            // render-thread only
     Screen do_play();
     Screen do_retry();
     Screen do_more_info();

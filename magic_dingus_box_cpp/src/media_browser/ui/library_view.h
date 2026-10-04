@@ -176,4 +176,29 @@ std::vector<const LibraryEntry*> build_library_view(
     const std::string& recent_cutoff_iso,
     bool recent_cutoff_valid);
 
+// ---- Radarr outage policy ----
+//
+// The 2 s refresh read Radarr with the unchecked get_library()/get_queue(),
+// so ANY failed read — a netns re-link blip, and the 20-40 s after every
+// FullPause movie while the stopped container restarts — replaced the movie
+// grid with nothing and painted "Library is empty". LibraryScreen now keeps
+// the last good movie list when Radarr does not answer (its own decision,
+// one line in apply_pending) and uses these two for the rest.
+
+// One badge set (downloading / stuck / importing) for this cycle.
+// movie_half_ok = Radarr's library AND queue both answered, so `fresh`
+// holds real movie refs. Otherwise the movie refs in `fresh` are absent
+// for lack of evidence, not because nothing is downloading: carry the
+// previous cycle's MOVIE refs forward and take TV refs from `fresh`
+// (Sonarr answered or not on its own, and its half already has a policy).
+std::unordered_set<MediaRef> carry_forward_movie_refs(
+    std::unordered_set<MediaRef> fresh,
+    const std::unordered_set<MediaRef>& prev,
+    bool movie_half_ok);
+
+// Centered copy for a grid with nothing to show. any_entries = the library
+// has entries but the filter hid them all. movies_offline = Radarr has not
+// answered since the screen last had a movie list — never "empty" then.
+const char* library_empty_message(bool any_entries, bool movies_offline);
+
 }  // namespace media_browser::ui

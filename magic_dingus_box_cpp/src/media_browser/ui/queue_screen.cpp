@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -218,6 +219,7 @@ QueueScreen::~QueueScreen() {
     // Wait for any in-flight worker before destruction so we don't
     // leave a thread holding references to a dying QueueScreen.
     if (worker_.joinable()) worker_.join();
+    if (cancel_worker_.joinable()) cancel_worker_.join();
 }
 
 void QueueScreen::enter() {
@@ -249,12 +251,26 @@ void QueueScreen::refresh_async() {
     // accumulation at one.
     if (worker_.joinable()) worker_.join();
 
-    worker_ = std::thread([this] {
-        run_guarded("queue refresh", [this] { run_refresh(); });
-    });
+    try {
+        worker_ = std::thread([this] {
+            run_guarded("queue refresh", [this] { run_refresh(); });
+        });
+    } catch (const std::system_error& e) {
+        // An uncaught throw from the thread ctor is std::terminate. Release
+        // the CAS so the next update() tick simply tries again.
+        spdlog::warn("[QueueScreen] refresh spawn failed: {}", e.what());
+        refresh_in_flight_.store(false, std::memory_order_release);
+    }
 }
 
 void QueueScreen::run_refresh() {
+    // Clears refresh_in_flight_ on EVERY exit path: run_guarded swallows a
+    // throw, and a latched flag silently stopped every later refresh — the
+    // queue froze on its last snapshot for the rest of the session.
+    struct InflightGuard {
+        std::atomic<bool>& flag;
+        ~InflightGuard() { flag.store(false, std::memory_order_release); }
+    } inflight_guard{refresh_in_flight_};
     PendingResult r;
     auto queue_checked = radarr_.get_queue_checked();
     r.error = radarr_queue_error(queue_checked);
@@ -324,8 +340,13 @@ void QueueScreen::run_refresh() {
                     }
                 }
                 if (tv_lib_stale) {
-                    tv_lib_cache_ = sonarr_->get_library();
-                    tv_lib_cache_at_ = tv_now;
+                    // CHECKED: a failed read keeps the previous snapshot
+                    // (stale titles/posters beat blank ones) and leaves the
+                    // timestamp alone so the next tick retries.
+                    if (auto lib = sonarr_->get_library_checked()) {
+                        tv_lib_cache_ = std::move(*lib);
+                        tv_lib_cache_at_ = tv_now;
+                    }
                 }
 
                 std::unordered_map<int, SeriesRef> series_by_id;
@@ -378,8 +399,15 @@ void QueueScreen::run_refresh() {
         }
     }
     if (lib_stale) {
-        lib_cache_ = radarr_.get_library();
-        lib_cache_at_ = now;
+        // CHECKED: an unchecked read turned a Radarr blip into an EMPTY
+        // snapshot for the full 30 s TTL — the "awaiting release" section
+        // vanished and every queue row lost its poster. A failed read keeps
+        // the previous snapshot and leaves the timestamp alone so the next
+        // tick retries.
+        if (auto lib = radarr_.get_library_checked()) {
+            lib_cache_ = std::move(*lib);
+            lib_cache_at_ = now;
+        }
     }
     const auto& library = lib_cache_;
 
@@ -549,7 +577,7 @@ void QueueScreen::run_refresh() {
         pending_ = std::move(r);
     }
     result_ready_.store(true);
-    refresh_in_flight_.store(false);
+    // refresh_in_flight_ is cleared by inflight_guard as this returns.
 }
 
 void QueueScreen::apply_pending() {
@@ -619,6 +647,7 @@ void QueueScreen::update() {
     // Drain any worker result into the live state. Cheap — it's an
     // atomic load most frames, only takes the mutex when result is ready.
     apply_pending();
+    drain_cancel_result();
 
     auto now = std::chrono::steady_clock::now();
 
@@ -646,20 +675,62 @@ void QueueScreen::update() {
 void QueueScreen::do_cancel_focused() {
     if (cursor_ < 0 || cursor_ >= row_count()) return;
     const int movie_rows = static_cast<int>(queue_.size());
-    if (cursor_ < movie_rows) {
-        radarr_.cancel_queue_item(queue_[cursor_].id);
-    } else if (sonarr_) {
-        // EXACTLY ONE call. Sonarr's DELETE acts on the whole download, so
-        // this removes every episode row of the pack; iterating the pack's
-        // sibling ids would only collect 404s (sonarr_client.h).
-        sonarr_->cancel_queue_item(
-            tv_[static_cast<size_t>(cursor_ - movie_rows)].group.first_queue_id);
-    }
+    const bool is_tv = cursor_ >= movie_rows;
+    if (is_tv && sonarr_ == nullptr) return;
+    // Capture by VALUE: queue_/tv_ are render-thread state that the next
+    // apply_pending() replaces while the DELETE is in flight.
+    const int queue_id =
+        is_tv ? tv_[static_cast<size_t>(cursor_ - movie_rows)].group.first_queue_id
+              : queue_[cursor_].id;
+    std::string title =
+        is_tv ? tv_row_title(tv_[static_cast<size_t>(cursor_ - movie_rows)].group)
+              : queue_[cursor_].title;
     cancel_pending_ = false;
     cancel_pending_is_tv_ = false;
     cancel_pending_queue_id_ = 0;
-    // Force an immediate refresh so the row disappears without the user
-    // waiting on the 2s poll. Async — UI thread doesn't block.
+    if (cancel_in_flight_.load(std::memory_order_acquire)) {
+        ::ui::Toast::show("Still cancelling the last download\xE2\x80\xA6");
+        return;
+    }
+    // cancel_in_flight_ was false, so the previous worker has finished and
+    // this join is instant.
+    if (cancel_worker_.joinable()) cancel_worker_.join();
+    cancel_in_flight_.store(true, std::memory_order_release);
+    try {
+        cancel_worker_ = std::thread([this, is_tv, queue_id,
+                                      title = std::move(title)]() {
+            bool ok = false;
+            run_guarded("queue cancel", [&] {
+                // TV: EXACTLY ONE call. Sonarr's DELETE acts on the whole
+                // download, so this removes every episode row of the pack;
+                // iterating the pack's sibling ids would only collect 404s
+                // (sonarr_client.h).
+                ok = is_tv ? sonarr_->cancel_queue_item(queue_id)
+                           : radarr_.cancel_queue_item(queue_id);
+            });
+            cancel_ok_ = ok;
+            cancel_title_ = title;
+            cancel_done_.store(true, std::memory_order_release);
+            cancel_in_flight_.store(false, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        cancel_in_flight_.store(false, std::memory_order_release);
+        ::ui::Toast::show("Couldn't start the cancel \xE2\x80\x94 try again");
+    }
+}
+
+void QueueScreen::drain_cancel_result() {
+    if (!cancel_done_.exchange(false, std::memory_order_acq_rel)) return;
+    if (!cancel_ok_) {
+        ::ui::Toast::show("Couldn't cancel " +
+                          (cancel_title_.empty() ? std::string("the download")
+                                                 : cancel_title_) +
+                          " \xE2\x80\x94 try again");
+    }
+    // Refresh now either way — success makes the row disappear without
+    // waiting on the poll; failure shows the row is still there. Async;
+    // a refresh already in flight makes this a no-op and the next tick
+    // catches up.
     refresh_async();
 }
 

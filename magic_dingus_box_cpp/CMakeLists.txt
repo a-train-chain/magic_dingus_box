@@ -249,6 +249,12 @@ if(BUILD_KIOSK)
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/mb_ui_utils.cpp
+            # Post-playback "services ready" gate + the movie Remove sequence.
+            # Renderer-free, so both are ALSO in MEDIA_BROWSER_SOURCES and
+            # unit-tested; the screens call into them, so the kiosk needs its
+            # own copies here (same dual-list arrangement as library_view).
+            src/media_browser/service_gate.cpp
+            src/media_browser/movie_remove.cpp
             # Renderer-free, so it is ALSO in MEDIA_BROWSER_SOURCES and gets
             # unit-tested — but library_screen.cpp calls into it, so the kiosk
             # binary needs its own copy here or the link fails on an undefined
@@ -438,6 +444,8 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/prowlarr/prowlarr_client.cpp
         src/media_browser/qbittorrent/qbittorrent_client.cpp
         src/media_browser/qbittorrent/download_watchdog.cpp
+        src/media_browser/service_gate.cpp
+        src/media_browser/movie_remove.cpp
         src/platform/sequence_detector.cpp
         # Pure UI helpers shared by every Marquee screen. Deliberately has no
         # ::ui::Renderer dependency (Renderer pulls in GLES, which does not
@@ -506,6 +514,8 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_queue_screen.cpp
         tests/media_browser/test_mb_entry_gate.cpp
         tests/media_browser/test_json_shapes.cpp
+        tests/media_browser/test_service_gate.cpp
+        tests/media_browser/test_movie_remove.cpp
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp

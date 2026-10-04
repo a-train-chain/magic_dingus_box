@@ -25,6 +25,7 @@
 #include <string>
 #include <thread>
 
+#include "media_browser/radarr/radarr_client.h"  // GrabOutcome
 #include "media_browser/ui/worker_pool.h"
 #include <vector>
 
@@ -286,6 +287,21 @@ private:
     std::vector<ReleaseCandidate>     pending_rows_;       // guarded by load_mu_
     std::string                       loading_title_;      // guarded by load_mu_
     std::chrono::steady_clock::time_point loading_started_at_{};
+
+    // --- Async grab ------------------------------------------------------
+    // grab_release is a 5 s-timeout POST and ran on the render thread
+    // (WatchdogSec=10). One grab at a time on grab_worker_. While it runs
+    // every input is swallowed, BTN4 included: the outcome decides where
+    // the user goes and the watchdog registration (not thread-safe) must
+    // happen on this thread — the wait is bounded by the client timeout.
+    // drain_grab_result() runs at the top of handle_input (every frame).
+    // grab_outcome_ is written before the release store to grab_done_ and
+    // read only after the acquire exchange — that pair is the ordering.
+    Screen drain_grab_result();
+    std::thread                       grab_worker_;
+    std::atomic<bool>                 grab_in_flight_{false};
+    std::atomic<bool>                 grab_done_{false};
+    GrabOutcome                       grab_outcome_ = GrabOutcome::Unknown;
 
     // Worker threads spawned during this screen's lifetime. Finished ones
     // are reaped (instant join, done flag) from load_async()/update();

@@ -98,12 +98,13 @@ bool RadarrMockClient::cancel_queue_item(int id) {
     queue_.erase(it, queue_.end());
     return removed;
 }
-std::vector<std::string>
-RadarrMockClient::get_movie_download_hashes(int /*movie_id*/) {
-    // No history in the mock — DetailScreen tests that exercise the
-    // remove flow don't need any historical hashes; the live HTTP
-    // client's behavior is tested separately via the test_cli harness.
-    return {};
+std::optional<std::vector<std::string>>
+RadarrMockClient::get_movie_download_hashes_checked(int /*movie_id*/) {
+    // No history in the mock: an ANSWERED empty history (engaged empty
+    // vector), never a failure — remove-flow tests inject failures by
+    // overriding this. The live HTTP client's behavior is tested
+    // separately via the test_cli harness.
+    return std::vector<std::string>{};
 }
 std::vector<QualityProfile> RadarrMockClient::get_quality_profiles() { return profiles_; }
 std::vector<RootFolder> RadarrMockClient::get_root_folders() {

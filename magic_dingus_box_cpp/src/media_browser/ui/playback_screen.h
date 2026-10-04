@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -78,10 +79,14 @@ public:
     static app::MovieQuietMode::Actions make_quiet_actions(
         QbittorrentClient* qbit, std::function<void()> barrier);
 
-    // The quick-add worker publishes into members — join before they
-    // die (a joinable std::thread member at destruction is terminate()).
+    // The quick-add workers publish into members — join before they die
+    // (a joinable std::thread member at destruction is terminate()). The
+    // deferred-add worker may be inside a 90 s service gate: shutting_down_
+    // cancels it so the join costs at most one in-flight request.
     ~PlaybackScreen() override {
+        shutting_down_.store(true, std::memory_order_release);
         if (quickadd_worker_.joinable()) quickadd_worker_.join();
+        if (deferred_add_worker_.joinable()) deferred_add_worker_.join();
     }
 
     // Caller (main.cpp dispatcher, on Detail->Playback) sets these BEFORE
@@ -276,14 +281,41 @@ private:
 
     // Async quick-add (overlay SELECT). get_quality_profiles + add_movie
     // are two 5s-timeout HTTP calls — run inline they froze the PLAYING
-    // MOVIE for up to ~10s (and on a Pi 4B, where the Radarr container is
-    // docker-paused during playback, the freeze was guaranteed and the
-    // add could never succeed until playback ended). The worker composes
-    // the result toast; update() drains it. One at a time.
+    // MOVIE for up to ~10s. The worker composes the result toast; update()
+    // drains it. One at a time. Only used when Radarr is up during the
+    // movie (trickle sessions) — a FullPause session stops the container,
+    // so its presses go to the deferred queue below instead.
     std::thread quickadd_worker_;
     std::atomic<bool> quickadd_in_flight_{false};
     std::atomic<bool> quickadd_done_{false};
     std::string quickadd_toast_;   // worker → render, ordered by quickadd_done_
+
+    // WORKER thread. The add itself, shared by the immediate and the
+    // deferred path: quality-profile pick + add_movie. Returns the outcome
+    // phrase ("Added — searching", "Already in library", ...).
+    std::string run_quick_add(int tmdb_id);
+
+    // Deferred quick-add (FullPause sessions). FullPause STOPS the Radarr
+    // container for the whole movie, so an add fired during playback could
+    // only burn its timeouts and say "Couldn't add". Such a press is queued
+    // instead ("Will add after the movie"); leave() hands the session's
+    // queue to deferred_add_worker_, which waits on a ServiceGate (the
+    // MovieQuietMode resume, then Radarr answering) and then adds each
+    // film, reporting through the thread-safe ::ui::Toast::post because the
+    // outcome lands after this screen stops receiving update() ticks.
+    struct DeferredAdd {
+        int tmdb_id = 0;
+        std::string title;
+    };
+    bool session_full_pause_ = false;                  // set by enter()
+    std::vector<DeferredAdd> session_deferred_adds_;   // render thread
+    void start_deferred_adds();                        // render thread (leave)
+    void run_deferred_adds();                          // worker
+    std::thread deferred_add_worker_;
+    std::mutex deferred_add_mtx_;
+    std::vector<DeferredAdd> deferred_add_queue_;      // guarded by the mutex
+    bool deferred_add_running_ = false;                // guarded by the mutex
+    std::atomic<bool> shutting_down_{false};
 
     // Frames remaining during which we suppress end-of-stream detection.
     // Counted down by update(). The state.video_active flag flickers

@@ -4,6 +4,7 @@
 #include "ui/font_manager.h"
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,19 @@ namespace ui {
 std::string Toast::message_;
 std::chrono::steady_clock::time_point Toast::shown_at_;
 bool Toast::active_ = false;
+
+namespace {
+// Toast::post mailbox. File-local rather than class statics so the Mac UI
+// test doubles (tests/ui/ui_test_doubles.cpp), which define the class
+// statics themselves, need no new definitions.
+std::mutex g_post_mtx;
+std::vector<std::string> g_posted;  // guarded by g_post_mtx
+}  // namespace
+
+void Toast::post(std::string message) {
+    std::lock_guard<std::mutex> lk(g_post_mtx);
+    g_posted.push_back(std::move(message));
+}
 
 namespace {
 constexpr int FADE_IN_MS = 300;
@@ -75,6 +89,24 @@ bool Toast::is_active() {
 }
 
 void Toast::render(Renderer& r, int screen_w, int screen_h) {
+    // Drain the post() mailbox here, on the render thread, ONE message per
+    // idle slot: a posted outcome waits out whatever toast is already up
+    // instead of stomping it, and several posted together (a batch of
+    // deferred quick-adds) are shown in turn rather than only the last.
+    if (!is_active()) {
+        std::string next;
+        bool have = false;
+        {
+            std::lock_guard<std::mutex> lk(g_post_mtx);
+            if (!g_posted.empty()) {
+                next = std::move(g_posted.front());
+                g_posted.erase(g_posted.begin());
+                have = true;
+            }
+        }
+        if (have) show(std::move(next));
+    }
+
     if (!active_) return;
 
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(

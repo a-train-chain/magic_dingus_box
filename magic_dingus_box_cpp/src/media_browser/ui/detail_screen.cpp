@@ -7,11 +7,13 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <spdlog/spdlog.h>
 
 #include "media_browser/library/watch_store.h"
+#include "media_browser/movie_remove.h"
 #include "media_browser/qbittorrent/download_watchdog.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
@@ -264,8 +266,23 @@ void DetailScreen::fetch() {
     spdlog::info("[DetailScreen] fetch: tmdb_id={} (gen={})",
                  tmdb_id_, my_gen);
     auto done = std::make_shared<std::atomic<bool>>(false);
-    std::thread t(&DetailScreen::run_fetch, this, my_gen, tmdb_id_, done);
-    tmdb_workers_.push_back(FetchWorker{std::move(t), std::move(done)});
+    try {
+        std::thread t([this, my_gen, id = tmdb_id_, done]() {
+            run_guarded("detail fetch", [&] { run_fetch(my_gen, id, done); });
+            // run_fetch's DoneFlag already fired on a normal return; this
+            // covers a throw before it was constructed (it never is today,
+            // but the reaper must never be left waiting on this thread).
+            done->store(true, std::memory_order_release);
+        });
+        tmdb_workers_.push_back(FetchWorker{std::move(t), std::move(done)});
+    } catch (const std::system_error& e) {
+        // An uncaught throw from the thread ctor is std::terminate (thread
+        // exhaustion on a long uptime is exactly when it fires). Land on
+        // the Error page, whose Retry calls fetch() again.
+        spdlog::warn("[DetailScreen] fetch worker spawn failed: {}", e.what());
+        mode_ = Mode::Error;
+        rebuild_buttons();
+    }
 }
 
 namespace {
@@ -303,12 +320,16 @@ void DetailScreen::run_fetch(uint64_t gen, int tmdb_id,
 
     // 2) Radarr library state — best-effort. If Radarr is unreachable
     // we still render the Detail screen with TMDB metadata; only the
-    // mutating actions degrade (Add fails with a toast, etc.). The
-    // last_error() check matches the original sync path's heuristic:
-    // empty library + clean error == legitimately empty, not a failure.
-    r.library = radarr_.get_library();
-    r.radarr_library_error = radarr_.last_error();
-    r.library_ok = r.library.empty() ? r.radarr_library_error.empty() : true;
+    // mutating actions degrade (Add fails with a toast, etc.). CHECKED
+    // read: the verdict used to come from reading the SHARED last_error()
+    // after an unchecked get_library() — a cross-thread split, since the
+    // library poll and other screens' workers write that same string, so
+    // an unrelated success could clear it (outage read as "empty library,
+    // not in it") or an unrelated failure could set it.
+    if (auto lib = radarr_.get_library_checked()) {
+        r.library = std::move(*lib);
+        r.library_ok = true;
+    }
     if (gen != tmdb_current_gen_.load()) {
         spdlog::info("[DetailScreen] gen={} stale after Radarr library; discarding",
                      gen);
@@ -456,10 +477,16 @@ void DetailScreen::maybe_repoll_library() {
     // bail return), so the thread is at/near exit. join() reaps it (near-
     // instant, no render stall) before we reassign.
     if (lib_poll_worker_.joinable()) lib_poll_worker_.join();
-    lib_poll_worker_ = std::thread([this, gen, radarr_id] {
-        run_guarded("detail library poll",
-                    [&] { run_library_poll(gen, radarr_id); });
-    });
+    try {
+        lib_poll_worker_ = std::thread([this, gen, radarr_id] {
+            run_guarded("detail library poll",
+                        [&] { run_library_poll(gen, radarr_id); });
+        });
+    } catch (const std::system_error& e) {
+        // terminate() otherwise; the 9 s cadence simply retries.
+        spdlog::warn("[DetailScreen] library poll spawn failed: {}", e.what());
+        lib_poll_inflight_.store(false, std::memory_order_release);
+    }
 }
 
 // Worker body (off the render thread). Re-reads the movie record for the
@@ -467,9 +494,22 @@ void DetailScreen::maybe_repoll_library() {
 // import so the banner can distinguish "importing" from "awaiting
 // release". Publishes under lib_poll_mtx_ only if still the current gen.
 void DetailScreen::run_library_poll(uint64_t gen, int radarr_id) {
+    // inflight means ONLY "a worker thread is running", so it is cleared on
+    // EVERY exit — the gen-mismatch bails, the publish, and a throw that
+    // run_guarded swallows (the hand-placed clears it replaces missed that
+    // one, and a latched flag silently killed all future polling: a movie
+    // that finished importing never flipped to Play). Never cleared by
+    // apply_library_poll(): a fetch()/navigate landing between the publish
+    // and the drain (which clears lib_poll_ready_) would leave it stuck.
+    // Re-poll-before-drain is prevented by the 9s cadence timer, not by
+    // inflight — a drain happens on the very next frame (~16ms << 9s).
+    struct InflightGuard {
+        std::atomic<bool>& flag;
+        ~InflightGuard() { flag.store(false, std::memory_order_release); }
+    } inflight_guard{lib_poll_inflight_};
     LibraryPollResult r;
     auto m = radarr_.get_movie(radarr_id);
-    if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+    if (gen != lib_poll_gen_.load()) return;
     if (m.has_value()) {
         r.movie = std::move(m);
         r.ok = true;
@@ -481,31 +521,25 @@ void DetailScreen::run_library_poll(uint64_t gen, int radarr_id) {
     // non-fatal — we just fall back to import_active=false (plain
     // MONITORED banner) rather than erroring the poll.
     if (r.ok && r.movie && !r.movie->has_file) {
-        for (const auto& qi : radarr_.get_queue()) {
-            if (qi.movie_id != radarr_id) continue;
-            if (qi.tracked_download_state == "importing" ||
-                qi.tracked_download_state == "importPending") {
-                r.import_active = true;
+        if (const auto queue = radarr_.get_queue_checked()) {
+            for (const auto& qi : *queue) {
+                if (qi.movie_id != radarr_id) continue;
+                if (qi.tracked_download_state == "importing" ||
+                    qi.tracked_download_state == "importPending") {
+                    r.import_active = true;
+                }
+                break;
             }
-            break;
         }
     }
-    if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+    if (gen != lib_poll_gen_.load()) return;
 
     {
         std::lock_guard<std::mutex> lk(lib_poll_mtx_);
-        if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+        if (gen != lib_poll_gen_.load()) return;
         lib_poll_pending_ = std::move(r);
     }
     lib_poll_ready_.store(true);
-    // inflight means ONLY "a worker thread is running" — clear it on the
-    // success path too, not just the bail paths. If apply_library_poll()
-    // owned this clear instead, a fetch()/navigate that lands between the
-    // publish and the drain (which clears lib_poll_ready_) would leave
-    // inflight stuck true forever and silently kill all future polling.
-    // Re-poll-before-drain is prevented by the 9s cadence timer, not by
-    // inflight — a drain happens on the very next frame (~16ms << 9s).
-    lib_poll_inflight_.store(false);
 }
 
 // Drain a completed poll on the render thread. NEVER sets Mode::Loading
@@ -567,6 +601,7 @@ DetailScreen::~DetailScreen() {
     // The remove/add workers publish into members — join before they die.
     if (remove_worker_.joinable()) remove_worker_.join();
     if (add_worker_.joinable()) add_worker_.join();
+    if (search_worker_.joinable()) search_worker_.join();
     for (auto& w : tmdb_workers_) {
         if (w.thread.joinable()) w.thread.join();
     }
@@ -662,6 +697,7 @@ Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& event
     if (Screen s = drain_add_result(); s != Screen::Detail) {
         return s;
     }
+    drain_search_result();
     for (const auto& e : events) {
         // BTN4 (SETTINGS_MENU, black) — short-press returns to the screen
         // that opened this Detail (Browse / Library / Search / Queue) via
@@ -800,7 +836,13 @@ Screen DetailScreen::do_add_to_library() {
     const int tmdb_id = tmdb_id_;
     try {
         add_worker_ = std::thread([this, tmdb_id, qp]() {
-            add_ok_ = radarr_.add_movie(tmdb_id, qp, /*monitor=*/true);
+            // run_guarded: an escaping throw is std::terminate, and the
+            // flags below must publish on that path too or the Add button
+            // stays inert ("Adding…") for the rest of the session.
+            bool ok = false;
+            run_guarded("detail add",
+                        [&] { ok = radarr_.add_movie(tmdb_id, qp, /*monitor=*/true); });
+            add_ok_ = ok;
             add_done_.store(true, std::memory_order_release);
             add_in_flight_.store(false, std::memory_order_release);
         });
@@ -863,9 +905,46 @@ Screen DetailScreen::do_search_again() {
         show_banner("No movie record");
         return Screen::Detail;
     }
-    bool ok = radarr_.trigger_search(movie_->radarr_id);
-    show_banner(ok ? "Search triggered" : "Search failed");
+    if (search_in_flight_.load(std::memory_order_acquire)) {
+        show_banner("Searching\xE2\x80\xA6");
+        return Screen::Detail;
+    }
+    // search_in_flight_ was false, so the previous worker has finished and
+    // this join is instant.
+    if (search_worker_.joinable()) search_worker_.join();
+    const int radarr_id = movie_->radarr_id;
+    search_radarr_id_ = radarr_id;
+    search_in_flight_.store(true, std::memory_order_release);
+    show_banner("Searching\xE2\x80\xA6");
+    try {
+        search_worker_ = std::thread([this, radarr_id]() {
+            bool ok = false;
+            run_guarded("detail search again",
+                        [&] { ok = radarr_.trigger_search(radarr_id); });
+            search_ok_ = ok;
+            search_done_.store(true, std::memory_order_release);
+            search_in_flight_.store(false, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        search_in_flight_.store(false, std::memory_order_release);
+        show_banner("Search failed to start; try again");
+    }
     return Screen::Detail;
+}
+
+void DetailScreen::drain_search_result() {
+    if (!search_done_.exchange(false, std::memory_order_acq_rel)) return;
+    const bool same_movie =
+        movie_.has_value() && movie_->radarr_id == search_radarr_id_;
+    if (search_ok_) {
+        if (same_movie) show_banner("Search triggered");
+        return;
+    }
+    // A failure is worth a toast even when the user has moved on: they
+    // asked for a search and none is running.
+    if (same_movie) show_banner("Search failed");
+    ::ui::Toast::show("Search didn't start \xE2\x80\x94 Radarr didn't answer; "
+                      "try again");
 }
 
 Screen DetailScreen::do_remove_stage1() {
@@ -942,104 +1021,38 @@ Screen DetailScreen::drain_remove_result() {
 }
 
 void DetailScreen::run_remove(int radarr_id) {
-    // Four-step cleanup, in this order so each step's prerequisite has
-    // happened before it runs:
+    // WORKER thread. The cleanup itself — cancel this movie's queue rows,
+    // purge every torrent its history remembers from qBittorrent, then
+    // remove_movie(delete_files=true) — lives in remove_movie_orphan_proof
+    // (media_browser/movie_remove.h), where its abort rule is unit-tested:
+    // a failed queue or history READ aborts before the delete instead of
+    // reading as "nothing to clean up". This used the bare get_queue() /
+    // get_movie_download_hashes() and removed the record anyway, orphaning
+    // seeding torrents for good (the production 2.58 GB orphan that
+    // motivated step 2 in the first place).
     //
-    //  1. Cancel any in-flight Radarr queue items for this movie. Each
-    //     cancel uses removeFromClient=true, which tells Radarr to send
-    //     qBittorrent the delete-with-files command. This catches
-    //     downloads in progress (state=downloading/queued).
-    //
-    //  2. Purge any remaining qBit torrents associated with this movie
-    //     by walking Radarr's history. Step 1 only covers items in the
-    //     active queue — finished+seeding torrents (state=uploading on
-    //     qBit, no longer in Radarr's queue) slip through. Without this
-    //     step, removing a movie that has already been imported leaves
-    //     its torrent seeding forever, pinning disk + upload bandwidth
-    //     with no Radarr record to clean it up. We discovered this in
-    //     production: a HEVC release we cancelled and re-grabbed left
-    //     a 2.58 GB orphan that survived multiple Detail-Remove cycles.
-    //
-    //  3. Remove the movie record itself from Radarr's library, with
-    //     delete_files=true so the imported copy in /library is also
-    //     cleaned up. Steps 1-2 cover the qBit-side artifacts; step 3
-    //     covers Radarr's side and the host's library disk.
-    //
-    //  4. Navigate back to the library view (the screen the user
-    //     conceptually came from when they decided to remove).
-    auto publish = [this](bool ok, std::string err) {
-        remove_ok_ = ok;
-        remove_error_ = std::move(err);
-        remove_done_.store(true, std::memory_order_release);
-        remove_in_flight_.store(false, std::memory_order_release);
-    };
-
-    int cancelled = 0;
-    int cancel_failed = 0;
-    auto queue = radarr_.get_queue();
-    for (const auto& q : queue) {
-        if (q.movie_id == radarr_id) {
-            if (radarr_.cancel_queue_item(q.id)) {
-                ++cancelled;
-            } else {
-                ++cancel_failed;
-                spdlog::warn(
-                    "[detail] failed to cancel queue item {} for movie {}: {}",
-                    q.id, radarr_id, radarr_.last_error());
-            }
+    // Publishes on EVERY exit path, a throw included: run_guarded swallows
+    // the exception, and without this guard remove_in_flight_ stayed true
+    // and every later Confirm Remove was silently ignored for the session.
+    // The render-thread state invalidation on success (movie_.reset(),
+    // needs_refresh_, mode_, library-poll gen bump) is drain_remove_result's.
+    struct PublishGuard {
+        DetailScreen& self;
+        bool published = false;
+        void publish(bool ok, std::string err) {
+            self.remove_ok_ = ok;
+            self.remove_error_ = std::move(err);
+            published = true;
+            self.remove_done_.store(true, std::memory_order_release);
+            self.remove_in_flight_.store(false, std::memory_order_release);
         }
-    }
-    if (cancelled > 0) {
-        spdlog::info("[detail] cancelled {} in-flight queue item(s) "
-                     "before removing movie {}", cancelled, radarr_id);
-    }
-
-    // If any queue cancel failed, do NOT proceed. Same reasoning as
-    // before: orphan-torrent state is worse than a "remove failed"
-    // toast. User can fix qBit connectivity and retry.
-    if (cancel_failed > 0) {
-        publish(false,
-                "Cancel failed for " + std::to_string(cancel_failed)
-                + " in-flight torrent(s). Movie not removed; "
-                  "check qBittorrent connectivity and retry.");
-        return;
-    }
-
-    // Step 2: history-walk + qBit delete for any historical torrent
-    // hashes Radarr remembers for this movie. This is the new path
-    // that catches finished+seeding torrents step 1 can't see. We
-    // collect every distinct downloadId from grabbed/imported events
-    // (typically 1-2 hashes per movie, more if the user re-grabbed)
-    // and ask qBit to remove each with deleteFiles=true. qBit's
-    // delete is a no-op when the hash isn't present, so this is safe
-    // to call even when the cleanup already happened via step 1.
-    if (qbit_) {
-        auto hashes = radarr_.get_movie_download_hashes(radarr_id);
-        int purged = 0;
-        for (const auto& h : hashes) {
-            if (qbit_->delete_torrent(h, /*delete_files=*/true)) {
-                ++purged;
-            }
+        ~PublishGuard() {
+            if (!published) publish(false, "Remove failed \xE2\x80\x94 try again");
         }
-        if (!hashes.empty()) {
-            spdlog::info("[detail] purged {} of {} historical qBit "
-                         "torrent(s) for movie {}",
-                         purged, hashes.size(), radarr_id);
-        }
-    }
-
-    bool ok = radarr_.remove_movie(radarr_id, /*delete_files=*/true);
-    if (!ok) {
-        publish(false, "Remove failed: " + radarr_.last_error());
-        return;
-    }
-    // Success. The render-thread state invalidation (movie_.reset(),
-    // needs_refresh_, mode_, library-poll gen bump — see the comment in
-    // drain_remove_result) is applied by the drain: without it,
-    // navigating back into Detail for the same tmdb_id hits the enter()
-    // short-circuit and re-renders the stale InLibrary mode for a movie
-    // Radarr no longer knows about.
-    publish(true, {});
+    } guard{*this};
+    const MovieRemoveOutcome out =
+        remove_movie_orphan_proof(radarr_, qbit_, radarr_id);
+    guard.publish(out.removed, out.message);
 }
 
 DetailScreen::PlayTarget DetailScreen::get_play_target() const {

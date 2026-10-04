@@ -227,6 +227,78 @@ inline std::vector<int> cancel_ids_for_season(
     return ids;
 }
 
+// The quiet re-poll's per-season "downloading" set, from a CHECKED queue
+// read. nullopt in -> nullopt out: a failed read is no evidence at all, and
+// the caller must keep the set it already has. The poll used the unchecked
+// get_queue() and gated it only on get_series() succeeding — but the two
+// are separate requests, so a queue read that failed after a good series
+// read published an EMPTY set. That flipped every downloading season to
+// None for ~9 s, which made them eligible in the season chooser and let a
+// press fire a duplicate search for a season already in flight.
+inline std::optional<std::unordered_set<int>> downloading_seasons_from_queue(
+        const std::optional<std::vector<SonarrQueueItem>>& queue,
+        int sonarr_series_id) {
+    if (!queue.has_value()) return std::nullopt;
+    std::unordered_set<int> out;
+    for (const auto& q : *queue) {
+        if (q.series_id == sonarr_series_id) out.insert(q.season_number);
+    }
+    return out;
+}
+
+// ---------- Season-end card: deferred "Start Season N" ----------
+//
+// The card's primary is pressed at the END of playback. On a FullPause box
+// (every Pi 4B, every 2 GB Pi 5) Sonarr's container was stopped for the
+// whole episode and leave() only QUEUES its restart, which then takes
+// ~20-40 s to answer. Running start_season_download the instant
+// SeriesDetail re-entered therefore failed ("couldn't monitor season") or
+// refused against a pre-playback snapshot ("Season update didn't apply")
+// for a season that was perfectly downloadable. The intent is now held
+// until a ServiceGate says Sonarr answers AND a fresh Sonarr answer has
+// landed on the page; this function is the per-frame verdict.
+
+// Render-thread view of the gate worker's verdict.
+enum class DeferredGate { Pending, Ready, TimedOut };
+
+enum class DeferredStartStep {
+    Wait,          // keep holding the intent
+    Start,         // run start_season_download(want) now
+    Drifted,       // the world changed while playing — say so, drop it
+    ServicesDown,  // Sonarr never came back in time — say so, drop it
+};
+
+struct DeferredStartInputs {
+    DeferredGate gate = DeferredGate::Pending;
+    // A Sonarr answer (load or poll) has been APPLIED since the gate said
+    // Ready. The page's series_/rows_ before that are the pre-playback
+    // snapshot and must not decide anything.
+    bool fresh_answer = false;
+    bool has_series = false;      // in library with a usable sonarr_id
+    bool settled = false;         // series_settled_
+    bool want_eligible = false;   // want is in eligible_seasons(rows_)
+    bool mutation_in_flight = false;
+    bool past_deadline = false;
+};
+
+inline DeferredStartStep decide_deferred_season_start(const DeferredStartInputs& in) {
+    if (in.gate == DeferredGate::TimedOut) return DeferredStartStep::ServicesDown;
+    const bool fresh = in.gate == DeferredGate::Ready && in.fresh_answer;
+    if (fresh) {
+        // A fresh answer that no longer holds the record: it is gone.
+        if (!in.has_series) return DeferredStartStep::Drifted;
+        if (in.settled && !in.mutation_in_flight) {
+            return in.want_eligible ? DeferredStartStep::Start
+                                    : DeferredStartStep::Drifted;
+        }
+    }
+    if (!in.past_deadline) return DeferredStartStep::Wait;
+    // Out of time. No fresh answer ever arrived -> an outage; an answer
+    // arrived but the record never settled (or a mutation never finished)
+    // -> drift. Either way the user hears about it.
+    return fresh ? DeferredStartStep::Drifted : DeferredStartStep::ServicesDown;
+}
+
 // Whether the trailing "Delete Season N…" row exists in the picker: either
 // files are already on disk, or a download for the season is live (nothing
 // to delete yet, but the row still offers to cancel it).

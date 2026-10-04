@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
-#include <filesystem>
 #include <iterator>
 #include <random>
 #include <string>
@@ -151,30 +150,25 @@ void BrowseScreen::enter() {
     // Kick off the Radarr health-check + library/queue fetch on a worker
     // thread instead of blocking the render thread on 3-4 HTTP round-trips.
     // Stale "in library"/"downloading" badges from the previous visit stay
-    // visible until apply_library_pending() lands (next update() ticks). See
-    // the PendingLibrary block in the header for the quick-add correctness
-    // rationale.
+    // visible until apply_library_pending() lands (next update() ticks).
     refresh_library_async();
 }
 
 void BrowseScreen::refresh_library_async() {
     // CAS guard: at most one refresh in flight. A second enter() (or any
-    // future periodic caller) while one is running is a no-op. Snapshot
-    // library_cached_ HERE on the render thread and pass it to the worker
-    // so the worker never touches a render-thread-owned member.
+    // future periodic caller) while one is running is a no-op.
     bool expected = false;
     if (!lib_refresh_in_flight_.compare_exchange_strong(expected, true)) return;
     // Reap a previous finished-but-not-joined worker before reusing the handle.
     if (lib_refresh_worker_.joinable()) lib_refresh_worker_.join();
-    const bool fetch_quality = !library_cached_;
     lib_refresh_worker_ =
-        std::thread([this, fetch_quality] {
+        std::thread([this] {
             run_guarded("browse library refresh",
-                        [&] { run_library_refresh(fetch_quality); });
+                        [&] { run_library_refresh(); });
         });
 }
 
-void BrowseScreen::run_library_refresh(bool fetch_quality) {
+void BrowseScreen::run_library_refresh() {
     // Worker thread: all blocking Radarr I/O happens here. Touches NO live
     // member except lib_pending_/lib_result_ready_/lib_refresh_in_flight_.
     PendingLibrary r;
@@ -267,13 +261,6 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
                 r.downloading_refs.insert(MediaRef{MediaKind::Movie, it->second});
             }
         }
-        // Quality profiles change only when the operator reconfigures Radarr
-        // (rare), so we fetch them once — fetch_quality is a render-thread
-        // snapshot of !library_cached_, avoiding a cross-thread read.
-        if (fetch_quality) {
-            r.quality_profiles = radarr_.get_quality_profiles();
-            r.quality_fetched = true;
-        }
     }
     // tv_refs is written only by the worker and read only after this join, so
     // the plain (non-atomic) container needs no further synchronisation.
@@ -330,7 +317,7 @@ void BrowseScreen::apply_library_pending() {
     // Replace per kind, never wholesale: when only one service answered, the
     // other's contribution must survive or its mode's in-library hide
     // silently stops working. Replacing (rather than clearing then filling)
-    // means quick_add_focused() never reads a momentarily-empty set.
+    // means no reader ever sees a momentarily-empty set.
     bool refs_changed = false;
     // MOVIE GATE IS `r.services_ok` ALONE — unchanged from the shipped code.
     // Adding `&& r.movie_fetch_ok` here would RETAIN the previous sets when a
@@ -354,10 +341,6 @@ void BrowseScreen::apply_library_pending() {
     if (r.tv_fetch_ok) {
         replace_refs_of_kind(library_refs_, MediaKind::Tv, r.tv_refs);
         refs_changed = true;
-    }
-    if (r.services_ok && r.quality_fetched) {
-        quality_profiles_ = std::move(r.quality_profiles);
-        library_cached_   = true;
     }
     if (refs_changed) {
         // Retro-hide: pages can land before the (async) library refresh on a
@@ -622,82 +605,6 @@ void BrowseScreen::apply_foryou_pending() {
         more_available_ = false;
         fetching_more_ = false;
     }
-}
-
-void BrowseScreen::quick_add_focused() {
-    // *** TRAP FOR A FUTURE CALLER, DO NOT REACTIVATE AS-IS. ***
-    // This function is KIND-BLIND: the in-library check below correctly
-    // uses media_ref_of(hit)/library_refs_.count(...) (kind-aware, since
-    // Phase 2c-1), but the add itself is hardcoded to
-    // radarr_.add_movie(hit.tmdb_id, ...). Since Phase 2c-1, movies_ can
-    // hold TV rows (TV mode's Popular/TopRated/For You all populate it),
-    // and movie and TV TMDB id spaces OVERLAP COMPLETELY — e.g. id 1396 is
-    // Breaking Bad (a show) AND an entirely unrelated film. A caller who
-    // reactivates this while focused on a TV poster would silently add the
-    // WRONG, UNRELATED MOVIE to Radarr — no error, no mismatch detectable
-    // from the call site. Before wiring this back up: branch on
-    // media_ref_of(hit).kind and route TV through a Sonarr add_series() call
-    // (NOT implemented here — out of scope per the final whole-branch
-    // review), never let a TV hit reach radarr_.add_movie(). Same hazard
-    // class as the deferred SonarrMockClient traps documented in
-    // sonarr_mock.cpp and tests/media_browser/test_sonarr_client.cpp.
-    //
-    // Only meaningful when a poster is focused.
-    if (focus_ != Focus::PosterGrid) return;
-    if (movies_.empty()) return;
-    if (grid_cursor_ < 0 ||
-        grid_cursor_ >= static_cast<int>(movies_.size())) return;
-    const auto& hit = movies_[grid_cursor_];
-    if (hit.tmdb_id <= 0) return;
-
-    // Already in library? Short-circuit with a toast.
-    if (library_refs_.count(media_ref_of(hit)) > 0) {
-        ::ui::Toast::show("Already in library");
-        return;
-    }
-
-    // Pick quality profile — prefer "HD-1080p", fall back to first.
-    int qp = 0;
-    for (const auto& p : quality_profiles_) {
-        if (p.name == "HD-1080p") { qp = p.id; break; }
-    }
-    if (qp == 0 && !quality_profiles_.empty()) qp = quality_profiles_.front().id;
-    if (qp == 0) {
-        ::ui::Toast::show("No quality profile — check Radarr");
-        return;
-    }
-
-    // Disk-space pre-flight (matches DetailScreen's check on the slower
-    // add path — kept inline rather than extracted because each screen
-    // is the only caller for its own add flow). Threshold is 15 GB
-    // free; below that, surface a toast as a heads-up. We don't block
-    // the add — small WEB-DL releases fit in <2 GB.
-    {
-        constexpr int64_t kWarnFreeBytes = 15LL * 1024 * 1024 * 1024;
-        std::error_code ec;
-        auto info = std::filesystem::space("/mnt/ssd/library", ec);
-        if (!ec && info.available > 0
-            && static_cast<int64_t>(info.available) < kWarnFreeBytes) {
-            int gb_free = static_cast<int>(info.available
-                                           / (1024 * 1024 * 1024));
-            ::ui::Toast::show(
-                "Warning: only " + std::to_string(gb_free)
-                + " GB free — large releases may fail to import");
-            // Fall through — let the user proceed; warning is informational.
-        }
-    }
-
-    // KIND-BLIND — see the hazard comment at the top of this function
-    // before reactivating this caller. hit may be a TV row.
-    bool ok = radarr_.add_movie(hit.tmdb_id, qp, /*monitor=*/true);
-    if (!ok) {
-        ::ui::Toast::show("Add failed — see Radarr logs");
-        return;
-    }
-    library_refs_.insert(media_ref_of(hit));
-    std::string msg = "Added: ";
-    msg += (hit.title.empty() ? "movie" : hit.title);
-    ::ui::Toast::show(msg);
 }
 
 const char* BrowseScreen::label_for_category(Category cat) {

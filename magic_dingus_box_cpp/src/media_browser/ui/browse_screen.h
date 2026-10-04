@@ -198,12 +198,6 @@ private:
     void apply_pending();
     // Lazily fetches /genre/movie/list on first entry to the Filter category.
     void ensure_genres_loaded();
-    // Retired in v1.6.x — was the BTN2 quick-add shortcut, replaced by
-    // the back-grammar remap. Preserved intentionally in case a future
-    // overlay or shortcut wants the same library-add flow without going
-    // through DetailScreen. Add to the new caller, then remove the
-    // [[maybe_unused]] when reactivating.
-    [[maybe_unused]] void quick_add_focused();
 
     static const char* label_for_category(Category cat);
 
@@ -360,8 +354,6 @@ private:
     // cross-referencing with the library's radarr_id → tmdb_id mapping.
     // Drives the DOWNLOADING badge on poster cards.
     std::unordered_set<MediaRef> downloading_refs_;
-    std::vector<QualityProfile> quality_profiles_;
-    bool library_cached_ = false;
 
     // --- For You state (spec 1c) -----------------------------------
     // Cached merged list — activation re-renders this without refetching;
@@ -402,20 +394,14 @@ private:
 
     // --- Async Radarr library/services refresh (mirrors LibraryScreen) ---
     // enter() used to call is_reachable() + get_library() + get_queue()
-    // (+ get_quality_profiles() on first entry) SYNCHRONOUSLY on the render
-    // thread — 3-4 blocking HTTP round-trips (~200ms-1s+ over the VPN egress)
-    // that stalled the whole kiosk every time the operator opened the movie
-    // marquee. Those calls now run on lib_refresh_worker_; apply_library_pending()
-    // drains the result on the render thread on the next update() tick.
-    //
-    // Correctness note for quick_add_focused(): it reads library_refs_ and
-    // quality_profiles_. During the async window those sets keep the PREVIOUS
-    // visit's data (they're only replaced atomically in apply_library_pending(),
-    // never cleared first), so quick-add always sees complete — if up to one
-    // refresh-cycle stale — data. Same staleness tolerance LibraryScreen and
-    // QueueScreen already accept. On the very first entry the sets are empty,
-    // which reads as "not in library yet" — identical to the pre-async state
-    // during the blocking fetch, just non-blocking now.
+    // SYNCHRONOUSLY on the render thread — 3-4 blocking HTTP round-trips
+    // (~200ms-1s+ over the VPN egress) that stalled the whole kiosk every
+    // time the operator opened the movie marquee. Those calls now run on
+    // lib_refresh_worker_; apply_library_pending() drains the result on the
+    // render thread on the next update() tick. During the async window the
+    // sets keep the PREVIOUS visit's data (they're only replaced atomically
+    // in apply_library_pending(), never cleared first) — the same staleness
+    // tolerance LibraryScreen and QueueScreen accept.
     struct PendingLibrary {
         bool                        services_ok = false;
         // Named movie_refs (not library_refs) from the start: Task 8 adds a
@@ -426,13 +412,11 @@ private:
         // just that service's contribution (see replace_refs_of_kind).
         std::unordered_set<MediaRef> tv_refs;
         std::unordered_set<MediaRef> downloading_refs;
-        std::vector<QualityProfile> quality_profiles;
-        bool                        quality_fetched = false;
         bool                        movie_fetch_ok = false;
         bool                        tv_fetch_ok    = false;
     };
     void refresh_library_async();              // non-blocking; spawns worker
-    void run_library_refresh(bool fetch_quality);  // worker body (off render)
+    void run_library_refresh();                // worker body (off render)
     void apply_library_pending();              // drain on render thread
     std::mutex        lib_pending_mtx_;
     PendingLibrary    lib_pending_;
