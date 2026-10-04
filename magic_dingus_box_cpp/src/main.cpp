@@ -67,6 +67,7 @@
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
 #include "utils/path_resolver.h"
+#include "utils/services_env.h"
 #include "utils/wifi_manager.h"
 #include "utils/logger.h"
 #include "ui/virtual_keyboard.h"
@@ -768,26 +769,14 @@ int main(int /* argc */, char* /* argv */[]) {
     //   3. Parse /opt/magic_dingus_box/services/.env directly (fallback
     //      for when systemd env propagation isn't set up)
     // Otherwise we fall back to RadarrMockClient for dev machines.
-    auto read_env_file_key = [](const std::string& path, const std::string& key) -> std::string {
-        std::ifstream f(path);
-        if (!f) return "";
-        std::string line;
-        const std::string prefix = key + "=";
-        while (std::getline(f, line)) {
-            if (line.rfind(prefix, 0) == 0) {
-                std::string v = line.substr(prefix.size());
-                while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ')) v.pop_back();
-                return v;
-            }
-        }
-        return "";
-    };
+    // (Step 3 for every client below goes through utils::read_env_value —
+    // see utils/services_env.h for the quoting rules.)
 
     std::unique_ptr<media_browser::RadarrClient> radarr_owned;
     std::string radarr_key;
     if (const char* rk = std::getenv("MDB_RADARR_API_KEY"); rk && *rk) radarr_key = rk;
     else if (const char* rk2 = std::getenv("RADARR_API_KEY"); rk2 && *rk2) radarr_key = rk2;
-    else radarr_key = read_env_file_key("/opt/magic_dingus_box/services/.env", "RADARR_API_KEY");
+    else radarr_key = utils::read_env_value(utils::kServicesEnvPath, "RADARR_API_KEY");
 
     if (!radarr_key.empty()) {
         media_browser::RadarrClient::Config radarr_cfg;
@@ -836,7 +825,7 @@ int main(int /* argc */, char* /* argv */[]) {
     std::string sonarr_key;
     if (const char* sk = std::getenv("MDB_SONARR_API_KEY"); sk && *sk) sonarr_key = sk;
     else if (const char* sk2 = std::getenv("SONARR_API_KEY"); sk2 && *sk2) sonarr_key = sk2;
-    else sonarr_key = read_env_file_key("/opt/magic_dingus_box/services/.env", "SONARR_API_KEY");
+    else sonarr_key = utils::read_env_value(utils::kServicesEnvPath, "SONARR_API_KEY");
 
     if (!sonarr_key.empty()) {
         media_browser::SonarrClient::Config sonarr_cfg;
@@ -930,8 +919,8 @@ int main(int /* argc */, char* /* argv */[]) {
         } else if (const char* k2 = std::getenv("PROWLARR_API_KEY"); k2 && *k2) {
             prowlarr_key = k2;
         } else {
-            prowlarr_key = read_env_file_key(
-                "/opt/magic_dingus_box/services/.env", "PROWLARR_API_KEY");
+            prowlarr_key = utils::read_env_value(
+                utils::kServicesEnvPath, "PROWLARR_API_KEY");
         }
 
         if (!prowlarr_key.empty()) {

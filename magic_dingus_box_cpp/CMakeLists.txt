@@ -171,6 +171,7 @@ set(APP_SOURCES
 set(UTILS_SOURCES
     src/utils/config.cpp
     src/utils/path_resolver.cpp
+    src/utils/services_env.cpp
     src/utils/stb_image_impl.cpp
     src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
@@ -688,6 +689,8 @@ if(UI_TEST_SOURCES)
         src/utils/config.cpp
         # controller_wizard.cpp stamps captured_at through this.
         src/utils/time_format.cpp
+        # settings_menu.cpp's open() re-probes WIREGUARD_PRIVATE_KEY.
+        src/utils/services_env.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -757,7 +760,9 @@ endif()
 # other.
 file(GLOB UTILS_TEST_SOURCES "tests/utils/*.cpp")
 if(UTILS_TEST_SOURCES)
-    add_executable(test_utils_unit ${UTILS_TEST_SOURCES} src/utils/time_format.cpp)
+    add_executable(test_utils_unit ${UTILS_TEST_SOURCES}
+        src/utils/time_format.cpp
+        src/utils/services_env.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
