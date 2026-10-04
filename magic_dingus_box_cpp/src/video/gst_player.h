@@ -2,6 +2,7 @@
 
 #include "video_player.h"
 #include "deferred_start.h"
+#include "query_cache.h"
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 #include <string>
@@ -88,6 +89,11 @@ private:
     std::atomic<bool> has_error_{false};
     std::atomic<double> duration_;
     std::atomic<double> position_;
+    // Per-frame memo of the two pipeline queries (query_cache.h):
+    // update_position() refreshes them once per frame, the getters reuse
+    // that answer for the rest of the frame. Invalidated by seeks/stop.
+    QueryCache position_query_;
+    QueryCache duration_query_;
     
     // Bus message dispatcher. Called from update_state()'s polling drain
     // (NOT registered with gst_bus_add_watch — see gst_player.cpp::update_state

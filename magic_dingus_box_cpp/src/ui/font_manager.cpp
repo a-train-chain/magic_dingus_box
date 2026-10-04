@@ -145,13 +145,25 @@ bool FontManager::atlas_alloc(int w, int h, int& page_idx, int& x, int& y) {
         // No page yet, or the last page is out of vertical space: append
         // a fresh page (zero-initialized so glyph padding samples
         // transparent) and retry once.
+        //
+        // Single-channel page (GL_R8, 1 MB) instead of RGBA8 (4 MB): glyphs
+        // are pure coverage. The swizzle makes the shader's texture()
+        // return (1, 1, 1, coverage) — exactly the white-RGB + alpha texel
+        // the RGBA upload used to store — so the UI shader (texColor *
+        // color) is unchanged. Swizzle is core in GLES 3.0.
         AtlasPage page;
         glGenTextures(1, &page.texture);
         glBindTexture(GL_TEXTURE_2D, page.texture);
         std::vector<uint8_t> zeros(
-            static_cast<size_t>(kAtlasSize) * kAtlasSize * 4, 0);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kAtlasSize, kAtlasSize, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, zeros.data());
+            static_cast<size_t>(kAtlasSize) * kAtlasSize, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, kAtlasSize, kAtlasSize, 0,
+                     GL_RED, GL_UNSIGNED_BYTE, zeros.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_ONE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_ONE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_ONE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -231,10 +243,9 @@ Glyph FontManager::rasterize_glyph_at_size(char32_t codepoint, int size) {
     int ascent, descent, line_gap;
     stbtt_GetFontVMetrics(&font, &ascent, &descent, &line_gap);
     
-    // Upload into the shared glyph atlas. Same rasterization, same RGBA
-    // conversion (grayscale alpha → white RGB + alpha, tinted by the
-    // color uniform at draw time) — only the destination changed from a
-    // per-glyph texture to a region of a shared page.
+    // Upload into the shared glyph atlas. Same rasterization; the page
+    // stores coverage in R8 and its swizzle presents it as white RGB +
+    // alpha, tinted by the color uniform at draw time.
     int page_idx = 0, ax = 0, ay = 0;
     if (!atlas_alloc(bitmap_width, bitmap_height, page_idx, ax, ay)) {
         std::cerr << "FontManager: glyph " << static_cast<uint32_t>(codepoint)
@@ -248,25 +259,23 @@ Glyph FontManager::rasterize_glyph_at_size(char32_t codepoint, int size) {
     // Padded upload: the glyph sits inset by kGlyphPad inside a
     // zero-initialized border so LINEAR sampling at sub-pixel positions
     // blends toward transparent, never toward a neighboring glyph.
+    // Coverage only (GL_R8 page; the page's swizzle supplies the white
+    // RGB). UNPACK_ALIGNMENT 1 is load-bearing: R8 rows are pw bytes,
+    // rarely a multiple of 4.
     const int pw = bitmap_width + 2 * kGlyphPad;
     const int ph = bitmap_height + 2 * kGlyphPad;
-    std::vector<uint8_t> rgba_data(static_cast<size_t>(pw) * ph * 4, 0);
+    std::vector<uint8_t> coverage(static_cast<size_t>(pw) * ph, 0);
     for (int row = 0; row < bitmap_height; row++) {
-        for (int col = 0; col < bitmap_width; col++) {
-            uint8_t* px = &rgba_data[
-                ((static_cast<size_t>(row) + kGlyphPad) * pw +
-                 (col + kGlyphPad)) * 4];
-            px[0] = 255;  // R (white, tinted by color uniform)
-            px[1] = 255;  // G
-            px[2] = 255;  // B
-            px[3] = bitmap[row * bitmap_width + col];  // A
-        }
+        std::memcpy(&coverage[(static_cast<size_t>(row) + kGlyphPad) * pw +
+                              kGlyphPad],
+                    &bitmap[row * bitmap_width],
+                    static_cast<size_t>(bitmap_width));
     }
     const AtlasPage& page = atlas_pages_[static_cast<size_t>(page_idx)];
     glBindTexture(GL_TEXTURE_2D, page.texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexSubImage2D(GL_TEXTURE_2D, 0, ax - kGlyphPad, ay - kGlyphPad,
-                    pw, ph, GL_RGBA, GL_UNSIGNED_BYTE, rgba_data.data());
+                    pw, ph, GL_RED, GL_UNSIGNED_BYTE, coverage.data());
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     glBindTexture(GL_TEXTURE_2D, 0);
 

@@ -16,6 +16,7 @@
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/sonarr/sonarr_client.h"
+#include "media_browser/tmdb_image.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -1165,7 +1166,10 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // uses on its big poster, just sized down for a row context.
             float poster_x = row_x + kRowInnerPadding;
             float poster_y = ry + (kRowHeight - kPosterH) / 2.0f;
-            r.mb_draw_poster_fit(q.poster_url,
+            // 70 px thumbnail: the grid-size (w185) variant, shared with
+            // the Library card's texture.
+            r.mb_draw_poster_fit(media_browser::tmdb_poster_url_for_card(
+                                     q.poster_url, static_cast<int>(kPosterW)),
                                  poster_x, poster_y, kPosterW, kPosterH,
                                  stable_tint_for_id(q.id), 1.0f);
             r.mb_stroke_rect(poster_x, poster_y, kPosterW, kPosterH,

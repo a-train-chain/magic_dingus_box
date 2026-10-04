@@ -20,6 +20,7 @@
 
 #ifdef MEDIA_BROWSER_ENABLED
 #include "../media_browser/artwork/artwork_cache.h"
+#include "../platform/platform_profile.h"
 #endif
 
 #include <GLES3/gl3.h>
@@ -2429,12 +2430,14 @@ void Renderer::mb_fill_triangle(float x1, float y1, float x2, float y2,
 
 media_browser::ArtworkCache& Renderer::artwork_cache() {
     if (!artwork_cache_) {
-        // 256MB budget matches the default from artwork_cache.h. It is a
+        // Per-board budget (PlatformProfile::artwork_cache_budget_bytes:
+        // Pi 4 64 MB, Pi 5 / Unknown 128 MB — was a fixed 256 MB). It is a
         // real GPU-memory budget: entries are charged base level + full
         // mipmap chain (ArtworkCache::texture_bytes — the old w*h*4 count
         // undercounted by ~1/3). On the Pi that memory is unswappable
         // system RAM, so MB movie playback trims it to 32 MB and a game
-        // launch releases it entirely (main.cpp).
+        // launch releases it entirely (main.cpp). detect_platform() is a
+        // single small file read, done once here on first MB use.
         //
         // Disk-cache directory: /mnt/ssd/cache/posters when the USB SSD
         // is mounted (it always is when the Media Browser is in use —
@@ -2447,7 +2450,8 @@ media_browser::ArtworkCache& Renderer::artwork_cache() {
             ? std::string(env_cache)
             : std::string("/mnt/ssd/cache/posters");
         artwork_cache_ = std::make_unique<media_browser::ArtworkCache>(
-            256u * 1024u * 1024u, std::move(cache_dir));
+            platform::detect_platform().artwork_cache_budget_bytes,
+            std::move(cache_dir));
     }
     return *artwork_cache_;
 }

@@ -1,5 +1,6 @@
 #include "media_browser/ui/mb_chrome.h"
 
+#include "media_browser/tmdb_image.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -13,13 +14,21 @@ namespace media_browser::ui {
 
 // One-line forward into the tested core. See mb_chrome.h for why this overload
 // exists and why it lives here rather than in mb_ui_utils.
+//
+// Memoized: the ~40 call sites re-truncate the same titles / meta lines every
+// frame. Render-thread only (it takes the Renderer), so a function-local
+// memo is safe. 1024 entries comfortably covers one frame's distinct calls
+// (a full 9x3 grid plus header/footer is well under 200).
 std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
                               int font_size, float max_w) {
-    return truncate_to_width(text, font_size, max_w,
-                             [&r](const std::string& s, int px) {
-                                 return static_cast<float>(
-                                     r.mb_text_width(s, px));
-                             });
+    static TextLayoutMemo<std::string> memo(1024);
+    return memo.get_or_compute(text, font_size, max_w, 0, [&] {
+        return truncate_to_width(text, font_size, max_w,
+                                 [&r](const std::string& s, int px) {
+                                     return static_cast<float>(
+                                         r.mb_text_width(s, px));
+                                 });
+    });
 }
 
 }  // namespace media_browser::ui
@@ -48,8 +57,10 @@ constexpr int kTabGap            = 16;          // was kPad4 (24) — 7-chip str
 constexpr int kTitleFontPx       = 32;          // ZenDots screen title
 }  // namespace
 
-std::vector<std::string> wrap_text(::ui::Renderer& r, const std::string& text,
-                                   int font_size, float max_w) {
+namespace {
+std::vector<std::string> wrap_text_uncached(::ui::Renderer& r,
+                                            const std::string& text,
+                                            int font_size, float max_w) {
     std::vector<std::string> lines;
     if (text.empty()) return lines;
 
@@ -92,6 +103,19 @@ std::vector<std::string> wrap_text(::ui::Renderer& r, const std::string& text,
     }
     if (!current.empty()) lines.push_back(current);
     return lines;
+}
+}  // namespace
+
+// Memoized (see TextLayoutMemo in mb_ui_utils.h): Detail and SeriesDetail
+// re-wrap the same synopsis every frame, which was one candidate string +
+// width measure per word, per frame. Render-thread only.
+std::vector<std::string> wrap_text(::ui::Renderer& r, const std::string& text,
+                                   int font_size, float max_w) {
+    if (text.empty()) return {};
+    static TextLayoutMemo<std::vector<std::string>> memo(64);
+    return memo.get_or_compute(text, font_size, max_w, 0, [&] {
+        return wrap_text_uncached(r, text, font_size, max_w);
+    });
 }
 
 // =====================================================================
@@ -476,7 +500,10 @@ void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
     // for the same URL is cheap, and the first call kicks off a
     // background fetch that completes asynchronously.
     if (!poster_url.empty()) {
-        r.mb_draw_poster_or_tint(poster_url,
+        // Grid-sized cards fetch the w185 variant (tmdb_image.h): ~274 KB
+        // of texture instead of ~2 MB for the w500 the data layer emits.
+        // Wider (hero) cards keep the URL as given.
+        r.mb_draw_poster_or_tint(media_browser::tmdb_poster_url_for_card(poster_url, w),
                                  static_cast<float>(x), static_cast<float>(y),
                                  static_cast<float>(w), static_cast<float>(h),
                                  tint, 1.0f);

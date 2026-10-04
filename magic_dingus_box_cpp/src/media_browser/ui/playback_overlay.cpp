@@ -427,8 +427,17 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float available       = bottom_anchor - cursor_y - cast_reserve - dir_reserve - 12.0f;
         int max_lines = std::max(1, static_cast<int>(available / line_h));
 
-        auto lines = wrap_text_overlay(r, meta_.synopsis, sz, static_cast<float>(col_w));
-        cap_lines(r, lines, sz, static_cast<float>(col_w), max_lines);
+        // Wrap + cap memoized by (synopsis, size, width, max_lines): the
+        // overlay is up during movie playback, and re-wrapping the same
+        // synopsis every frame competed with the decoder for CPU.
+        static TextLayoutMemo<std::vector<std::string>> synopsis_memo(8);
+        const std::vector<std::string>& lines = synopsis_memo.get_or_compute(
+            meta_.synopsis, sz, static_cast<float>(col_w), max_lines, [&] {
+                auto wrapped = wrap_text_overlay(r, meta_.synopsis, sz,
+                                                 static_cast<float>(col_w));
+                cap_lines(r, wrapped, sz, static_cast<float>(col_w), max_lines);
+                return wrapped;
+            });
 
         cursor_y += 10.0f;
         int baseline = r.mb_text_baseline(sz);

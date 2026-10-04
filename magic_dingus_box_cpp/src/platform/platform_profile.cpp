@@ -75,6 +75,9 @@ PlatformProfile profile_for(PiModel model) {
             p.unsupported_emulator_cores = {"mupen64plus_next_libretro",
                                             "parallel_n64_libretro",
                                             "flycast_libretro"};
+            // 1.5 GB envelope board: posters get the smallest budget
+            // (see header — ~230 w185 grid posters).
+            p.artwork_cache_budget_bytes = 64u * 1024u * 1024u;
             break;
         case PiModel::Pi5:
             p.has_analog_audio = false;
@@ -90,6 +93,7 @@ PlatformProfile profile_for(PiModel model) {
             // the IO/CPU headroom, so downloads keep moving during films.
             // Pi 4 / Unknown keep the full pause (struct default false).
             p.trickle_torrents_during_video = true;
+            p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
             break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on
@@ -98,6 +102,7 @@ PlatformProfile profile_for(PiModel model) {
             p.has_analog_audio = false;
             p.gpiochip_labels = {"pinctrl-rp1", "pinctrl-bcm2711",
                                  "pinctrl-bcm2835"};
+            p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
             break;
     }
     return p;

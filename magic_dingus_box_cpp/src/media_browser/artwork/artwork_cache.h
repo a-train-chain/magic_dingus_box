@@ -44,9 +44,10 @@ public:
         int h = 0;
     };
 
-    // max_bytes: LRU eviction threshold; default 256MB (conservative on
-    // the Pi 4B with 2GB RAM — TMDB w500 posters are ~50-150KB each so
-    // 256MB holds ~2-3k posters uncompressed in GPU memory).
+    // max_bytes: LRU eviction threshold in GPU bytes (texture_bytes():
+    // RGBA8 + mipmaps — a w185 grid poster is ~274 KB, a w500 hero ~2 MB).
+    // The kiosk passes PlatformProfile::artwork_cache_budget_bytes (Pi 4
+    // 64 MB, Pi 5 128 MB); the 256 MB default only serves tests/tools.
     //
     // disk_cache_dir: optional path to a directory holding raw JPEG bytes
     // keyed by hashed URL. When set, the fetcher thread reads from disk
