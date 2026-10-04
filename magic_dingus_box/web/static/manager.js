@@ -1760,6 +1760,26 @@ async function handleDirectUpload(input) {
                     const statusResponse = await fetch(`${currentDevice.url}/admin/transcode-status/${job.jobId}`);
                     const statusData = await statusResponse.json();
 
+                    // 404 = the box no longer knows this job. Transcode jobs
+                    // live in the web service's memory and its encoder dies
+                    // with it, so after a restart (update, power blip, crash)
+                    // the job is simply gone — it will never finish. This
+                    // used to fall into the "still running" branch below
+                    // (statusData.data is undefined on an error body) and
+                    // poll forever with the progress bar frozen.
+                    if (statusResponse.status === 404 || statusData.error?.code === 'NOT_FOUND') {
+                        console.error(`[SmartUpload] ${job.fileName}: job lost (box restarted?)`);
+                        errors++;
+                        failedNames.push(`${job.truncatedName} (the box restarted while converting it — please upload it again)`);
+                        pendingJobs.splice(i, 1);
+                        continue;
+                    }
+                    // Any other error body has no .data either — count it as
+                    // a failed poll (capped below), never as "still running".
+                    if (!statusResponse.ok || !statusData.data) {
+                        throw new Error(`status ${statusResponse.status}`);
+                    }
+
                     if (statusData.data?.status === 'complete') {
                         console.log(`[SmartUpload] ${job.fileName}: Transcode complete`);
                         completed++;
@@ -1775,8 +1795,18 @@ async function handleDirectUpload(input) {
                             detailsEl.textContent = statusData.data?.message || `Transcoding: ${job.truncatedName}`;
                         }
                     }
+                    job.fetchErrors = 0;
                 } catch (e) {
                     console.warn(`[SmartUpload] Error polling job ${job.jobId}:`, e);
+                    // Tolerate Wi-Fi blips, but not a box that never answers
+                    // again (~2 min at the 1 s poll) — same policy as the
+                    // per-file uploader's poller.
+                    job.fetchErrors = (job.fetchErrors || 0) + 1;
+                    if (job.fetchErrors >= 120) {
+                        errors++;
+                        failedNames.push(`${job.truncatedName} (lost contact with the box)`);
+                        pendingJobs.splice(i, 1);
+                    }
                 }
             }
 
@@ -2076,6 +2106,16 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                 let data;
                 try {
                     const resp = await fetch(`${currentDevice.url}/admin/transcode-status/${jobId}`);
+                    // 404 is an ANSWER, not a blip: the box restarted and the
+                    // in-memory job (and its encoder) is gone for good. Fail
+                    // now with a message the user can act on, instead of
+                    // counting it as 30 "transient" errors first.
+                    if (resp.status === 404) {
+                        const msg = 'The box restarted while converting this video — please upload it again';
+                        progressBar.error(msg);
+                        resolve({ success: false, error: msg });
+                        return;
+                    }
                     if (!resp.ok) throw new Error(`status ${resp.status}`);
                     data = (await resp.json()).data;
                     fetchErrors = 0;

@@ -183,6 +183,77 @@ test_version_lt() {
     [[ "$output" == *"Invalid download URL"* ]] || [[ "$output" == *"must be from GitHub"* ]]
 }
 
+# The version is interpolated into the GitHub API URL get_binary_url()
+# curls (releases/tags/v${version}); curl normalizes dot-segments, so a
+# crafted version fetched ANOTHER repo's release and installed its binary.
+# admin.py validates it too — this is the independent second check.
+@test "install_update rejects a path-traversal version" {
+    run "$UPDATE_SCRIPT" install "1.0.8/../../../../attacker/evil/releases/tags/v1" \
+        "https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/x.tar.gz"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Invalid version"* ]]
+    # Rejected BEFORE anything touched the temp dir or VERSION.
+    [ ! -d "$MAGIC_TEMP_DIR" ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.7" ]
+}
+
+@test "install_update rejects non-X.Y.Z versions" {
+    for v in "v1.0.8" "1.0" "1.0.8-rc1" '1.0.8;id' "1.0.8 "; do
+        run "$UPDATE_SCRIPT" install "$v" \
+            "https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/x.tar.gz"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"Invalid version"* ]]
+    done
+}
+
+@test "install_update rejects a GitHub URL outside this repo" {
+    run "$UPDATE_SCRIPT" install "1.0.8" \
+        "https://github.com/attacker/evil/releases/download/v1.0.8/x.tar.gz"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Invalid download URL"* ]]
+
+    run "$UPDATE_SCRIPT" install "1.0.8" \
+        "https://github.com/a-train-chain/magic_dingus_box/../../attacker/evil/x.tar.gz"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Invalid download URL"* ]]
+}
+
+# Single-flight: install and rollback share TEMP_DIR and the install tree.
+@test "install refuses to run while another update holds the lock" {
+    if command -v flock >/dev/null 2>&1; then
+        flock "${MAGIC_TEMP_DIR}.lock" sleep 5 &
+        local holder=$!
+        sleep 0.5
+    else
+        # No flock here (macOS): a stub that reports "held" still proves
+        # the dispatcher takes the lock before doing anything.
+        mkdir -p "$TEST_TEMP_DIR/bin"
+        printf '#!/bin/sh\nexit 1\n' > "$TEST_TEMP_DIR/bin/flock"
+        chmod +x "$TEST_TEMP_DIR/bin/flock"
+        export PATH="$TEST_TEMP_DIR/bin:$PATH"
+    fi
+
+    run "$UPDATE_SCRIPT" install "1.0.8" \
+        "https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/x.tar.gz"
+    [ -n "${holder:-}" ] && kill "$holder" 2>/dev/null || true
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"already running"* ]]
+    [ ! -d "$MAGIC_TEMP_DIR" ]
+}
+
+@test "rollback refuses to run while another update holds the lock" {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/bin/sh\nexit 1\n' > "$TEST_TEMP_DIR/bin/flock"
+    chmod +x "$TEST_TEMP_DIR/bin/flock"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+
+    run "$UPDATE_SCRIPT" rollback
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"already running"* ]]
+}
+
 @test "install_update requires version argument" {
     run "$UPDATE_SCRIPT" install
 

@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upload endpoint only accepts video files; a malicious package import
   can no longer fill the SD card; pairing codes can no longer be guessed
   in parallel to get around the attempt limit.
+- **Software updates can only install this project's own releases.** A
+  crafted update request could name a version that quietly pointed the
+  box at someone else's download. The box now accepts only a plain
+  version number and only the matching official release.
+- **Other websites can no longer poke the box through your browser.**
+  A page on the internet could make a phone or laptop at home quietly
+  ask the box to check for updates over and over, or use up the pairing
+  code's guesses. The box now ignores requests that a browser marks as
+  coming from another website. Scanning the pairing QR code, typing the
+  box's address, the home-screen app, and links to the box all work
+  exactly as before.
 
 ### Added
 - **Choose which season to download.** A show's page now suggests the
@@ -56,6 +67,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could have acted on your behalf once you opened the Games tab —
   including deleting videos, games or playlists. File names are now
   always treated as plain text.
+- **An update, rollback or Movies setup can no longer be cut off halfway.**
+  These ran inside the Content Manager's own service, so anything that
+  restarted it — including the Movies setup itself — stopped them
+  mid-way, which for an update could leave a half-installed box. They
+  now run on their own, the Content Manager keeps showing their progress
+  even after it restarts, and starting a second one while one is running
+  is politely refused instead of letting the two collide.
+- **Uploading two videos with the same name keeps both.** If a second
+  copy of a file was uploaded while the first was still converting, the
+  second could silently replace the first. The second one is now saved
+  alongside it with a `_1` added to its name.
+- **Uploads no longer hang forever if the box restarts mid-conversion.**
+  The progress bar used to sit frozen; it now says the box restarted and
+  asks you to upload that video again.
 - **A broken video no longer freezes the box.** A truncated upload, a bad
   SD-card sector or a format the box can't decode used to stop an
   unattended playlist dead on that video until someone pressed Next. The

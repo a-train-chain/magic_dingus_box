@@ -38,7 +38,7 @@ set -euo pipefail
 INSTALL_DIR="${MAGIC_BASE_PATH:-/opt/magic_dingus_box}"
 BACKUP_DIR="${MAGIC_BACKUP_DIR:-${HOME}/.magic_dingus_box_backup}"
 TEMP_DIR="${MAGIC_TEMP_DIR:-/tmp/magic_update}"
-GITHUB_REPO="a-train-chain/magic_dingus_box"
+GITHUB_REPO="${MAGIC_GITHUB_REPO:-a-train-chain/magic_dingus_box}"  # same override admin.py honors (forks)
 GITHUB_API="${MAGIC_GITHUB_API:-https://api.github.com/repos/${GITHUB_REPO}/releases/latest}"
 VERSION_FILE="${INSTALL_DIR}/VERSION"
 
@@ -240,6 +240,11 @@ get_device_arch() {
 get_binary_url() {
     local version="${1#v}"   # Strip optional leading "v" (bug #1 fix)
     local arch=$(get_device_arch)
+
+    # Never interpolate anything but X.Y.Z into the API URL below (curl
+    # would normalize a "/../" in it onto another repo). install_update()
+    # already enforces this; an empty result means "build from source".
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 0
 
     (
         set +e +o pipefail   # Bug #2 fix: tolerate grep no-match
@@ -511,9 +516,31 @@ install_update() {
         return 1
     fi
 
-    # Validate URL (must be from GitHub)
-    if [[ ! "$download_url" =~ ^https://github\.com/ ]] && [[ ! "$download_url" =~ ^https://api\.github\.com/ ]]; then
-        json_response "false" "Invalid download URL (must be from GitHub)"
+    # Validate the version BEFORE it is used anywhere. It is not an inert
+    # label: get_binary_url() interpolates it into
+    # api.github.com/repos/<repo>/releases/tags/v${version}, and curl
+    # normalizes dot-segments — so "1.0.8/../../../../attacker/evil/..."
+    # fetched ANOTHER repo's release metadata and installed its binary. It
+    # is also written verbatim into VERSION. admin.py enforces the same
+    # X.Y.Z rule; this is the independent second check (defense in depth —
+    # the script is also runnable by hand). [0-9], not [[:digit:]], so the
+    # locale cannot widen it.
+    if [[ ! "$target_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        json_response "false" "Invalid version (expected X.Y.Z)"
+        return 1
+    fi
+
+    # Validate URL: THIS repo on GitHub, nothing else. "Any github.com URL"
+    # let a crafted request install an attacker-owned repo's tarball, and a
+    # repo-prefix match alone is defeated by a /../ segment (curl -L
+    # normalizes it away before the request), so dot-segments are refused
+    # outright. admin.py additionally pins the exact release-asset shape.
+    local repo_re="${GITHUB_REPO//./\\.}"
+    if [[ "$download_url" == *"/./"* ]] || [[ "$download_url" == *"/../"* ]] \
+        || [[ "$download_url" == *"/.." ]] || [[ "$download_url" == *"%"* ]] \
+        || { [[ ! "$download_url" =~ ^https://(github\.com|codeload\.github\.com)/${repo_re}/ ]] \
+             && [[ ! "$download_url" =~ ^https://api\.github\.com/repos/${repo_re}/ ]]; }; then
+        json_response "false" "Invalid download URL (must be from the ${GITHUB_REPO} GitHub repo)"
         return 1
     fi
 
@@ -1327,6 +1354,27 @@ usage() {
     echo ""
 }
 
+# Single-flight for the mutating commands. Two installs (or an install and
+# a rollback) share TEMP_DIR — the second's `rm -rf "$TEMP_DIR"` pulls the
+# first's download out from under it — and race the same rsync --delete over
+# the install tree. The web admin refuses a second job with 409; this lock
+# covers every other way in (a manual run over ssh, a retry script). Held on
+# fd 9 for the life of the script; the kernel drops it on any exit. The
+# lock file sits NEXT TO TEMP_DIR, not inside it, so the rm -rf above never
+# deletes it. Skipped where flock is absent (macOS dev / BATS on a Mac).
+acquire_update_lock() {
+    command -v flock >/dev/null 2>&1 || return 0
+    local lock="${TEMP_DIR%/}.lock"
+    if ! { exec 9>>"$lock"; } 2>/dev/null; then
+        log_warn "Cannot open $lock — continuing without the single-flight lock"
+        return 0
+    fi
+    if ! flock -n 9; then
+        json_response "false" "Another update or rollback is already running"
+        exit 1
+    fi
+}
+
 # Main command dispatcher
 case "${1:-}" in
     check)
@@ -1337,9 +1385,11 @@ case "${1:-}" in
             json_response "false" "Usage: $0 install <version> <download_url>"
             exit 1
         fi
+        acquire_update_lock
         install_update "$2" "$3"
         ;;
     rollback)
+        acquire_update_lock
         rollback
         ;;
     version)

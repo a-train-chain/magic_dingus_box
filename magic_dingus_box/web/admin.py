@@ -22,7 +22,9 @@ try:  # noqa: E402
         movies_drive_devices,
         protected_disk_names,
     )
+    from detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
 except ImportError:  # pragma: no cover - exercised by whichever form runs
+    from .detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
     from .storage_prepare import (
         PROTECTED_MOUNTPOINTS,
         eligible_devices,
@@ -248,6 +250,86 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text or "").strip()
 
 
+DEVICE_NAME_MAX = 64
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _clean_device_name(value) -> Optional[str]:
+    """The trimmed name if `value` is an acceptable device name, else None.
+
+    A display label shown on every Content Manager screen and in the mDNS
+    device list: a string, 1..DEVICE_NAME_MAX chars after trimming, no
+    control characters (a newline or NUL would break the one-line labels
+    and the JSON-lines tooling that greps this file)."""
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    if not name or len(name) > DEVICE_NAME_MAX or _CONTROL_CHARS_RE.search(name):
+        return None
+    return name
+
+
+def _device_info_problem(doc) -> Optional[str]:
+    """Why `doc` cannot be a device_info.json, or None if it can. It must be
+    a JSON object; device_name / device_id, when present, plain strings."""
+    if not isinstance(doc, dict):
+        return "device_info.json must be a JSON object"
+    if "device_name" in doc and _clean_device_name(doc["device_name"]) is None:
+        return f"device_name must be text of 1-{DEVICE_NAME_MAX} characters"
+    if "device_id" in doc and not (isinstance(doc["device_id"], str)
+                                   and 0 < len(doc["device_id"]) <= 128):
+        return "device_id must be a short string"
+    return None
+
+
+# OTA install inputs. See install_update() for why `version` is load-bearing.
+# re.ASCII + explicit [0-9]: the pattern must not admit non-ASCII digits.
+_OTA_VERSION_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", re.ASCII)
+# A release asset name: a plain filename. No "/", no "%" (so no encoded
+# separators or dot-segments), and it may not be "." or "..".
+_OTA_ASSET_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}", re.ASCII)
+
+
+def _ota_download_url_ok(url: str, repo: str, version: str) -> bool:
+    """True iff `url` is exactly one of the shapes a TAGGED v<version>
+    release of `repo` is served from. Anything else — another repo, another
+    tag, a branch archive, dot-segments, a query — is refused.
+
+    Accepted (all https, exact host, path compared verbatim — a path that
+    normalizes differently from how it is written is rejected outright):
+      github.com/<repo>/releases/download/v<ver>/<asset>   (release asset;
+                                     what `update.sh check` emits first)
+      api.github.com/repos/<repo>/tarball/v<ver>           (tarball_url
+                                     fallback of `update.sh check`)
+      codeload.github.com/<repo>/tar.gz/[refs/tags/]v<ver> (tarball_url's
+                                     redirect target)
+      github.com/<repo>/archive/refs/tags/v<ver>.tar.gz    (UI "Source code")
+    """
+    try:
+        parts = urlsplit(url)
+        if (parts.scheme != "https" or parts.query or parts.fragment
+                or parts.username is not None or parts.password is not None
+                or parts.port is not None):  # .port raises on a bad port
+            return False
+    except ValueError:
+        return False
+    path = parts.path
+    if not path or posixpath.normpath(path) != path:
+        return False
+    tag = f"v{version}"
+    host = parts.hostname or ""
+    if host == "github.com":
+        prefix = f"/{repo}/releases/download/{tag}/"
+        if path.startswith(prefix):
+            return bool(_OTA_ASSET_RE.fullmatch(path[len(prefix):]))
+        return path == f"/{repo}/archive/refs/tags/{tag}.tar.gz"
+    if host == "api.github.com":
+        return path == f"/repos/{repo}/tarball/{tag}"
+    if host == "codeload.github.com":
+        return path in (f"/{repo}/tar.gz/{tag}", f"/{repo}/tar.gz/refs/tags/{tag}")
+    return False
+
+
 def _has_internet(timeout: float = 3.0) -> bool:
     """Best-effort reachability probe, used ONLY to improve an error message.
 
@@ -337,10 +419,18 @@ def _media_browser_locked_response():
 # In production, consider using Redis or session storage
 _csrf_tokens: dict[str, float] = {}
 _CSRF_TOKEN_EXPIRY = 3600  # 1 hour
+# Bounded, and locked. GET /admin/csrf-token mints a token per call, so the
+# dict grew without limit for anything that looped it, and the cleanup
+# iterated it while request threads inserted ("dictionary changed size during
+# iteration" -> a 500 on a random request). A household holds a handful of
+# live tokens; at the cap the earliest-expiring (= oldest) are dropped, and
+# an operator whose token was evicted just reloads the page.
+_CSRF_TOKEN_MAX = 2048
+_csrf_lock = threading.Lock()
 
 
 def _cleanup_expired_tokens():
-    """Remove expired CSRF tokens."""
+    """Remove expired CSRF tokens. Caller holds _csrf_lock."""
     current_time = time.time()
     expired = [token for token, expiry in _csrf_tokens.items() if current_time > expiry]
     for token in expired:
@@ -349,9 +439,14 @@ def _cleanup_expired_tokens():
 
 def _generate_csrf_token() -> str:
     """Generate a new CSRF token."""
-    _cleanup_expired_tokens()
     token = secrets.token_urlsafe(32)
-    _csrf_tokens[token] = time.time() + _CSRF_TOKEN_EXPIRY
+    with _csrf_lock:
+        _cleanup_expired_tokens()
+        overflow = len(_csrf_tokens) - (_CSRF_TOKEN_MAX - 1)
+        if overflow > 0:
+            for old in sorted(_csrf_tokens, key=_csrf_tokens.get)[:overflow]:
+                del _csrf_tokens[old]
+        _csrf_tokens[token] = time.time() + _CSRF_TOKEN_EXPIRY
     return token
 
 
@@ -366,8 +461,9 @@ def _validate_csrf_token(token: str | None) -> bool:
     """
     if not token:
         return False
-    _cleanup_expired_tokens()
-    return token in _csrf_tokens
+    with _csrf_lock:
+        _cleanup_expired_tokens()
+        return token in _csrf_tokens
 
 
 def _derive_playlist_type(data: dict) -> str:
@@ -494,6 +590,39 @@ def _playlist_summary(path: Path) -> dict:
         "title": str(data.get("title") or path.stem),
         "item_count": len(items) if isinstance(items, list) else 0,
     }
+
+
+# Hard cap for the small text entries (playlist YAML, settings/device JSON,
+# manifest) read out of a backup or playlist-package ZIP. Real ones are a
+# few KB; 4 MB is ~1000x headroom. Without it, zf.read() allocated whatever
+# the archive declared — and deflate shrinks a run of spaces ~1000:1, so a
+# sub-MB upload could make the web service allocate gigabytes on a 1.5 GB
+# Pi 4B, where the OOM killer then picks the kiosk or the web service.
+_ZIP_TEXT_ENTRY_MAX = 4 * 1024 * 1024
+
+
+class _ZipEntryTooLarge(ValueError):
+    """A ZIP text entry exceeds _ZIP_TEXT_ENTRY_MAX."""
+
+
+def _read_zip_entry_capped(zf: "zipfile.ZipFile", name: str,
+                           cap: int = _ZIP_TEXT_ENTRY_MAX) -> bytes:
+    """Read one ZIP entry, refusing anything over `cap` bytes.
+
+    Two checks, because the first is the archive's own claim: the declared
+    (central-directory) size, which rejects an honest oversized entry before
+    any decompression; then a bounded read(cap + 1), so an archive that
+    under-declares can still never make us hold more than cap + 1 bytes.
+    """
+    info = zf.getinfo(name)
+    if info.file_size > cap:
+        raise _ZipEntryTooLarge(
+            f"{name} is too large ({info.file_size} bytes; limit {cap})")
+    with zf.open(info) as f:
+        data = f.read(cap + 1)
+    if len(data) > cap:
+        raise _ZipEntryTooLarge(f"{name} is too large (limit {cap} bytes)")
+    return data
 
 
 class _ExtractTooLarge(Exception):
@@ -1955,6 +2084,37 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "<name>.local, or http://dingus.box over USB).",
             status=403)
 
+    # Cross-site request defence — the half the Host check cannot cover.
+    # The allowlist must accept IP literals (the pairing QR and the Connect
+    # screen are the LAN IP), so any website could still make its visitor's
+    # browser hit http://<box-ip>:5000/...: spawn `update.sh check` and burn
+    # the GitHub rate limit shared by the whole household, mint CSRF tokens,
+    # or spend the pairing attempt budget with /?pair=000000. Browsers stamp
+    # every request with Sec-Fetch-Site and a page cannot forge it, so refuse
+    # 'cross-site'. Zero friction for real use:
+    #   * header absent  -> allowed (curl, Retro Ripper, Safari < 16.4)
+    #   * 'none'         -> allowed (camera-app QR scan, typed address,
+    #                       home-screen app launch, bookmark)
+    #   * same-origin / same-site -> allowed (the Content Manager itself)
+    #   * a cross-site TOP-LEVEL navigation to a page (a link in a router's
+    #     device list, a help article) still opens it — the user can see
+    #     it; only embedding (iframe), fetch/XHR, forms and subresources are
+    #     refused. One carrying a pairing code is bounced to the Connect
+    #     page (admin_interface) so the code is spent only by a tap there.
+    @app.before_request
+    def _check_fetch_site():  # type: ignore[no-redef]
+        if request.headers.get("Sec-Fetch-Site", "").lower() != "cross-site":
+            return None
+        if (request.method in ("GET", "HEAD")
+                and request.headers.get("Sec-Fetch-Mode", "").lower() == "navigate"
+                and request.headers.get("Sec-Fetch-Dest", "document").lower() == "document"):
+            return None
+        return error_response(
+            "CROSS_SITE_REQUEST",
+            "This request came from another website and was refused. Open "
+            "the Content Manager directly by the box's address.",
+            status=403)
+
     # Optional simple token auth for admin APIs (disabled by default)
     _admin_token = os.getenv("MAGIC_ADMIN_TOKEN")
     if _admin_token:
@@ -2047,9 +2207,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # last slice of the card is gone, not after.
     STORAGE_HEADROOM_BYTES = 512 * 1024 * 1024
 
-    # A staged ZIP and its extracted contents coexist on disk at the peak, and
-    # video barely compresses, so budget for two copies. Same for the transcode
-    # endpoints, which hold the uploaded original while ffmpeg writes the .part.
+    # Every multipart upload is spooled to the card by werkzeug (TMPDIR is
+    # the SD card) and that spool lives until the request ends, so EVERY
+    # upload route holds at least two copies at its peak:
+    #   import-package    spool + extracted media (the ZIP is read in place)
+    #   /admin/upload     spool + the staging copy that is renamed into place
+    #   transcode routes  spool + the saved original during the request, then
+    #                     the original + ffmpeg's .part until the encode ends
+    # Video barely compresses, so two copies of the request size it is.
     IMPORT_PEAK_MULTIPLIER = 2
 
     def _storage_precondition(needed_bytes: int):
@@ -2119,14 +2284,23 @@ def create_app(data_dir: Path, config=None) -> Flask:
     def get_device_info() -> dict:
         """Get device identity and stats."""
         try:
+            info = None
             if device_info_file.exists():
                 info = json.loads(device_info_file.read_text())
-            else:
+                # A wrong-shaped file (e.g. restored before restore checked
+                # the shape) must not 500 this endpoint forever — it is the
+                # first call the Content Manager makes to find the box. Fall
+                # back to defaults; a rename rewrites the file properly.
+                if not isinstance(info, dict):
+                    info = None
+                elif _clean_device_name(info.get('device_name')) is None:
+                    info['device_name'] = 'Magic Dingus Box'
+            if info is None:
                 info = {
                     'device_id': 'unknown',
                     'device_name': 'Magic Dingus Box'
                 }
-            
+
             # Add runtime info
             info['hostname'] = socket.gethostname()
             info['local_ip'] = get_local_ip()
@@ -2156,16 +2330,25 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def set_device_name():  # type: ignore[no-redef]
         """Set/update device name."""
-        data = request.get_json()
-        if not data:
-            return error_response("VALIDATION_ERROR", "JSON body required")
-        new_name = data.get('name', 'Magic Dingus Box')
+        data = request.get_json(silent=True)
+        if not data or not isinstance(data, dict):
+            return error_response("VALIDATION_ERROR", "JSON object body required")
+        new_name = _clean_device_name(data.get('name', 'Magic Dingus Box'))
+        if new_name is None:
+            return error_response(
+                "VALIDATION_ERROR",
+                f"Name must be text of 1-{DEVICE_NAME_MAX} characters")
 
         try:
+            info = None
             if device_info_file.exists():
-                info = json.loads(device_info_file.read_text())
-            else:
-                import uuid
+                try:
+                    info = json.loads(device_info_file.read_text())
+                except json.JSONDecodeError:
+                    info = None
+            if not isinstance(info, dict):
+                # Missing, corrupt, or wrong-shaped: start a fresh record
+                # (this is also how a bad restored file gets healed).
                 info = {'device_id': str(uuid.uuid4())}
 
             info['device_name'] = new_name
@@ -2372,7 +2555,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 manifest = None
                 if "manifest.json" in names:
                     try:
-                        manifest_data = zf.read("manifest.json")
+                        manifest_data = _read_zip_entry_capped(zf, "manifest.json")
                         manifest = json.loads(manifest_data.decode('utf-8'))
                     except Exception as e:
                         errors.append(f"Could not read manifest: {e}")
@@ -2393,7 +2576,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                             continue
 
                         try:
-                            content = zf.read(name)
+                            content = _read_zip_entry_capped(zf, name)
                             # Validate it's valid YAML
                             restored_doc = yaml.safe_load(content.decode('utf-8'))
                             bad = _invalid_emulator_core(restored_doc)
@@ -2420,9 +2603,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 # Restore settings
                 if "config/settings.json" in names:
                     try:
-                        content = zf.read("config/settings.json")
-                        # Validate it's valid JSON
-                        json.loads(content.decode('utf-8'))
+                        content = _read_zip_entry_capped(zf, "config/settings.json")
+                        # Valid JSON AND an object: the kiosk reads this file
+                        # as a JSON object; a list or scalar is not settings.
+                        if not isinstance(json.loads(content.decode('utf-8')), dict):
+                            raise ValueError("settings.json must be a JSON object")
 
                         settings_dest = kiosk_config_dir / "settings.json"
                         # Atomic + fsync'd — a torn settings.json reads as
@@ -2442,9 +2627,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 # Restore device info
                 if "data/device_info.json" in names:
                     try:
-                        content = zf.read("data/device_info.json")
-                        # Validate it's valid JSON
-                        json.loads(content.decode('utf-8'))
+                        content = _read_zip_entry_capped(zf, "data/device_info.json")
+                        # Valid JSON is not enough: a list or a string here
+                        # used to 500 /admin/device/info forever after.
+                        problem = _device_info_problem(
+                            json.loads(content.decode('utf-8')))
+                        if problem:
+                            raise ValueError(problem)
 
                         _atomic_write_text(device_info_file, content.decode("utf-8"))
                         restored["device_info"] = True
@@ -2913,7 +3102,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # Reading request.files makes werkzeug spool the whole multipart body
         # onto the SD card, so any validation placed above this line has
         # already spent the space we are trying to protect. Budget two copies:
-        # the staged ZIP and the extracted media coexist at the peak.
+        # werkzeug's spool of the ZIP and the extracted media coexist at the
+        # peak. (That is only true because the ZIP is opened straight from
+        # the spool below — it used to be copied a second time first.)
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
@@ -2936,24 +3127,27 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
             overwrite = request.args.get('overwrite', 'false').lower() == 'true'
 
-            # Hybrid Upload Handling
-            # < 100MB: RAM for speed
-            # >= 100MB or Unknown: Disk for safety
-            
-            RAM_LIMIT = 100 * 1024 * 1024  # 100MB
-            content_length = request.content_length or 0
+            # Open the ZIP straight from werkzeug's upload spool. It is
+            # already a complete, seekable copy of the upload (on the card
+            # once past 500 KB), and it lives until the request ends anyway.
+            # The old "hybrid" handling made a SECOND full copy first —
+            # file.save() to a mkstemp at >=100 MB (three copies on the card
+            # at the peak against a two-copy space budget), or the whole
+            # upload read() into RAM below 100 MB (up to 100 MB of heap on a
+            # 1.5 GB Pi 4B). The staged-copy path survives only as a
+            # fallback for a stream zipfile cannot seek.
             temp_path = None
-            
+
             try:
-                # Use RAM only if we know the size is safe
-                if content_length > 0 and content_length < RAM_LIMIT:
-                    # Small file: Load into RAM
-                    print(f"Upload size {content_length}: Processing in RAM", file=sys.stderr)
-                    source = io.BytesIO(file.read())
-                    zf = zipfile.ZipFile(source, 'r')
-                else:
-                    # Large file: Stream to Disk
-                    print(f"Upload size {content_length}: Processing on Disk", file=sys.stderr)
+                zf = None
+                stream = file.stream
+                if hasattr(stream, "seek") and hasattr(stream, "tell"):
+                    try:
+                        stream.seek(0)
+                        zf = zipfile.ZipFile(stream, 'r')
+                    except (io.UnsupportedOperation, AttributeError, OSError):
+                        zf = None
+                if zf is None:
                     fd, temp_path = tempfile.mkstemp(suffix='.zip')
                     os.close(fd)
                     file.save(temp_path)
@@ -2979,9 +3173,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
                     # Parse playlist YAML
                     try:
-                        with zf.open(playlist_file) as pf:
-                            yaml_content = pf.read().decode('utf-8')
-                            playlist_data = yaml.safe_load(yaml_content)
+                        # Capped: see _ZIP_TEXT_ENTRY_MAX.
+                        yaml_content = _read_zip_entry_capped(
+                            zf, playlist_file).decode('utf-8')
+                        playlist_data = yaml.safe_load(yaml_content)
+                    except _ZipEntryTooLarge:
+                        return error_response(
+                            "VALIDATION_ERROR",
+                            "playlist.yaml is too large to be a playlist "
+                            f"(limit {_ZIP_TEXT_ENTRY_MAX // (1024 * 1024)} MB)")
                     except UnicodeDecodeError:
                         return error_response("VALIDATION_ERROR", "playlist.yaml must be valid UTF-8")
                     except yaml.YAMLError as e:
@@ -3393,9 +3593,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
     def upload_media():  # type: ignore[no-redef]
         """Upload video file."""
         # Ahead of request.files for the reason given in _storage_precondition:
-        # touching it spools the body to the card. One copy here — the staged
-        # temp file is renamed into place, never duplicated.
-        _no_space = _storage_precondition(request.content_length or 0)
+        # touching it spools the body to the card. TWO copies here, not one:
+        # werkzeug's spool lives until the request ends, and
+        # _staged_save_upload copies it into a staging file beside the target
+        # before the rename (the rename itself duplicates nothing).
+        _no_space = _storage_precondition(
+            (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
             return _no_space
 
@@ -3498,6 +3701,34 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # Store for tracking transcoding jobs (in-memory, cleared on restart)
     transcode_jobs: dict = {}
 
+    # Output-name reservations for in-flight uploads. A transcode's output
+    # only appears at its final os.replace — minutes after the request chose
+    # the name — so "pick the first name that doesn't exist() yet" let two
+    # uploads of the same file (two phones, a double-submit, or a second job
+    # queued behind the encoder semaphore) both choose clip.mp4: the second
+    # publish silently replaced the first video. A name is free only if it
+    # is neither on disk NOR held by a job still running; check-and-reserve
+    # happens under one lock. In-memory is enough: a restart kills every
+    # in-flight encode, and nothing on disk is ever a placeholder, so the
+    # kiosk and the library listing only ever see finished videos.
+    _media_name_lock = threading.Lock()
+    _reserved_media_names: set = set()
+
+    def _reserve_media_output(preferred_name: str) -> Path:
+        """Reserve media_dir/<preferred_name> or the first free <stem>_N.mp4."""
+        base = Path(preferred_name).stem
+        with _media_name_lock:
+            name, counter = preferred_name, 1
+            while name in _reserved_media_names or (media_dir / name).exists():
+                name = f"{base}_{counter}.mp4"
+                counter += 1
+            _reserved_media_names.add(name)
+        return media_dir / name
+
+    def _release_media_output(path: Path) -> None:
+        with _media_name_lock:
+            _reserved_media_names.discard(path.name)
+
 
     def _detect_pi_model() -> str:
         """Return 'pi5', 'pi4', or 'unknown' from the device-tree model.
@@ -3566,7 +3797,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         ISO-8601 contract). Jobs without `_pruner_ts` are kept forever — by
         design, since adding the field is opt-in at each call site."""
         cutoff = time.time() - _JOB_RETENTION_SECONDS
-        terminal_states = {"complete", "completed", "error", "failed", "cancelled", "canceled"}
+        terminal_states = {"complete", "completed", "success", "error", "failed", "cancelled", "canceled"}
         stale = []
         for jid, job in jobs_dict.items():
             if not isinstance(job, dict):
@@ -3665,7 +3896,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # of every *.mp4 glob; same-directory staging guarantees os.replace
         # is an atomic same-filesystem rename wherever media_dir lives.
         # Crashed leftovers are swept at startup alongside upload_temp.
-        staging_path = output_path.with_name(output_path.name + ".part")
+        # The job id in the staging name keeps two encoders from ever sharing
+        # one .part (one's error path used to unlink the other's encode);
+        # the name still ends in .part, so the sweep and globs are unchanged.
+        staging_path = output_path.with_name(
+            f"{output_path.name}.{job_id.replace('-', '')[:12]}.part")
 
         # Build FFmpeg command with the framing filter resolved above
         # (crop = fill the frame, fit = whole frame + black bars).
@@ -3830,13 +4065,17 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 except Exception:
                     pass
             _TRANSCODE_SEMAPHORE.release()
+            # After the publish (if any): from here the name is protected by
+            # the file existing, or free again because the encode failed.
+            _release_media_output(output_path)
 
     @app.post("/admin/upload-and-transcode")
     @require_csrf
     def upload_and_transcode():  # type: ignore[no-redef]
         """Upload video file and transcode it on the Pi."""
-        # Two copies: the uploaded original sits in upload_temp for the whole
-        # job while ffmpeg writes the .mp4.part next to the media library.
+        # Two copies: werkzeug's spool + the saved original during the
+        # request; then the original sits in upload_temp for the whole job
+        # while ffmpeg writes the .part next to the media library.
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
@@ -3871,18 +4110,18 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         # Save to temp location
         temp_input = upload_temp_dir / f"transcode_input_{job_id}_{original_name}"
-        output_name = Path(original_name).stem + ".mp4"
-        output_path = media_dir / output_name
 
-        # Ensure unique output filename
-        counter = 1
-        while output_path.exists():
-            output_name = f"{Path(original_name).stem}_{counter}.mp4"
-            output_path = media_dir / output_name
-            counter += 1
+        # Unique output filename — reserved against in-flight jobs too, not
+        # just files already on disk (see _reserve_media_output).
+        output_path = _reserve_media_output(Path(original_name).stem + ".mp4")
+        output_name = output_path.name
 
         # Save uploaded file
-        f.save(str(temp_input))
+        try:
+            f.save(str(temp_input))
+        except BaseException:
+            _release_media_output(output_path)
+            raise
 
         # Initialize job (prune stale terminal-state entries first)
         _prune_terminal_jobs(transcode_jobs)
@@ -3911,9 +4150,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     @app.get("/admin/transcode-status/<job_id>")
     def transcode_status(job_id):  # type: ignore[no-redef]
-        """Get status of a transcoding job."""
+        """Get status of a transcoding job.
+
+        Jobs are in-memory on purpose: the ffmpeg encode runs inside this
+        service and dies with it (and its .part is swept at startup), so a
+        job cannot outlive a restart. The 404 is therefore final, and says
+        so — manager.js turns it into "upload it again" rather than polling.
+        """
         if job_id not in transcode_jobs:
-            return error_response("NOT_FOUND", "Job not found", status=404)
+            return error_response(
+                "NOT_FOUND",
+                "Job not found — the box may have restarted while converting. "
+                "Please upload the file again.",
+                status=404)
 
         job = transcode_jobs[job_id]
         return success_response(data={
@@ -4012,8 +4261,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def smart_upload():  # type: ignore[no-redef]
         """Smart upload: probe video and decide whether to transcode or direct upload."""
-        # Probe first, so worst case is the same two copies as
-        # upload_and_transcode; the direct-move branch only needs one.
+        # Two copies on every branch: werkzeug's spool + the probe copy during
+        # the request, then the original + ffmpeg's .part if it transcodes
+        # (the direct branch renames the probe copy, adding nothing).
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
@@ -4070,19 +4320,17 @@ def create_app(data_dir: Path, config=None) -> Flask:
             # If original is already .mp4, keep it
             if original_name.lower().endswith('.mp4'):
                 output_name = original_name
-            output_path = media_dir / output_name
-
-            # Ensure unique filename
-            counter = 1
-            base_name = Path(output_name).stem
-            while output_path.exists():
-                output_name = f"{base_name}_{counter}.mp4"
-                output_path = media_dir / output_name
-                counter += 1
+            # Unique filename — reserved against in-flight transcodes too
+            # (see _reserve_media_output); released once the move has
+            # published it, after which the file itself holds the name.
+            output_path = _reserve_media_output(output_name)
+            output_name = output_path.name
 
             # Move file to media folder
-            import shutil
-            shutil.move(str(temp_input), str(output_path))
+            try:
+                shutil.move(str(temp_input), str(output_path))
+            finally:
+                _release_media_output(output_path)
 
             return success_response(data={
                 'action': 'direct',
@@ -4093,16 +4341,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
             }, message="File uploaded directly (already compatible)")
 
         else:
-            # Needs transcoding - start transcode job
-            output_name = Path(original_name).stem + ".mp4"
-            output_path = media_dir / output_name
-
-            # Ensure unique output filename
-            counter = 1
-            while output_path.exists():
-                output_name = f"{Path(original_name).stem}_{counter}.mp4"
-                output_path = media_dir / output_name
-                counter += 1
+            # Needs transcoding - start transcode job. Unique output name,
+            # reserved until the job finishes (see _reserve_media_output).
+            output_path = _reserve_media_output(Path(original_name).stem + ".mp4")
+            output_name = output_path.name
 
             # Initialize job (prune stale terminal-state entries first)
             _prune_terminal_jobs(transcode_jobs)
@@ -4176,7 +4418,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def upload_rom(system):  # type: ignore[no-redef]
         """Upload ROM for specific system."""
-        _no_space = _storage_precondition(request.content_length or 0)
+        # Spool + staging copy: two copies, exactly as for /admin/upload.
+        _no_space = _storage_precondition(
+            (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
             return _no_space
 
@@ -4268,8 +4512,71 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # update.sh is at /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/update.sh
     UPDATE_SCRIPT = data_dir.parent / "scripts" / "update.sh"
 
-    # Store for tracking update jobs (in-memory, cleared on restart)
+    # Parse-state cache for update jobs. NOT the source of truth: the job
+    # itself runs detached (detached_jobs.py — its own systemd unit on the
+    # Pi, so a magic-dingus-web restart no longer kills an OTA mid-rsync)
+    # and its progress is re-derived from its on-disk log. A Flask that
+    # restarted mid-job rebuilds this entry from offset 0 on the first poll.
     update_jobs: dict = {}
+    _update_jobs_lock = threading.Lock()
+
+    # OTA install/rollback and Media Browser setup: launched detached, state
+    # on disk outside the install tree (see detached_jobs.default_state_dir).
+    # The launcher is resolved per launch: a test app never spawns systemd
+    # units even on a CI runner that has systemd-run + passwordless sudo.
+    detached = DetachedJobs(
+        _default_job_state_dir(data_dir),
+        mode_resolver=lambda: "popen" if app.testing else "auto")
+
+    # One maintenance job at a time, ACROSS kinds. Two OTAs share update.sh's
+    # TEMP_DIR (/tmp/magic_update — the second's `rm -rf` pulls the first's
+    # download out from under it) and race the same rsync --delete; an OTA
+    # and a Media Browser setup both restart services and rewrite files the
+    # other reads. The lock only serialises check-and-launch inside this
+    # process; "is one running" is answered from disk + liveness, so it also
+    # holds across a Flask restart. update.sh flocks as well, for runs that
+    # don't come through here.
+    _MAINTENANCE_KINDS = ("ota-install", "ota-rollback", "mb-setup")
+    _MAINTENANCE_LABELS = {
+        "ota-install": "A software update",
+        "ota-rollback": "A rollback",
+        "mb-setup": "Media Browser setup",
+    }
+    _maintenance_launch_lock = threading.Lock()
+
+    def _maintenance_busy_response(running_kind=None):
+        label = _MAINTENANCE_LABELS.get(running_kind, "Another maintenance task")
+        resp, status = error_response(
+            "JOB_ALREADY_RUNNING",
+            f"{label} is already running on this box. Wait for it to "
+            "finish, then try again.",
+            status=409)
+        resp.headers["Retry-After"] = "30"
+        return resp, status
+
+    def _maintenance_precheck():
+        """409 response if a maintenance job is running, else None. For
+        routes that must refuse BEFORE side effects (Media Browser setup
+        rewrites services/.env, which a running setup is reading)."""
+        running = detached.active(_MAINTENANCE_KINDS)
+        return _maintenance_busy_response(running[1]) if running else None
+
+    def _launch_maintenance_job(kind: str, argv: list, **kwargs):
+        """Return (job_id, None), or (None, error_response) when another
+        maintenance job is running (409) or the launch failed (500)."""
+        if not _maintenance_launch_lock.acquire(blocking=False):
+            return None, _maintenance_busy_response()
+        try:
+            running = detached.active(_MAINTENANCE_KINDS)
+            if running:
+                return None, _maintenance_busy_response(running[1])
+            try:
+                return detached.launch(kind, argv, **kwargs), None
+            except (OSError, ValueError) as e:
+                return None, error_response(
+                    "INTERNAL_ERROR", f"Could not start the job: {e}", status=500)
+        finally:
+            _maintenance_launch_lock.release()
 
     # One Network Doctor run at a time. Each run is a ~20-45 s probe ladder
     # (curl, DNS, ping) and every GET used to spawn its own — a few open tabs,
@@ -4354,6 +4661,29 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "device_name": get_device_info().get("device_name", "Unknown")
         })
 
+    # `update.sh check` is a GitHub API call (60/hour unauthenticated, per
+    # public IP — shared by every box behind the same router) plus a process
+    # spawn, and the endpoint is a plain GET: a few open tabs, the Settings
+    # tab's post-update verify loop, or a hostile web page making the
+    # browser hit http://<box-ip>:5000/admin/update/check in a loop each
+    # spawned its own. One check at a time; concurrent callers wait for it
+    # and share its answer; a SUCCESSFUL answer is reused briefly. Every
+    # install/rollback start and finish drops the cache, so the verify loop
+    # never sees a pre-update current_version (and both end with a web
+    # restart, which empties it anyway).
+    UPDATE_CHECK_CACHE_SECONDS = 30
+    _update_check_lock = threading.Lock()
+    _update_check_cache: dict = {"ts": 0.0, "body": None}
+
+    def _invalidate_update_check_cache() -> None:
+        _update_check_cache["body"] = None
+
+    def _cached_update_check():
+        body = _update_check_cache["body"]
+        if body is not None and time.monotonic() - _update_check_cache["ts"] < UPDATE_CHECK_CACHE_SECONDS:
+            return jsonify(body), 200
+        return None
+
     @app.get("/admin/update/check")
     def check_for_update():  # type: ignore[no-redef]
         """Check if an update is available from GitHub."""
@@ -4363,7 +4693,22 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 "Update script not found. Run deploy with --build first.",
                 status=500
             )
+        if (cached := _cached_update_check()) is not None:
+            return cached
+        if not _update_check_lock.acquire(timeout=75):
+            resp, status = error_response(
+                "BUSY", "An update check is already running — try again in a moment.",
+                status=429)
+            resp.headers["Retry-After"] = "10"
+            return resp, status
+        try:
+            if (cached := _cached_update_check()) is not None:
+                return cached
+            return _run_update_check()
+        finally:
+            _update_check_lock.release()
 
+    def _run_update_check():
         try:
             result = subprocess.run(
                 [str(UPDATE_SCRIPT), "check"],
@@ -4375,6 +4720,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
             if result.returncode == 0:
                 # Parse JSON output from update script
                 response_data = json.loads(result.stdout)
+                _update_check_cache["body"] = response_data
+                _update_check_cache["ts"] = time.monotonic()
                 return jsonify(response_data), 200
             else:
                 error_msg = strip_ansi(result.stderr) or strip_ansi(result.stdout) or "Unknown error"
@@ -4393,64 +4740,81 @@ def create_app(data_dir: Path, config=None) -> Flask:
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
 
-    def run_update_job(job_id: str, version: str, download_url: str):
-        """Background thread function to run the update installation."""
-        job = update_jobs[job_id]
+    def _new_update_job_view(version: Optional[str]) -> dict:
+        return {
+            'status': 'running',
+            'stage': 'preparing',
+            'progress': 0,
+            'message': 'Starting update...',
+            'version': version,
+            'new_version': None,
+            '_cursor': 0,
+            '_recent': collections.deque(maxlen=20),
+            '_pruner_ts': time.time(),
+        }
 
-        recent_lines: "collections.deque[str]" = collections.deque(maxlen=20)
-        try:
-            # Run update script with install command.
-            # stderr is MERGED into stdout (not a separate pipe): the progress
-            # parser below already ignores any non-JSON line, so mixing the
-            # script's stderr in is harmless — and it removes the classic
-            # dual-pipe deadlock where a chatty stderr fills its 64KB buffer,
-            # blocks the script's write(), and hangs our stdout read forever.
-            # Use start_new_session=True so the process survives web restart.
-            process = subprocess.Popen(
-                [str(UPDATE_SCRIPT), "install", version, download_url],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,  # Line buffered
-                start_new_session=True  # Detach from parent process group
-            )
+    def _refresh_update_job(job_id: str, job: dict) -> None:
+        """Advance `job` with whatever the detached update.sh has written
+        since the last poll (its stdout+stderr, merged, in the job log).
 
-            # Read progress output line by line
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    # Stripped at CAPTURE time: on failure this deque becomes
-                    # job['message'], which the Settings tab renders verbatim
-                    # — the same raw-ANSI-in-the-red-box leak the check
-                    # endpoint already fixed with strip_ansi. The JSON parse
-                    # below is unaffected (progress lines carry no colour).
-                    recent_lines.append(strip_ansi(line))
-                    try:
-                        progress_data = json.loads(line)
-                        job['stage'] = progress_data.get('stage', job['stage'])
-                        job['progress'] = progress_data.get('progress', job['progress'])
-                        job['message'] = progress_data.get('message', job['message'])
-
-                        if progress_data.get('stage') == 'complete':
-                            job['status'] = 'complete'
-                            job['new_version'] = progress_data.get('new_version', version)
-                        elif not progress_data.get('ok', True):
-                            job['status'] = 'error'
-                            job['message'] = progress_data.get('error', {}).get('message', 'Unknown error')
-                    except json.JSONDecodeError:
-                        # Non-JSON output, ignore
-                        pass
-
-            process.wait()
-
-            if process.returncode != 0 and job['status'] != 'complete':
-                tail = "\n".join(recent_lines)
+        Merged is fine: the parser ignores any non-JSON line, exactly as the
+        old in-process pipe reader did. Driven by status polls rather than a
+        reader thread, so there is nothing to lose on a Flask restart — a
+        fresh process just re-parses from byte 0.
+        """
+        if job['status'] in ('complete', 'error') and job.get('_finished'):
+            return
+        result = detached.read(job_id, job['_cursor'])
+        if result is None:
+            return
+        lines, job['_cursor'], state, rc = result
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Stripped at CAPTURE time: on failure this deque becomes
+            # job['message'], which the Settings tab renders verbatim — the
+            # same raw-ANSI-in-the-red-box leak the check endpoint already
+            # fixed with strip_ansi. The JSON parse below is unaffected
+            # (progress lines carry no colour).
+            job['_recent'].append(strip_ansi(line))
+            try:
+                progress_data = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # Non-JSON output, ignore
+            if not isinstance(progress_data, dict):
+                continue
+            job['stage'] = progress_data.get('stage', job['stage'])
+            job['progress'] = progress_data.get('progress', job['progress'])
+            job['message'] = progress_data.get('message', job['message'])
+            if progress_data.get('stage') == 'complete':
+                job['status'] = 'complete'
+                job['new_version'] = progress_data.get('new_version', job.get('version'))
+            elif not progress_data.get('ok', True):
                 job['status'] = 'error'
-                job['message'] = tail[-500:] if tail else 'Update failed'
+                err = progress_data.get('error')
+                job['message'] = (err.get('message', 'Unknown error')
+                                  if isinstance(err, dict) else 'Unknown error')
 
-        except Exception as e:
+        if state == 'running':
+            return
+        job['_finished'] = True
+        job['_pruner_ts'] = time.time()
+        _invalidate_update_check_cache()  # VERSION may have just changed
+        if job['status'] == 'complete':
+            return
+        tail = "\n".join(job['_recent'])
+        if state == 'lost':
             job['status'] = 'error'
-            job['message'] = str(e)
+            job['message'] = ("The update process stopped unexpectedly (was the "
+                              "box restarted?). Check the version shown here, "
+                              "then retry the update or roll back."
+                              + (f"\n\n{tail[-400:]}" if tail else ""))
+        elif job['status'] != 'error':
+            job['status'] = 'error'
+            job['message'] = (tail[-500:] if tail and rc != 0
+                              else 'Update failed' if rc != 0
+                              else 'Update ended without confirming completion')
 
     @app.post("/admin/update/install")
     @require_csrf
@@ -4473,6 +4837,22 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if not version or not download_url:
             return error_response("VALIDATION_ERROR", "version and download_url required")
 
+        # `version` is NOT an inert label. update.sh interpolates it into
+        # https://api.github.com/repos/<repo>/releases/tags/v${version} to
+        # find the pre-compiled binary, and curl normalizes dot-segments —
+        # so "1.0.8/../../../../attacker/evil/releases/tags/v1" fetched ANOTHER
+        # repo's release metadata and installed ITS binary, while the
+        # download_url below stayed a perfectly valid asset of our own repo.
+        # It is also written verbatim into VERSION. Plain X.Y.Z only (what
+        # `update.sh check` emits as latest_version). [0-9], not \d: Python's
+        # \d matches every Unicode digit; fullmatch, not `$`, which would
+        # accept a trailing newline. update.sh re-checks this independently.
+        if not isinstance(version, str) or not _OTA_VERSION_RE.fullmatch(version):
+            return error_response(
+                "VALIDATION_ERROR", "Invalid version (expected X.Y.Z)")
+        if not isinstance(download_url, str):
+            return error_response("VALIDATION_ERROR", "Invalid download URL")
+
         # Validate the download URL. Pin it to THIS PROJECT's own repo, not
         # just "any github.com URL" — the old prefix check let any device on
         # the LAN POST a download_url pointing at an attacker-owned GitHub
@@ -4483,60 +4863,51 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # A plain string startswith() is NOT enough: curl (which update.sh
         # uses with -L) normalizes RFC-3986 dot-segments before the request,
         # so ".../a-train-chain/magic_dingus_box/../../attacker/repo/x.tar.gz"
-        # would pass a prefix check yet fetch attacker/repo. Parse the URL and
-        # compare the NORMALIZED path segments (same defense the _is_within
-        # filesystem check uses), and match the host exactly.
+        # would pass a prefix check yet fetch attacker/repo. And "anything
+        # under the repo" was still too loose: it accepted a branch archive
+        # or a DIFFERENT tag than `version`, so VERSION could claim one
+        # release while another was installed. The URL must now be exactly
+        # one of the shapes a tagged release of THIS version produces
+        # (`update.sh check` emits the release-asset form, or the API
+        # tarball_url as its fallback), with no dot-segments, query or
+        # fragment, and an asset name drawn from a plain-filename alphabet so
+        # percent-encoded separators (%2F, %2e) cannot ride along.
         gh_repo = os.getenv("MAGIC_GITHUB_REPO", "a-train-chain/magic_dingus_box")
-        # host → required leading path (normalized, no trailing slash yet)
-        host_prefix = {
-            "github.com":         f"/{gh_repo}",
-            "codeload.github.com": f"/{gh_repo}",
-            "api.github.com":     f"/repos/{gh_repo}",
-        }
-        parts = urlsplit(download_url)
-        norm_path = posixpath.normpath(parts.path) if parts.path else ""
-        expected = host_prefix.get(parts.netloc)
-        url_ok = (
-            parts.scheme == "https"
-            and expected is not None
-            # exact repo dir or a descendant path, post-normalization
-            and (norm_path == expected or norm_path.startswith(expected + "/"))
-        )
-        if not url_ok:
+        if not _ota_download_url_ok(download_url, gh_repo, version):
             return error_response(
                 "VALIDATION_ERROR",
-                f"Invalid download URL (must be from the {gh_repo} GitHub repo)")
+                f"Invalid download URL (must be the v{version} release of "
+                f"the {gh_repo} GitHub repo)")
 
-        # Create job (prune stale terminal-state entries first)
+        # Launch detached (prune stale terminal-state entries first). The
+        # job's id is the detached job's id, so a restarted Flask can find it.
         _prune_terminal_jobs(update_jobs)
-        job_id = str(uuid.uuid4())
-        update_jobs[job_id] = {
-            'status': 'running',
-            'stage': 'preparing',
-            'progress': 0,
-            'message': 'Starting update...',
-            'version': version,
-            'new_version': None,
-            '_pruner_ts': time.time(),
-        }
-
-        # Start update in background thread
-        thread = threading.Thread(
-            target=run_update_job,
-            args=(job_id, version, download_url)
-        )
-        thread.daemon = True
-        thread.start()
+        job_id, err = _launch_maintenance_job(
+            "ota-install", [str(UPDATE_SCRIPT), "install", version, download_url])
+        if err:
+            return err
+        update_jobs[job_id] = _new_update_job_view(version)
+        _invalidate_update_check_cache()
 
         return success_response(data={'job_id': job_id}, message="Update started")
 
     @app.get("/admin/update/status/<job_id>")
     def update_status(job_id):  # type: ignore[no-redef]
-        """Get status of an update job."""
-        if job_id not in update_jobs:
-            return error_response("NOT_FOUND", "Job not found", status=404)
+        """Get status of an update job.
 
-        job = update_jobs[job_id]
+        Answered from the job's on-disk log, so it keeps working after the
+        web service restarts mid-update (the job itself is unaffected — it
+        runs in its own systemd unit). Still 404 for an id we have no record
+        of; the Settings tab treats that as "restarted, verify the version".
+        """
+        job = update_jobs.get(job_id)
+        if job is None:
+            meta = detached.meta(job_id)
+            if not meta or meta.get('kind') != 'ota-install':
+                return error_response("NOT_FOUND", "Job not found", status=404)
+            job = update_jobs.setdefault(job_id, _new_update_job_view(None))
+        with _update_jobs_lock:  # concurrent pollers must not split the cursor
+            _refresh_update_job(job_id, job)
         return success_response(data={
             'status': job['status'],
             'stage': job['stage'],
@@ -4556,32 +4927,59 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 status=500
             )
 
+        # The rollback runs DETACHED (own systemd unit — see detached_jobs.py)
+        # and this request waits on its log. The response contract is
+        # unchanged (synchronous JSON); what changed is that the rollback no
+        # longer dies with us: update.sh restarts magic-dingus-web as its
+        # last act, and anything else restarting the unit mid-rsync used to
+        # kill a half-restored install along with this request.
+        job_id, err = _launch_maintenance_job("ota-rollback", [str(UPDATE_SCRIPT), "rollback"])
+        if err:
+            return err
+        _invalidate_update_check_cache()
+
+        deadline = time.monotonic() + 180  # 3 minute timeout for rollback
+        cursor, lines, state, rc = 0, [], "running", None
         try:
-            result = subprocess.run(
-                [str(UPDATE_SCRIPT), "rollback"],
-                capture_output=True,
-                text=True,
-                timeout=180  # 3 minute timeout for rollback
-            )
-
-            if result.returncode == 0:
-                # Parse the last JSON line of output (completion message)
-                lines = [l for l in result.stdout.strip().split('\n') if l.strip()]
-                if lines:
-                    try:
-                        response_data = json.loads(lines[-1])
-                        return jsonify(response_data), 200
-                    except json.JSONDecodeError:
-                        pass
-                return success_response(message="Rollback completed")
-            else:
-                error_msg = strip_ansi(result.stderr) or "Rollback failed"
-                return error_response("ROLLBACK_FAILED", error_msg, status=500)
-
-        except subprocess.TimeoutExpired:
-            return error_response("TIMEOUT", "Rollback timed out", status=504)
+            while True:
+                result = detached.read(job_id, cursor)
+                if result is None:
+                    return error_response("INTERNAL_ERROR", "Rollback job vanished", status=500)
+                new, cursor, state, rc = result
+                lines += new
+                if state != "running":
+                    break
+                if time.monotonic() > deadline:
+                    # The job carries on in its own unit; only our wait ends.
+                    return error_response("TIMEOUT", "Rollback timed out", status=504)
+                time.sleep(0.25)
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
+        finally:
+            _invalidate_update_check_cache()
+
+        json_lines = []
+        for l in lines:
+            l = l.strip()
+            if l.startswith("{"):
+                try:
+                    parsed = json.loads(l)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    json_lines.append(parsed)
+
+        if state == "exited" and rc == 0:
+            # The last JSON line of output is the completion message.
+            if json_lines:
+                return jsonify(json_lines[-1]), 200
+            return success_response(message="Rollback completed")
+
+        err_obj = json_lines[-1].get("error") if json_lines else None
+        error_msg = (err_obj.get("message") if isinstance(err_obj, dict) else None) \
+            or strip_ansi("\n".join(l for l in lines if not l.startswith("{"))[-500:]) \
+            or ("Rollback process stopped unexpectedly" if state == "lost" else "Rollback failed")
+        return error_response("ROLLBACK_FAILED", error_msg, status=500)
 
     # ===== MEDIA BROWSER (RADARR/PROWLARR/QBIT/GLUETUN) SETUP =====
     #
@@ -4980,34 +5378,48 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "vpn_country": vpn["vpn_country"],
         })
 
-    def _run_media_browser_setup_job(job_id: str):
-        """Background thread: stream setup_services.sh output into the job buffer."""
-        job = media_browser_jobs[job_id]
-        try:
-            process = subprocess.Popen(
-                ["sudo", "-n", str(SETUP_SERVICES_SCRIPT)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                start_new_session=True,
-            )
-            job["process"] = process
+    _mb_jobs_lock = threading.Lock()
 
-            for line in process.stdout:
-                line = line.rstrip("\n")
-                buf = job["log"]
-                buf.append(line)
-                if len(buf) > _MB_LOG_BUFFER_LIMIT:
-                    del buf[: len(buf) - _MB_LOG_BUFFER_LIMIT]
+    def _new_mb_job_view(started_ts: float) -> dict:
+        return {
+            "status": "running",
+            "exit_code": None,
+            "log": [],
+            "started_at": datetime.fromtimestamp(started_ts).isoformat(),
+            "started_ts": started_ts,
+            "_cursor": 0,
+            "_pruner_ts": time.time(),
+        }
 
-            process.wait()
-            job["exit_code"] = process.returncode
-            job["status"] = "success" if process.returncode == 0 else "failed"
-        except Exception as e:
-            job["log"].append(f"[admin.py] setup job crashed: {e}")
-            job["status"] = "failed"
+    def _refresh_media_browser_job(job_id: str, job: dict) -> None:
+        """Pull setup_services.sh's new output from the detached job's log.
+
+        setup_services.sh runs as its own systemd unit (detached_jobs.py):
+        it restarts magic-dingus-web itself (Step: uinput group), which under
+        KillMode=control-group used to kill the script that issued the
+        restart, mid-provisioning. Status is re-derived from the log, so a
+        restarted Flask resumes reporting where the old one stopped.
+        """
+        if job["status"] != "running":
+            return
+        result = detached.read(job_id, job["_cursor"])
+        if result is None:
+            return
+        lines, job["_cursor"], state, rc = result
+        buf = job["log"]
+        buf.extend(lines)
+        if len(buf) > _MB_LOG_BUFFER_LIMIT:
+            del buf[: len(buf) - _MB_LOG_BUFFER_LIMIT]
+        if state == "exited":
+            job["exit_code"] = rc
+            job["status"] = "success" if rc == 0 else "failed"
+        elif state == "lost":
+            buf.append("[admin.py] setup process stopped unexpectedly — "
+                       "safe to run setup again")
             job["exit_code"] = -1
+            job["status"] = "failed"
+        if job["status"] != "running":
+            job["_pruner_ts"] = time.time()
 
     @app.post("/admin/media-browser/setup")
     @require_csrf
@@ -5087,6 +5499,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if (resp := _require_nopasswd_sudo()):
             return resp
 
+        # Refuse BEFORE touching .env: a setup (or OTA) already running is
+        # reading it, and rewriting it underneath is the half of the race
+        # the launch-time check alone cannot prevent.
+        if (resp := _maintenance_precheck()):
+            return resp
+
         # Merge WG vars + sensible defaults into existing .env. An existing
         # .env we cannot READ must abort the request: treating it as empty
         # would rewrite it with only the WireGuard keys and destroy the qBit
@@ -5129,23 +5547,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 status=500,
             )
 
-        # Start the long-running setup script in a background thread
-        # (prune stale terminal-state entries first)
+        # Start the long-running setup script DETACHED, as root (it was
+        # `sudo -n setup_services.sh` before — same privilege, now in its own
+        # cgroup). Prune stale terminal-state entries first.
         _prune_terminal_jobs(media_browser_jobs)
-        job_id = str(uuid.uuid4())
-        media_browser_jobs[job_id] = {
-            "status": "running",
-            "exit_code": None,
-            "log": [],
-            "started_at": datetime.now().isoformat(),
-            "started_ts": time.time(),
-            "process": None,
-            "_pruner_ts": time.time(),
-        }
-        thread = threading.Thread(
-            target=_run_media_browser_setup_job, args=(job_id,), daemon=True
-        )
-        thread.start()
+        job_id, err = _launch_maintenance_job(
+            "mb-setup", [str(SETUP_SERVICES_SCRIPT)], as_root=True)
+        if err:
+            return err
+        media_browser_jobs[job_id] = _new_mb_job_view(time.time())
 
         return success_response(
             data={
@@ -5217,6 +5627,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return resp
         job = media_browser_jobs.get(job_id)
         if not job:
+            # Not in memory — e.g. this Flask restarted mid-setup (which
+            # setup_services.sh itself causes). The job's own record on disk
+            # still knows; rebuild from it.
+            meta = detached.meta(job_id)
+            if meta and meta.get("kind") == "mb-setup":
+                started = meta.get("started_ts")
+                job = media_browser_jobs.setdefault(
+                    job_id, _new_mb_job_view(
+                        started if isinstance(started, (int, float)) else time.time()))
+        if not job:
             return success_response(data={
                 "status": "unknown",
                 "log_lines": [],
@@ -5225,14 +5645,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 "elapsed_sec": 0,
             })
 
-        # If the background thread hasn't yet observed a finished process,
-        # poll the Popen handle defensively to keep status fresh.
-        process = job.get("process")
-        if job["status"] == "running" and process is not None:
-            rc = process.poll()
-            if rc is not None:
-                job["exit_code"] = rc
-                job["status"] = "success" if rc == 0 else "failed"
+        with _mb_jobs_lock:  # concurrent pollers must not split the cursor
+            _refresh_media_browser_job(job_id, job)
 
         log = job["log"]
         tail = log[-_MB_LOG_TAIL_LINES:] if len(log) > _MB_LOG_TAIL_LINES else list(log)
@@ -5924,6 +6338,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
         """
         pair_code = request.args.get("pair")
         if pair_code:
+            if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+                # A pairing code arriving by a link on ANOTHER website is
+                # never the kiosk's QR (a camera scan is Sec-Fetch-Site:
+                # none) — it is how a hostile page would spend the attempt
+                # budget. Show the Connect page instead: its button submits
+                # the same code same-origin, so a genuine link costs one tap.
+                code = pair_code.strip()
+                target = (f"/connect?code={code}"
+                          if re.fullmatch(r"[0-9]{6}", code) else "/connect")
+                return redirect(target, code=303)
             return remote_auth.handle_pair_param(pair_code)
         submitted_token = request.args.get("device_token")
         if submitted_token:
@@ -6149,18 +6573,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         if request.method == "POST":
             nickname = (request.form.get("nickname") or "").strip()[:40] or "Phone"
-            # Update the entry in paired_remotes.json — atomic temp+rename so
-            # concurrent reads from the StatusBroadcaster's reap_revocations
-            # tick can never see a torn write.
-            try:
-                data = json.loads(paired_path.read_text())
-            except (FileNotFoundError, json.JSONDecodeError):
-                data = {"schema": 1, "devices": []}
-            for d in data["devices"]:
-                if d["id"] == device_id:
-                    d["nickname"] = nickname
-                    break
-            _atomic_write_text(paired_path, json.dumps(data, indent=2))
+            # Through devices.py, under its lock: an atomic rename alone kept
+            # the file whole but not CURRENT — this read-modify-write could
+            # write back a copy read before a concurrent pairing (or the
+            # StatusBroadcaster's revocation reap) committed, undoing it.
+            remote_devices.rename_device(paired_path, device_id, nickname)
             target = request.args.get("tab", "remote")
             return redirect(f"/?tab={target}", code=303)
 
