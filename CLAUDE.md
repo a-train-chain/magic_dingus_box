@@ -371,6 +371,21 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
 - Downloads tarball, backs up current installation, extracts update
 - Rollback support if update fails
 - **Never leaves a box without a kiosk** (2026-10): builds in `build.new/` and swaps it in only after `verify_kiosk_binary`; an "install in progress" marker (`/home/magic/.magic_dingus_box_backup.ota_in_progress`) + `magic-dingus-ota-recovery.service` restore the backup at the next boot after a power cut. The kiosk exits **69** (`src/platform/kiosk_exit.h`) when no display is connected — `update.sh` accepts that as a good start; keep the two in sync. rsync exit 23 is a FAILURE. Details: `OTA_UPDATE_GUARANTEES.md` "2026-10 hardening".
+- **The kiosk is stopped once, only for the swap + restart** — not before
+  the rsync. A source build (no usable pre-compiled binary) compiles in
+  `build.new/` while the OLD kiosk keeps the TV on, when the box can
+  afford it: `build_memory_plan` (pure, table-tested in
+  `test_update.bats`) decides from board + `MemAvailable` measured with
+  the kiosk up — ≥1300 MiB → `-j2`, ≥700 MiB → `-j1`, else pause the Media
+  Browser services via `playback_services_pause.sh` and re-measure, else
+  the old behaviour (stop the kiosk first, `-j2`). Unknown board or a
+  kiosk that isn't `active` → old behaviour. Paused services are resumed
+  on every exit path (post-compile, `fail_install`, EXIT trap). The
+  compiler runs at `oom_score_adj 1000` + nice 19; an OOM-killed build is
+  retried once with the kiosk stopped at `-j1`. The stop must stay BEFORE
+  the swap: `build/` is the kiosk's `WorkingDirectory=`. Details:
+  `OTA_UPDATE_GUARANTEES.md` "The TV stays on while a source build
+  compiles".
 - Triggered via web admin `/admin/update/*` endpoints (`version`, `check`, `install`, `status/<job_id>`, `rollback`) — NOT `/api/update/*`
 
 ## Media Browser (Movie Playback + Downloads)

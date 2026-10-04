@@ -12,7 +12,7 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 
 | Path | Why |
 |---|---|
-| `magic_dingus_box_cpp/src/**` | Kiosk C++ source. Rebuilt on-Pi via `cmake .. && make -j2` after rsync. |
+| `magic_dingus_box_cpp/src/**` | Kiosk C++ source. Rebuilt on-Pi (in `build.new/`, at `-j1` or `-j2` per `build_memory_plan`) after rsync when no usable pre-compiled binary exists — see "The TV stays on while a source build compiles". |
 | `magic_dingus_box_cpp/scripts/**` (incl. `update.sh`, `deploy_cpp.sh`, `setup_services.sh`, `kiosk_standby_watcher.sh`) | All shipping scripts. |
 | `scripts/golden_image/**` (`first_boot.sh`, `prepare_for_cloning.sh`, `restore_after_cloning.sh`) | Clone tooling. Updated on the Pi so future re-clones from a customer Pi (rare but supported) use current logic. |
 | `magic_dingus_box_cpp/assets/**` (bezels, fonts, logos, Marquee wood-frame) | Visual assets. Bezel updates and Marquee wood-frame revisions (`assets/marquee/marquee_frame.png`) flow through cleanly. |
@@ -92,6 +92,45 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `services/config/*` | Per-Pi Media Browser stack runtime state. NOT in git. | Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime state, FlareSolverr state. |
 | `magic_dingus_box_cpp/data/media_browser.db*` | Media Browser watch state. NOT in git (`prepare_for_cloning.sh` deliberately wipes it, so it can never ship in a tarball). Excluded as of **v1.9.8** — before that, every OTA of every fielded box deleted it and `WatchStore` silently re-created an empty schema, so nothing errored and nothing warned. | Resume positions, watched/unwatched flags and NEW-badge state for movies **and** TV, plus the `-wal`/`-shm` sidecars. The library itself repopulates from Radarr/Sonarr; only the per-household viewing history was lost. |
 | `/VERSION` (backup + install rsyncs only; anchored) | Not operator content — a control file. Excluded from the **install** rsync so the new version is stamped only after a verified kiosk start, and from the **backup** rsync so `$BACKUP_DIR/VERSION` can be written afterwards as a completion marker. Both rollback rsyncs deliberately keep it (a rollback must restore the old number) and also `cp` it explicitly. Pinned by `tests/local/update_rsync_excludes.bats`. | The single line of text the Content Manager reports as the box's version. |
+
+## The TV stays on while a source build compiles (kiosk stopped only for the swap)
+
+When no usable pre-compiled binary exists (none published, or it needs newer libraries than the OS has), `update.sh` compiles the kiosk on the box — 8-10 minutes at `-j2` on a Pi 4B. The kiosk used to be stopped **before** the rsync, so that whole compile was a black TV. Now the kiosk is stopped exactly once, by `stop_kiosk_for_swap`, immediately before its binary changes.
+
+**Exact kiosk-down window.**
+
+| Path | Before | Now |
+|---|---|---|
+| Pre-compiled binary | rsync + binary download + install + hooks + restart (~14 s) | binary install (a rename) + hooks + restart |
+| Source build, kiosk kept up (`keep_j2` / `keep_j1`) | rsync + **whole compile** + hooks + restart | `promote_build_dir` (two renames) + hooks + restart |
+| Source build, `stop_kiosk` plan | rsync + whole compile + hooks + restart | whole compile + hooks + restart (unchanged in practice) |
+
+"Hooks" = Phone Remote/cores bootstraps, network hardening, memory tuning, Custom Format convergence — all still run with the kiosk stopped, as before (`setup_audio_service.sh` relies on it). A failed install's rollback still stops/restores/restarts the kiosk itself.
+
+**Why the old kiosk may run against the new tree.** From the install rsync to the swap, the OLD binary runs beside the NEW tree — exactly what the web admin has always done during an update. `build/` (the binary *and* the unit's `WorkingDirectory=`, against which the kiosk resolves `../assets/...` and `path_resolver` candidates) is excluded from the rsync and replaced only at the swap; the compile writes only `build.new/`. rsync replaces each file by rename, so an open file keeps its old contents and a later open sees a whole old or whole new file. After startup the kiosk reads only image/font assets and system tiles from the tree; the scripts it runs are in `/usr/local/bin` (refreshed only after the verified start); settings, playlists and its runtime files are excluded. Worst case is cosmetic (an asset the release renamed fails to load until the restart). The swap itself must NOT happen under a running kiosk — renaming `build/` away deletes its working directory — which is why the stop sits right before `promote_build_dir` / `install_kiosk_binary`. A final `stop_kiosk_for_swap` before `verify_kiosk_started` guarantees that check always starts a stopped unit (starting a running unit would "verify" the old process).
+
+**The decision — `build_memory_plan` (pure, table-tested).** Inputs: board (`/proc/device-tree/model`, same prefix rule as `PlatformProfile`), `MemAvailable` measured with the kiosk running, whether the kiosk is `active` (reached READY), and whether Media Browser services can be paused.
+
+| Condition (first match wins) | Plan |
+|---|---|
+| board not Pi 4 / Pi 5 | `stop_kiosk` (today's behaviour — the thresholds are Pi measurements) |
+| kiosk not `active` (TV off → exit-69 restart loop, or stopped) | `stop_kiosk` (no picture to keep; each restart's startup unpause would undo a services pause) |
+| `MemAvailable` ≥ 1300 MiB | `keep_j2` |
+| `MemAvailable` ≥ 700 MiB | `keep_j1` (twice as slow; the TV works) |
+| services pausable | `pause_services` → re-measure → decide again without pausing |
+| otherwise | `stop_kiosk`, `-j2` |
+
+Thresholds: 600 MiB per make job (CLAUDE.md's cc1plus peak; `deploy_cpp.sh` measured ~430 MB and budgets 600) + 100 MiB reserve. The per-job budget already carries ~170 MiB/job over the measured peak, so a build started exactly at its floor has ~440 MiB (`-j2`) / ~270 MiB (`-j1`) of real slack for a viewer who starts a movie or a game mid-build. Never wider than `-j2` (the kiosk needs CPU). The tarball and its extracted copy are deleted from `TEMP_DIR` before measuring — `/tmp` is a RAM tmpfs on Trixie.
+
+**Services pause.** Uses `/usr/local/bin/playback_services_pause.sh` — the kiosk's own quiet-mode script and marker (`/tmp/mdb_playback_services_paused`), so the cascade watcher and Content Manager already honour it; qBittorrent and Gluetun are untouched (downloads continue). Only on a provisioned box (`services/.env`), and never when the marker already exists (the kiosk paused them for a movie/game in progress — that memory is already in the measurement, and they are the kiosk's to resume). Paused only to keep the TV, never to upgrade `-j1` to `-j2`: while paused, the kiosk's tunnel monitor stops seeing Radarr and hides Movies (with a "tunnel down" toast) until the update finishes. **Resumed on every exit:** right after the compile (before the hooks — Custom Format convergence needs Radarr/Sonarr up), in `fail_install`, and by an `EXIT` trap the `install` dispatcher arms (killed job, `set -e` abort). Only what this update paused is resumed. A SIGKILL skips even the trap; the next kiosk start's crash-recovery unpause or the next boot (`compose up -d`; the tmpfs marker is gone) restores them. The script's compose-lock wait is bounded at 20 s; `update.sh` closes its own fd 9 (the single-flight lock) for it.
+
+**Safety net.** The compile runs at `nice 19`, best-effort/lowest I/O priority, and `oom_score_adj 1000`, so if memory runs out anyway the kernel kills `cc1plus`, not the kiosk or RetroArch. A build that dies that way (gcc's "Killed signal terminated program", ld killed by signal 9, make exit 137) is retried once with the kiosk stopped at `-j1`; a real compile error is not retried and rolls back as before. build.new + verify + promote, the in-progress marker and boot recovery, rollback, the flock single-flight, the exit-69 acceptance and the `systemd-run` launch are all unchanged.
+
+**Progress.** No new stage names. `building` carries "Compiling from source - the TV keeps working meanwhile (about 8-10 / 15-20 minutes)..." when the kiosk is kept up; `stopping_services` is now emitted at the swap ("Stopping the kiosk to switch to the new version...").
+
+**Needs hardware validation before trusting the numbers further:** real `MemAvailable` with the kiosk up on a Pi 4B (games-only and Media Browser) and a Pi 5 2 GB; peak RSS of `cc1plus` at `-j1`/`-j2` on the current tree; menu/video/game responsiveness during a `-j1` build on a Pi 4B; and a game or movie started mid-build (expect the compiler, not the session, to be the casualty).
+
+**Reaching the field:** like every `update.sh` change, this applies on the update AFTER the one that ships it.
 
 ## 2026-10 hardening — an interrupted or headless update can no longer brick or roll back a box
 

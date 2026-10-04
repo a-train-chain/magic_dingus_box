@@ -135,13 +135,30 @@ run_systemctl() {
     sudo systemctl "$@"
 }
 
-# Wrapper for build steps (skipped in test mode)
+# Compile + verify + swap in one call (skipped in test mode). install_update
+# does NOT use this: it calls compile_build and promote_build_dir separately
+# so it can stop the kiosk between the two (see build_from_source). Kept for
+# direct callers and the BATS suite. $1 = make -j (default 2).
 run_build() {
     if [ "$SKIP_BUILD" = "true" ]; then
         log "SKIP: Build step"
         return 0
     fi
+    compile_build "${1:-2}" || return $?
+    promote_build_dir "$INSTALL_DIR/magic_dingus_box_cpp/build.new"
+}
 
+# Compile a clean tree into build.new/ and verify its binary. Never touches
+# build/ — the running kiosk's binary AND its working directory (the unit's
+# WorkingDirectory= is build/, and the kiosk resolves "../assets/..." and
+# path_resolver candidates relative to it), which is why the OLD kiosk can
+# keep running while this compiles.
+#   $1 = make -j (1 or 2; see build_memory_plan)
+# Returns 0 = build.new/ holds a verified binary, 1 = failed (build.new/
+# removed), 3 = the compiler was KILLED, almost certainly by the OOM killer
+# (build.new/ removed) — the caller may retry with more memory.
+compile_build() {
+    local jobs="${1:-2}"
     local build_dir="$INSTALL_DIR/magic_dingus_box_cpp/build"
 
     # ALWAYS build clean on an OTA. build/ is excluded from the install rsync
@@ -203,13 +220,39 @@ run_build() {
     # pipeline: the pipeline's status depends on pipefail (on here, off in
     # the bats harness), and an unguarded failing pipeline under set -e
     # would abort the whole update before the rollback could run.
+    #
+    # -j comes from build_memory_plan (1 or 2, never more: each cc1plus
+    # peaks near 600 MB and a Pi 4B has 1.5 GB). The compile may now run
+    # NEXT TO the live kiosk, so it is made the polite tenant:
+    #   - oom_score_adj 1000: if memory does run out (the viewer starts a
+    #     game mid-build), the kernel kills cc1plus, never the kiosk or
+    #     RetroArch. Raising your own score needs no privilege; children
+    #     inherit it. The caller retries a killed build with the kiosk
+    #     stopped (return 3 below).
+    #   - nice 19 + best-effort/lowest I/O: the menu and video keep the
+    #     CPU and the disk. Not ionice's idle class — with qBittorrent
+    #     streaming to the same disk, idle could starve the build for hours.
+    #     -t: if the kernel refuses the I/O class, run make anyway.
+    local -a prio=(nice -n 19)
+    if command -v ionice >/dev/null 2>&1; then
+        prio+=(ionice -c 2 -n 7 -t)
+    fi
     local make_rc_file="${new_dir}/.make_rc"
     (cd "$new_dir" || { echo 1 > "$make_rc_file"; exit 0; }
-     make -j2 2>&1; echo $? > "$make_rc_file") | tee -a "$build_log" || true   # -j2: prevent OOM on Pi 4B (1.5GB RAM)
-    if [ "$(cat "$make_rc_file" 2>/dev/null || echo 1)" != "0" ]; then
+     { echo 1000 > /proc/self/oom_score_adj; } 2>/dev/null || true
+     "${prio[@]}" make -j"$jobs" 2>&1; echo $? > "$make_rc_file") | tee -a "$build_log" || true
+    local make_rc
+    make_rc="$(cat "$make_rc_file" 2>/dev/null || echo 1)"
+    if [ "$make_rc" != "0" ]; then
         log_error "make failed; last lines of $build_log:"
         tail -n 60 "$build_log" >&2 || true
         rm -rf "$new_dir"
+        # 137 = make itself SIGKILLed; the rest are how gcc/ld report a
+        # child the OOM killer took. A real compile error matches none.
+        if [ "$make_rc" = "137" ] || grep -qE 'Killed signal terminated program|internal compiler error: Killed|terminated with signal 9|virtual memory exhausted' "$build_log" 2>/dev/null; then
+            log_warn "The compiler was killed (out of memory) at -j${jobs}"
+            return 3
+        fi
         return 1
     fi
 
@@ -218,8 +261,7 @@ run_build() {
         rm -rf "$new_dir"
         return 1
     fi
-
-    promote_build_dir "$new_dir"
+    return 0
 }
 
 # Swap a freshly built, verified build tree into place.
@@ -249,6 +291,266 @@ promote_build_dir() {
     rm -rf "$old_dir"
     sync 2>/dev/null || true
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# Keeping the TV on during a source build
+# ---------------------------------------------------------------------------
+# A source build (no usable pre-compiled binary) takes 8-10 min at -j2 on a
+# Pi 4B. It used to run with the kiosk stopped — a black TV for the whole
+# compile. The compile only ever writes build.new/ (compile_build), so the
+# OLD kiosk can keep running until the swap, IF the box has the memory for
+# both. That is decided per box, from memory measured with the kiosk
+# running, by build_memory_plan below.
+#
+# Memory figures. Budget per make job: 600 MiB — CLAUDE.md's "each cc1plus
+# peaks near 600 MB" (deploy_cpp.sh measured ~430 MB on this tree and
+# budgets 600; the final link runs alone, inside one job's budget). Reserve:
+# 100 MiB for make/cmake, the page cache the compile itself churns, and
+# kernel slack. The reserve is deliberately small because the per-job
+# budget already carries ~170 MiB/job over the measured peak, i.e. a -j2
+# build started exactly at its floor still has ~440 MiB of real slack
+# (-j1: ~270 MiB) for the viewer to start a movie or a PS1 game. If they
+# overrun it anyway, the compiler — at oom_score_adj 1000 — is what dies,
+# and build_from_source retries with the kiosk stopped. Validate on a
+# Pi 4B before trusting these numbers further (OTA_UPDATE_GUARANTEES.md).
+OTA_BUILD_JOB_KIB=$((600 * 1024))
+OTA_BUILD_RESERVE_KIB=$((100 * 1024))
+# MemAvailable (kiosk running) needed to compile at -j2 beside it: 1300 MiB.
+OTA_KEEP_J2_FLOOR_KIB=$((2 * OTA_BUILD_JOB_KIB + OTA_BUILD_RESERVE_KIB))
+# ... and at -j1 (twice as slow, but the TV works): 700 MiB.
+OTA_KEEP_J1_FLOOR_KIB=$((OTA_BUILD_JOB_KIB + OTA_BUILD_RESERVE_KIB))
+# Docker stop returns once the containers have exited; give the kernel a
+# moment to settle the freed pages before measuring again.
+OTA_PAUSE_SETTLE_SECS="${MAGIC_PAUSE_SETTLE_SECS:-2}"
+
+# The Media Browser playback pause (playback_services_pause.sh) and its
+# marker — the same script and marker the kiosk's quiet modes use, so the
+# cascade watcher and the Content Manager already honor a pause made here.
+PLAYBACK_PAUSE_MARKER="${MAGIC_PLAYBACK_PAUSE_MARKER:-/tmp/mdb_playback_services_paused}"
+
+# State for the current install (set by plan_source_build / the helpers).
+BUILD_JOBS=2
+BUILD_KEEP_KIOSK="false"
+KIOSK_STOPPED_FOR_UPDATE="false"
+OTA_SERVICES_PAUSED_BY_US="false"
+
+# Which board is this? Same rule as platform::PlatformProfile (model string
+# prefix WITH the trailing space, so a "Raspberry Pi 400" is not a Pi 4).
+# Prints pi4 | pi5 | unknown. MAGIC_DEVICE_MODEL_FILE is the test seam.
+detect_board() {
+    local model
+    model="$(tr -d '\0' < "${MAGIC_DEVICE_MODEL_FILE:-/proc/device-tree/model}" 2>/dev/null)" || true
+    case "$model" in
+        "Raspberry Pi 4 "*) echo "pi4" ;;
+        "Raspberry Pi 5 "*) echo "pi5" ;;
+        *)                  echo "unknown" ;;
+    esac
+}
+
+# MemAvailable in KiB, 0 when it cannot be read (0 = "no evidence", which
+# build_memory_plan treats as too little). MAGIC_MEMINFO_FILE = test seam.
+read_mem_available_kib() {
+    local kib
+    kib="$(awk '/^MemAvailable:/ {print $2; exit}' "${MAGIC_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null)" || true
+    [[ "$kib" =~ ^[0-9]+$ ]] || kib=0
+    echo "$kib"
+}
+
+# THE decision. Pure (no I/O) — pinned by a table test in test_update.bats.
+#   $1 board (pi4|pi5|unknown)  $2 MemAvailable KiB, kiosk running
+#   $3 kiosk_active (1|0)       $4 can_pause (1 = Media Browser services
+#                                  can still be paused to free memory)
+# Prints one of:
+#   keep_j2         compile at -j2 with the kiosk up
+#   keep_j1         compile at -j1 with the kiosk up (slower; TV works)
+#   pause_services  not enough yet — pause the services, re-measure, ask
+#                   again with can_pause=0
+#   stop_kiosk      the old behaviour: stop the kiosk first, compile -j2
+# Why each rule:
+#   - unknown board: the thresholds come from Pi measurements; anything
+#     else keeps the behaviour that has always worked.
+#   - kiosk not active: there is no picture to keep (TV off = exit-69
+#     restart loop, or already stopped), and every restart of a looping
+#     kiosk runs its startup "unpause" — it would undo a services pause.
+#   - never above -j2, even with memory to spare: the kiosk needs CPU too,
+#     and two of four cores is what the Pi 4B has always built with.
+#   - pause only to reach -j1 (keeping the TV), never to upgrade -j1 to
+#     -j2: paused services hide Movies on the TV for the whole build
+#     (the kiosk's tunnel monitor stops seeing Radarr).
+build_memory_plan() {
+    local board="$1" avail="$2" active="$3" can_pause="$4"
+    [[ "$avail" =~ ^[0-9]+$ ]] || avail=0
+    case "$board" in
+        pi4|pi5) ;;
+        *) echo "stop_kiosk"; return 0 ;;
+    esac
+    if [ "$active" != "1" ]; then
+        echo "stop_kiosk"
+    elif [ "$avail" -ge "$OTA_KEEP_J2_FLOOR_KIB" ]; then
+        echo "keep_j2"
+    elif [ "$avail" -ge "$OTA_KEEP_J1_FLOOR_KIB" ]; then
+        echo "keep_j1"
+    elif [ "$can_pause" = "1" ]; then
+        echo "pause_services"
+    else
+        echo "stop_kiosk"
+    fi
+}
+
+# Is the kiosk up and showing a picture right now? Type=notify, so "active"
+# means it reached READY (a no-display exit 69 never does). In test mode the
+# state comes from MAGIC_KIOSK_STATE (default active), never from systemd.
+kiosk_is_active() {
+    local state
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        state="${MAGIC_KIOSK_STATE:-active}"
+    else
+        state="$(kiosk_prop ActiveState)"
+    fi
+    [ "$state" = "active" ]
+}
+
+# The pause script to use: the /usr/local/bin copy the kiosk itself calls
+# (it exists only on Media Browser boxes). Never a CI runner's docker:
+# test mode needs the explicit MAGIC_PLAYBACK_PAUSE_SCRIPT seam.
+playback_pause_script() {
+    if [ -n "${MAGIC_PLAYBACK_PAUSE_SCRIPT:-}" ]; then
+        echo "$MAGIC_PLAYBACK_PAUSE_SCRIPT"
+    elif [ "$SKIP_SYSTEMCTL" != "true" ] && [ -x /usr/local/bin/playback_services_pause.sh ]; then
+        echo /usr/local/bin/playback_services_pause.sh
+    fi
+}
+
+# Can the build free memory by pausing the Media Browser services? Only on
+# a provisioned box (services/.env — the same gate the kiosk uses), and NOT
+# when they are already paused: the marker means the kiosk paused them for
+# a movie or game in progress. That memory is already free (it is in the
+# measurement), and those services are the kiosk's to resume, not ours.
+services_pausable() {
+    [ -f "$INSTALL_DIR/services/.env" ] || return 1
+    [ -n "$(playback_pause_script)" ] || return 1
+    [ ! -e "$PLAYBACK_PAUSE_MARKER" ]
+}
+
+# Stop Radarr/Sonarr/Prowlarr/Byparr for the build (qBittorrent and Gluetun
+# are untouched: downloads continue). The script is bounded (20 s compose-
+# lock wait, 2 s stop timeout). fd 9 — our single-flight update lock — is
+# closed for it: it opens its own fd 9 for the compose lock.
+pause_services_for_build() {
+    local script
+    script="$(playback_pause_script)"
+    [ -n "$script" ] || return 1
+    log "Pausing Media Browser services to free memory for the build"
+    OTA_SERVICES_PAUSED_BY_US="true"
+    bash "$script" pause 9>&- >&2 || log_warn "playback_services_pause.sh pause reported a failure"
+}
+
+# Undo pause_services_for_build — and ONLY that (consent record, like the
+# kiosk's own pause): idempotent, so it is safe on every exit path. Called
+# after the compile, from fail_install, and from the EXIT trap the install
+# dispatcher sets (killed job, set -e abort). A SIGKILL skips even the
+# trap; then the next kiosk start's crash-recovery unpause, or the next
+# boot (magic-dingus-services runs compose up -d; /tmp is tmpfs, so the
+# marker is gone too), brings them back.
+resume_build_paused_services() {
+    [ "$OTA_SERVICES_PAUSED_BY_US" = "true" ] || return 0
+    OTA_SERVICES_PAUSED_BY_US="false"
+    local script
+    script="$(playback_pause_script)"
+    [ -n "$script" ] || return 0
+    log "Resuming the Media Browser services paused for the build"
+    bash "$script" unpause 9>&- >&2 || log_warn "playback_services_pause.sh unpause reported a failure"
+}
+
+# Stop the kiosk for the swap + restart. Exactly once per install: the
+# final guard before verify_kiosk_started calls this too, because that
+# check STARTS the unit — on a unit that is still running the old binary,
+# `start` is a no-op and the old process would be "verified".
+#   $1 = progress percentage for the stage line
+stop_kiosk_for_swap() {
+    [ "$KIOSK_STOPPED_FOR_UPDATE" = "true" ] && return 0
+    json_progress "stopping_services" "${1:-80}" "Stopping the kiosk to switch to the new version..."
+    log "Stopping C++ service..."
+    run_systemctl stop "$KIOSK_UNIT" 2>/dev/null || true
+    KIOSK_STOPPED_FOR_UPDATE="true"
+    sleep 1
+}
+
+# Measure, decide, and (if that is the plan) pause services, then decide
+# again. Sets BUILD_JOBS and BUILD_KEEP_KIOSK.
+plan_source_build() {
+    local board avail active=0 can_pause=0 plan
+    board="$(detect_board)"
+    kiosk_is_active && active=1
+    services_pausable && can_pause=1
+    avail="$(read_mem_available_kib)"
+    plan="$(build_memory_plan "$board" "$avail" "$active" "$can_pause")"
+    log "Build memory plan: board=${board} MemAvailable=$((avail / 1024))MiB kiosk_active=${active} can_pause=${can_pause} -> ${plan}"
+
+    if [ "$plan" = "pause_services" ]; then
+        json_progress "building" 58 "Pausing Movies services to make room for the build..."
+        pause_services_for_build || true
+        sleep "$OTA_PAUSE_SETTLE_SECS"
+        avail="$(read_mem_available_kib)"
+        plan="$(build_memory_plan "$board" "$avail" "$active" 0)"
+        log "Build memory plan after pausing services: MemAvailable=$((avail / 1024))MiB -> ${plan}"
+    fi
+
+    case "$plan" in
+        keep_j2) BUILD_KEEP_KIOSK="true";  BUILD_JOBS=2 ;;
+        keep_j1) BUILD_KEEP_KIOSK="true";  BUILD_JOBS=1 ;;
+        *)       BUILD_KEEP_KIOSK="false"; BUILD_JOBS=2 ;;   # today's proven setting
+    esac
+}
+
+# The source-build path of install_update: plan, compile (the old kiosk
+# running when the plan allows), stop the kiosk, swap. Returns non-zero on
+# failure with build/ untouched and any paused services already resumed.
+build_from_source() {
+    if [ "$SKIP_BUILD" = "true" ]; then
+        log "SKIP: Build step"
+        return 0
+    fi
+    local build_dir="$INSTALL_DIR/magic_dingus_box_cpp/build"
+
+    plan_source_build
+    if [ "$BUILD_KEEP_KIOSK" = "true" ]; then
+        local eta="8-10"
+        [ "$BUILD_JOBS" = "1" ] && eta="15-20"
+        json_progress "building" 60 "Compiling from source - the TV keeps working meanwhile (about ${eta} minutes)..."
+        log "Compiling at -j${BUILD_JOBS} with the current kiosk still running"
+    else
+        stop_kiosk_for_swap 58
+        json_progress "building" 60 "Compiling from source (this may take 8-10 minutes)..."
+        log "Compiling at -j${BUILD_JOBS} with the kiosk stopped"
+    fi
+
+    local rc=0
+    compile_build "$BUILD_JOBS" || rc=$?
+
+    # Killed (OOM): one retry in the most frugal setup there is — kiosk
+    # stopped, -j1. A real compile error (rc 1) is not retried.
+    if [ "$rc" -eq 3 ] && { [ "$BUILD_KEEP_KIOSK" = "true" ] || [ "$BUILD_JOBS" != "1" ]; }; then
+        log_warn "Retrying the build with the kiosk stopped at -j1"
+        stop_kiosk_for_swap 62
+        json_progress "building" 65 "The box ran short of memory; retrying the build with the TV paused..."
+        BUILD_KEEP_KIOSK="false"
+        BUILD_JOBS=1
+        rc=0
+        compile_build 1 || rc=$?
+    fi
+
+    # The memory is no longer needed. Resume before the hooks below:
+    # converge_custom_formats.sh needs Radarr/Sonarr answering.
+    resume_build_paused_services
+
+    [ "$rc" -eq 0 ] || return 1
+
+    # The swap. The kiosk must be down for it: renaming build/ away from
+    # under a running kiosk deletes its working directory.
+    stop_kiosk_for_swap 80
+    promote_build_dir "${build_dir}.new"
 }
 
 # The ELF e_machine low byte the kiosk binary must carry on this box
@@ -1063,6 +1365,8 @@ retire_audio_service_if_absent() {
 # the rollback so the message says what actually happened.
 fail_install() {
     local why="$1"
+    # Normally already done after the compile; idempotent.
+    resume_build_paused_services
     if rollback_internal; then
         json_response "false" "${why}; the previous version was restored"
     else
@@ -1291,13 +1595,25 @@ install_update() {
     # this process dies — power cut, OOM, a killed job — before then.
     write_ota_marker "$target_version" "$from_version"
 
-    json_progress "stopping_services" 55 "Stopping C++ service..."
-
-    # Only stop C++ service - web service stays running until the end
-    # (stopping web service would kill our parent process and abort the update)
-    log "Stopping C++ service..."
-    run_systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
-    sleep 1
+    # The kiosk is NOT stopped here any more. It is stopped once, by
+    # stop_kiosk_for_swap, immediately before its binary changes (the
+    # pre-compiled install, or promote_build_dir after a source build) —
+    # or before the compile when build_memory_plan says the box cannot
+    # afford both. Until then the OLD kiosk keeps running against the NEW
+    # tree this rsync lays down, exactly as the web admin always has
+    # during an update. That is safe because:
+    #   - build/ (its binary AND its WorkingDirectory) is excluded from the
+    #     rsync and only replaced at the swap;
+    #   - rsync replaces each file by rename, so a file the kiosk holds open
+    #     keeps its old contents, and a file it opens later is a whole old
+    #     or whole new file, never a half-written one;
+    #   - what it reads from the tree after startup is image/font assets
+    #     and system tiles; the scripts it runs live in /usr/local/bin,
+    #     refreshed only after the verified start; settings, playlists and
+    #     its runtime files are excluded.
+    # Worst case is cosmetic: an asset the new release renamed fails to
+    # load until the restart. Only the web service must never be stopped
+    # here (it is our parent's service).
 
     json_progress "installing" 60 "Installing new files..."
 
@@ -1522,6 +1838,12 @@ install_update() {
     # Compose-file delivery guard (see ensure_compose_file above).
     ensure_compose_file
 
+    # The downloaded tarball and its extracted copy are spent. Drop them
+    # now rather than at the end: TEMP_DIR is under /tmp, which is a RAM
+    # tmpfs on Trixie, and a source build is about to be planned against
+    # MemAvailable — tmpfs pages are not "available".
+    rm -rf "$TEMP_DIR/update.tar.gz" "$TEMP_DIR/extracted"
+
     # NOTE: the out-of-tree helper refresh (refresh_out_of_tree_files) runs
     # only AFTER the verified kiosk start, so a rolled-back update can never
     # leave /usr/local/bin helpers from the release it rolled back.
@@ -1570,7 +1892,7 @@ install_update() {
                         log_warn "Binary architecture mismatch, will compile from source"
                     elif ldd "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" 2>&1 | grep -q "not found"; then
                         log_warn "Pre-compiled binary needs newer system libraries than this OS provides; will compile from source"
-                    elif ! install_kiosk_binary "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp"; then
+                    elif ! { stop_kiosk_for_swap 50; install_kiosk_binary "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp"; }; then
                         # The binary itself is fine — the box could not take
                         # it (disk full, I/O error). Compiling would hit the
                         # same wall, so restore the previous version.
@@ -1593,16 +1915,14 @@ install_update() {
         fi
     fi
 
-    # Only build from source if no binary available
+    # Only build from source if no binary available. build_from_source
+    # decides from measured memory whether the current kiosk keeps the TV
+    # on while this compiles (see build_memory_plan), and stops it only
+    # for the swap.
     if [ "$use_binary" = false ]; then
-        json_progress "building" 60 "Compiling from source (this may take 8-10 minutes)..."
-
-        # Rebuild C++ application
         log "Building application from source..."
 
-        json_progress "building" 70 "Compiling..."
-
-        if ! run_build; then
+        if ! build_from_source; then
             log_error "Build failed, attempting rollback..."
             json_progress "error" 70 "Build failed, rolling back..."
             fail_install "Build failed"
@@ -1767,6 +2087,12 @@ install_update() {
     else
         log_warn "converge_custom_formats.sh not found in this release; skipping Custom Format convergence"
     fi
+
+    # Normally a no-op (the swap above stopped it). Load-bearing whenever a
+    # path reaches here with the old kiosk still up (e.g. MAGIC_SKIP_BUILD):
+    # verify_kiosk_started STARTS the unit, and starting a running unit
+    # would "verify" the old process.
+    stop_kiosk_for_swap 88
 
     json_progress "restarting_services" 90 "Restarting services..."
 
@@ -2141,6 +2467,10 @@ case "${1:-}" in
             exit 1
         fi
         acquire_update_lock
+        # Media Browser services paused for a source build come back on
+        # EVERY exit — including a killed job (SIGTERM/SIGHUP run EXIT traps
+        # in bash) and a set -e abort. Idempotent with the explicit resumes.
+        trap 'resume_build_paused_services' EXIT
         install_update "$2" "$3"
         ;;
     rollback)

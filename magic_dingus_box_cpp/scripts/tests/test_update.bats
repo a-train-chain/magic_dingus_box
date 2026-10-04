@@ -491,8 +491,11 @@ test_version_lt() {
 # PRE-COMPILED BINARY TESTS
 # =============================================================================
 
-@test "run_build uses -j2 for memory safety" {
-    grep -q 'make -j2' "$UPDATE_SCRIPT"
+@test "the compile never runs wider than -j2 (Pi 4B memory safety)" {
+    # -j is chosen by build_memory_plan; every plan maps to 1 or 2.
+    grep -q 'make -j"\$jobs"' "$UPDATE_SCRIPT"
+    ! grep -nE 'BUILD_JOBS=[3-9]' "$UPDATE_SCRIPT"
+    ! grep -nE 'make -j[3-9]' "$UPDATE_SCRIPT"
 }
 
 @test "get_device_arch function exists" {
@@ -620,11 +623,28 @@ make_elf() {
 #   FAKE_MAKE_MODE=ok       -> writes an aarch64 ELF kiosk binary
 #   FAKE_MAKE_MODE=fail     -> exits 2 (compile error)
 #   FAKE_MAKE_MODE=garbage  -> exits 0 but writes a text file
+#   FAKE_MAKE_MODE=oom_once -> the FIRST run fails the way gcc reports an
+#                              OOM-killed cc1plus; later runs succeed
+#   FAKE_MAKE_MODE=kill_update -> SIGTERMs update.sh (make's grandparent:
+#                              make <- build subshell <- update.sh), then ok
+# Every run logs "FAKE-MAKE <args>" so tests can see -j and the ordering
+# against the kiosk stop.
 install_build_shims() {
     mkdir -p "$TEST_TEMP_DIR/bin"
     printf '#!/bin/sh\nexit 0\n' > "$TEST_TEMP_DIR/bin/cmake"
     cat > "$TEST_TEMP_DIR/bin/make" <<'SH'
 #!/bin/bash
+echo "FAKE-MAKE $*"
+echo "FAKE-MAKE $*" >> "${FAKE_MAKE_LOG:-/dev/null}"
+case "${FAKE_MAKE_MODE:-ok}" in
+    oom_once)
+        if [ ! -e "${FAKE_MAKE_LOG}.oom" ]; then
+            : > "${FAKE_MAKE_LOG}.oom"
+            echo "c++: fatal error: Killed signal terminated program cc1plus" >&2; exit 2
+        fi ;;
+    kill_update)
+        kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d ' ')" ;;
+esac
 case "${FAKE_MAKE_MODE:-ok}" in
     fail) echo "error: compile failed" >&2; exit 2 ;;
     garbage) echo "not a binary" > magic_dingus_box_cpp; chmod +x magic_dingus_box_cpp; exit 0 ;;
@@ -1380,4 +1400,329 @@ seed_audio_rollback() {
     rollback_internal 2>/dev/null
     rollback >/dev/null 2>&1
     [ "$(wc -l < "$TEST_TEMP_DIR/retire.log")" -eq 2 ]
+}
+
+# =============================================================================
+# Source builds keep the TV on (build_memory_plan / build_from_source)
+# =============================================================================
+# The kiosk used to be stopped BEFORE the backup/rsync/compile, so an update
+# that had to compile from source left the TV black for 8-10 minutes. Now
+# the old kiosk keeps running through the rsync and (when the measured
+# memory allows) the compile, and is stopped only for the swap + restart.
+
+KIOSK_STOP="Stopping C++ service..."
+
+# Line number of the first line of $output containing $1 (0 = absent).
+line_of() {
+    local n
+    n=$(printf '%s\n' "$output" | grep -nF -- "$1" | head -1 | cut -d: -f1)
+    echo "${n:-0}"
+}
+
+count_of() {
+    printf '%s\n' "$output" | grep -cF -- "$1" || true
+}
+
+set_mem_available_mib() {
+    printf 'MemTotal:        1800000 kB\nMemFree:          100000 kB\nMemAvailable:    %s kB\n' \
+        "$(( $1 * 1024 ))" > "$MAGIC_MEMINFO_FILE"
+}
+
+# A box that must compile from source: fake board ($1 = /proc/device-tree/
+# model string, "" = no model file) and MemAvailable ($2 MiB, measured with
+# the kiosk running), cmake/make shims, and a release to install.
+setup_build_box() {
+    seed_installed_tree
+    make_fake_release 1.0.8
+    install_build_shims
+    export MAGIC_SKIP_BUILD=false
+    export MAGIC_EXPECT_ELF_MACHINE=b7
+    export MAGIC_DEVICE_MODEL_FILE="$TEST_TEMP_DIR/model"
+    [ -z "$1" ] || printf '%s\0' "$1" > "$MAGIC_DEVICE_MODEL_FILE"
+    export MAGIC_MEMINFO_FILE="$TEST_TEMP_DIR/meminfo"
+    set_mem_available_mib "$2"
+    export FAKE_MAKE_LOG="$TEST_TEMP_DIR/make.log"
+    export MAGIC_PAUSE_SETTLE_SECS=0
+    export MAGIC_PLAYBACK_PAUSE_MARKER="$TEST_TEMP_DIR/mdb_playback_services_paused"
+    export PAUSE_LOG="$TEST_TEMP_DIR/pause.log"
+}
+
+# Make it a Media Browser box: services/.env plus a playback_services_pause.sh
+# stand-in that logs each call, keeps the marker the way the real script
+# does, and on pause "frees" memory by rewriting meminfo to $1 MiB.
+add_media_browser() {
+    mkdir -p "$MAGIC_BASE_PATH/services"
+    echo "WIREGUARD_PRIVATE_KEY=x" > "$MAGIC_BASE_PATH/services/.env"
+    export FAKE_MEM_AFTER_PAUSE="$1"
+    cat > "$TEST_TEMP_DIR/bin/pause_shim.sh" <<'SH'
+#!/bin/bash
+echo "PAUSE-SHIM $1"
+echo "$1" >> "$PAUSE_LOG"
+if [ "$1" = pause ]; then
+    date > "$MAGIC_PLAYBACK_PAUSE_MARKER"
+    printf 'MemAvailable:    %s kB\n' "$(( FAKE_MEM_AFTER_PAUSE * 1024 ))" > "$MAGIC_MEMINFO_FILE"
+else
+    rm -f "$MAGIC_PLAYBACK_PAUSE_MARKER"
+fi
+SH
+    chmod +x "$TEST_TEMP_DIR/bin/pause_shim.sh"
+    export MAGIC_PLAYBACK_PAUSE_SCRIPT="$TEST_TEMP_DIR/bin/pause_shim.sh"
+}
+
+# Comma-joined lines of a log file ("pause,unpause,").
+joined() {
+    tr '\n' ',' < "$1"
+}
+
+@test "build_memory_plan: decision table (board, MemAvailable, kiosk up, can pause)" {
+    load_update_functions
+    local board mib active pause want got
+    while read -r board mib active pause want; do
+        [ -n "$board" ] || continue
+        got="$(build_memory_plan "$board" "$(( mib * 1024 ))" "$active" "$pause")"
+        if [ "$got" != "$want" ]; then
+            echo "board=$board ${mib}MiB active=$active can_pause=$pause: want $want, got $got"
+            return 1
+        fi
+    done <<'TABLE'
+pi5      1800  1  1  keep_j2
+pi5      1300  1  1  keep_j2
+pi4      1300  1  0  keep_j2
+pi5      1299  1  1  keep_j1
+pi4      1299  1  0  keep_j1
+pi4      700   1  1  keep_j1
+pi5      700   1  0  keep_j1
+pi4      699   1  1  pause_services
+pi5      500   1  1  pause_services
+pi4      699   1  0  stop_kiosk
+pi4      300   1  0  stop_kiosk
+pi4      0     1  0  stop_kiosk
+pi4      3000  0  1  stop_kiosk
+pi5      3000  0  0  stop_kiosk
+unknown  8000  1  1  stop_kiosk
+unknown  0     1  0  stop_kiosk
+TABLE
+    # Garbage in the memory field is "no evidence", never a keep.
+    [ "$(build_memory_plan pi5 "" 1 0)" = "stop_kiosk" ]
+    [ "$(build_memory_plan pi5 "lots" 1 1)" = "pause_services" ]
+}
+
+@test "build_memory_plan: floors are 2 x 600 MiB + 100 MiB and 600 MiB + 100 MiB" {
+    load_update_functions
+    [ "$OTA_KEEP_J2_FLOOR_KIB" -eq $(( 1300 * 1024 )) ]
+    [ "$OTA_KEEP_J1_FLOOR_KIB" -eq $(( 700 * 1024 )) ]
+}
+
+@test "detect_board matches PlatformProfile's model-prefix rule" {
+    load_update_functions
+    export MAGIC_DEVICE_MODEL_FILE="$TEST_TEMP_DIR/model"
+    printf 'Raspberry Pi 4 Model B Rev 1.5\0' > "$MAGIC_DEVICE_MODEL_FILE"
+    [ "$(detect_board)" = "pi4" ]
+    printf 'Raspberry Pi 5 Model B Rev 1.0\0' > "$MAGIC_DEVICE_MODEL_FILE"
+    [ "$(detect_board)" = "pi5" ]
+    printf 'Raspberry Pi 400 Rev 1.0\0' > "$MAGIC_DEVICE_MODEL_FILE"
+    [ "$(detect_board)" = "unknown" ]
+    printf 'Raspberry Pi Compute Module 4 Rev 1.0\0' > "$MAGIC_DEVICE_MODEL_FILE"
+    [ "$(detect_board)" = "unknown" ]
+    rm -f "$MAGIC_DEVICE_MODEL_FILE"
+    [ "$(detect_board)" = "unknown" ]
+}
+
+@test "read_mem_available_kib reads MemAvailable, 0 when unreadable" {
+    load_update_functions
+    export MAGIC_MEMINFO_FILE="$TEST_TEMP_DIR/meminfo"
+    set_mem_available_mib 900
+    [ "$(read_mem_available_kib)" = "$(( 900 * 1024 ))" ]
+    rm -f "$MAGIC_MEMINFO_FILE"
+    [ "$(read_mem_available_kib)" = "0" ]
+}
+
+@test "source build, roomy Pi 5: compiles at -j2 with the kiosk up; stopped once, only for the swap" {
+    setup_build_box "Raspberry Pi 5 Model B Rev 1.0" 1500
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.8" ]
+    grep -q NEWBUILD "$MAGIC_BASE_PATH/magic_dingus_box_cpp/build/magic_dingus_box_cpp"
+    [ "$(cat "$FAKE_MAKE_LOG")" = "FAKE-MAKE -j2" ]
+    [[ "$output" == *"the TV keeps working"* ]]
+    # The kiosk ran through the rsync and the compile ...
+    [ "$(line_of 'Installing new files')" -lt "$(line_of "$KIOSK_STOP")" ]
+    [ "$(line_of 'FAKE-MAKE -j2')" -lt "$(line_of "$KIOSK_STOP")" ]
+    # ... and was stopped exactly once, before the restart + verification.
+    [ "$(count_of "$KIOSK_STOP")" -eq 1 ]
+    [ "$(line_of "$KIOSK_STOP")" -lt "$(line_of 'SKIP: kiosk start verification')" ]
+    [ ! -e "$PAUSE_LOG" ]
+}
+
+@test "source build, Pi 4B with ~900 MiB free: -j1 with the kiosk up" {
+    setup_build_box "Raspberry Pi 4 Model B Rev 1.5" 900
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FAKE_MAKE_LOG")" = "FAKE-MAKE -j1" ]
+    [ "$(line_of 'FAKE-MAKE -j1')" -lt "$(line_of "$KIOSK_STOP")" ]
+    [ "$(count_of "$KIOSK_STOP")" -eq 1 ]
+}
+
+@test "source build, tight Pi 4B: pauses Media Browser services, keeps the kiosk up at -j1, resumes after the compile" {
+    setup_build_box "Raspberry Pi 4 Model B Rev 1.5" 500
+    add_media_browser 900
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FAKE_MAKE_LOG")" = "FAKE-MAKE -j1" ]
+    [ "$(joined "$PAUSE_LOG")" = "pause,unpause," ]
+    [ "$(line_of 'PAUSE-SHIM pause')" -lt "$(line_of 'FAKE-MAKE')" ]
+    [ "$(line_of 'FAKE-MAKE')" -lt "$(line_of 'PAUSE-SHIM unpause')" ]
+    # Resumed BEFORE the hooks (Custom Format convergence needs Radarr).
+    [ "$(line_of 'PAUSE-SHIM unpause')" -lt "$(line_of 'SKIP: Custom Format convergence')" ]
+    [ "$(line_of 'FAKE-MAKE')" -lt "$(line_of "$KIOSK_STOP")" ]
+    [ "$(count_of "$KIOSK_STOP")" -eq 1 ]
+    [ ! -e "$MAGIC_PLAYBACK_PAUSE_MARKER" ]
+}
+
+@test "source build, still too tight after pausing: kiosk stopped first, -j2, services resumed after" {
+    setup_build_box "Raspberry Pi 4 Model B Rev 1.5" 400
+    add_media_browser 600
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FAKE_MAKE_LOG")" = "FAKE-MAKE -j2" ]
+    [ "$(line_of "$KIOSK_STOP")" -lt "$(line_of 'FAKE-MAKE')" ]
+    [ "$(count_of "$KIOSK_STOP")" -eq 1 ]
+    [ "$(joined "$PAUSE_LOG")" = "pause,unpause," ]
+    [ "$(line_of 'FAKE-MAKE')" -lt "$(line_of 'PAUSE-SHIM unpause')" ]
+}
+
+@test "source build, unknown board: today's behaviour (kiosk stopped first, -j2, nothing paused)" {
+    setup_build_box "" 8000
+    add_media_browser 9000
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FAKE_MAKE_LOG")" = "FAKE-MAKE -j2" ]
+    [ "$(line_of "$KIOSK_STOP")" -lt "$(line_of 'FAKE-MAKE')" ]
+    [ ! -e "$PAUSE_LOG" ]
+}
+
+@test "source build, kiosk not showing a picture (TV off / restart loop): stopped first" {
+    setup_build_box "Raspberry Pi 5 Model B Rev 1.0" 1800
+    export MAGIC_KIOSK_STATE=activating
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(line_of "$KIOSK_STOP")" -lt "$(line_of 'FAKE-MAKE')" ]
+    [ "$(cat "$FAKE_MAKE_LOG")" = "FAKE-MAKE -j2" ]
+}
+
+@test "source build: services the KIOSK paused (movie in progress) are neither paused nor resumed by us" {
+    setup_build_box "Raspberry Pi 4 Model B Rev 1.5" 500
+    add_media_browser 900
+    echo "kiosk" > "$MAGIC_PLAYBACK_PAUSE_MARKER"
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ ! -e "$PAUSE_LOG" ]
+    [ "$(cat "$MAGIC_PLAYBACK_PAUSE_MARKER")" = "kiosk" ]
+    # 500 MiB and nothing we may pause: today's behaviour.
+    [ "$(line_of "$KIOSK_STOP")" -lt "$(line_of 'FAKE-MAKE')" ]
+}
+
+@test "source build failure while services are paused: resumed, rolled back, old kiosk kept until the rollback" {
+    setup_build_box "Raspberry Pi 4 Model B Rev 1.5" 500
+    add_media_browser 900
+    export FAKE_MAKE_MODE=fail
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"previous version was restored"* ]]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.7" ]
+    [ "$(joined "$PAUSE_LOG")" = "pause,unpause," ]
+    [ ! -e "$MAGIC_PLAYBACK_PAUSE_MARKER" ]
+    # A real compile error is not retried.
+    [ "$(wc -l < "$FAKE_MAKE_LOG")" -eq 1 ]
+    # The old kiosk was never stopped for the swap; the rollback (which
+    # stops + restarts it itself) is the first thing to touch it.
+    [ "$(count_of "$KIOSK_STOP")" -eq 0 ]
+    [ "$(line_of 'FAKE-MAKE')" -lt "$(line_of 'Rolling back to previous version')" ]
+}
+
+@test "fail_install resumes paused services before rolling back (any later failure)" {
+    load_update_functions
+    export MAGIC_PLAYBACK_PAUSE_SCRIPT="$TEST_TEMP_DIR/pause.sh"
+    printf '#!/bin/bash\necho "$1" >> "%s/pause.log"\n' "$TEST_TEMP_DIR" > "$MAGIC_PLAYBACK_PAUSE_SCRIPT"
+    chmod +x "$MAGIC_PLAYBACK_PAUSE_SCRIPT"
+    rollback_internal() { echo rollback >> "$TEST_TEMP_DIR/pause.log"; return 0; }
+    OTA_SERVICES_PAUSED_BY_US=true
+
+    run fail_install "The updated kiosk did not start"
+    [ "$(joined "$TEST_TEMP_DIR/pause.log")" = "unpause,rollback," ]
+
+    # Idempotent: nothing paused -> nothing resumed.
+    : > "$TEST_TEMP_DIR/pause.log"
+    OTA_SERVICES_PAUSED_BY_US=false
+    resume_build_paused_services
+    [ ! -s "$TEST_TEMP_DIR/pause.log" ]
+}
+
+@test "source build killed by the OOM killer: retried once with the kiosk stopped at -j1" {
+    setup_build_box "Raspberry Pi 5 Model B Rev 1.0" 1500
+    export FAKE_MAKE_MODE=oom_once
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.8" ]
+    [ "$(joined "$FAKE_MAKE_LOG")" = "FAKE-MAKE -j2,FAKE-MAKE -j1," ]
+    [ "$(line_of 'FAKE-MAKE -j2')" -lt "$(line_of "$KIOSK_STOP")" ]
+    [ "$(line_of "$KIOSK_STOP")" -lt "$(line_of 'FAKE-MAKE -j1')" ]
+    [ "$(count_of "$KIOSK_STOP")" -eq 1 ]
+}
+
+@test "an update killed mid-compile still resumes the services it paused (EXIT trap)" {
+    setup_build_box "Raspberry Pi 4 Model B Rev 1.5" 500
+    add_media_browser 900
+    export FAKE_MAKE_MODE=kill_update
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -ne 0 ]
+    # Really killed mid-compile: never completed, and the in-progress marker
+    # stays armed for the boot-time recovery / next install.
+    [[ "$output" != *"Update complete"* ]]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.7" ]
+    [ -e "${MAGIC_BACKUP_DIR}.ota_in_progress" ]
+    [ "$(joined "$PAUSE_LOG")" = "pause,unpause," ]
+    [ ! -e "$MAGIC_PLAYBACK_PAUSE_MARKER" ]
+}
+
+@test "pre-compiled path: the kiosk is stopped immediately before the binary swap, not before the rsync" {
+    grep -q 'elif ! { stop_kiosk_for_swap 50; install_kiosk_binary "\$TEMP_DIR/binary_extracted/magic_dingus_box_cpp"; }; then' "$UPDATE_SCRIPT"
+    # No kiosk stop between the marker and the install rsync any more.
+    local marker_line rsync_line
+    marker_line=$(grep -n 'write_ota_marker "\$target_version"' "$UPDATE_SCRIPT" | cut -d: -f1)
+    rsync_line=$(grep -n '"\$content_dir/" "\$INSTALL_DIR/"' "$UPDATE_SCRIPT" | cut -d: -f1)
+    [ -n "$marker_line" ] && [ -n "$rsync_line" ]
+    ! sed -n "${marker_line},${rsync_line}p" "$UPDATE_SCRIPT" | grep -vE '^[[:space:]]*#' | grep -qE 'systemctl stop|stop_kiosk_for_swap'
+}
+
+@test "the kiosk is always stopped before verify_kiosk_started starts it" {
+    local stop_line verify_line
+    stop_line=$(grep -n '^    stop_kiosk_for_swap 88$' "$UPDATE_SCRIPT" | cut -d: -f1)
+    verify_line=$(grep -n 'if ! verify_kiosk_started; then' "$UPDATE_SCRIPT" | head -1 | cut -d: -f1)
+    [ -n "$stop_line" ]
+    [ "$stop_line" -lt "$verify_line" ]
+}
+
+@test "the install dispatcher arms the services-resume EXIT trap" {
+    grep -A12 '^    install)' "$UPDATE_SCRIPT" | grep -q "trap 'resume_build_paused_services' EXIT"
 }

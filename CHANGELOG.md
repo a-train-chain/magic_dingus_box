@@ -5,6 +5,30 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Updates that need to build on the box no longer leave the TV dark for
+  ten minutes.** Most updates install a ready-made program in seconds, but
+  when a box has to build the new version itself it used to switch the TV
+  off first and keep it off for the whole 8-10 minute build. Now the
+  current version keeps running — menu, videos and games all work — while
+  the new one builds in the background, and the TV only blanks for the
+  few seconds it takes to switch over. The box decides how to do this from
+  how much free memory it has at that moment: with plenty, the build runs
+  at full speed; with less, it builds more slowly (about 15-20 minutes) so
+  the TV can stay on; on a box that is already short of memory it briefly
+  pauses the Movies background services to make room (Movies is hidden on
+  the TV until the update finishes, then comes straight back — downloads
+  keep going throughout); and if even that is not enough it does exactly
+  what it did before. If the build ever runs out of memory anyway, it is
+  the build that gets stopped, never what you are watching or playing, and
+  the update simply retries with the TV paused. The Content Manager says
+  "the TV keeps working" while this is happening.
+  Like every updater improvement, this applies from the update *after* the
+  one that delivers it, because a box always updates using the updater it
+  already has.
+
 ## [1.10.0] - 2026-10-04
 
 ### Security
