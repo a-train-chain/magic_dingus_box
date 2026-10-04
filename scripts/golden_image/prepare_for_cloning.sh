@@ -144,6 +144,27 @@ fi
 log "Preflight: secret tripwire clean"
 
 # ---------------------------------------------------------------------------
+# Preflight: refuse to clone a box on the BETA update channel
+# ---------------------------------------------------------------------------
+# config/update_channel = "beta" makes a box take pre-release builds. It is
+# for the owner's own boxes, never a customer unit. first_boot.sh deletes
+# the flag on every clone anyway; refusing here keeps the decision with the
+# operator (resetting it silently would also flip the SOURCE box) and
+# leaves nothing to trust to that second line of defence. Same rule as
+# update.sh read_update_channel: only the exact word "beta" counts.
+UPDATE_CHANNEL_FILE="${INSTALL_DIR}/config/update_channel"
+if [[ -r "$UPDATE_CHANNEL_FILE" ]] \
+    && [[ "$(head -c 64 "$UPDATE_CHANNEL_FILE" 2>/dev/null | tr -d '[:space:]')" == "beta" ]]; then
+    log "ERROR: this box is on the BETA update channel — refusing to clone."
+    log "       A golden image must never carry the beta flag. Switch it back with"
+    log "         ${CPP_DIR}/scripts/update.sh channel stable"
+    log "       (or untick 'Get early (beta) updates' in the Content Manager),"
+    log "       then re-run. Nothing has been changed."
+    exit 1
+fi
+log "Preflight: update channel is stable"
+
+# ---------------------------------------------------------------------------
 # Preflight: choose the secret stash — persistent, and OFF the SD card
 # ---------------------------------------------------------------------------
 # Decided BEFORE the marker and before anything is touched, so a refusal
