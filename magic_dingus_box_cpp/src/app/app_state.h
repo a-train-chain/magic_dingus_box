@@ -420,8 +420,8 @@ public:
     // Post-game menu fade-up. 0 = idle. -1 = fade REQUESTED, set by
     // prepare_kiosk_state_after_game (which runs only on the post-handover
     // exit path — NOT the game-session exit hook, which also fires on
-    // validation early-returns where the display was never released and a
-    // fade would black-flash the still-visible menu). >0 = steady_clock
+    // launch failures where the display was never released and a fade
+    // would black-flash the still-visible menu). >0 = steady_clock
     // time_since_epoch in ms of the first frame the render loop actually
     // drew: the loop stamps the sentinel on first sight, so the fade covers
     // 250ms of RENDERED frames even when frame_ctx/EGL/GStreamer re-init

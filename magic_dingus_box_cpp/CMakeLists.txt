@@ -151,6 +151,7 @@ list(APPEND UI_SOURCES src/ui/toast.cpp)
 
 set(APP_SOURCES
     src/app/game_launch_recovery.cpp
+    src/app/game_launch_validation.cpp
     src/app/game_quiet_mode.cpp
     src/app/movie_quiet_mode.cpp
     src/app/playlist_loader.cpp
@@ -626,6 +627,10 @@ if(RETROARCH_TEST_SOURCES)
     add_executable(test_retroarch_unit
         ${RETROARCH_TEST_SOURCES}
         src/app/game_launch_recovery.cpp
+        # game_launch_validation resolves ROMs through the kiosk's real
+        # path resolver, hence path_resolver.cpp.
+        src/app/game_launch_validation.cpp
+        src/utils/path_resolver.cpp
         src/app/game_quiet_mode.cpp
         src/app/movie_quiet_mode.cpp
         ${RETROARCH_TESTABLE_SOURCES}

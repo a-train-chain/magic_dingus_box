@@ -12,7 +12,8 @@ void prepare_kiosk_state_after_game(AppState& state) {
     // render loop stamps the real start time on the first frame it draws.
     // Requested HERE and not in the game-session exit hook: this helper runs
     // only after a genuine display handover, while the hook also fires on
-    // validation early-returns where the menu never left the screen.
+    // launch failures before the handover, where the menu never left the
+    // screen.
     state.post_game_fade_start_ms.store(-1);
 }
 

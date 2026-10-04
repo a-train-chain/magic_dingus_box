@@ -28,9 +28,10 @@ public:
     void set_input_manager(platform::InputManager* input_manager) { input_manager_ = input_manager; }
 
     // RetroArch session bracketing hooks — installed once from main().
-    // begin runs at the top of load_playlist_item's emulated_game branch;
-    // end is guaranteed to run when the branch exits, on every path
-    // (normal return, validation early-return, exception). They carry the
+    // begin runs in load_playlist_item's emulated_game branch right AFTER
+    // validate_game_launch passes (a launch that can't happen must not
+    // quiet the media stack); end is guaranteed to run once begin has, on
+    // every path (normal return, launch failure, exception). They carry the
     // side effects that must wrap EVERY game session — systemd watchdog
     // disable/re-enable, phone-remote status writes, GPIO restart-button
     // polling, media-stack quiet mode — so all five launch routes get
