@@ -2462,9 +2462,14 @@ void SeriesDetailScreen::run_series_poll(uint64_t gen, int sonarr_id,
         ~InflightGuard() { flag.store(false, std::memory_order_release); }
     } inflight_guard{poll_inflight_};
     auto fresh = sonarr_.get_series(sonarr_id);
-    std::unordered_set<int> downloading;
-    for (const auto& q : sonarr_.get_queue()) {
-        if (q.series_id == sonarr_id) downloading.insert(q.season_number);
+    // CHECKED queue read: nullopt = Sonarr did not answer THIS request,
+    // which is independent of whether get_series just did. See
+    // downloading_seasons_from_queue for the duplicate-search bug the
+    // unchecked read caused.
+    std::optional<std::unordered_set<int>> downloading;
+    if (fresh.has_value()) {
+        downloading = downloading_seasons_from_queue(sonarr_.get_queue_checked(),
+                                                     sonarr_id);
     }
     std::lock_guard<std::mutex> lk(pending_mtx_);
     // Recheck under the lock — a worker that passed a pre-lock check could
@@ -2485,14 +2490,16 @@ void SeriesDetailScreen::run_series_poll(uint64_t gen, int sonarr_id,
         pending_.settled = record_refreshed(*fresh);
         pending_.has_settled = true;
         pending_.series = std::move(fresh);
-        // The queue snapshot rides on get_series' verdict. get_queue()
-        // returns an EMPTY vector both for "nothing is downloading" and for
-        // "Sonarr did not answer", and only get_series can tell those apart:
-        // it succeeded, so Sonarr is answering and an empty set is the truth.
-        // Publishing it unconditionally would let one transport blip blank
-        // every real per-season badge until the next poll ~9 s later.
-        pending_.downloading = std::move(downloading);
-        pending_.has_downloading = true;
+        // The queue snapshot is published only when the queue read ITSELF
+        // answered. It used to ride on get_series' verdict alone, but the
+        // two are separate requests: a queue read that failed after a good
+        // series read published an empty set. A missing snapshot leaves
+        // has_downloading false, so apply_pending() keeps the existing
+        // badges standing rather than clearing them on no evidence.
+        if (downloading.has_value()) {
+            pending_.downloading = std::move(*downloading);
+            pending_.has_downloading = true;
+        }
     } else {
         pending_.in_library = prev_in_library;
         // has_downloading stays false — apply_pending() leaves the existing

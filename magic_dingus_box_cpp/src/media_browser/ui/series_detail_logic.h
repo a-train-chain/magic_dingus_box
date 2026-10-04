@@ -227,6 +227,25 @@ inline std::vector<int> cancel_ids_for_season(
     return ids;
 }
 
+// The quiet re-poll's per-season "downloading" set, from a CHECKED queue
+// read. nullopt in -> nullopt out: a failed read is no evidence at all, and
+// the caller must keep the set it already has. The poll used the unchecked
+// get_queue() and gated it only on get_series() succeeding — but the two
+// are separate requests, so a queue read that failed after a good series
+// read published an EMPTY set. That flipped every downloading season to
+// None for ~9 s, which made them eligible in the season chooser and let a
+// press fire a duplicate search for a season already in flight.
+inline std::optional<std::unordered_set<int>> downloading_seasons_from_queue(
+        const std::optional<std::vector<SonarrQueueItem>>& queue,
+        int sonarr_series_id) {
+    if (!queue.has_value()) return std::nullopt;
+    std::unordered_set<int> out;
+    for (const auto& q : *queue) {
+        if (q.series_id == sonarr_series_id) out.insert(q.season_number);
+    }
+    return out;
+}
+
 // Whether the trailing "Delete Season N…" row exists in the picker: either
 // files are already on disk, or a download for the season is live (nothing
 // to delete yet, but the row still offers to cancel it).

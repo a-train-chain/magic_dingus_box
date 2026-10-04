@@ -728,3 +728,28 @@ TEST_CASE("action row: the chooser label replaces the primary label, same action
     CHECK(b.action == Action::NextSeason);
     CHECK(b.label == "\xE2\x80\xB9 Season 6 \xC2\xB7 ~20 GB \xE2\x80\xBA");
 }
+
+TEST_CASE("poll downloading set: a failed queue read is NO evidence, not an empty queue",
+          "[series_detail]") {
+    // A failed read must not flip every downloading season to None — that
+    // made them eligible in the season chooser and invited duplicate
+    // searches. nullopt in, nullopt out: the caller keeps its prior set.
+    CHECK_FALSE(downloading_seasons_from_queue(std::nullopt, 7).has_value());
+
+    SECTION("an answered empty queue really is an empty set") {
+        const auto got = downloading_seasons_from_queue(
+            std::vector<SonarrQueueItem>{}, 7);
+        REQUIRE(got.has_value());
+        CHECK(got->empty());
+    }
+    SECTION("only this series' rows count, deduped by season") {
+        SonarrQueueItem a; a.series_id = 7; a.season_number = 2;
+        SonarrQueueItem b; b.series_id = 7; b.season_number = 2;
+        SonarrQueueItem c; c.series_id = 9; c.season_number = 3;
+        SonarrQueueItem d; d.series_id = 7; d.season_number = 4;
+        const auto got = downloading_seasons_from_queue(
+            std::vector<SonarrQueueItem>{a, b, c, d}, 7);
+        REQUIRE(got.has_value());
+        CHECK(*got == std::unordered_set<int>{2, 4});
+    }
+}
