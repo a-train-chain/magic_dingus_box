@@ -10,6 +10,15 @@
 
 namespace media_browser {
 
+// What a manual release grab did.
+//   Grabbed — Radarr answered 2xx: the release is queued.
+//   Refused — Radarr answered with an error status, or the request provably
+//             never left the box: nothing was queued; picking again is safe.
+//   Unknown — sent, but no answer (timeout / dropped connection): Radarr may
+//             well have queued it. The UI must say "may have started —
+//             check Queue", never "failed", or the user grabs twice.
+enum class GrabOutcome { Grabbed, Refused, Unknown };
+
 class RadarrClient {
 public:
     struct Config {
@@ -78,7 +87,10 @@ public:
     // Grab a specific release picked by the user. The `release` JSON
     // must be an object previously returned from /api/v3/release?movieId=X
     // (or constructed with the same shape — at minimum guid + indexerId).
-    virtual bool grab_release(const Json::Value& release);
+    // Classified in-band (see GrabOutcome): a POST that times out after
+    // being sent may still have queued the download, and must not be
+    // reported as a refusal the user answers with a second grab.
+    virtual GrabOutcome grab_release(const Json::Value& release);
 
     // Fetch /api/v3/release?movieId=X — the list of releases Radarr would
     // consider for an interactive search of this movie. Each entry has
@@ -143,6 +155,17 @@ public:
         return last_error_;
     }
 
+    // POST outcome with the transport facts kept apart, for callers that
+    // must classify a failure (grab_release). Public so tests can script it.
+    struct HttpPostResult {
+        std::string body;
+        long http_code = 0;       // 0 = no HTTP status (transport failure)
+        // True only when the request provably never reached Radarr (curl
+        // init failure, unresolvable host, connection refused). A timeout
+        // or a dropped connection AFTER sending is NOT never_sent.
+        bool never_sent = false;
+    };
+
 protected:
     struct HttpGetResult {
         std::string body;
@@ -160,6 +183,10 @@ protected:
     virtual HttpGetResult http_get_result(const std::string& path,
                                           int timeout_secs);
     virtual std::string http_post(const std::string& path, const std::string& body);
+    // The transport behind http_post, keeping the status and the
+    // never-sent fact. last_error side effects are unchanged.
+    virtual HttpPostResult http_post_result(const std::string& path,
+                                            const std::string& body);
     // Returns the HTTP status code; 0 is the ONE reserved "no answer" value
     // (transport failure — no status line). Callers branch on the code
     // IN-BAND (code > 0 && code < 400) instead of reading last_error()

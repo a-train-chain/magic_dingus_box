@@ -568,6 +568,7 @@ DetailScreen::~DetailScreen() {
     // The remove/add workers publish into members — join before they die.
     if (remove_worker_.joinable()) remove_worker_.join();
     if (add_worker_.joinable()) add_worker_.join();
+    if (search_worker_.joinable()) search_worker_.join();
     for (auto& w : tmdb_workers_) {
         if (w.thread.joinable()) w.thread.join();
     }
@@ -663,6 +664,7 @@ Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& event
     if (Screen s = drain_add_result(); s != Screen::Detail) {
         return s;
     }
+    drain_search_result();
     for (const auto& e : events) {
         // BTN4 (SETTINGS_MENU, black) — short-press returns to the screen
         // that opened this Detail (Browse / Library / Search / Queue) via
@@ -864,9 +866,46 @@ Screen DetailScreen::do_search_again() {
         show_banner("No movie record");
         return Screen::Detail;
     }
-    bool ok = radarr_.trigger_search(movie_->radarr_id);
-    show_banner(ok ? "Search triggered" : "Search failed");
+    if (search_in_flight_.load(std::memory_order_acquire)) {
+        show_banner("Searching\xE2\x80\xA6");
+        return Screen::Detail;
+    }
+    // search_in_flight_ was false, so the previous worker has finished and
+    // this join is instant.
+    if (search_worker_.joinable()) search_worker_.join();
+    const int radarr_id = movie_->radarr_id;
+    search_radarr_id_ = radarr_id;
+    search_in_flight_.store(true, std::memory_order_release);
+    show_banner("Searching\xE2\x80\xA6");
+    try {
+        search_worker_ = std::thread([this, radarr_id]() {
+            bool ok = false;
+            run_guarded("detail search again",
+                        [&] { ok = radarr_.trigger_search(radarr_id); });
+            search_ok_ = ok;
+            search_done_.store(true, std::memory_order_release);
+            search_in_flight_.store(false, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        search_in_flight_.store(false, std::memory_order_release);
+        show_banner("Search failed to start; try again");
+    }
     return Screen::Detail;
+}
+
+void DetailScreen::drain_search_result() {
+    if (!search_done_.exchange(false, std::memory_order_acq_rel)) return;
+    const bool same_movie =
+        movie_.has_value() && movie_->radarr_id == search_radarr_id_;
+    if (search_ok_) {
+        if (same_movie) show_banner("Search triggered");
+        return;
+    }
+    // A failure is worth a toast even when the user has moved on: they
+    // asked for a search and none is running.
+    if (same_movie) show_banner("Search failed");
+    ::ui::Toast::show("Search didn't start \xE2\x80\x94 Radarr didn't answer; "
+                      "try again");
 }
 
 Screen DetailScreen::do_remove_stage1() {

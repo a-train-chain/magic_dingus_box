@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -218,6 +219,7 @@ QueueScreen::~QueueScreen() {
     // Wait for any in-flight worker before destruction so we don't
     // leave a thread holding references to a dying QueueScreen.
     if (worker_.joinable()) worker_.join();
+    if (cancel_worker_.joinable()) cancel_worker_.join();
 }
 
 void QueueScreen::enter() {
@@ -631,6 +633,7 @@ void QueueScreen::update() {
     // Drain any worker result into the live state. Cheap — it's an
     // atomic load most frames, only takes the mutex when result is ready.
     apply_pending();
+    drain_cancel_result();
 
     auto now = std::chrono::steady_clock::now();
 
@@ -658,20 +661,62 @@ void QueueScreen::update() {
 void QueueScreen::do_cancel_focused() {
     if (cursor_ < 0 || cursor_ >= row_count()) return;
     const int movie_rows = static_cast<int>(queue_.size());
-    if (cursor_ < movie_rows) {
-        radarr_.cancel_queue_item(queue_[cursor_].id);
-    } else if (sonarr_) {
-        // EXACTLY ONE call. Sonarr's DELETE acts on the whole download, so
-        // this removes every episode row of the pack; iterating the pack's
-        // sibling ids would only collect 404s (sonarr_client.h).
-        sonarr_->cancel_queue_item(
-            tv_[static_cast<size_t>(cursor_ - movie_rows)].group.first_queue_id);
-    }
+    const bool is_tv = cursor_ >= movie_rows;
+    if (is_tv && sonarr_ == nullptr) return;
+    // Capture by VALUE: queue_/tv_ are render-thread state that the next
+    // apply_pending() replaces while the DELETE is in flight.
+    const int queue_id =
+        is_tv ? tv_[static_cast<size_t>(cursor_ - movie_rows)].group.first_queue_id
+              : queue_[cursor_].id;
+    std::string title =
+        is_tv ? tv_row_title(tv_[static_cast<size_t>(cursor_ - movie_rows)].group)
+              : queue_[cursor_].title;
     cancel_pending_ = false;
     cancel_pending_is_tv_ = false;
     cancel_pending_queue_id_ = 0;
-    // Force an immediate refresh so the row disappears without the user
-    // waiting on the 2s poll. Async — UI thread doesn't block.
+    if (cancel_in_flight_.load(std::memory_order_acquire)) {
+        ::ui::Toast::show("Still cancelling the last download\xE2\x80\xA6");
+        return;
+    }
+    // cancel_in_flight_ was false, so the previous worker has finished and
+    // this join is instant.
+    if (cancel_worker_.joinable()) cancel_worker_.join();
+    cancel_in_flight_.store(true, std::memory_order_release);
+    try {
+        cancel_worker_ = std::thread([this, is_tv, queue_id,
+                                      title = std::move(title)]() {
+            bool ok = false;
+            run_guarded("queue cancel", [&] {
+                // TV: EXACTLY ONE call. Sonarr's DELETE acts on the whole
+                // download, so this removes every episode row of the pack;
+                // iterating the pack's sibling ids would only collect 404s
+                // (sonarr_client.h).
+                ok = is_tv ? sonarr_->cancel_queue_item(queue_id)
+                           : radarr_.cancel_queue_item(queue_id);
+            });
+            cancel_ok_ = ok;
+            cancel_title_ = title;
+            cancel_done_.store(true, std::memory_order_release);
+            cancel_in_flight_.store(false, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        cancel_in_flight_.store(false, std::memory_order_release);
+        ::ui::Toast::show("Couldn't start the cancel \xE2\x80\x94 try again");
+    }
+}
+
+void QueueScreen::drain_cancel_result() {
+    if (!cancel_done_.exchange(false, std::memory_order_acq_rel)) return;
+    if (!cancel_ok_) {
+        ::ui::Toast::show("Couldn't cancel " +
+                          (cancel_title_.empty() ? std::string("the download")
+                                                 : cancel_title_) +
+                          " \xE2\x80\x94 try again");
+    }
+    // Refresh now either way — success makes the row disappear without
+    // waiting on the poll; failure shows the row is still there. Async;
+    // a refresh already in flight makes this a no-op and the next tick
+    // catches up.
     refresh_async();
 }
 

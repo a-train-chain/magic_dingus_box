@@ -89,8 +89,20 @@ void RadarrClient::wait_for_metadata_retry(std::chrono::milliseconds delay) {
 }
 
 std::string RadarrClient::http_post(const std::string& path, const std::string& body) {
+    auto r = http_post_result(path, body);
+    return (r.http_code > 0 && r.http_code < 400) ? std::move(r.body)
+                                                  : std::string{};
+}
+
+RadarrClient::HttpPostResult
+RadarrClient::http_post_result(const std::string& path, const std::string& body) {
+    HttpPostResult out;
     CURL* curl = curl_easy_init();
-    if (!curl) { set_error("curl init failed"); return {}; }
+    if (!curl) {
+        set_error("curl init failed");
+        out.never_sent = true;
+        return out;
+    }
     std::string url = cfg_.base_url + path;
     std::string resp;
     struct curl_slist* headers = nullptr;
@@ -107,13 +119,26 @@ std::string RadarrClient::http_post(const std::string& path, const std::string& 
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
+    if (rc != CURLE_OK) {
+        set_error(curl_easy_strerror(rc));
+        // No complete answer: report no status even if headers arrived
+        // (a dropped body after a 2xx is still "we don't know").
+        // never_sent only for failures that happen before a single byte
+        // can reach Radarr — everything else may have been acted on.
+        out.never_sent = rc == CURLE_COULDNT_RESOLVE_HOST ||
+                         rc == CURLE_COULDNT_RESOLVE_PROXY ||
+                         rc == CURLE_COULDNT_CONNECT ||
+                         rc == CURLE_UNSUPPORTED_PROTOCOL ||
+                         rc == CURLE_URL_MALFORMAT;
+        return out;
+    }
+    out.http_code = http_code;
     if (http_code >= 400) {
         std::ostringstream os; os << "HTTP " << http_code << ": " << resp;
         set_error(os.str());
-        return {};
     }
-    return resp;
+    out.body = std::move(resp);
+    return out;
 }
 
 long RadarrClient::http_delete(const std::string& path) {
@@ -411,12 +436,16 @@ bool RadarrClient::cancel_queue_item(int queue_id) {
     return code > 0 && code < 400;
 }
 
-bool RadarrClient::grab_release(const Json::Value& release) {
+GrabOutcome RadarrClient::grab_release(const Json::Value& release) {
     Json::StreamWriterBuilder w;
     w["indentation"] = "";
     std::string body = Json::writeString(w, release);
-    std::string resp = http_post("/api/v3/release", body);
-    return !resp.empty();  // Radarr returns the queued release on success.
+    // Classified from THIS call's transport result, not a later
+    // last_error() read (shared with every background poll).
+    const HttpPostResult r = http_post_result("/api/v3/release", body);
+    if (r.http_code > 0 && r.http_code < 400) return GrabOutcome::Grabbed;
+    if (r.http_code >= 400 || r.never_sent) return GrabOutcome::Refused;
+    return GrabOutcome::Unknown;
 }
 
 std::vector<Json::Value>

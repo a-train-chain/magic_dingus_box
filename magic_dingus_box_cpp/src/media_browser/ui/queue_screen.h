@@ -325,6 +325,21 @@ private:
     bool cancel_pending_is_tv_ = false;
     int cancel_pending_queue_id_ = 0;
     std::chrono::steady_clock::time_point cancel_pending_at_{};
+
+    // --- Async cancel -----------------------------------------------------
+    // The confirmed cancel is a 5 s-timeout DELETE; it ran on the render
+    // thread with its result IGNORED, so a failed cancel looked exactly
+    // like a successful one (the row simply stayed, unexplained). One
+    // cancel at a time on cancel_worker_; drain_cancel_result() (update())
+    // toasts a failure and forces the refresh either way. cancel_ok_ /
+    // cancel_title_ are written before the release store to cancel_done_
+    // and read only after the acquire exchange.
+    void drain_cancel_result();
+    std::thread                cancel_worker_;
+    std::atomic<bool>          cancel_in_flight_{false};
+    std::atomic<bool>          cancel_done_{false};
+    bool                       cancel_ok_ = false;
+    std::string                cancel_title_;
 };
 
 }  // namespace media_browser::ui
