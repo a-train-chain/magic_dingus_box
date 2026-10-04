@@ -193,6 +193,46 @@ if [[ -n "$SELECTED" ]]; then
 fi
 
 # ---------------------------------------------------------------------
+header "Audio"
+# ---------------------------------------------------------------------
+# A box with a picture and no sound used to pass every check here — observed
+# live 2026-10-03: a udev rule hid HDMI1 from PulseAudio, the TV was on
+# HDMI1, the only sink was auto_null, and this script said SHIPPABLE.
+# A TV that takes audio lists short audio descriptors in its ELD
+# (sad_count > 0); each such port must have a PulseAudio sink.
+pa() {
+    if [[ $EUID -eq 0 ]]; then
+        local u; u="$(id -u magic 2>/dev/null)" || return 1
+        runuser -u magic -- env XDG_RUNTIME_DIR="/run/user/${u}" pactl "$@"
+    else
+        pactl "$@"
+    fi
+}
+TV_PORTS=0
+for eld in /proc/asound/vc4hdmi*/eld#0; do
+    [[ -r "$eld" ]] || continue
+    n="$(awk '$1=="sad_count"{print $2}' "$eld")"
+    [[ "${n:-0}" -gt 0 ]] && TV_PORTS=$((TV_PORTS+1))
+done
+SINKS="$(pa list short sinks 2>/dev/null || true)"
+HDMI_SINKS="$(grep -ci hdmi <<<"$SINKS" || true)"
+DEF_SINK="$(pa get-default-sink 2>/dev/null || true)"
+if [[ -e /etc/udev/rules.d/91-pulse-ignore-unused-hdmi.rules ]]; then
+    fail "udev rule hides an HDMI port from PulseAudio (91-pulse-ignore-unused-hdmi.rules) — restart the kiosk; init_audio.sh removes it"
+fi
+if [[ -z "$SINKS" ]]; then
+    fail "PulseAudio not answering — no audio for videos, menus or games"
+elif [[ -z "$DEF_SINK" || "$DEF_SINK" == "auto_null" ]]; then
+    fail "default sink is '${DEF_SINK:-none}' — the box is SILENT (TV ports with audio: ${TV_PORTS})"
+elif (( TV_PORTS > HDMI_SINKS )); then
+    fail "${TV_PORTS} HDMI port(s) have a TV that takes audio but only ${HDMI_SINKS} HDMI sink(s) exist"
+elif (( TV_PORTS == 0 )); then
+    warn "no TV reporting audio on HDMI (TV off, or a CRT converter without audio EDID?) — default sink ${DEF_SINK}"
+else
+    pass "audio: default sink ${DEF_SINK}"
+fi
+
+# ---------------------------------------------------------------------
 header "Content"
 # ---------------------------------------------------------------------
 # Playlist paths resolve against the APP root or the data dir depending on

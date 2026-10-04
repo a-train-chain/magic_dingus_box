@@ -93,3 +93,9 @@ PI5_USB_DAC_SINKS='0	alsa_output.platform-107c701400.hdmi.hdmi-stereo	module-als
     [ "$status" -eq 0 ]
     [ "$output" = "alsa_output.platform-107c706400.hdmi.hdmi-stereo" ]
 }
+
+@test "verify_box.sh fails a silent box (auto_null default sink)" {
+    grep -q 'header "Audio"' "$CPP_DIR/scripts/verify_box.sh"
+    grep -q 'auto_null' "$CPP_DIR/scripts/verify_box.sh"
+    grep -q 'sad_count' "$CPP_DIR/scripts/verify_box.sh"
+}
