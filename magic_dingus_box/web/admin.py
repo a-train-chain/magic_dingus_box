@@ -250,6 +250,38 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text or "").strip()
 
 
+DEVICE_NAME_MAX = 64
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _clean_device_name(value) -> Optional[str]:
+    """The trimmed name if `value` is an acceptable device name, else None.
+
+    A display label shown on every Content Manager screen and in the mDNS
+    device list: a string, 1..DEVICE_NAME_MAX chars after trimming, no
+    control characters (a newline or NUL would break the one-line labels
+    and the JSON-lines tooling that greps this file)."""
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    if not name or len(name) > DEVICE_NAME_MAX or _CONTROL_CHARS_RE.search(name):
+        return None
+    return name
+
+
+def _device_info_problem(doc) -> Optional[str]:
+    """Why `doc` cannot be a device_info.json, or None if it can. It must be
+    a JSON object; device_name / device_id, when present, plain strings."""
+    if not isinstance(doc, dict):
+        return "device_info.json must be a JSON object"
+    if "device_name" in doc and _clean_device_name(doc["device_name"]) is None:
+        return f"device_name must be text of 1-{DEVICE_NAME_MAX} characters"
+    if "device_id" in doc and not (isinstance(doc["device_id"], str)
+                                   and 0 < len(doc["device_id"]) <= 128):
+        return "device_id must be a short string"
+    return None
+
+
 # OTA install inputs. See install_update() for why `version` is load-bearing.
 # re.ASCII + explicit [0-9]: the pattern must not admit non-ASCII digits.
 _OTA_VERSION_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", re.ASCII)
@@ -2252,14 +2284,23 @@ def create_app(data_dir: Path, config=None) -> Flask:
     def get_device_info() -> dict:
         """Get device identity and stats."""
         try:
+            info = None
             if device_info_file.exists():
                 info = json.loads(device_info_file.read_text())
-            else:
+                # A wrong-shaped file (e.g. restored before restore checked
+                # the shape) must not 500 this endpoint forever — it is the
+                # first call the Content Manager makes to find the box. Fall
+                # back to defaults; a rename rewrites the file properly.
+                if not isinstance(info, dict):
+                    info = None
+                elif _clean_device_name(info.get('device_name')) is None:
+                    info['device_name'] = 'Magic Dingus Box'
+            if info is None:
                 info = {
                     'device_id': 'unknown',
                     'device_name': 'Magic Dingus Box'
                 }
-            
+
             # Add runtime info
             info['hostname'] = socket.gethostname()
             info['local_ip'] = get_local_ip()
@@ -2289,16 +2330,25 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def set_device_name():  # type: ignore[no-redef]
         """Set/update device name."""
-        data = request.get_json()
-        if not data:
-            return error_response("VALIDATION_ERROR", "JSON body required")
-        new_name = data.get('name', 'Magic Dingus Box')
+        data = request.get_json(silent=True)
+        if not data or not isinstance(data, dict):
+            return error_response("VALIDATION_ERROR", "JSON object body required")
+        new_name = _clean_device_name(data.get('name', 'Magic Dingus Box'))
+        if new_name is None:
+            return error_response(
+                "VALIDATION_ERROR",
+                f"Name must be text of 1-{DEVICE_NAME_MAX} characters")
 
         try:
+            info = None
             if device_info_file.exists():
-                info = json.loads(device_info_file.read_text())
-            else:
-                import uuid
+                try:
+                    info = json.loads(device_info_file.read_text())
+                except json.JSONDecodeError:
+                    info = None
+            if not isinstance(info, dict):
+                # Missing, corrupt, or wrong-shaped: start a fresh record
+                # (this is also how a bad restored file gets healed).
                 info = {'device_id': str(uuid.uuid4())}
 
             info['device_name'] = new_name
@@ -2554,8 +2604,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 if "config/settings.json" in names:
                     try:
                         content = _read_zip_entry_capped(zf, "config/settings.json")
-                        # Validate it's valid JSON
-                        json.loads(content.decode('utf-8'))
+                        # Valid JSON AND an object: the kiosk reads this file
+                        # as a JSON object; a list or scalar is not settings.
+                        if not isinstance(json.loads(content.decode('utf-8')), dict):
+                            raise ValueError("settings.json must be a JSON object")
 
                         settings_dest = kiosk_config_dir / "settings.json"
                         # Atomic + fsync'd — a torn settings.json reads as
@@ -2576,8 +2628,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 if "data/device_info.json" in names:
                     try:
                         content = _read_zip_entry_capped(zf, "data/device_info.json")
-                        # Validate it's valid JSON
-                        json.loads(content.decode('utf-8'))
+                        # Valid JSON is not enough: a list or a string here
+                        # used to 500 /admin/device/info forever after.
+                        problem = _device_info_problem(
+                            json.loads(content.decode('utf-8')))
+                        if problem:
+                            raise ValueError(problem)
 
                         _atomic_write_text(device_info_file, content.decode("utf-8"))
                         restored["device_info"] = True
