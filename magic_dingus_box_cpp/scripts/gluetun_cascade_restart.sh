@@ -194,6 +194,34 @@ converge_dependents() {
 }
 
 # docker restart mdb_gluetun under the compose lock (bounded wait).
+# Clear the *arr indexer cooldowns a tunnel outage caused. While Gluetun
+# is down every Radarr/Sonarr search fails, and both apps escalate the
+# indexers into cooldowns of up to 24 h — which, before this, only the
+# boot-time magic-dingus-clear-cooldowns oneshot cleared. A box whose
+# tunnel blipped (observed 2026-10-04: unhealthy every ~10 min for hours)
+# then searched nothing long after the tunnel was back. The helper is a
+# no-op when nothing is in cooldown, and restarts an app only when it has
+# rows to reset. Backgrounded after a settle delay (the apps must answer
+# first) and single-flight, so the event loop never blocks on it.
+clear_cooldowns_after_recovery() {
+    local cmd="${COOLDOWN_CLEAR_CMD:-/usr/local/bin/clear_radarr_cooldowns.py}"
+    [ -x "$cmd" ] || return 0
+    local lock="${COOLDOWN_CLEAR_LOCK:-/run/lock/mdb-cooldown-clear.lock}"
+    _run_clear() {
+        sleep "${COOLDOWN_CLEAR_DELAY_S:-60}"
+        if command -v flock >/dev/null 2>&1; then
+            flock -n "$lock" "$cmd" || log "cooldown clear skipped (another run in progress or failed)"
+        else
+            "$cmd" || true
+        fi
+    }
+    if [ "${COOLDOWN_CLEAR_SYNC:-0}" = "1" ]; then
+        _run_clear
+    else
+        _run_clear &
+    fi
+}
+
 restart_gluetun() {
     local rc=0
     compose_lock 120 || rc=$?
@@ -388,6 +416,7 @@ main() {
                 # tunnel was down, is only noticed here.
                 log "gluetun healthy at ${event_time} — converging dependents"
                 converge_dependents || true
+                clear_cooldowns_after_recovery || true
                 ;;
             *)
                 # Anything else slipping past the filter — log but ignore.

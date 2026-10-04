@@ -240,6 +240,37 @@ class CascadeConvergeTests(StubDockerTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
+    def test_recovery_clears_indexer_cooldowns(self):
+        # 2026-10-04: the tunnel dropped every ~10 min; each outage put the
+        # *arr indexers into cooldowns (up to 24 h) that only the boot-time
+        # oneshot cleared, so downloads stalled long after the tunnel was
+        # back. A healthy event now runs the cooldown clear.
+        marker = Path(self._tmp.name) / "cleared"
+        stub = Path(self._tmp.name) / "clear_stub.sh"
+        stub.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        stub.chmod(0o755)
+        env = dict(self.HEALTHY, COOLDOWN_CLEAR_CMD=str(stub),
+                   COOLDOWN_CLEAR_DELAY_S="0", COOLDOWN_CLEAR_SYNC="1")
+        result = self.run_script(CASCADE, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists(), result.stdout)
+
+    def test_start_event_does_not_clear_cooldowns(self):
+        marker = Path(self._tmp.name) / "cleared"
+        stub = Path(self._tmp.name) / "clear_stub.sh"
+        stub.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        stub.chmod(0o755)
+        env = {"COOLDOWN_CLEAR_CMD": str(stub), "COOLDOWN_CLEAR_DELAY_S": "0",
+               "COOLDOWN_CLEAR_SYNC": "1"}
+        self.run_script(CASCADE, extra_env=env)
+        self.assertFalse(marker.exists())
+
+    def test_missing_clear_helper_is_harmless(self):
+        env = dict(self.HEALTHY, COOLDOWN_CLEAR_CMD="/nonexistent/clear.py",
+                   COOLDOWN_CLEAR_DELAY_S="0", COOLDOWN_CLEAR_SYNC="1")
+        result = self.run_script(CASCADE, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_created_dependent_is_brought_up(self):
         self.converge(radarr="created", byparr="absent")
         ups = [l for l in self.compose_lines() if " up -d " in l]
