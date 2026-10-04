@@ -57,15 +57,15 @@ log() { echo "${LOG_PREFIX} $*"; }
 reset_alt_speed_limits() {
     local jar="$1" mode after
 
-    mode=$(curl -fsS -b "${jar}" \
+    mode=$(curl -fsS --max-time 15 -b "${jar}" \
         "${QBIT_URL}/api/v2/transfer/speedLimitsMode" 2>/dev/null || echo "")
 
     if [ "${mode}" = "1" ]; then
         # qBittorrent 5.x exposes no explicit setter for the mode, only a
         # toggle, so read-then-toggle-then-verify is the entire contract.
-        curl -fsS -b "${jar}" -X POST \
+        curl -fsS --max-time 15 -b "${jar}" -X POST \
             "${QBIT_URL}/api/v2/transfer/toggleSpeedLimitsMode" >/dev/null 2>&1 || true
-        after=$(curl -fsS -b "${jar}" \
+        after=$(curl -fsS --max-time 15 -b "${jar}" \
             "${QBIT_URL}/api/v2/transfer/speedLimitsMode" 2>/dev/null || echo "")
         if [ "${after}" = "0" ]; then
             log "alt-speed limits were STUCK ON (crash recovery) — cleared, full speed restored"
@@ -81,11 +81,17 @@ reset_alt_speed_limits() {
     # Re-assert the trickle RATES regardless, so boxes provisioned before
     # the rates were retuned converge with nobody touching them. These are
     # BYTES per second despite the qBittorrent docs claiming KiB —
-    # verified against the live API. 2 MiB/s down, 1 MiB/s up.
-    if curl -fsS -b "${jar}" -X POST "${QBIT_URL}/api/v2/app/setPreferences" \
-        --data-urlencode 'json={"alt_dl_limit":2097152,"alt_up_limit":1048576}' \
+    # verified against the live API. MUST match the kiosk's own
+    # configure_alt_speed_limits() call in src/main.cpp: 2 MiB/s down,
+    # 8 KiB/s up. Upload is near-zero by design (seeding is the expensive
+    # disk direction during a movie); near-zero, not zero, because 0 means
+    # UNLIMITED to qBit. This used to pin 1 MiB/s up, and since this unit
+    # runs AFTER the kiosk's best-effort startup call on every boot, it
+    # silently overrode the kiosk's 8 KiB/s on every box.
+    if curl -fsS --max-time 15 -b "${jar}" -X POST "${QBIT_URL}/api/v2/app/setPreferences" \
+        --data-urlencode 'json={"alt_dl_limit":2097152,"alt_up_limit":8192}' \
         >/dev/null 2>&1; then
-        log "alt-speed rates pinned (2 MiB/s down, 1 MiB/s up)"
+        log "alt-speed rates pinned (2 MiB/s down, 8 KiB/s up)"
     else
         log "WARN: failed to pin alt-speed rates"
     fi
@@ -132,7 +138,7 @@ COOKIE=$(mktemp)
 trap 'rm -f "${COOKIE}"' EXIT
 
 # Try .env password first — happy path, no changes needed.
-if curl -fsS -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
+if curl -fsS --max-time 15 -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
     -d "username=admin" --data-urlencode "password=${QBIT_PW}" 2>/dev/null \
     | grep -q "Ok\."; then
     log "qBit already accepts .env password (no resync needed)"
@@ -147,7 +153,7 @@ fi
 # default. linuxserver/qbittorrent ships with admin/adminadmin until
 # Step 7.5 (or this script) overrides it.
 log "qBit rejected .env password — trying docker default 'adminadmin'..."
-if curl -fsS -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
+if curl -fsS --max-time 15 -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
     -d "username=admin&password=adminadmin" 2>/dev/null \
     | grep -q "Ok\."; then
     log "qBit on default credentials — applying .env password..."
@@ -156,7 +162,7 @@ else
     # print a per-session temporary password in their log instead.
     # (Hit live on the first Pi 5 provisioning, 2026-07-22.)
     TMP_PW=$(docker logs mdb_qbittorrent 2>&1 | grep "temporary password" | tail -1 | awk '{print $NF}')
-    if [ -n "${TMP_PW}" ] && curl -fsS -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
+    if [ -n "${TMP_PW}" ] && curl -fsS --max-time 15 -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
         -d "username=admin" --data-urlencode "password=${TMP_PW}" 2>/dev/null \
         | grep -q "Ok\."; then
         log "qBit on session temporary password — applying .env password..."
@@ -179,7 +185,7 @@ print(json.dumps({
     'bypass_auth_subnet_whitelist_enabled': False,
 }))" "${QBIT_PW}")
 
-if curl -fsS -b "${COOKIE}" -X POST \
+if curl -fsS --max-time 15 -b "${COOKIE}" -X POST \
     "${QBIT_URL}/api/v2/app/setPreferences" \
     --data-urlencode "json=${PREFS_JSON}" >/dev/null 2>&1; then
     log "qBit password resynced + localhost-auth-bypass disabled"
@@ -190,7 +196,7 @@ fi
 
 # Verify the resync worked.
 NEW_COOKIE=$(mktemp)
-if curl -fsS -c "${NEW_COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
+if curl -fsS --max-time 15 -c "${NEW_COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
     -d "username=admin" --data-urlencode "password=${QBIT_PW}" 2>/dev/null \
     | grep -q "Ok\."; then
     log "verified: qBit now accepts .env password"

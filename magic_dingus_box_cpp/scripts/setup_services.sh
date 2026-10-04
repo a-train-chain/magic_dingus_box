@@ -1037,17 +1037,41 @@ fi
 # silently fail authentication after Step 7.5 disables the localhost
 # bypass. Idempotent: we only write the line if it's missing or stale.
 if [ -n "${QBIT_PW}" ]; then
+    PREV_MDB_QBIT_PASS=$(grep '^MDB_QBIT_PASS=' "${ENV_FILE}" | cut -d= -f2- || true)
     if grep -q '^MDB_QBIT_PASS=' "${ENV_FILE}"; then
         sed -i "s|^MDB_QBIT_PASS=.*|MDB_QBIT_PASS=${QBIT_PW}|" "${ENV_FILE}"
     else
         echo "MDB_QBIT_PASS=${QBIT_PW}" >> "${ENV_FILE}"
     fi
-    # Restart kiosk service if it's running, so it picks up the new env
-    # var. Skip silently if the service isn't loaded (fresh Pi during
-    # initial bootstrap before deploy_cpp.sh has run).
+    # Restart the kiosk ONLY when the value it is actually running with is
+    # missing or stale — it reads MDB_QBIT_PASS once, at start, via
+    # EnvironmentFile=. This used to restart unconditionally, so every
+    # Reconfigure from the Content Manager killed whatever movie or game was
+    # on screen even though nothing had changed. The authoritative answer is
+    # the running process's own environment; when that can't be read, fall
+    # back to "did this run change the line?". Skip silently if the service
+    # isn't running (fresh Pi during initial bootstrap before deploy_cpp.sh).
     if systemctl is-active --quiet magic-dingus-box-cpp.service 2>/dev/null; then
-        echo "  Restarting kiosk so it picks up MDB_QBIT_PASS..."
-        sudo systemctl restart magic-dingus-box-cpp.service || true
+        KIOSK_PID=$(systemctl show -p MainPID --value magic-dingus-box-cpp.service 2>/dev/null || echo 0)
+        KIOSK_RESTART=0
+        KIOSK_ENV=""
+        if [ -n "${KIOSK_PID}" ] && [ "${KIOSK_PID}" != "0" ]; then
+            # Never empty for a live process (PATH etc.), so empty = unreadable.
+            KIOSK_ENV=$(sudo -n cat "/proc/${KIOSK_PID}/environ" 2>/dev/null | tr '\0' '\n' || true)
+        fi
+        if [ -n "${KIOSK_ENV}" ]; then
+            if [ "$(printf '%s\n' "${KIOSK_ENV}" | sed -n 's/^MDB_QBIT_PASS=//p' | head -1)" != "${QBIT_PW}" ]; then
+                KIOSK_RESTART=1
+            fi
+        elif [ "${PREV_MDB_QBIT_PASS}" != "${QBIT_PW}" ]; then
+            KIOSK_RESTART=1
+        fi
+        if [ "${KIOSK_RESTART}" = "1" ]; then
+            echo "  Restarting kiosk so it picks up MDB_QBIT_PASS..."
+            sudo systemctl restart magic-dingus-box-cpp.service || true
+        else
+            echo "  Kiosk already has the current MDB_QBIT_PASS — not restarting it"
+        fi
     fi
 fi
 
