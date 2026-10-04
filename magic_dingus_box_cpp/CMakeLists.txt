@@ -177,6 +177,7 @@ set(UTILS_SOURCES
     src/utils/stb_image_impl.cpp
     src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
+    src/utils/subprocess.cpp
 )
 
 set(RETROARCH_SOURCES
@@ -770,7 +771,9 @@ file(GLOB UTILS_TEST_SOURCES "tests/utils/*.cpp")
 if(UTILS_TEST_SOURCES)
     add_executable(test_utils_unit ${UTILS_TEST_SOURCES}
         src/utils/time_format.cpp
-        src/utils/services_env.cpp)
+        src/utils/services_env.cpp
+        # The one fork/exec/wait helper, tested against real processes.
+        src/utils/subprocess.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
