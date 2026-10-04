@@ -259,7 +259,14 @@ services:
       # doesn't really change: the only observer of the DNS traffic
       # would be ProtonVPN itself, which can already see all our DNS
       # via DoT anyway (it's the upstream resolver).
-      - DOT=off
+      # Spelled DNS_SERVER=off since gluetun v3.40 deprecated DOT ("You are
+      # using the old environment variable DOT, please consider changing it
+      # to DNS_SERVER" — logged on every start in v3.41.1). DOT=off already
+      # mapped to exactly this: built-in DoT forwarder off, plaintext DNS
+      # to 1.1.1.1 ("[dns] using plaintext DNS at address 1.1.1.1"). Using
+      # the new name keeps that behavior if a future gluetun drops the
+      # alias — falling back to the DoT default would bring the wedge back.
+      - DNS_SERVER=off
       - TZ=${TZ}
     ports:
       # qBittorrent web UI + peer ports are exposed via Gluetun.
