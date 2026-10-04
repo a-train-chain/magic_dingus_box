@@ -78,6 +78,9 @@ PlatformProfile profile_for(PiModel model) {
             // 1.5 GB envelope board: posters get the smallest budget
             // (see header — ~230 w185 grid posters).
             p.artwork_cache_budget_bytes = 64u * 1024u * 1024u;
+            // Experimental zero-copy video policy gate (header). Still
+            // needs MDB_VIDEO_ZERO_COPY=1 to do anything.
+            p.video_dmabuf_import_candidate = true;
             break;
         case PiModel::Pi5:
             p.has_analog_audio = false;
@@ -94,6 +97,8 @@ PlatformProfile profile_for(PiModel model) {
             // Pi 4 / Unknown keep the full pause (struct default false).
             p.trickle_torrents_during_video = true;
             p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
+            // No hardware H.264 decoder -> no dmabuf frames to import.
+            p.video_dmabuf_import_candidate = false;
             break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on
@@ -103,6 +108,7 @@ PlatformProfile profile_for(PiModel model) {
             p.gpiochip_labels = {"pinctrl-rp1", "pinctrl-bcm2711",
                                  "pinctrl-bcm2835"};
             p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
+            p.video_dmabuf_import_candidate = false;
             break;
     }
     return p;

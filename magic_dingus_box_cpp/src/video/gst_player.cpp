@@ -1,5 +1,6 @@
 #include "gst_player.h"
 #include "decoder_policy.h"
+#include "zero_copy_policy.h"
 #include "gst_helpers.h"
 #include "../utils/logger.h"
 #include <iostream>
@@ -219,6 +220,23 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     gst_caps_append(caps, gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "RGBA",
         nullptr));
+
+    // EXPERIMENTAL zero-copy (docs/ZERO_COPY_VIDEO.md): only when main.cpp
+    // decided it (MDB_VIDEO_ZERO_COPY=1 + Pi 4B profile + EGL/GL import
+    // extensions), PREPEND DMABuf caps so they win negotiation whenever the
+    // decoder can produce them; the system-memory caps above stay the
+    // fallback (software decoders). Off: the caps are exactly the above.
+    if (zero_copy_dmabuf_) {
+        GstCaps* dmabuf_caps = gst_caps_from_string(zero_copy::dmabuf_appsink_caps());
+        if (dmabuf_caps) {
+            gst_caps_append(dmabuf_caps, caps);  // takes ownership of caps
+            caps = dmabuf_caps;
+            LOG_INFO("Appsink caps: DMABuf preferred (zero-copy experiment), "
+                     "system-memory I420/NV12/RGBA fallback");
+        } else {
+            LOG_WARN("Zero-copy: could not parse DMABuf caps; appsink stays system-memory only");
+        }
+    }
 
     g_object_set(G_OBJECT(appsink_raw), "caps", caps, nullptr);
     gst_caps_unref(caps);
@@ -650,6 +668,8 @@ void GstPlayer::fire_seek() {
 void GstPlayer::stop() {
     if (!initialized_) return;
 
+    if (before_stop_hook_) before_stop_hook_();  // zero-copy only; see header
+
     // Set pipeline to NULL (stops playback and releases stream resources)
     GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_NULL);
     if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -934,6 +954,7 @@ void GstPlayer::cleanup() {
     // any remaining bus messages will be dropped with the bus when the
     // pipeline is set to GST_STATE_NULL below.
     if (pipeline_) {
+        if (before_stop_hook_) before_stop_hook_();  // zero-copy only; see header
         gst_element_set_state(pipeline_, GST_STATE_NULL);
         gst_object_unref(pipeline_);
         pipeline_ = nullptr;

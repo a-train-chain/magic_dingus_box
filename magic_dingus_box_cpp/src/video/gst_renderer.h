@@ -8,10 +8,12 @@
 #include <gst/app/gstappsink.h>
 
 #include "stream_gate.h"
+#include "zero_copy_policy.h"
 
 namespace video {
 
 class GstPlayer;
+class DmabufImporter;
 
 class GstRenderer {
 public:
@@ -20,7 +22,12 @@ public:
 
     // Initialize renderer with GstPlayer and EGL display (if needed)
     bool initialize(GstPlayer* player);
-    
+
+    // EXPERIMENTAL zero-copy video (docs/ZERO_COPY_VIDEO.md). Call after
+    // initialize() with main.cpp's configure_zero_copy() result. A disabled
+    // decision is a no-op: the renderer stays on the copy path untouched.
+    void enable_zero_copy(const zero_copy::Decision& decision);
+
     // Set viewport size
     void set_viewport_size(uint32_t width, uint32_t height);
     
@@ -143,6 +150,23 @@ private:
     int allocated_height_ = 0;
     int allocated_format_ = -1;  // Track allocated format for glTexSubImage2D
     
+    // --- EXPERIMENTAL zero-copy path (null/false unless enabled) ---------
+    std::unique_ptr<DmabufImporter> zero_copy_;
+    zero_copy::FallbackCounter zc_fallback_;
+    bool draw_external_ = false;     // last frame was imported, not copied
+    uint64_t zc_generation_ = 0;     // stream the stats/log latch belong to
+    enum class ZcPath { None, ZeroCopy, Copy };
+    ZcPath zc_logged_path_ = ZcPath::None;
+    int zc_path_logs_this_stream_ = 0;
+    struct {
+        uint64_t imported = 0;
+        uint64_t copied = 0;
+        uint64_t failed = 0;
+    } zc_stats_;
+    void render_zero_copy_sample(GstSample* sample);
+    void zc_log_path(ZcPath path, const char* detail);
+    void zc_flush_stats(const char* why);
+
     void init_gl_resources();
     void upload_frame(GstSample* sample);
     void render_quad();

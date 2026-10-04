@@ -127,6 +127,19 @@ struct PlatformProfile {
     // Movie playback still trims to 32 MB and a game launch frees it all
     // (main.cpp), independent of this ceiling.
     std::size_t artwork_cache_budget_bytes = 128u * 1024u * 1024u;
+
+    // EXPERIMENTAL (docs/ZERO_COPY_VIDEO.md): may this board try importing
+    // the video decoder's DMABuf frames straight into GL (EGL dmabuf import
+    // + samplerExternalOES) instead of mapping each frame and uploading it
+    // with glTexSubImage2D? This is only a POLICY gate — the path is also
+    // OFF unless MDB_VIDEO_ZERO_COPY=1 is set and the EGL/GL extensions are
+    // present (video/zero_copy_policy.h decides).
+    //   Pi 4: true  — v4l2h264dec (hardware) can hand out DMABuf buffers,
+    //                 and the per-frame CPU copy is ~75-95 MB/s at 1080p.
+    //   Pi 5: false — no hardware H.264 block; avdec output is system
+    //                 memory, so there is no dmabuf to import.
+    //   Unknown: false — dev machines / unrecognized boards.
+    bool video_dmabuf_import_candidate = false;
 };
 
 // Parse the contents of /proc/device-tree/model (may carry a trailing

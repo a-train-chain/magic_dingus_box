@@ -7,6 +7,7 @@
 #include "platform/frame_presenter.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
+#include "video/dmabuf_importer.h"
 #include "ui/renderer.h"
 #include "ui/settings_menu.h"
 #include "ui/controller_wizard.h"
@@ -360,7 +361,16 @@ int main(int /* argc */, char* /* argv */[]) {
 
     // Initialize GStreamer player
     LOG_DEBUG("Initializing GStreamer player...");
+    // EXPERIMENTAL zero-copy video (docs/ZERO_COPY_VIDEO.md): OFF unless
+    // MDB_VIDEO_ZERO_COPY=1 AND the board profile allows dmabuf import (Pi
+    // 4B) AND the EGL/GL import extensions exist. With the flag unset this
+    // only logs "Video upload: copy (...)" — no probe, no caps change.
+    // Runs here because the EGL context is current and the appsink caps are
+    // fixed in player.initialize() below.
+    const video::zero_copy::Decision zero_copy_decision = video::configure_zero_copy(
+        platform::detect_platform().video_dmabuf_import_candidate);
     GstPlayer player;
+    player.set_zero_copy_dmabuf(zero_copy_decision.enabled);
     if (!player.initialize()) {
         LOG_ERROR("Failed to initialize GStreamer player");
         logging::shutdown();
@@ -378,6 +388,7 @@ int main(int /* argc */, char* /* argv */[]) {
         return 1;
     }
     gst_renderer.set_viewport_size(mode.width, mode.height);
+    gst_renderer.enable_zero_copy(zero_copy_decision);  // no-op when disabled
     LOG_INFO("GStreamer renderer initialized");
 
     // Initialize UI renderer

@@ -60,6 +60,17 @@ public:
     // EOS callback
     void set_eos_callback(std::function<void()> cb) { eos_callback_ = std::move(cb); }
 
+    // EXPERIMENTAL zero-copy video (docs/ZERO_COPY_VIDEO.md). Call BEFORE
+    // initialize(): when true, DMABuf caps are prepended to the appsink's
+    // system-memory caps. Default false = the appsink caps are untouched.
+    void set_zero_copy_dmabuf(bool enabled) { zero_copy_dmabuf_ = enabled; }
+
+    // Called at the top of stop() and cleanup(), before the pipeline goes
+    // to NULL. GstRenderer registers it ONLY when zero-copy is enabled, to
+    // hand every held decoder buffer back so the v4l2 pool can tear down
+    // with nothing outstanding. Unset by default (no behaviour change).
+    void set_before_stop_hook(std::function<void()> hook) { before_stop_hook_ = std::move(hook); }
+
     // Poll for state updates (call this regularly from main loop)
     void update_state();
 
@@ -114,6 +125,9 @@ private:
 
     // EOS callback
     std::function<void()> eos_callback_;
+
+    bool zero_copy_dmabuf_ = false;           // see set_zero_copy_dmabuf()
+    std::function<void()> before_stop_hook_;  // see set_before_stop_hook()
 
     // Stored PulseAudio device name for pipeline re-creation
     std::string pulse_device_;

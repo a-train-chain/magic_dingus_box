@@ -529,3 +529,22 @@ TEST_CASE("artwork cache budget never exceeds the old fixed 256 MB and "
     CHECK(profile_for(PiModel::Pi4).artwork_cache_budget_bytes <=
           profile_for(PiModel::Pi5).artwork_cache_budget_bytes);
 }
+
+// ---------------------------------------------------------------
+// Experimental zero-copy video: board policy gate
+// (docs/ZERO_COPY_VIDEO.md; the full decision is video/zero_copy_policy.h)
+// ---------------------------------------------------------------
+
+TEST_CASE("dmabuf import candidate: Pi 4 only (hardware v4l2h264dec)") {
+    REQUIRE(profile_for(PiModel::Pi4).video_dmabuf_import_candidate);
+}
+
+TEST_CASE("dmabuf import candidate is off on Pi 5 (software decode, no dmabuf)") {
+    REQUIRE_FALSE(profile_for(PiModel::Pi5).video_dmabuf_import_candidate);
+}
+
+TEST_CASE("dmabuf import candidate is off on unknown boards") {
+    REQUIRE_FALSE(profile_for(PiModel::Unknown).video_dmabuf_import_candidate);
+    // A default-constructed profile must never opt in either.
+    REQUIRE_FALSE(PlatformProfile{}.video_dmabuf_import_candidate);
+}

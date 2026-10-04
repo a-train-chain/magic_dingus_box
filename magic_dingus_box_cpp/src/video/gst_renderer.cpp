@@ -2,6 +2,7 @@
 #include "gst_player.h"
 #include "../utils/logger.h"
 #include "frame_layout.h"
+#include "dmabuf_importer.h"
 #include <gst/video/video.h>
 #include <array>
 #include <vector>
@@ -99,7 +100,124 @@ GstRenderer::GstRenderer()
 }
 
 GstRenderer::~GstRenderer() {
+    if (zero_copy_ && player_) {
+        // The player outlives us in main.cpp; its hook must not call into
+        // a destroyed renderer.
+        player_->set_before_stop_hook(nullptr);
+    }
     cleanup();
+}
+
+void GstRenderer::enable_zero_copy(const zero_copy::Decision& decision) {
+    if (!decision.enabled || !player_) return;
+    auto importer = std::make_unique<DmabufImporter>(decision);
+    if (!importer->init()) {
+        // configure_zero_copy() already resolved these entry points, so this
+        // is not expected; the appsink may still negotiate DMABuf, which the
+        // copy path maps like any other memory.
+        LOG_WARN("Video upload: copy (EGL image entry points unavailable at renderer init)");
+        return;
+    }
+    zero_copy_ = std::move(importer);
+    // Hand every held decoder buffer back BEFORE the pipeline goes to NULL
+    // (load_file, playlist advance, RetroArch launch, shutdown), so the
+    // v4l2 capture pool never tears down with buffers outstanding and no
+    // decoder memory stays pinned while a game runs.
+    player_->set_before_stop_hook([this]() {
+        if (!zero_copy_) return;
+        zero_copy_->release_frames();
+        draw_external_ = false;
+    });
+}
+
+void GstRenderer::zc_log_path(ZcPath path, const char* detail) {
+    // "Logs once which path is active": the first frame of every stream
+    // states its path; a path CHANGE inside a stream is logged too, but at
+    // most a few times (a pool that copies under pressure would otherwise
+    // flap the log every frame). The per-stream stats line has the counts.
+    constexpr int kMaxPathLogsPerStream = 4;
+    if (path == zc_logged_path_) return;
+    zc_logged_path_ = path;
+    if (++zc_path_logs_this_stream_ > kMaxPathLogsPerStream) return;
+    if (path == ZcPath::ZeroCopy) {
+        LOG_INFO("Video upload: zero-copy dmabuf ({})", detail);
+    } else {
+        LOG_INFO("Video upload: copy ({})", detail);
+    }
+    if (zc_path_logs_this_stream_ == kMaxPathLogsPerStream) {
+        LOG_INFO("Video upload: further path changes this stream are only "
+                 "counted (see the stats line at stream end)");
+    }
+}
+
+void GstRenderer::zc_flush_stats(const char* why) {
+    if (zc_stats_.imported + zc_stats_.copied + zc_stats_.failed > 0) {
+        LOG_INFO("Video upload stats ({}): {} zero-copy, {} copied, {} import failures",
+                 why, zc_stats_.imported, zc_stats_.copied, zc_stats_.failed);
+    }
+    zc_stats_ = {};
+    zc_logged_path_ = ZcPath::None;
+    zc_path_logs_this_stream_ = 0;
+}
+
+void GstRenderer::render_zero_copy_sample(GstSample* sample) {
+    const uint64_t gen = player_ != nullptr ? player_->stream_generation() : 0;
+    if (gen != zc_generation_) {
+        zc_flush_stats("previous stream");
+        zc_generation_ = gen;
+    }
+
+    const char* copy_reason = "decoder delivered system memory";
+    if (!zc_fallback_.permanently_disabled()) {
+        DmabufImporter::Geometry geo;
+        std::string error;
+        switch (zero_copy_->import(sample, &geo, &error)) {
+            case DmabufImporter::Result::Imported:
+                zc_fallback_.on_success();
+                ++zc_stats_.imported;
+                frame_width_ = geo.width;
+                frame_height_ = geo.height;
+                frame_par_num_ = geo.par_n;
+                frame_par_den_ = geo.par_d;
+                draw_external_ = true;
+                zc_log_path(ZcPath::ZeroCopy, zero_copy::format_name(geo.format));
+                return;
+            case DmabufImporter::Result::NotDmabuf:
+                ++zc_stats_.copied;
+                break;
+            case DmabufImporter::Result::Failed:
+                ++zc_stats_.failed;
+                copy_reason = "dmabuf import failed";
+                if (zc_fallback_.should_warn()) {
+                    LOG_WARN("Zero-copy: dmabuf import failed ({}); copying this frame. "
+                             "{} consecutive failures disable zero-copy until restart",
+                             error, zc_fallback_.threshold());
+                }
+                if (zc_fallback_.on_failure()) {
+                    LOG_WARN("Zero-copy: {} consecutive import failures (last: {}); "
+                             "zero-copy disabled until the kiosk restarts",
+                             zc_fallback_.threshold(), error);
+                    zero_copy_->release_frames();
+                    copy_reason = "zero-copy disabled after repeated import failures";
+                }
+                break;
+        }
+    } else {
+        ++zc_stats_.copied;
+        copy_reason = "zero-copy disabled after repeated import failures";
+    }
+
+    // Copy path for this frame — the unchanged upload_frame(). DMA_DRM caps
+    // are re-expressed as plain caps first (upload_frame cannot parse them).
+    zero_copy_->note_copied_frame();
+    draw_external_ = false;
+    zc_log_path(ZcPath::Copy, copy_reason);
+    if (GstSample* plain = zero_copy_->plain_sample_for_copy(sample)) {
+        upload_frame(plain);
+        gst_sample_unref(plain);
+    } else {
+        upload_frame(sample);
+    }
 }
 
 bool GstRenderer::initialize(GstPlayer* player) {
@@ -125,7 +243,12 @@ void GstRenderer::reset_gl() {
     // Recreated textures hold undefined contents — suppress drawing until
     // a real frame uploads (this was the "green rectangle" artifact).
     stream_gate_.on_gl_reset();
-    
+
+    if (zero_copy_) {
+        zero_copy_->reset_gl();
+        draw_external_ = false;
+    }
+
     if (gl_initialized_) {
         // These resources may be invalid but try to delete for cleanliness
         if (vao_id_ != 0) {
@@ -269,6 +392,10 @@ void GstRenderer::update_shader(int format) {
 }
 
 void GstRenderer::cleanup() {
+    if (zero_copy_) {
+        zero_copy_->destroy_gl();
+        draw_external_ = false;
+    }
     if (gl_initialized_) {
         glDeleteTextures(3, texture_ids_);
         glDeleteVertexArrays(1, &vao_id_);
@@ -310,7 +437,11 @@ void GstRenderer::render() {
         sample != nullptr);
 
     if (sample) {
-        upload_frame(sample);
+        if (zero_copy_) {
+            render_zero_copy_sample(sample);  // experimental; imports or copies
+        } else {
+            upload_frame(sample);
+        }
         gst_sample_unref(sample);
     }
 
@@ -501,7 +632,12 @@ void GstRenderer::upload_frame(GstSample* sample) {
 }
 
 void GstRenderer::render_quad() {
-    if (program_id_ == 0) return;
+    if (draw_external_) {
+        // Zero-copy frame: same quad/viewport math below, different sampler.
+        if (!zero_copy_ || !zero_copy_->has_frame()) return;
+    } else if (program_id_ == 0) {
+        return;
+    }
 
     // Working canvas — full screen by default, OR the explicit inset
     // rect set via set_render_inset(). All letterbox / aspect-preserve
@@ -660,7 +796,16 @@ void GstRenderer::render_quad() {
 
     // Disable depth test to ensure we draw over everything (or background)
     glDisable(GL_DEPTH_TEST);
-    
+
+    if (draw_external_) {
+        glUseProgram(zero_copy_->program());
+        zero_copy_->bind_for_draw();
+        glBindVertexArray(vao_id_);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        zero_copy_->unbind_after_draw();
+        return;
+    }
+
     glUseProgram(program_id_);
 
     glActiveTexture(GL_TEXTURE0);

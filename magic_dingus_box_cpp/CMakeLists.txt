@@ -82,6 +82,11 @@ if(BUILD_KIOSK)
     pkg_check_modules(GST_APP REQUIRED gstreamer-app-1.0)
     pkg_check_modules(GST_VIDEO REQUIRED gstreamer-video-1.0)
     pkg_check_modules(GST_GL REQUIRED gstreamer-gl-1.0)
+    # gst_is_dmabuf_memory / gst_dmabuf_memory_get_fd for the experimental
+    # zero-copy video path. Ships in libgstreamer-plugins-base1.0-dev, which
+    # install_deps.sh, release.yml and the pisim image already install.
+    # REQUIRED, never optional (CLAUDE.md dual-board rule 4).
+    pkg_check_modules(GST_ALLOCATORS REQUIRED gstreamer-allocators-1.0)
 
     # YAML config parsing (kiosk-only — media_browser uses JSON)
     pkg_check_modules(YAMLCPP REQUIRED yaml-cpp)
@@ -132,6 +137,9 @@ endif()
 set(VIDEO_SOURCES
     src/video/gst_player.cpp
     src/video/gst_renderer.cpp
+    # EXPERIMENTAL zero-copy (EGL dmabuf import) path, OFF unless
+    # MDB_VIDEO_ZERO_COPY=1 on a Pi 4B — docs/ZERO_COPY_VIDEO.md.
+    src/video/dmabuf_importer.cpp
 )
 
 set(UI_SOURCES
@@ -334,6 +342,7 @@ if(BUILD_KIOSK)
         ${GST_APP_INCLUDE_DIRS}
         ${GST_VIDEO_INCLUDE_DIRS}
         ${GST_GL_INCLUDE_DIRS}
+        ${GST_ALLOCATORS_INCLUDE_DIRS}
         ${CURL_INCLUDE_DIRS}
         ${SQLITE3_INCLUDE_DIRS}
         src/
@@ -354,6 +363,7 @@ if(BUILD_KIOSK)
         ${GST_APP_LIBRARIES}
         ${GST_VIDEO_LIBRARIES}
         ${GST_GL_LIBRARIES}
+        ${GST_ALLOCATORS_LIBRARIES}
         ${CURL_LIBRARIES}
         ${SQLITE3_LIBRARIES}
         spdlog::spdlog_header_only

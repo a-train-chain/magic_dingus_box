@@ -83,7 +83,7 @@ The kiosk engine must build and run on **both Raspberry Pi 4B and Raspberry Pi 5
 - `libevdev` — input device events
 - `libgpiod` — power button and LED GPIO
 - `libsystemd` — sd_notify readiness + watchdog. **Load-bearing, not optional**: CMake only auto-detects it, but the kiosk's systemd unit is `Type=notify` with a watchdog, so a binary built without it never sends `READY=1` and systemd kills a healthy kiosk on every box (shipped once, v1.7.2). The release workflow asserts `READY=1` is in the binary.
-- `gstreamer-1.0` + `gstreamer-app-1.0` + `gstreamer-video-1.0` + `gstreamer-gl-1.0` + `gstreamer1.0-libav` — video pipeline
+- `gstreamer-1.0` + `gstreamer-app-1.0` + `gstreamer-video-1.0` + `gstreamer-gl-1.0` + `gstreamer-allocators-1.0` (same `libgstreamer-plugins-base1.0-dev` package as video/gl; dmabuf helpers for the experimental zero-copy path) + `gstreamer1.0-libav` — video pipeline
 - `yaml-cpp`, `jsoncpp` — config and playlist parsing
 - `libsqlite3` + the `sqlite3` CLI — Media Browser library/watch-state store (`media_browser.db`); the CLI backs the on-box acceptance checks (Media Browser builds only)
 - `libcurl` (`libcurl4-openssl-dev`) — TMDB / Radarr / Sonarr / Prowlarr / qBittorrent HTTP clients (Media Browser builds only; CMake `REQUIRED`)
