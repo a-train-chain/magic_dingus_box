@@ -21,16 +21,38 @@
 # state. The Mac-side orchestrator dd's it and then SSHes back to run
 # restore_after_cloning.sh which puts everything back.
 #
-# CRITICAL: do not reboot the source Pi between this script and
-# restore_after_cloning.sh. If you do, first_boot.sh will fire on the
-# source and regenerate its identity (which is fine, but then the
-# `restore` script's identity-restore will conflict).
+# Reboot safety: every secret this removes from the SD is stashed on the
+# MOVIE DRIVE (/mnt/ssd/.mdb-secret-stash, see clone_stash_lib.sh), which
+# survives a reboot or power cut and is not part of the dd'd SD card. If the
+# source Pi goes down mid-clone, boot it (with the drive attached) and run
+# restore_after_cloning.sh — it restores everything. Avoid rebooting anyway:
+# until restore runs the box has no Wi-Fi profile, no .env and no *arr data.
+# On an SD root, first_boot.sh recognises the source card by its CID and
+# refuses to run; on a non-SD root it cannot, so DO NOT reboot such a box.
+#
+# The movie drive is REQUIRED. Without it this refuses to start, before
+# touching anything. --allow-ram-stash overrides that for a drive-less box by
+# stashing in /dev/shm instead — RAM: a reboot mid-clone then destroys the
+# box's secrets permanently. Opt-in only, and it says so loudly.
 #
 # Must run as root (operator's Mac-side script runs this via sudo over
 # SSH).
 #
 
 set -euo pipefail
+
+ALLOW_RAM_STASH=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --allow-ram-stash) ALLOW_RAM_STASH=1; shift ;;
+        *) echo "Unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+# Stash location + reboot-safe stash/restore helpers, shared with
+# restore_after_cloning.sh. Sourcing runs nothing.
+# shellcheck source=clone_stash_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/clone_stash_lib.sh"
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -118,6 +140,59 @@ fi
 log "Preflight: secret tripwire clean"
 
 # ---------------------------------------------------------------------------
+# Preflight: choose the secret stash — persistent, and OFF the SD card
+# ---------------------------------------------------------------------------
+# Decided BEFORE the marker and before anything is touched, so a refusal
+# here leaves the box exactly as it was (restore has nothing to do).
+#
+# The stash holds the ONLY copy of every secret Step 2b/2c removes, for the
+# whole 30-90 minute dd. It used to be /dev/shm: a reboot or power cut
+# mid-clone erased it, restore found no manifest and quietly restored
+# nothing, and the box permanently lost its Radarr/Sonarr libraries, VPN key,
+# API keys and phone pairings. Fail closed instead of degrading to RAM.
+STASH_VERDICT="$(mdb_check_stash_drive)"
+if [[ "$STASH_VERDICT" == "ok" ]]; then
+    SECRET_STASH="$MDB_SECRET_STASH_DIR"
+    log "Preflight: secret stash on the movie drive at ${SECRET_STASH} (survives a reboot)"
+elif [[ "$ALLOW_RAM_STASH" -eq 1 ]]; then
+    SECRET_STASH="$MDB_RAM_SECRET_STASH_DIR"
+    log "WARNING: ================================================================"
+    log "WARNING: movie drive unusable for the stash (${STASH_VERDICT}); --allow-ram-stash"
+    log "WARNING: given, so this box's secrets go to RAM (${SECRET_STASH})."
+    log "WARNING: If the Pi reboots or loses power before restore_after_cloning.sh"
+    log "WARNING: runs, its .env (VPN key), *arr databases + backups, API keys and"
+    log "WARNING: phone pairings are DESTROYED PERMANENTLY."
+    log "WARNING: ================================================================"
+else
+    log "ERROR: the secret stash needs the movie drive mounted at ${MDB_STASH_DRIVE} (${STASH_VERDICT})."
+    case "$STASH_VERDICT" in
+        not-mounted)
+            log "       ${MDB_STASH_DRIVE} is not a mount point, so it is a directory ON THE SD"
+            log "       CARD — writing secrets there would put them in the image." ;;
+        same-disk-as-root)
+            log "       ${MDB_STASH_DRIVE} is on the same disk as the root filesystem, so the"
+            log "       stash would land in the image." ;;
+        *)
+            log "       Could not determine which disk ${MDB_STASH_DRIVE} lives on." ;;
+    esac
+    log "       Attach/mount the movie drive and re-run. Nothing has been changed."
+    log "       (A drive-less box can pass --allow-ram-stash, accepting that a reboot"
+    log "       mid-clone would destroy its secrets for good.)"
+    exit 1
+fi
+# A stash left behind by an earlier clone (on either location) may be the only
+# copy of that clone's secrets. Never overwrite it; restore consumes it.
+for _old in "$MDB_SECRET_STASH_DIR" "$MDB_RAM_SECRET_STASH_DIR"; do
+    if [[ -e "${_old}/manifest" ]]; then
+        log "ERROR: an unrestored secret stash already exists at ${_old}"
+        log "       Run /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh"
+        log "       first (it restores that stash), then retry."
+        exit 1
+    fi
+done
+unset _old
+
+# ---------------------------------------------------------------------------
 # Preflight: drop the in-progress marker BEFORE touching anything
 # ---------------------------------------------------------------------------
 # This used to live in Step 4, after Step 2 removed device_info.json, Step 2b
@@ -148,6 +223,31 @@ cat > "$MARKER_PATH" <<EOF
 EOF
 chmod 600 "$MARKER_PATH"
 log "Preflight: clone-in-progress marker written (restore is now armed)"
+
+# Create the stash, THEN record where it is. The pointer is a path only (it
+# rides into the image inside cloning_backup/, which first_boot.sh wipes).
+# Pointer-without-manifest is therefore never a state this script produces —
+# restore reads it as "the stash was lost" and refuses to continue silently.
+if ! mdb_init_secret_stash "$SECRET_STASH"; then
+    log "ERROR: could not create the secret stash at ${SECRET_STASH}. Nothing has"
+    log "       been removed yet; run restore_after_cloning.sh to clear the marker."
+    exit 1
+fi
+printf '%s\n' "$SECRET_STASH" > "${BACKUP_DIR}/${MDB_STASH_POINTER_NAME}"
+chmod 600 "${BACKUP_DIR}/${MDB_STASH_POINTER_NAME}"
+sync
+log "Preflight: secret stash ready at ${SECRET_STASH} (location recorded for restore)"
+
+# stash_or_abort SRC: copy SRC into the stash. The callers then flush, prove
+# the copy is byte-identical, and only THEN destroy the original — a secret is
+# never zeroed on the SD until its stash copy is durably on the drive.
+stash_or_abort() {
+    if ! mdb_stash_copy "$1" "$SECRET_STASH"; then
+        log "ERROR: could not stash $1 — aborting before anything else is removed."
+        log "       Run restore_after_cloning.sh to put the Pi back."
+        exit 1
+    fi
+}
 
 # Hardware serial (CID) of the SD card the root filesystem lives on.
 # prepare_for_cloning.sh records it; first_boot.sh compares against it so
@@ -305,33 +405,32 @@ fi
 # several places the PSK lives, and is on the ext4 partition rather than the
 # one a customer can trivially read.
 #
-# Backups go to TMPFS, not $BACKUP_DIR: $BACKUP_DIR lives on the SD card and
-# would therefore be captured by the dd, putting the secret straight back into
-# the image it was just removed from. /dev/shm is RAM and never reaches the
-# card. restore_after_cloning.sh reads them back from there.
+# Backups go to the secret stash on the movie drive, not $BACKUP_DIR:
+# $BACKUP_DIR lives on the SD card and would therefore be captured by the dd,
+# putting the secret straight back into the image it was just removed from.
+# They share Step 2c's manifest, so restore_after_cloning.sh puts them back
+# through the same generic loop.
 #
 # Each file is OVERWRITTEN IN PLACE before unlinking. `rm` only detaches the
 # directory entry; the bytes stay in the free space that dd faithfully copies.
 BOOT_FW="/boot/firmware"
-BOOT_STASH="/dev/shm/mdb-boot-stash"
 
 if [[ -d "$BOOT_FW" ]]; then
     log "[2b/5] Stripping operator credentials from ${BOOT_FW}..."
-    mkdir -p "$BOOT_STASH"
-    chmod 700 "$BOOT_STASH"
 
     for f in user-data network-config meta-data; do
         src="${BOOT_FW}/${f}"
         [[ -f "$src" ]] || continue
-        cp -p "$src" "${BOOT_STASH}/${f}"
+        stash_or_abort "$src"
+        sync
+        if ! mdb_stash_matches "$src" "$SECRET_STASH"; then
+            log "ERROR: the stash copy of ${src} does not match — aborting before removing it."
+            log "       Run restore_after_cloning.sh to put the Pi back."
+            exit 1
+        fi
         # Shred the contents, then remove. On FAT there is no journal to
         # defeat, so an in-place overwrite genuinely clears the sectors.
-        sz=$(stat -c %s "$src" 2>/dev/null || echo 0)
-        if [[ "$sz" -gt 0 ]]; then
-            dd if=/dev/zero of="$src" bs=1 count="$sz" conv=notrunc status=none 2>/dev/null || true
-            sync
-        fi
-        rm -f "$src"
+        mdb_shred_file "$src"
         # macOS AppleDouble sidecars written when the card is mounted on a Mac.
         # ._network-config holds a copy of the resource fork and has been seen
         # to contain indexed fragments of the same data.
@@ -343,7 +442,7 @@ if [[ -d "$BOOT_FW" ]]; then
     # it holds an indexed copy of the SSID string.
     rm -rf "${BOOT_FW}/.Spotlight-V100" "${BOOT_FW}/.fseventsd" 2>/dev/null || true
     sync
-    log "[2b/5] Boot partition cleaned (stash: ${BOOT_STASH})"
+    log "[2b/5] Boot partition cleaned (stash: ${SECRET_STASH})"
 else
     log "[2b/5] No ${BOOT_FW} directory — skipping boot-partition clean"
 fi
@@ -370,8 +469,8 @@ fi
 # Anyone who reads a flashed card before its first boot, or whose first_boot.sh
 # aborts partway (it runs under `set -euo pipefail`), keeps all of it.
 #
-# Same tmpfs discipline as Step 2b: stash in RAM, overwrite in place, then
-# unlink. Restored by restore_after_cloning.sh.
+# Same discipline as Step 2b: stash on the movie drive, overwrite in place,
+# then unlink. Restored by restore_after_cloning.sh.
 #   services/config/<app>/config.xml        that app's API key
 #   services/config/radarr/radarr.db        the qBittorrent WebUI username and
 #                                           password, in plaintext, inside
@@ -438,7 +537,8 @@ fi
 # its paths had to be hand-copied in; the next *arr app is one word in ARR_APPS.
 ARR_APPS=(radarr sonarr prowlarr)
 
-SECRET_STASH="/dev/shm/mdb-secret-stash"
+# $SECRET_STASH was chosen at preflight: the movie drive, never /dev/shm
+# unless the operator passed --allow-ram-stash.
 SECRET_PATHS=(
     # Globbed, not the bare literal: an operator `.env.bak` / `.env.old` made
     # during a maintenance session carries the same credentials as .env itself,
@@ -611,7 +711,7 @@ SECRET_PATHS+=(
 # in the image AND then persists on the customer's unit indefinitely.
 #
 # Stashed rather than deleted: it is the first thing worth reading when the
-# source box misbehaves, and /dev/shm has ample room for 20 MB.
+# source box misbehaves, and 20 MB is nothing on the movie drive.
 SECRET_PATHS+=(
     "/opt/magic_dingus_box/config/magic_dingus_box.log*"
     "/home/magic/retroarch_launcher.log*"
@@ -689,12 +789,12 @@ SECRET_PATHS+=(
 # the .img.gz artifact and on any flashed-but-unbooted card, and would leave
 # the image needlessly large.
 #
-# They do NOT go through SECRET_PATHS. That stash is tmpfs (/dev/shm, ~990 MB
-# on the 2 GB board) and the curated media measured 921 MB across 20 files on
-# the source box (2026-08-04) — with the ~72 MB secret pass sharing the same
-# tmpfs that overflows it, ENOSPC aborts the whole prepare under set -e, and
-# long before that the copy is eating RAM the board needs. Bulk content gets
-# its own DISK-backed stash on /mnt/ssd below
+# They do NOT go through SECRET_PATHS. That stash used to be tmpfs (/dev/shm,
+# ~990 MB on the 2 GB board) and the curated media measured 921 MB across 20
+# files on the source box (2026-08-04) — ENOSPC aborted the whole prepare.
+# Both stashes live on the movie drive now, but content keeps its own: it is
+# MOVED (no copy, no shred) and has its own manifest. Bulk content gets its
+# own DISK-backed stash on /mnt/ssd below
 # (the movie drive is attached on any box being used as a clone source, and
 # the SD-only dd never captures it). Content is also not zeroed in place the
 # way secrets are: these are music videos, not credentials — the two-stage
@@ -713,7 +813,7 @@ SHIP_PLAYLISTS=(
     The_Nostalgia_Channel.yaml
 )
 
-CONTENT_STASH="/mnt/ssd/.mdb-content-stash"
+CONTENT_STASH="$MDB_CONTENT_STASH_DIR"
 CONTENT_PATHS=()
 _curated=0
 for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
@@ -793,10 +893,12 @@ log "[2c/5] Content curation: ${_curated} non-shipping playlist/media file(s) he
 # what the curation exists to prevent. restore_after_cloning.sh reverses
 # this whether or not the rest of prepare completed.
 if [[ ${#CONTENT_PATHS[@]} -gt 0 ]]; then
-    if ! mountpoint -q /mnt/ssd; then
-        log "ERROR: ${#CONTENT_PATHS[@]} curated file(s) need the content stash, but /mnt/ssd"
-        log "       is not a mounted drive — stashing there would write to the SD card,"
-        log "       which the dd captures. Attach/mount the movie drive and re-run"
+    # Same guard as the secret stash (clone_stash_lib.sh). Only reachable
+    # without the drive under --allow-ram-stash, which covers secrets only.
+    if [[ "$(mdb_check_stash_drive)" != "ok" ]]; then
+        log "ERROR: ${#CONTENT_PATHS[@]} curated file(s) need the content stash, but ${MDB_STASH_DRIVE}"
+        log "       is not a usable mounted drive — stashing there would write to the SD"
+        log "       card, which the dd captures. Attach/mount the movie drive and re-run"
         log "       (restore_after_cloning.sh first, to clear the marker)."
         exit 1
     fi
@@ -847,55 +949,61 @@ SECRET_PATHS=("${_expanded[@]}")
 unset _expanded _entry _match
 
 log "[2c/5] Removing application secrets from the SD..."
-mkdir -p "$SECRET_STASH"
-chmod 700 "$SECRET_STASH"
-: > "${SECRET_STASH}/manifest"
-chmod 600 "${SECRET_STASH}/manifest"
 
 # Adding Backups/ and logs/ took this pass from 15 files / ~7 MB to 86 files /
-# ~72 MB on the production box, all of which is copied into $SECRET_STASH —
-# tmpfs, i.e. RAM — before being overwritten in place. That is comfortable:
-# /dev/shm is 992 MB there, it is empty at this point in the clone because every
-# service has already been stopped in Step 1, and 72 MB is 7% of it. The cost is
-# a shredding pass over ~72 MB plus one sync per file, seconds on the SSD-backed
-# boxes and longer on a slow SD. The count logged below is what confirms the
-# pass actually ran over the whole list.
+# ~72 MB on the production box (258 files by the time the clone tooling was
+# made reboot-safe), all of which is copied into $SECRET_STASH on the movie
+# drive before being overwritten in place. The count logged below is what
+# confirms the pass actually ran over the whole list.
 #
 # INVARIANT: only small secret files belong on this list. Bulk content (the
-# curated playlists/media above) has its own disk-backed stash on /mnt/ssd —
-# 1.9 GB of curated video routed through this loop filled tmpfs mid-copy and
-# aborted the whole prepare with ENOSPC. If a future entry can plausibly
-# exceed a few hundred MB, it goes in CONTENT_PATHS, not here.
-stripped=0
-
+# curated playlists/media above) has its own MOVE-based stash — 1.9 GB of
+# curated video routed through this copy-and-shred loop filled the old tmpfs
+# stash mid-copy and aborted the whole prepare with ENOSPC. If a future entry
+# can plausibly exceed a few hundred MB, it goes in CONTENT_PATHS, not here.
+#
+# TWO PHASES, so no secret is ever destroyed before its copy is safe:
+#   1. copy every file into the stash (recording original path, mode and
+#      ownership — restore is an exact inverse; it used to hardcode
+#      `chown magic` + `chmod 600`, which is wrong for container-owned files)
+#   2. sync, then prove every copy byte-identical — any failure aborts here,
+#      with every original still on disk
+#   3. only then zero each original in place and unlink it
+# A power cut at any point leaves either the original or a durable stash copy.
+STASHED=()
+declare -A _seen=()
 for src in "${SECRET_PATHS[@]}"; do
     [[ -f "$src" ]] || continue
-    # Flatten the path into a stash filename, recording the original so restore
-    # can put each file back exactly where it came from — along with its mode
-    # and ownership. Restore used to hardcode `chown magic` + `chmod 600`, which
-    # silently changed these service files from their real 1000:1000 / 644 and
-    # is wrong for anything a container owns. Recording the real values keeps
-    # restore an exact inverse. Older stashes carry only two fields; restore
-    # falls back to its previous behaviour when mode/uid/gid are absent.
-    key="$(printf '%s' "$src" | tr '/' '_')"
-    cp -p "$src" "${SECRET_STASH}/${key}"
-    mode="$(stat -c %a "$src" 2>/dev/null || echo '')"
-    uid="$(stat -c %u "$src" 2>/dev/null || echo '')"
-    gid="$(stat -c %g "$src" 2>/dev/null || echo '')"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$key" "$src" "$mode" "$uid" "$gid" \
-        >> "${SECRET_STASH}/manifest"
-    sz=$(stat -c %s "$src" 2>/dev/null || echo 0)
-    if [[ "$sz" -gt 0 ]]; then
-        # Block size matters now that radarr.db (~2.6MB) and its WAL (~2.9MB)
-        # are on the list: bs=1 issues one write syscall per byte, which took
-        # milliseconds for a 500-byte key but would grind for minutes on a
-        # multi-megabyte database. Round up to whole 64K blocks — overshooting
-        # the end is harmless because the file is unlinked immediately after.
-        blocks=$(( (sz + 65535) / 65536 ))
-        dd if=/dev/zero of="$src" bs=64K count="$blocks" conv=notrunc status=none 2>/dev/null || true
-        sync
+    # The globs overlap (tmdb_api_key* and *tmdb_api_key*, the literal and
+    # globbed flask_secret.key); take each file once.
+    [[ -n "${_seen[$src]:-}" ]] && continue
+    _seen[$src]=1
+    stash_or_abort "$src"
+    STASHED+=("$src")
+done
+unset _seen
+sync
+
+_bad=0
+for src in "${STASHED[@]}"; do
+    if ! mdb_stash_matches "$src" "$SECRET_STASH"; then
+        log "ERROR: stash copy of ${src} does not match the original"
+        _bad=$((_bad + 1))
     fi
-    rm -f "$src"
+done
+if [[ "$_bad" -gt 0 ]]; then
+    log "ERROR: ${_bad} stash copie(s) failed verification — NOTHING in this pass was"
+    log "       removed. Run restore_after_cloning.sh to put the Pi back."
+    exit 1
+fi
+unset _bad
+log "[2c/5] ${#STASHED[@]} secret file(s) stashed and verified in ${SECRET_STASH}"
+
+stripped=0
+for src in "${STASHED[@]}"; do
+    # Zero in place then unlink (mdb_shred_file): 64K blocks, because bs=1
+    # ground for minutes on the multi-megabyte *arr databases.
+    mdb_shred_file "$src"
     stripped=$((stripped + 1))
     log "[2c/5]   removed ${src}"
 done
@@ -1363,4 +1471,6 @@ log "The Pi is now ready to be dd'd. The Mac-side script will:"
 log "  1. Stream /dev/mmcblk0 over this SSH session"
 log "  2. SSH back to run restore_after_cloning.sh when done"
 log ""
-log "DO NOT reboot the source Pi until restore completes."
+log "Avoid rebooting the source Pi until restore completes. If it does go down,"
+log "boot it with the movie drive attached and run restore_after_cloning.sh —"
+log "the secrets are stashed at ${SECRET_STASH}."

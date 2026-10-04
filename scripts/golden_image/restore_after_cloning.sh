@@ -7,15 +7,44 @@
 # doesn't run first-boot logic on its next reboot, and starts the
 # kiosk + Docker stack back up.
 #
-# Idempotent: if the marker is missing (i.e. nothing to restore),
-# it's a no-op with a friendly message rather than an error. This
-# matters because the Mac-side orchestrator runs this in a trap
-# handler that may fire even on the happy path.
+# Idempotent: if the marker is missing and no secret stash is pending
+# (i.e. nothing to restore), it's a no-op with a friendly message rather
+# than an error. This matters because the Mac-side orchestrator runs this
+# in a trap handler that may fire even on the happy path. Re-running after
+# a partial or interrupted restore finishes the job; it never copies a
+# stash back twice (see clone_stash_lib.sh, the `restored` flag).
+#
+# Reboot recovery: the secrets prepare removed are stashed on the movie
+# drive (/mnt/ssd/.mdb-secret-stash), so a source Pi that rebooted or lost
+# power mid-clone is recovered by booting it with the drive attached and
+# running this script. It exits NON-ZERO, loudly, instead of quietly
+# restoring nothing when:
+#   - the stash is on a drive that is not mounted (attach it, re-run), or
+#   - a stash was started and is gone (e.g. the --allow-ram-stash RAM stash
+#     after a reboot). --accept-secret-loss acknowledges that and lets the
+#     rest of the restore bring the box back up without those files.
 #
 # Must run as root.
 #
 
 set -euo pipefail
+
+ACCEPT_SECRET_LOSS=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --accept-secret-loss) ACCEPT_SECRET_LOSS=1; shift ;;
+        *) echo "Unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+STASH_LIB="$(dirname "${BASH_SOURCE[0]}")/clone_stash_lib.sh"
+if [[ ! -f "$STASH_LIB" ]]; then
+    echo "ERROR: ${STASH_LIB} is missing — cannot locate the secret stash." >&2
+    echo "       Nothing has been restored. Re-deploy scripts/golden_image/ and re-run." >&2
+    exit 1
+fi
+# shellcheck source=clone_stash_lib.sh
+source "$STASH_LIB"
 
 INSTALL_DIR="/opt/magic_dingus_box"
 CPP_DIR="${INSTALL_DIR}/magic_dingus_box_cpp"
@@ -43,9 +72,18 @@ fi
 # Idempotency guard
 # ---------------------------------------------------------------------------
 if [[ ! -f "$MARKER_PATH" ]]; then
-    log "No clone-in-progress marker found at ${MARKER_PATH}"
-    log "Nothing to restore. (This is fine — restore was a no-op.)"
-    exit 0
+    if mdb_secret_stash_pending "$BACKUP_DIR"; then
+        # No marker, but a stash is waiting. first_boot.sh on a box whose root
+        # has no SD CID cannot tell the source from a clone and wipes
+        # cloning_backup/ (marker included) — while the stash on the movie
+        # drive survives. Restoring it is the only way those secrets come back.
+        log "WARNING: no clone-in-progress marker, but an unrestored secret stash"
+        log "         exists — restoring it."
+    else
+        log "No clone-in-progress marker found at ${MARKER_PATH}"
+        log "Nothing to restore. (This is fine — restore was a no-op.)"
+        exit 0
+    fi
 fi
 
 # Disarm first-boot BEFORE anything below can fail: this script runs under
@@ -53,6 +91,42 @@ fi
 # source's next reboot ran first_boot.sh against it. Step 2 repeats this
 # (idempotent) for the log line.
 systemctl disable magic-first-boot.service &>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Step 0: Application secrets — FIRST, and fatal on failure
+# ---------------------------------------------------------------------------
+# Everything prepare_for_cloning.sh Step 2b/2c removed from the SD (the
+# boot-partition cloud-init files, services/.env with the VPN key, the
+# Radarr/Sonarr/Prowlarr databases, config.xml files and Backups/ zips,
+# flask_secret.key, the TMDB key, the Wi-Fi profile, the operator's SSH/git
+# identity, ...) is in ONE manifest-driven stash, normally on the movie drive.
+# Each file goes back to its exact path with its recorded owner and mode, and
+# is verified byte-for-byte; only then is the stash shredded.
+#
+# This runs before anything else so that a failure leaves the box untouched
+# for a clean re-run: drive not mounted, stash gone, or a file that will not
+# go back all exit NON-ZERO here, with the marker and the stash kept. The old
+# behaviour — "No application-secret stash found (nothing to restore)", exit
+# 0 — is exactly how a reboot mid-clone used to cost a box its libraries
+# without a single error on screen.
+set +e
+mdb_restore_secrets "$BACKUP_DIR" "$ACCEPT_SECRET_LOSS"
+_secrets_rc=$?
+set -e
+if [[ "$_secrets_rc" -ne 0 ]]; then
+    log "ERROR: restore stopped at the secret stash (code ${_secrets_rc}). Identity,"
+    log "       content and services have NOT been restored; the clone-in-progress"
+    log "       marker is kept. Fix the problem above and re-run this script."
+    exit 1
+fi
+unset _secrets_rc
+
+# The stash includes the Wi-Fi profile (*.nmconnection). The active connection
+# survived in NM's memory while the file was gone (NM does not watch
+# connection files); reload so NM's file view matches again rather than
+# waiting for the next reboot — or, after a reboot mid-clone, so the restored
+# profile is picked up at all. Best-effort; harmless no-op when nothing changed.
+nmcli connection reload 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Step 1: Restore per-Pi identity files from backup
@@ -78,22 +152,13 @@ if [[ -f "$BACKUP_DIR/hosts" ]]; then
     log "[1/4] Restored /etc/hosts"
 fi
 
-# Boot-partition cloud-init files that prepare_for_cloning.sh Step 2b removed
-# so the operator's Wi-Fi PSK, the `magic` password hash and the operator's
-# SSH public key would not be captured by the dd.
-#
-# The stash is in /dev/shm (RAM) rather than $BACKUP_DIR precisely because
-# $BACKUP_DIR is on the SD card and would have been captured by the dd —
-# putting the secret straight back into the image it was removed from.
-#
-# Consequence worth knowing: /dev/shm does not survive a reboot. If the source
-# Pi is rebooted between prepare and restore, these are gone for good. That is
-# not data loss in any meaningful sense — cloud-init has already applied them,
-# the live Wi-Fi config lives in /etc/NetworkManager, and the box keeps
-# working — but the files will not come back. prepare_for_cloning.sh's header
-# already warns against rebooting between the two scripts.
+# LEGACY boot-partition stash. Current prepare puts the boot-partition
+# cloud-init files (Wi-Fi PSK, `magic` password hash, operator SSH key) into
+# the shared secret stash restored in Step 0. An older prepare kept them in
+# their own /dev/shm directory; restore it if one is still around so an
+# in-flight clone started by the old script is never stranded.
 BOOT_FW="/boot/firmware"
-BOOT_STASH="/dev/shm/mdb-boot-stash"
+BOOT_STASH="$MDB_LEGACY_BOOT_STASH_DIR"
 
 if [[ -d "$BOOT_STASH" ]]; then
     restored=0
@@ -106,75 +171,16 @@ if [[ -d "$BOOT_STASH" ]]; then
     # Wipe the RAM stash so the credentials do not linger in /dev/shm, which
     # is world-readable by default.
     rm -rf "$BOOT_STASH"
-    log "[1/4] Restored ${restored} boot-partition file(s) and cleared the stash"
-else
-    log "[1/4] No boot-partition stash found (nothing to restore)"
+    log "[1/4] Restored ${restored} legacy boot-partition file(s) and cleared that stash"
 fi
 
-# Application secrets removed by prepare_for_cloning.sh Step 2c so the .img.gz
-# artifact would not carry the ProtonVPN private key, the phone-remote HMAC
-# secret or the TMDB key. The manifest records each file's original path so
-# they go back exactly where they came from, with their ownership.
-# The manifest is generic, so every SECRET_PATHS class comes back through this
-# one loop — including the operator's SSH client keys + known_hosts, git and
-# gh credentials, and NetworkManager's seen-bssids/timestamps/secret_key
-# (mode 600 on the private keys is preserved, which ssh insists on).
-# Docker container logs are NOT here: prepare truncates them (disposable).
-SECRET_STASH="/dev/shm/mdb-secret-stash"
-
-if [[ -f "${SECRET_STASH}/manifest" ]]; then
-    restored=0
-    while IFS=$'\t' read -r key dest mode uid gid; do
-        [[ -n "$key" && -n "$dest" ]] || continue
-        [[ -f "${SECRET_STASH}/${key}" ]] || continue
-        mkdir -p "$(dirname "$dest")"
-        cp -p "${SECRET_STASH}/${key}" "$dest"
-        if [[ -n "$mode" && -n "$uid" && -n "$gid" ]]; then
-            # Exact inverse of prepare: put back the ownership and mode the file
-            # actually had. The Radarr/Prowlarr/qBittorrent files are owned by
-            # the container user (1000:1000, mode 644); blanket-chowning them to
-            # magic and forcing 600 — as this did before the manifest carried
-            # these fields — silently changed service state the clone then
-            # inherited.
-            chown "${uid}:${gid}" "$dest" 2>/dev/null || true
-            chmod "$mode" "$dest" 2>/dev/null || true
-        else
-            # Stash written by an older prepare_for_cloning.sh, which recorded
-            # only key and dest. Keep the previous behaviour for those.
-            case "$dest" in
-                /home/magic/*) chown magic:magic "$dest" 2>/dev/null || true ;;
-                /opt/magic_dingus_box/*) chown magic:magic "$dest" 2>/dev/null || true ;;
-            esac
-            chmod 600 "$dest" 2>/dev/null || true
-        fi
-        restored=$((restored + 1))
-    done < "${SECRET_STASH}/manifest"
-    sync
-    rm -rf "$SECRET_STASH"
-    log "[1/4] Restored ${restored} application secret(s) and cleared the stash"
-
-    # The stash now includes the Wi-Fi profile (*.nmconnection). The active
-    # connection survived in NM's memory while the file was gone (NM does not
-    # watch connection files); reload so NM's file view matches again rather
-    # than waiting for the next reboot. Best-effort — Ethernet-only boxes
-    # have nothing to reload.
-    nmcli connection reload 2>/dev/null || true
-else
-    log "[1/4] No application-secret stash found (nothing to restore)"
-    # An orphaned stash DIRECTORY with no manifest cannot be mapped back to
-    # original paths (prepare creates the manifest before the first copy, so
-    # this state means nothing was actually removed from disk). Clear it so
-    # credentials do not linger in world-readable /dev/shm, and reload NM
-    # anyway — it is a harmless no-op when nothing changed.
-    rm -rf "$SECRET_STASH" 2>/dev/null || true
-    nmcli connection reload 2>/dev/null || true
-fi
+# (Application secrets were restored and verified in Step 0 above.)
 
 # Curated content (the operator's own playlists/videos) that prepare moved to
 # the disk-backed stash on the movie drive so the artifact would not carry
 # them. mv'd back exactly where they came from. This stash survives a reboot
 # (it is on the SSD, not tmpfs), so a crashed clone loses nothing.
-CONTENT_STASH="/mnt/ssd/.mdb-content-stash"
+CONTENT_STASH="$MDB_CONTENT_STASH_DIR"
 
 if [[ -f "${CONTENT_STASH}/manifest" ]]; then
     restored=0
@@ -293,6 +299,9 @@ unset _u
 # ---------------------------------------------------------------------------
 log "[4/4] Removing clone-in-progress marker..."
 
+# The stash pointer goes BEFORE the marker (Step 0 normally removed it
+# already): a pointer that outlived its marker would read as a lost stash.
+rm -f "${BACKUP_DIR}/${MDB_STASH_POINTER_NAME}"
 rm -f "$MARKER_PATH"
 
 # Backup files no longer needed; remove them so a future prepare run
