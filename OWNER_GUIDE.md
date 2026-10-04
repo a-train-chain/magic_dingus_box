@@ -12,7 +12,8 @@ guide walks through all of it.
 ## 1. First power-on
 
 1. Connect the HDMI cable to your TV and **turn the TV on first**,
-   switched to the right input.
+   switched to the right input. Either of the box's two HDMI ports
+   works — picture and sound follow whichever one the TV is on.
 2. Flip the power switch on the box. The first boot takes about two
    minutes while the box sets itself up (later boots are ~20 seconds).
 3. You'll see the intro video, then the main menu. Plug in a controller
@@ -87,7 +88,7 @@ sequence on the box's front panel, from the main menu:
 2. **Tap BTN2 three times** within two seconds.
 3. **Press the rotary knob in** (one click).
 
-You'll see "Media Browser unlocked" on the TV, and a **Media Browser**
+You'll see "Movie section unlocked" on the TV, and a **Media Browser**
 tab appears in the Content Manager (refresh the page). This only ever
 needs doing once.
 
@@ -177,6 +178,14 @@ Movies are stored on a USB drive so they never crowd the games.
 
 ## 11. If something's stuck
 
+- **Not sure what's wrong?** → Content Manager → **Settings** tab →
+  **Box Health** → **Run Health Check**. In about half a minute it checks
+  sound, picture, games, storage and (if you use Movies) the download
+  services, and says "Everything looks good" or lists what needs
+  attention in plain English.
+- **Asked for logs by support?** → same card → **Download Diagnostics**.
+  It saves one small .zip you can email. Passwords, keys and your Wi-Fi
+  details are removed before it's created.
 - **Movies missing their pictures, updates failing, or things "half
   working"?** → Content Manager → **Settings** tab → **Network Doctor**
   → Run Network Test. It checks the box's connection step by step and
