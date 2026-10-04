@@ -742,6 +742,12 @@ std::string build_kms_ready_watch_block(const std::string& command,
     block << "RETROARCH_READY_FILE=" << shell_single_quote(options.ready_file)
           << "\n";
     block << "rm -f \"$RETROARCH_READY_FILE\"\n";
+    // Survive the group SIGTERM the kiosk sends when it is stopped mid-game.
+    // Untrapped, bash died at once and the kiosk's waitpid() returned while
+    // RetroArch was still writing its auto save-state/SRAM. The trap is
+    // reset to default in RetroArch itself (children never inherit traps),
+    // so RetroArch still quits through its own handler.
+    block << "trap ':' TERM\n";
     block << command << " &\n";
     block << "RETROARCH_PID=$!\n";
     block << "while kill -0 \"$RETROARCH_PID\" 2>/dev/null; do\n";
@@ -759,6 +765,12 @@ std::string build_kms_ready_watch_block(const std::string& command,
     block << "done\n";
     block << "wait \"$RETROARCH_PID\"\n";
     block << "RETROARCH_EXIT=$?\n";
+    // A trapped signal makes `wait` return early (status 128+n) while
+    // RetroArch is still alive and saving: keep waiting until it is gone.
+    block << "while kill -0 \"$RETROARCH_PID\" 2>/dev/null; do\n";
+    block << "    wait \"$RETROARCH_PID\"\n";
+    block << "    RETROARCH_EXIT=$?\n";
+    block << "done\n";
     return block.str();
 }
 
@@ -846,6 +858,23 @@ bool terminate_process_group(pid_t launcher_pid,
             return errno == ECHILD;
         }
     }
+}
+
+StragglerResult reap_retroarch_stragglers(const StragglerOps& ops,
+                                          std::chrono::milliseconds grace,
+                                          std::chrono::milliseconds poll) {
+    if (!ops.running()) return StragglerResult::None;
+    if (poll <= std::chrono::milliseconds::zero()) poll = std::chrono::milliseconds(1);
+
+    ops.signal(SIGTERM);
+    // Waited time is counted from the sleeps themselves, not a clock, so
+    // the bound holds exactly and the policy is testable without sleeping.
+    for (std::chrono::milliseconds waited{0}; waited < grace; waited += poll) {
+        ops.sleep(poll);
+        if (!ops.running()) return StragglerResult::Terminated;
+    }
+    ops.signal(SIGKILL);
+    return StragglerResult::Killed;
 }
 
 }  // namespace retroarch

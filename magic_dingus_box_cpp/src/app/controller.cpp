@@ -7,10 +7,13 @@
 #include "../video/gst_player.h"
 #include "../utils/path_resolver.h"
 #include "../retroarch/retroarch_launcher.h"
+#include "../retroarch/launch_contract.h"
 #include "../platform/drm_display.h"
 #include "app_state.h"
 
 #include <sstream>
+#include <csignal>
+#include <vector>
 #include <iomanip>
 #include <iostream>
 #include <filesystem>
@@ -764,17 +767,42 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         // frame reads as frame 1 of a deliberate fade instead of a hang.
 
         // CRITICAL: Ensure RetroArch is truly dead before we try to take back control
-        // This prevents "zombie" processes from holding onto DRM/Input resources
+        // This prevents "zombie" processes from holding onto DRM/Input resources.
+        // TERM first with a bounded grace, KILL only as the fallback: this
+        // was an unconditional `pkill -9 retroarch`, which on a mid-game
+        // kiosk stop could land while RetroArch was writing its auto
+        // save-state/SRAM. Normally nothing is left (the launcher script
+        // now waits for RetroArch), so this costs one pgrep.
         std::cout << "RetroArch exited. Ensuring process termination..." << std::endl;
         {
-            pid_t pid = fork();
-            if (pid == 0) {
-                int devnull = open("/dev/null", O_WRONLY);
-                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                execlp("pkill", "pkill", "-9", "retroarch", nullptr);
-                _exit(127);
+            auto run_quiet = [](std::vector<const char*> argv) -> int {
+                argv.push_back(nullptr);
+                pid_t pid = fork();
+                if (pid == 0) {
+                    int devnull = open("/dev/null", O_WRONLY);
+                    if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+                    execvp(argv[0], const_cast<char* const*>(argv.data()));
+                    _exit(127);
+                }
+                if (pid < 0) return -1;
+                int s = 0;
+                if (waitpid(pid, &s, 0) < 0) return -1;
+                return WIFEXITED(s) ? WEXITSTATUS(s) : -1;
+            };
+            retroarch::StragglerOps ops;
+            ops.running = [&] { return run_quiet({"pgrep", "-x", "retroarch"}) == 0; };
+            ops.signal = [&](int sig) {
+                run_quiet({"pkill", sig == SIGKILL ? "-KILL" : "-TERM", "-x", "retroarch"});
+            };
+            ops.sleep = [](std::chrono::milliseconds d) { std::this_thread::sleep_for(d); };
+            // 5 s fits inside TimeoutStopSec=20 alongside the rest of the stop.
+            const auto reaped = retroarch::reap_retroarch_stragglers(
+                ops, std::chrono::milliseconds(5000), std::chrono::milliseconds(100));
+            if (reaped == retroarch::StragglerResult::Terminated) {
+                std::cout << "Straggling RetroArch exited after SIGTERM" << std::endl;
+            } else if (reaped == retroarch::StragglerResult::Killed) {
+                std::cerr << "RetroArch ignored SIGTERM for 5 s; SIGKILLed" << std::endl;
             }
-            if (pid > 0) { int s; waitpid(pid, &s, 0); }
         }
         
         // Fixed settle before re-acquiring DRM master, so RetroArch has fully
