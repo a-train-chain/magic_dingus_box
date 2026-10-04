@@ -127,3 +127,99 @@ teardown() {
     [ "$status" -eq 0 ]
     [[ "$output" != *"REBOOT_REQUIRED"* ]]
 }
+
+# --- 1e. stale cascade watcher ----------------------------------------------
+# restart_stale_cascade_watcher.sh with a stubbed systemctl: the stub reports
+# the unit's state from files in $STUB_DIR and logs every call.
+
+CASCADE_HELPER="$SCRIPT_DIR/../restart_stale_cascade_watcher.sh"
+
+cascade_stubs() {
+    STUB_DIR="$TEST_TEMP_DIR/stubs"
+    mkdir -p "$STUB_DIR"
+    CALLS="$TEST_TEMP_DIR/systemctl.log"
+    : > "$CALLS"
+    cat > "$STUB_DIR/systemctl" <<STUB
+#!/bin/bash
+echo "systemctl \$*" >> "$CALLS"
+case "\$1" in
+    is-active) cat "$STUB_DIR/active" 2>/dev/null || echo inactive ;;
+    show)      cat "$STUB_DIR/started" 2>/dev/null ;;
+esac
+exit 0
+STUB
+    chmod +x "$STUB_DIR/systemctl"
+    export PATH="$STUB_DIR:$PATH"
+    WATCHER="$TEST_TEMP_DIR/gluetun_cascade_restart.sh"
+    export MAGIC_CASCADE_WATCHER_BIN="$WATCHER"
+}
+
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+
+# `! cmd` mid-test never fails a bats test (set -e ignores negations).
+refute() {
+    if "$@"; then
+        echo "unexpectedly succeeded: $*"
+        return 1
+    fi
+}
+
+@test "cascade: restarts the watcher when the installed script is newer than the process" {
+    cascade_stubs
+    echo "#new" > "$WATCHER"
+    echo active > "$STUB_DIR/active"
+    echo "@$(( $(file_mtime "$WATCHER") - 3600 ))" > "$STUB_DIR/started"
+    run bash "$CASCADE_HELPER"
+    [ "$status" -eq 0 ]
+    grep -qx "systemctl try-restart --no-block gluetun-cascade-restart.service" "$CALLS"
+}
+
+@test "cascade: no restart once the process is newer than the script (idempotent)" {
+    cascade_stubs
+    echo "#new" > "$WATCHER"
+    echo active > "$STUB_DIR/active"
+    echo "@$(( $(file_mtime "$WATCHER") + 60 ))" > "$STUB_DIR/started"
+    run bash "$CASCADE_HELPER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already runs the installed script"* ]]
+    refute grep -q "try-restart" "$CALLS"
+}
+
+@test "cascade: games-only box (watcher not installed) is a no-op" {
+    cascade_stubs
+    run bash "$CASCADE_HELPER"
+    [ "$status" -eq 0 ]
+    refute grep -q "try-restart" "$CALLS"
+    refute grep -q "is-active" "$CALLS"
+}
+
+@test "cascade: an inactive unit is never started" {
+    cascade_stubs
+    echo "#new" > "$WATCHER"
+    echo inactive > "$STUB_DIR/active"
+    echo "@1" > "$STUB_DIR/started"
+    run bash "$CASCADE_HELPER"
+    [ "$status" -eq 0 ]
+    refute grep -q "try-restart" "$CALLS"
+}
+
+@test "cascade: an unreadable start time leaves the watcher alone and exits 0" {
+    cascade_stubs
+    echo "#new" > "$WATCHER"
+    echo active > "$STUB_DIR/active"
+    echo "n/a" > "$STUB_DIR/started"
+    run bash "$CASCADE_HELPER"
+    [ "$status" -eq 0 ]
+    refute grep -q "try-restart" "$CALLS"
+}
+
+@test "cascade: setup_memory_tuning.sh runs the helper before the cmdline step can exit" {
+    helper_line="$(grep -n 'restart_stale_cascade_watcher.sh"$' "$TUNING_SCRIPT" | head -1 | cut -d: -f1)"
+    cmdline_line="$(grep -n '^# --- 4\. kernel cmdline' "$TUNING_SCRIPT" | cut -d: -f1)"
+    [ -n "$helper_line" ] && [ -n "$cmdline_line" ]
+    [ "$helper_line" -lt "$cmdline_line" ]
+    # Test mode never reaches a real systemctl.
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP: cascade watcher staleness check (test mode)"* ]]
+}
