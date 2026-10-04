@@ -198,9 +198,15 @@ run_build() {
         return 1
     fi
 
-    # tee keeps make's progress streaming to the job log as before;
-    # pipefail (set at the top) makes the pipeline fail when make does.
-    if ! (cd "$new_dir" && make -j2 2>&1) | tee -a "$build_log"; then    # -j2: prevent OOM on Pi 4B (1.5GB RAM)
+    # tee keeps make's progress streaming to the job log as before. make's
+    # own exit code is recorded in a file rather than read from the
+    # pipeline: the pipeline's status depends on pipefail (on here, off in
+    # the bats harness), and an unguarded failing pipeline under set -e
+    # would abort the whole update before the rollback could run.
+    local make_rc_file="${new_dir}/.make_rc"
+    (cd "$new_dir" || { echo 1 > "$make_rc_file"; exit 0; }
+     make -j2 2>&1; echo $? > "$make_rc_file") | tee -a "$build_log" || true   # -j2: prevent OOM on Pi 4B (1.5GB RAM)
+    if [ "$(cat "$make_rc_file" 2>/dev/null || echo 1)" != "0" ]; then
         log_error "make failed; last lines of $build_log:"
         tail -n 60 "$build_log" >&2 || true
         rm -rf "$new_dir"
