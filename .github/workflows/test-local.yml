@@ -81,6 +81,22 @@ jobs:
         if: matrix.media_browser == 'ON'
         run: ctest --test-dir build-ci -N | grep -q "MediaBrowserUnit"
 
+      # The same guard for the eight standalone suites, on BOTH legs: each
+      # is registered behind its own CMake condition (AppUnit is skipped
+      # with only a configure-time WARNING when yaml-cpp is missing), so a
+      # dropped suite would otherwise still exit green with one fewer.
+      - name: Assert every standalone suite ran
+        run: |
+          listing="$(ctest --test-dir build-ci -N)"
+          for suite in RetroArchUnit UiUnit AppUnit PlatformUnit DisplayUnit \
+                       UtilsUnit VideoUnit PhoneRemoteUnit; do
+            echo "$listing" | grep -qw "$suite" || { echo "FATAL: $suite not registered"; exit 1; }
+          done
+          want=8; [ "${{ matrix.media_browser }}" = "ON" ] && want=9
+          got="$(echo "$listing" | sed -n 's/^Total Tests: //p')"
+          echo "ctest suites: $got (want $want)"
+          [ "$got" = "$want" ]
+
   # The real kiosk binary. Every other job builds with BUILD_KIOSK=OFF, so
   # main.cpp, controller.cpp, the renderer and every Media Browser screen
   # were first compiled at TAG time, under QEMU, in release.yml — a broken
