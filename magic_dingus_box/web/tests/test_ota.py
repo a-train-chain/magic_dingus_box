@@ -493,3 +493,139 @@ class TestVersionValidation:
             headers=auth_headers,
         )
         assert response.status_code == 200
+
+    @pytest.mark.parametrize("version", ["1.10.1-beta.1", "1.10.1-beta.12"])
+    def test_install_accepts_beta_version_with_its_own_tag(self, client, mock_update_script,
+                                                          auth_headers, version):
+        url = ("https://github.com/a-train-chain/magic_dingus_box/releases/download/"
+               f"v{version}/magic-dingus-box-{version}.tar.gz")
+        response = client.post("/admin/update/install",
+                               json={"version": version, "download_url": url},
+                               headers=auth_headers)
+        assert response.status_code == 200
+
+    @pytest.mark.parametrize("version", [
+        "1.10.1-beta", "1.10.1-beta.", "1.10.1-beta.x", "1.10.1-rc.1", "1.10.1-alpha.1",
+        "1.10.1-BETA.1", "1.10.1-beta.1.2", "1.10.1-beta.1\n", "1.10.1-beta.١",
+        "1.10.1-beta.1/../../x",
+    ])
+    def test_install_rejects_other_prerelease_shapes(self, client, mock_update_script,
+                                                     auth_headers, version):
+        response = client.post("/admin/update/install",
+                               json={"version": version, "download_url": self.GOOD_URL},
+                               headers=auth_headers)
+        assert response.status_code == 400
+
+    def test_beta_url_must_name_the_beta_tag(self, client, mock_update_script, auth_headers):
+        """A beta version paired with the STABLE tag's URL (or vice versa) is
+        refused: VERSION would claim one release while another was installed."""
+        stable_url = ("https://github.com/a-train-chain/magic_dingus_box/releases/download/"
+                      "v1.10.1/magic-dingus-box-1.10.1.tar.gz")
+        r = client.post("/admin/update/install",
+                        json={"version": "1.10.1-beta.1", "download_url": stable_url},
+                        headers=auth_headers)
+        assert r.status_code == 400
+        beta_url = ("https://github.com/a-train-chain/magic_dingus_box/releases/download/"
+                    "v1.10.1-beta.1/magic-dingus-box-1.10.1-beta.1.tar.gz")
+        r = client.post("/admin/update/install",
+                        json={"version": "1.10.1", "download_url": beta_url},
+                        headers=auth_headers)
+        assert r.status_code == 400
+
+
+class TestOtaVersionRegex:
+    """admin.py's version gate and update.sh's VERSION_RE accept the same
+    grammar: X.Y.Z or X.Y.Z-beta.N."""
+
+    @pytest.mark.parametrize("version,ok", [
+        ("1.10.0", True), ("1.10.1-beta.1", True), ("0.0.0", True),
+        ("1.10.1-beta.999999", True),
+        ("1.10", False), ("v1.10.0", False), ("1.10.0-rc.1", False),
+        ("1.10.0-beta", False), ("1.10.0-beta.1-beta.2", False),
+    ])
+    def test_regex(self, version, ok):
+        from admin import _OTA_VERSION_RE
+        assert bool(_OTA_VERSION_RE.fullmatch(version)) is ok
+
+
+REAL_UPDATE_SH = (Path(__file__).resolve().parents[3]
+                  / "magic_dingus_box_cpp" / "scripts" / "update.sh")
+
+
+class TestUpdateChannel:
+    """GET/POST /admin/update/channel. Both delegate to the REAL update.sh
+    (`update.sh channel [stable|beta]`), so these also pin the contract
+    between the two: one word on stdout, default stable, the file at
+    <install>/config/update_channel."""
+
+    @pytest.fixture
+    def real_update_script(self, temp_data_dir, monkeypatch):
+        import shutil
+        scripts_dir = temp_data_dir.parent / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        dst = scripts_dir / "update.sh"
+        shutil.copy(REAL_UPDATE_SH, dst)
+        dst.chmod(0o755)
+        # NOT temp_data_dir.parent.parent: in this fixture layout that is the
+        # system temp root, shared by every test run on the machine.
+        install_root = temp_data_dir.parent / "install"
+        install_root.mkdir()
+        monkeypatch.setenv("MAGIC_BASE_PATH", str(install_root))
+        return install_root / "config" / "update_channel"
+
+    def test_default_is_stable(self, client, real_update_script):
+        r = client.get("/admin/update/channel")
+        assert r.status_code == 200
+        assert r.get_json()["data"]["channel"] == "stable"
+        assert not real_update_script.exists()
+
+    def test_set_beta_then_back_to_stable(self, client, real_update_script, auth_headers):
+        r = client.post("/admin/update/channel", json={"channel": "beta"}, headers=auth_headers)
+        assert r.status_code == 200
+        assert r.get_json()["data"]["channel"] == "beta"
+        assert real_update_script.read_text().strip() == "beta"
+        assert client.get("/admin/update/channel").get_json()["data"]["channel"] == "beta"
+
+        r = client.post("/admin/update/channel", json={"channel": "stable"}, headers=auth_headers)
+        assert r.status_code == 200
+        assert r.get_json()["data"]["channel"] == "stable"
+        assert not real_update_script.exists()  # absence IS stable
+
+    def test_garbage_file_reads_as_stable(self, client, real_update_script):
+        real_update_script.parent.mkdir(parents=True, exist_ok=True)
+        real_update_script.write_text("nightly\n")
+        assert client.get("/admin/update/channel").get_json()["data"]["channel"] == "stable"
+
+    @pytest.mark.parametrize("body", [
+        {"channel": "nightly"}, {"channel": "Beta"}, {"channel": ""}, {"channel": None},
+        {"channel": ["beta"]}, {"channel": 1}, {}, ["beta"], "beta",
+    ])
+    def test_rejects_unknown_channel(self, client, real_update_script, auth_headers, body):
+        r = client.post("/admin/update/channel", json=body, headers=auth_headers)
+        assert r.status_code == 400
+        assert r.get_json()["ok"] is False
+        assert not real_update_script.exists()
+
+    def test_switch_invalidates_cached_check(self, client, mock_update_script,
+                                             auth_headers, temp_data_dir):
+        """A cached stable answer must not survive a switch to beta."""
+        calls = temp_data_dir.parent / "check_calls"
+        text = mock_update_script.read_text()
+        text = text.replace("    check)\n", f"    check)\n        echo x >> '{calls}'\n", 1)
+        text = text.replace("    version)\n",
+                            "    channel)\n        echo \"${2:-stable}\"\n        ;;\n"
+                            "    version)\n", 1)
+        mock_update_script.write_text(text)
+        assert client.get("/admin/update/check").status_code == 200
+        assert client.get("/admin/update/check").status_code == 200
+        assert calls.read_text().count("x") == 1  # the second answer was cached
+        r = client.post("/admin/update/channel", json={"channel": "beta"}, headers=auth_headers)
+        assert r.status_code == 200
+        assert client.get("/admin/update/check").status_code == 200
+        assert calls.read_text().count("x") == 2
+
+    def test_script_missing(self, client, temp_data_dir):
+        script = temp_data_dir.parent / "scripts" / "update.sh"
+        if script.exists():
+            script.unlink()
+        assert client.get("/admin/update/channel").status_code == 500

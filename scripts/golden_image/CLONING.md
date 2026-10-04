@@ -249,6 +249,18 @@ DB, etc.) — useful if you want to start fresh, but not if you have a
 working library you want to keep using on the source while building
 the golden image.
 
+## Update channel — clones always ship on stable
+
+A source box on the **beta** OTA channel (`config/update_channel` = `beta`,
+the owner's early-release opt-in) cannot be cloned: `prepare_for_cloning.sh`
+refuses at preflight, before touching anything. Switch it back first:
+
+    /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/update.sh channel stable
+
+`first_boot.sh` Step 6i also deletes the flag on every clone, and
+`verify_box.sh` WARNs on any box still on beta. How betas are cut,
+promoted and pulled: `magic_dingus_box_cpp/docs/RELEASING.md`.
+
 ## Boot config (2026-07-16)
 
 `/boot/firmware/config.txt` on the source Pi carries the RetroArch

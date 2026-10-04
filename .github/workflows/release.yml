@@ -25,7 +25,16 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        # vX.Y.Z = stable; vX.Y.Z-beta.N = prerelease (beta channel only).
+        # Release-blocking: any other shape would publish a release no box
+        # can install (update.sh VERSION_RE / admin.py _OTA_VERSION_RE accept
+        # exactly these two), and VERSION gets the full string verbatim.
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+            echo "FATAL: tag v${VERSION} is neither vX.Y.Z nor vX.Y.Z-beta.N"; exit 1
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
       # Use Debian Trixie for libgpiod 2.x (Bookworm only has 1.6.x)
       - name: Build ARM64 binary
@@ -114,7 +123,16 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        # vX.Y.Z = stable; vX.Y.Z-beta.N = prerelease (beta channel only).
+        # Release-blocking: any other shape would publish a release no box
+        # can install (update.sh VERSION_RE / admin.py _OTA_VERSION_RE accept
+        # exactly these two), and VERSION gets the full string verbatim.
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+            echo "FATAL: tag v${VERSION} is neither vX.Y.Z nor vX.Y.Z-beta.N"; exit 1
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Update VERSION file
         run: echo "${{ steps.version.outputs.VERSION }}" > VERSION
@@ -226,7 +244,16 @@ jobs:
     steps:
       - name: Extract version
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        # vX.Y.Z = stable; vX.Y.Z-beta.N = prerelease (beta channel only).
+        # Release-blocking: any other shape would publish a release no box
+        # can install (update.sh VERSION_RE / admin.py _OTA_VERSION_RE accept
+        # exactly these two), and VERSION gets the full string verbatim.
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+            echo "FATAL: tag v${VERSION} is neither vX.Y.Z nor vX.Y.Z-beta.N"; exit 1
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -234,6 +261,12 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          # A tag with a "-" (v1.10.1-beta.1) is published as a GitHub
+          # PRERELEASE. GitHub never returns a prerelease from
+          # releases/latest — the only endpoint stable boxes (and every
+          # updater <= 1.10.0) query — so a beta reaches beta-channel boxes
+          # only. Stable tags are unaffected (false).
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             source-tarball/magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz
             source-tarball/checksum.sha256

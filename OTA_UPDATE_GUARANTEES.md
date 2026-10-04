@@ -86,6 +86,7 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `magic_dingus_box_cpp/data/kiosk_status.json`, `data/text_input_queue.jsonl`, `data/seek_request.json` | Transient kiosk↔web runtime files; excluded so an OTA can't yank them out from under the running web admin. | Status broadcast, phone-remote text-input queue, seek requests. |
 | `/config/*` (anchored to the install root) | Kiosk settings (display mode, audio, bezel selection, master volume, Media Browser unlock flag). Plus WiFi credentials in NetworkManager. | `config/settings.json`. |
 | `config/controller_profiles.json` | Captured controller mappings from the Controller Setup wizard. Covered by the existing `/config/*` exclude; listed here so nobody "cleans it up". | Per-model button/axis profiles keyed by USB VID/PID. |
+| `config/update_channel` | The box's OTA update channel (see "Update channels" below). Covered by `/config/*` in all four lists, so neither an install nor either rollback can flip a box between stable and beta. Absent = stable. | The single word `beta`, or nothing. |
 | `magic_dingus_box_cpp/build/*` | Local build artifacts. Always rebuilt fresh during install — **in `build.new/`, swapped in only after the new binary is verified** (see the 2026-10 section below); the live `build/` is never deleted first. | CMake cache, object files, the kiosk binary. |
 | `magic_dingus_box_cpp/data/pending_revocations.txt`, `magic_dingus_box_cpp/data/upload_temp/` | Per-box runtime state, never in a release tarball, so the install `--delete` removed them on every OTA. Excluded from all four lists as of the 2026-10 hardening (`deploy_cpp.sh` already excluded both). | Phone-unpair revocations not yet applied; half-finished Content Manager uploads. |
 | `services/.env` | Per-Pi Media Browser secrets. NOT in git. | WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr/qBit API keys, qBit admin password. |
@@ -238,9 +239,30 @@ The full preservation list lives in 4 rsync invocations inside `magic_dingus_box
 
 Adding a new "this should be preserved" path? Update **all four** lists. Inconsistency between them is a recipe for partial-update data loss.
 
+## Update channels (stable / beta)
+
+Added after v1.10.0 so the owner can ship a release to their own boxes before every customer gets it. Operator workflow: [`magic_dingus_box_cpp/docs/RELEASING.md`](magic_dingus_box_cpp/docs/RELEASING.md).
+
+- **The channel is per box**: one word in `/opt/magic_dingus_box/config/update_channel`. Absent, unreadable, or anything but the exact word `beta` = **stable**. Setting stable deletes the file. Preserved by `/config/*` (table above); `deploy_cpp.sh` never syncs `config/`. Set with `update.sh channel [stable|beta]` or the Content Manager's Software Updates → Advanced → "Get early (beta) updates" (`POST /admin/update/channel`, which runs the same command).
+- **Stable** (`update.sh check`) makes exactly the request every earlier updater makes: `GET releases/latest`. Nothing about stable discovery changed. A bats test drives `check` against the rehearsal's fake GitHub and asserts from its request log that the stable path **never** requests the release list.
+- **Beta** requests `GET releases?per_page=20`, drops drafts and any tag outside the version grammar, and takes the **highest SemVer** among stable *and* prerelease releases — selection by version, never by list order, so a 1.9.x hotfix published after a 1.10.1 beta cannot outrank it, and a beta box moves onto the final 1.10.1 the moment it is published.
+- **Version grammar**: `X.Y.Z` or `X.Y.Z-beta.N`, nothing else, enforced in `update.sh` (`VERSION_RE`: install, binary lookup, check output), `admin.py` (`_OTA_VERSION_RE`; the download URL must still name exactly `v<version>` of this repo) and `release.yml` (a tag of any other shape fails the release).
+- **Ordering** is SemVer precedence via `update.sh`'s pure-bash `version_cmp`: `1.10.0 < 1.10.1-beta.1 < 1.10.1-beta.2 < 1.10.1-beta.10 < 1.10.1`, numeric at any length. It replaced `sort -V`, which ranks `1.10.1` *below* `1.10.1-beta.1` — a beta box would never have been offered the release it was testing.
+- **No downgrades, on either channel.** A box on `1.10.1-beta.2` switched back to stable while `releases/latest` is `1.10.0` reports no update and waits for the next stable (`1.10.1` or later). A `-beta` version that somehow appears at `releases/latest` (someone hand-cleared the prerelease flag) is never offered on stable.
+
+### Why a beta can never reach a customer box — safety by construction
+
+1. `release.yml` publishes every `vX.Y.Z-beta.N` tag with `prerelease: true` (`contains(github.ref_name, '-')`, pinned by `tests/local/release_prerelease.bats`).
+2. GitHub's `releases/latest` endpoint, by GitHub's own definition, returns the most recent **non-prerelease, non-draft** release. A prerelease is never "latest".
+3. Every updater shipped up to and including **v1.10.0** knows only `releases/latest` — the endpoint is hard-coded in their `update.sh` (`GITHUB_API`) and the boxes update with the `update.sh` they already have. So every box in the field today is structurally blind to betas; no change in this repo can alter what those already-installed scripts request. Belt and braces: updaters that carry the strict version check (`c75fdee`, "validate version as X.Y.Z") would also refuse to install a `-beta.N` version even if one were posted to them by hand.
+4. New updaters on the stable channel (the default, and the only state a clone can boot in) make that same single request.
+5. Clones: `prepare_for_cloning.sh` refuses to clone a beta box, `first_boot.sh` deletes the flag on every clone, `prepare_golden_image.sh` removes it, and `verify_box.sh` WARNs on any box still on beta.
+
+The only way onto beta is a deliberate per-box opt-in on a box that already runs the channel feature.
+
 ## The version-detection path
 
-`update.sh check` queries `https://api.github.com/repos/a-train-chain/magic_dingus_box/releases/latest`. **Tags alone don't trigger updates** — you need a published GitHub *Release* (via `gh release create v1.X.Y --notes ...` or the GitHub web UI) for OTA to see it.
+`update.sh check` queries `https://api.github.com/repos/a-train-chain/magic_dingus_box/releases/latest` on the stable channel (the default) — see "Update channels" above for beta. **Tags alone don't trigger updates** — you need a published GitHub *Release* (via `gh release create v1.X.Y --notes ...` or the GitHub web UI) for OTA to see it.
 
 Releases for v1.0.0–v1.0.17 and v1.1.0–v1.3.0 are published. v1.4.0 and v1.4.1 are git tags only (intentional — they were stepping stones during the v1.4.x release cycle). v1.4.2 onwards: every patch tagged in git also gets a GitHub Release.
 

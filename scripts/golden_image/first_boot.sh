@@ -990,6 +990,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 6i: Every clone starts on the STABLE update channel
+# ---------------------------------------------------------------------------
+# config/update_channel = "beta" opts a box into pre-release builds (the
+# owner's own boxes only — magic_dingus_box_cpp/docs/RELEASING.md). A
+# customer unit must never inherit it from the source box.
+# prepare_for_cloning.sh already refuses to clone a beta box; this is the
+# belt to those suspenders (and covers images cut any other way). Absence
+# IS stable, so deleting the file is the whole reset.
+rm -f "${INSTALL_DIR}/config/update_channel" "${INSTALL_DIR}/config/update_channel.tmp" 2>/dev/null || true
+log "[6i/7] Update channel reset to stable"
+
+# ---------------------------------------------------------------------------
 # Step 7: Disable this service (run once only)
 # ---------------------------------------------------------------------------
 log "[7/7] Disabling first-boot service..."

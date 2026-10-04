@@ -2,15 +2,20 @@
 """A local stand-in for the three GitHub surfaces update.sh talks to.
 
   api.github.com   GET /repos/<repo>/releases/latest
-                   GET /repos/<repo>/releases/tags/v<X.Y.Z>
-  github.com       GET /<repo>/releases/download/v<X.Y.Z>/<asset>
+                   GET /repos/<repo>/releases?per_page=N   (beta channel)
+                   GET /repos/<repo>/releases/tags/v<VER>
+  github.com       GET /<repo>/releases/download/v<VER>/<asset>
                    -> 302 to the asset CDN, as the real site does
   objects.githubusercontent.com (+ release-assets.githubusercontent.com)
                    GET <signed-looking path> -> the asset bytes
 
-Releases come from RELEASES_DIR/v<X.Y.Z>/ (whatever asset files are there).
+<VER> is X.Y.Z or X.Y.Z-beta.N. Releases come from RELEASES_DIR/v<VER>/
+(whatever asset files are there). A release whose version carries a "-" is
+served with "prerelease": true, exactly as release.yml publishes it.
 Behaviour is steered per request by CONTROL (JSON, re-read every request):
   {"latest": "1.10.0",        which release /releases/latest returns
+   "drafts": ["1.11.0"],      releases served as "draft": true (list only —
+                              like GitHub, drafts never answer latest/tags)
    "minify": false,           compact JSON instead of GitHub's pretty form
    "asset_order": "release"}  "release" = the order release.yml uploads in
                               (source, checksum, binary); "reversed" puts
@@ -18,6 +23,12 @@ Behaviour is steered per request by CONTROL (JSON, re-read every request):
                               check_update's asset match was hardened for)
 Every request is appended to REQUEST_LOG as one JSON line. Read-only: any
 non-GET is answered 405, so nothing can ever be "published" to it.
+
+  fake_github.py CERT KEY        TLS on 127.0.0.1:443 (the rehearsal box)
+  fake_github.py --http PORTFILE plain HTTP on an ephemeral 127.0.0.1 port,
+                                 written to PORTFILE; requests whose Host is
+                                 127.0.0.1/localhost are served as
+                                 api.github.com (update.sh's bats suite)
 """
 import hashlib
 import json
@@ -39,6 +50,8 @@ REPO = os.environ.get("FAKE_GH_REPO", "a-train-chain/magic_dingus_box")
 BODY_TEMPLATE = RELEASES_DIR / "body_template.md"
 TEMPLATE_VERSION = os.environ.get("FAKE_GH_TEMPLATE_VERSION", "")
 CDN = "objects.githubusercontent.com"
+VER = r"[0-9]+\.[0-9]+\.[0-9]+(?:-beta\.[0-9]+)?"
+LOCAL_AS = None  # set by --http: the host a 127.0.0.1 request stands for
 
 
 def control() -> dict:
@@ -66,7 +79,7 @@ def release_assets(ver: str, order: str):
     return [(n, files[n]) for n in names]
 
 
-def release_json(ver: str, order: str):
+def release_json(ver: str, order: str, draft: bool = False):
     assets = release_assets(ver, order)
     if assets is None:
         return None
@@ -89,9 +102,9 @@ def release_json(ver: str, order: str):
         "tag_name": tag,
         "target_commitish": "main",
         "name": tag,
-        "draft": False,
+        "draft": draft,
         "immutable": False,
-        "prerelease": False,
+        "prerelease": "-" in ver,
         "created_at": published,
         "updated_at": published,
         "published_at": published,
@@ -154,20 +167,26 @@ class Handler(BaseHTTPRequestHandler):
         minify = bool(ctl.get("minify"))
         order = ctl.get("asset_order", "release")
         host = (self.headers.get("Host") or "").split(":")[0]
+        if LOCAL_AS and host in ("127.0.0.1", "localhost"):
+            host = LOCAL_AS
         path = urlsplit(self.path).path
+        drafts = {str(v) for v in ctl.get("drafts", [])}
 
         if host == "api.github.com":
             if path == f"/repos/{REPO}/releases/latest":
-                rel = release_json(str(ctl.get("latest", "")), order)
+                ver = str(ctl.get("latest", ""))
+                rel = None if ver in drafts else release_json(ver, order)
                 return self._json(200, rel, minify) if rel else self._not_found(minify)
-            m = re.fullmatch(rf"/repos/{re.escape(REPO)}/releases/tags/v([0-9]+\.[0-9]+\.[0-9]+)", path)
+            if path == f"/repos/{REPO}/releases":
+                return self._json(200, self._release_list(order, drafts), minify)
+            m = re.fullmatch(rf"/repos/{re.escape(REPO)}/releases/tags/v({VER})", path)
             if m:
-                rel = release_json(m.group(1), order)
+                rel = None if m.group(1) in drafts else release_json(m.group(1), order)
                 return self._json(200, rel, minify) if rel else self._not_found(minify)
             return self._not_found(minify)
 
         if host == "github.com":
-            m = re.fullmatch(rf"/{re.escape(REPO)}/releases/download/v([0-9.]+)/([^/]+)", path)
+            m = re.fullmatch(rf"/{re.escape(REPO)}/releases/download/v({VER})/([^/]+)", path)
             if m and (RELEASES_DIR / f"v{m.group(1)}" / m.group(2)).is_file():
                 ver, name = m.groups()
                 loc = (f"https://{CDN}/github-production-release-asset-2e65be/{asset_id(name)}/"
@@ -209,6 +228,26 @@ class Handler(BaseHTTPRequestHandler):
 
         self._not_found()
 
+    def _release_list(self, order: str, drafts: set):
+        """GET /releases: newest first (by published_at, as GitHub orders
+        by creation), stable and prerelease alike, honouring per_page
+        (default 30, max 100)."""
+        q = dict(kv.split("=", 1) for kv in urlsplit(self.path).query.split("&") if "=" in kv)
+        try:
+            per_page = max(1, min(100, int(q.get("per_page", "30"))))
+        except ValueError:
+            per_page = 30
+        rels = []
+        if RELEASES_DIR.is_dir():
+            for d in RELEASES_DIR.iterdir():
+                if d.is_dir() and re.fullmatch(rf"v({VER})", d.name):
+                    ver = d.name[1:]
+                    rel = release_json(ver, order, draft=ver in drafts)
+                    if rel:
+                        rels.append(rel)
+        rels.sort(key=lambda r: (r["published_at"], r["tag_name"]), reverse=True)
+        return rels[:per_page]
+
     def _refuse(self):
         self.send_response(405)
         self.send_header("Content-Length", "0")
@@ -219,6 +258,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global LOCAL_AS
+    if sys.argv[1] == "--http":
+        LOCAL_AS = "api.github.com"
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        Path(sys.argv[2]).write_text(f"{srv.server_address[1]}\n")
+        print(f"fake GitHub (plain HTTP) on 127.0.0.1:{srv.server_address[1]}", flush=True)
+        srv.serve_forever()
+        return
     cert, key = sys.argv[1], sys.argv[2]
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)

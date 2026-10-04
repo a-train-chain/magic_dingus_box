@@ -871,6 +871,13 @@
                             <span class="health-label">Current Version</span>
                             <span class="health-value" id="currentVersion">Loading...</span>
                         </div>
+                        <!-- Hidden until /admin/update/channel answers (a box on
+                             an updater older than the channel feature has no
+                             such endpoint). -->
+                        <div class="health-row" id="updateChannelRow" style="display: none;">
+                            <span class="health-label">Update Channel</span>
+                            <span class="health-value" id="updateChannel">Stable</span>
+                        </div>
                     </div>
 
                     <div id="updateStatus" class="update-status" style="display: none;">
@@ -905,6 +912,24 @@
                             Rollback
                         </button>
                     </div>
+
+                    <details id="updateAdvanced" style="margin-top: 1rem; display: none;">
+                        <summary style="cursor: pointer; color: var(--accent2); font-size: 0.9rem;">
+                            Advanced
+                        </summary>
+                        <div style="padding: 0.75rem 0;">
+                            <label style="display: flex; gap: 0.5rem; align-items: center; cursor: pointer;">
+                                <input type="checkbox" id="betaChannelToggle"
+                                    onchange="setUpdateChannel(this.checked ? 'beta' : 'stable')">
+                                Get early (beta) updates
+                            </label>
+                            <p class="settings-description" style="color: var(--accent); font-size: 0.85rem; margin-top: 0.5rem;">
+                                <svg class="ic" aria-hidden="true"><use href="#ic-warning"/></svg>
+                                Beta updates are unfinished test builds that may have bugs — leave this off unless you are testing a new release.
+                                Turning it off later does not undo a beta; this box simply waits for the next regular update.
+                            </p>
+                        </div>
+                    </details>
                 </div>
             </div>
         </section>

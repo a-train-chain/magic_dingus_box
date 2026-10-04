@@ -386,7 +386,8 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
   the swap: `build/` is the kiosk's `WorkingDirectory=`. Details:
   `OTA_UPDATE_GUARANTEES.md` "The TV stays on while a source build
   compiles".
-- Triggered via web admin `/admin/update/*` endpoints (`version`, `check`, `install`, `status/<job_id>`, `rollback`) — NOT `/api/update/*`
+- Triggered via web admin `/admin/update/*` endpoints (`version`, `check`, `install`, `status/<job_id>`, `rollback`, `channel`) — NOT `/api/update/*`
+- **Update channels: `stable` (default) / `beta`** — one word in `<install>/config/update_channel` (absent = stable; `/config/*` is excluded from every OTA rsync). Stable queries `releases/latest` (GitHub never returns prereleases there — the request is byte-identical to pre-channel updaters, which is why boxes on ≤1.10.0 can never see a beta). Beta queries `releases?per_page=20`, ignores drafts, takes the highest version across stable + beta. Versions are `X.Y.Z` or `X.Y.Z-beta.N` ONLY (`VERSION_RE` in update.sh, `_OTA_VERSION_RE` in admin.py, the tag check in release.yml — change all three together), ordered by update.sh's pure-bash SemVer `version_cmp` (never `sort -V`: it ranks `1.10.1` below `1.10.1-beta.1`). No channel ever offers a downgrade. Set via `update.sh channel [stable|beta]` or the Content Manager's Advanced toggle. Tag `vX.Y.Z-beta.N` → release.yml publishes a GitHub prerelease; betas reuse `## [Unreleased]` (no beta changelog headings). Clones: `prepare_for_cloning.sh` refuses a beta box, `first_boot.sh` deletes the flag, `verify_box.sh` WARNs. Operator workflow: `magic_dingus_box_cpp/docs/RELEASING.md`. Never mention betas in `OWNER_GUIDE.md` (customer-facing).
 
 ## Media Browser (Movie Playback + Downloads)
 

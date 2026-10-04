@@ -290,7 +290,13 @@ def _device_info_problem(doc) -> Optional[str]:
 
 # OTA install inputs. See install_update() for why `version` is load-bearing.
 # re.ASCII + explicit [0-9]: the pattern must not admit non-ASCII digits.
-_OTA_VERSION_RE = re.compile(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", re.ASCII)
+# X.Y.Z, or a beta-channel prerelease X.Y.Z-beta.N — the same grammar as
+# update.sh's VERSION_RE and release.yml's tag check. Nothing here compares
+# versions; update.sh's version_cmp is the only comparator.
+_OTA_VERSION_RE = re.compile(
+    r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}(?:-beta\.[0-9]{1,6})?", re.ASCII)
+# The OTA update channels `update.sh channel` understands (stable = default).
+_OTA_CHANNELS = ("stable", "beta")
 # A release asset name: a plain filename. No "/", no "%" (so no encoded
 # separators or dot-segments), and it may not be "." or "..".
 _OTA_ASSET_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}", re.ASCII)
@@ -4891,6 +4897,59 @@ def create_app(data_dir: Path, config=None) -> Flask:
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
 
+    # Update channel (stable | beta). update.sh owns the file
+    # (<install>/config/update_channel) and its default-to-stable rule, so
+    # both endpoints go through `update.sh channel` — the same command an
+    # owner runs over SSH — rather than a second reader/writer here. stdout
+    # is exactly one word by contract.
+    def _run_update_channel(args: list) -> str:
+        result = subprocess.run(
+            [str(UPDATE_SCRIPT), "channel", *args],
+            capture_output=True, text=True, timeout=15)
+        lines = (result.stdout or "").strip().splitlines()
+        channel = lines[-1].strip() if lines else ""
+        if result.returncode != 0 or channel not in _OTA_CHANNELS:
+            raise RuntimeError(strip_ansi(result.stderr or "").strip()
+                               or "update.sh channel failed")
+        return channel
+
+    @app.get("/admin/update/channel")
+    def get_update_channel():  # type: ignore[no-redef]
+        """The box's OTA update channel: "stable" (default) or "beta"."""
+        if not UPDATE_SCRIPT.exists():
+            return error_response("UPDATE_NOT_AVAILABLE", "Update script not found", status=500)
+        try:
+            channel = _run_update_channel([])
+        except (OSError, subprocess.TimeoutExpired, RuntimeError) as e:
+            return error_response("INTERNAL_ERROR", f"Could not read the update channel: {e}",
+                                  status=500)
+        return success_response(data={"channel": channel})
+
+    @app.post("/admin/update/channel")
+    @require_csrf
+    def set_update_channel():  # type: ignore[no-redef]
+        """Switch the OTA update channel. Body: {"channel": "stable"|"beta"}.
+
+        No password or PIN by owner decision (same trust model as Install
+        Update itself, which is strictly more powerful). Beta only widens
+        which RELEASES of this project's own repo are offered; the install
+        path's repo/tag pinning is unchanged.
+        """
+        if not UPDATE_SCRIPT.exists():
+            return error_response("UPDATE_NOT_AVAILABLE", "Update script not found", status=500)
+        data = request.get_json(silent=True)
+        channel = data.get("channel") if isinstance(data, dict) else None
+        if not isinstance(channel, str) or channel not in _OTA_CHANNELS:
+            return error_response("VALIDATION_ERROR", "channel must be \"stable\" or \"beta\"")
+        try:
+            channel = _run_update_channel([channel])
+        except (OSError, subprocess.TimeoutExpired, RuntimeError) as e:
+            return error_response("INTERNAL_ERROR", f"Could not change the update channel: {e}",
+                                  status=500)
+        _invalidate_update_check_cache()  # the next check must use the new channel
+        return success_response(data={"channel": channel},
+                                message=f"Update channel set to {channel}")
+
     def _new_update_job_view(version: Optional[str]) -> dict:
         return {
             'status': 'running',
@@ -4994,13 +5053,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # so "1.0.8/../../../../attacker/evil/releases/tags/v1" fetched ANOTHER
         # repo's release metadata and installed ITS binary, while the
         # download_url below stayed a perfectly valid asset of our own repo.
-        # It is also written verbatim into VERSION. Plain X.Y.Z only (what
-        # `update.sh check` emits as latest_version). [0-9], not \d: Python's
-        # \d matches every Unicode digit; fullmatch, not `$`, which would
-        # accept a trailing newline. update.sh re-checks this independently.
+        # It is also written verbatim into VERSION. X.Y.Z or X.Y.Z-beta.N only
+        # (what `update.sh check` emits as latest_version). [0-9], not \d:
+        # Python's \d matches every Unicode digit; fullmatch, not `$`, which
+        # would accept a trailing newline. update.sh re-checks this
+        # independently.
         if not isinstance(version, str) or not _OTA_VERSION_RE.fullmatch(version):
             return error_response(
-                "VALIDATION_ERROR", "Invalid version (expected X.Y.Z)")
+                "VALIDATION_ERROR", "Invalid version (expected X.Y.Z or X.Y.Z-beta.N)")
         if not isinstance(download_url, str):
             return error_response("VALIDATION_ERROR", "Invalid download URL")
 

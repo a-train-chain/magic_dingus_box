@@ -154,6 +154,27 @@ case "$FB_STATE" in
   *) pass "magic-first-boot.service not enabled (${FB_STATE:-not installed})" ;;
 esac
 
+# OTA update channel. The owner's own boxes may legitimately sit on beta
+# (early pre-release builds), so this is a WARN, not a FAIL — but a box
+# shipped to a customer must be on stable, and this line is what makes a
+# forgotten beta flag impossible to miss at pre-ship time. (Clones are
+# safe regardless: prepare_for_cloning.sh refuses a beta box and
+# first_boot.sh deletes the flag.)
+#
+# Pure, pinned by tests/local/verify_box_update_channel.bats: the SAME rule
+# as update.sh read_update_channel — only the exact word "beta" (whitespace
+# ignored) is beta; absent/unreadable/anything else is stable.
+update_channel_of() {
+  local c=""
+  [[ -r "${1:-}" ]] && c=$(head -c 64 "$1" 2>/dev/null | tr -d '[:space:]')
+  if [[ "$c" == "beta" ]]; then echo beta; else echo stable; fi
+}
+if [[ "$(update_channel_of "${BASE}/config/update_channel")" == "beta" ]]; then
+  warn "update channel is BETA — this box gets pre-release builds. Fine for the owner's own box; NEVER ship it: run '${APP}/scripts/update.sh channel stable'"
+else
+  pass "update channel: stable"
+fi
+
 # config.txt model-specific settings must live under [pi4]/[pi5], never
 # [all] — one image boots both boards. Filters stack in config.txt, so only
 # the MODEL filters ([piN]/[cmN]/[all]/[none]) change the context tracked

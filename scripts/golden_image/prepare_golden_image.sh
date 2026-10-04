@@ -331,6 +331,13 @@ else
     echo -e "  ${DIM}No settings.json found${NC}"
 fi
 
+# The OTA update channel: an image must start on stable (absence = stable).
+channel_file="${CONFIG_DIR}/update_channel"
+if [[ -e "$channel_file" ]]; then
+    rm -f "$channel_file" "${channel_file}.tmp"
+    echo -e "  ${RED}Removed${NC} ${channel_file} (units start on the stable update channel)"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 6: Remove SSH host keys
 # ---------------------------------------------------------------------------
