@@ -175,6 +175,7 @@ refute() {
 }
 
 @test "init_audio.sh WITHOUT the unit falls back to starting PulseAudio itself" {
+    [[ $EUID -ne 0 ]] || skip "as root, legacy-start runs prepare directly instead of via sudo"
     MAGIC_AUDIO_UNIT_FILE="$T/missing" run bash "$SCRIPTS/init_audio.sh"
     [ "$status" -eq 0 ]
     grep -q '^pulseaudio --start' "$CALLS"
@@ -192,6 +193,7 @@ refute() {
 # --- audio_service.sh -------------------------------------------------------
 
 @test "run: writes pulse config with autospawn off, execs PulseAudio in the foreground" {
+    [[ $EUID -ne 0 ]] || skip "run refuses root by design (the unit sets User=magic)"
     run bash "$SCRIPTS/audio_service.sh" run
     [ "$status" -eq 0 ]
     grep -q -- '^pulseaudio --daemonize=no --exit-idle-time=-1' "$CALLS"
@@ -201,6 +203,7 @@ refute() {
 }
 
 @test "run: waits for a PulseAudio it did not start instead of killing it" {
+    [[ $EUID -ne 0 ]] || skip "run refuses root by design (the unit sets User=magic)"
     # pgrep reports a foreign PA once, then none.
     cat > "$STUBS/pgrep" <<EOF
 #!/bin/bash
