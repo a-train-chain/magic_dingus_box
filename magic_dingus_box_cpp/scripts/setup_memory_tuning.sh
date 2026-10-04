@@ -21,6 +21,9 @@
 #   1d. magic-dingus-audio.service + its kiosk drop-in, via
 #        setup_audio_service.sh (PulseAudio out of the kiosk's cgroup) —
 #        same OTA delivery path as 1b
+#   1e. restart gluetun-cascade-restart.service when it runs an older copy
+#        of its script than /usr/local/bin holds, via
+#        restart_stale_cascade_watcher.sh — same OTA delivery path as 1b
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -152,6 +155,22 @@ if [[ -f "$AUDIO_INSTALLER" ]]; then
         || log "WARNING: audio service install failed (init_audio.sh keeps starting PulseAudio itself)"
 else
     log "setup_audio_service.sh not found; skipping audio service install"
+fi
+
+# --- 1e. restart a cascade watcher running a stale script -------------------
+# Same "only root hook the OLD update.sh runs" reasoning as 1d: v1.9.14's
+# update.sh copies a new gluetun_cascade_restart.sh into /usr/local/bin but
+# never restarts the long-running watcher, and the next update sees an
+# identical file and skips its restart too. The helper restarts the unit
+# only when the installed script is newer than the running process; it is a
+# no-op on games-only boxes and never fails. Before step 4 (early exit).
+CASCADE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/restart_stale_cascade_watcher.sh"
+if [[ "$SKIP_SYSTEMCTL" == "true" ]]; then
+    log "SKIP: cascade watcher staleness check (test mode)"
+elif [[ -f "$CASCADE_HELPER" ]]; then
+    bash "$CASCADE_HELPER" 2>&1 | sed 's/^/  /' || true
+else
+    log "restart_stale_cascade_watcher.sh not found; skipping cascade watcher check"
 fi
 
 # --- 2. system.slice companion ----------------------------------------------

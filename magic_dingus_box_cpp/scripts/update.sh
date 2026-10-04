@@ -929,9 +929,23 @@ ensure_phone_remote_uinput() {
 # install_deps.sh, which would apt-update, re-install the whole build
 # toolchain and restart dnsmasq + the port-80 redirect mid-update. Never
 # fatal: a failure (offline, dpkg lock held by unattended-upgrades) only
-# means the box keeps the old server until the next update retries. Runs
-# BEFORE the web restart at the end of install_update, which is what brings
-# the Content Manager up under gunicorn.
+# means the box keeps the old server until the next update retries.
+#
+# Placement (install_update): AFTER the kiosk's verified start and the
+# VERSION commit, BEFORE the web restart that brings the Content Manager up
+# under gunicorn. It only concerns the web server, so it must not keep the
+# screen dark (the kiosk is stopped earlier in the install) for however
+# long a slow mirror takes, nor sit inside the window where a power cut
+# would make the boot recovery roll back a good update.
+#
+# Two phases, because dpkg must NEVER be killed: a SIGTERM mid-unpack
+# leaves "dpkg was interrupted, you must manually run dpkg --configure -a",
+# which blocks every later apt run on the box.
+#   1. --download-only, bounded by `timeout` — all the network time. Killing
+#      a download is harmless.
+#   2. the real install with --no-download and NO timeout: every .deb is
+#      already in the cache, so this is a few seconds of dpkg and cannot
+#      stall on the network; DPkg::Lock::Timeout bounds the lock wait.
 ensure_web_server_dep() {
     if python3 -c "import gunicorn.workers.gthread" 2>/dev/null; then
         log "Content Manager: gunicorn present"
@@ -942,18 +956,89 @@ ensure_web_server_dep() {
         return 0
     fi
     log "Content Manager: gunicorn missing; installing python3-gunicorn"
-    local apt_install=(sudo -n env DEBIAN_FRONTEND=noninteractive timeout 300
-                       apt-get -o DPkg::Lock::Timeout=60 install -y
-                       --no-install-recommends python3-gunicorn)
-    # Retry once after refreshing the package lists: a stale list 404s on
-    # a package version the mirror has since replaced.
-    if "${apt_install[@]}" >&2 \
-       || { sudo -n timeout 300 apt-get -o DPkg::Lock::Timeout=60 update >&2 \
-            && "${apt_install[@]}" >&2; }; then
+    local fetch_secs="${MAGIC_WEB_DEP_FETCH_TIMEOUT:-300}"
+    local apt=(env DEBIAN_FRONTEND=noninteractive
+               apt-get -o DPkg::Lock::Timeout=60)
+    local pkg=(-y --no-install-recommends python3-gunicorn)
+    # Retry the download once after refreshing the package lists: a stale
+    # list 404s on a package version the mirror has since replaced. Both
+    # are network-only (no dpkg), so both may be bounded.
+    if ! sudo -n timeout "$fetch_secs" "${apt[@]}" install --download-only "${pkg[@]}" >&2 \
+       && ! { sudo -n timeout "$fetch_secs" "${apt[@]}" update >&2 \
+              && sudo -n timeout "$fetch_secs" "${apt[@]}" install --download-only "${pkg[@]}" >&2; }; then
+        log_warn "could not download python3-gunicorn (Content Manager keeps its built-in server until the next update)"
+        return 0
+    fi
+    # No timeout here, on purpose (see above).
+    if sudo -n "${apt[@]}" install --no-download "${pkg[@]}" >&2; then
         log "Content Manager: python3-gunicorn installed"
     else
         log_warn "could not install python3-gunicorn (Content Manager keeps its built-in server until the next update)"
     fi
+    return 0
+}
+
+# Rollback hygiene for PulseAudio-as-its-own-unit (magic-dingus-audio,
+# shipped 2026-10). Rolling back to a release that predates it restores an
+# init_audio.sh that starts PulseAudio itself and relies on libpulse
+# AUTOSPAWN to recover when it dies — but audio_service.sh's `run` wrote
+# ~/.config/pulse/client.conf with `autospawn = no`, which nothing in the
+# old tree ever removes, so the rolled-back box would lose that recovery.
+# The unit and the kiosk drop-in that Wants= it would also linger (inert —
+# the unit's ConditionPathExists= points at the now-missing audio_service.sh
+# — but the restored kiosk unit should run exactly as it shipped).
+#
+# Runs only when the restored tree has no audio_service.sh; a rollback to
+# any release that has it is a no-op. A rollback performed by an OLDER
+# update.sh (e.g. v1.9.14's) cannot get this; it only reaches rollbacks run
+# by this script or a later one. Never fails the rollback. The marker must
+# equal CLIENT_CONF_MARKER in audio_service.sh (pinned by test_update.bats),
+# so only our own file is ever removed.
+#
+# Test seams: MAGIC_AUDIO_HOME (the audio user's home; required in test
+# mode, where nothing else is touched), MAGIC_SYSTEMD_DIR (/etc/systemd/system).
+AUDIO_CLIENT_CONF_MARKER="# magic-dingus-audio: written by audio_service.sh"
+retire_audio_service_if_absent() {
+    if [ -f "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/audio_service.sh" ]; then
+        return 0
+    fi
+
+    local audio_home="${MAGIC_AUDIO_HOME:-}"
+    if [ -z "$audio_home" ] && [ "$SKIP_SYSTEMCTL" != "true" ]; then
+        audio_home="$(getent passwd magic 2>/dev/null | cut -d: -f6)" || true
+        [ -n "$audio_home" ] || audio_home="/home/magic"
+    fi
+    if [ -n "$audio_home" ]; then
+        local conf="${audio_home}/.config/pulse/client.conf"
+        if [ -f "$conf" ] && grep -qF "$AUDIO_CLIENT_CONF_MARKER" "$conf" 2>/dev/null; then
+            if rm -f "$conf" 2>/dev/null || sudo -n rm -f "$conf" 2>/dev/null; then
+                log "Removed $conf (autospawn = no) — the restored release relies on PulseAudio autospawn"
+            else
+                log_warn "could not remove $conf (PulseAudio autospawn stays off)"
+            fi
+        fi
+    fi
+
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: audio unit retirement (test mode)"
+        return 0
+    fi
+    local sd_dir="${MAGIC_SYSTEMD_DIR:-/etc/systemd/system}"
+    if [ ! -f "${sd_dir}/magic-dingus-audio.service" ]; then
+        return 0
+    fi
+    log "Restored release predates magic-dingus-audio.service; disabling it"
+    # --no-reload: both rollback paths daemon-reload before starting the
+    # kiosk (and at boot nothing here may block on the manager).
+    run_systemctl disable --no-reload magic-dingus-audio.service >/dev/null 2>&1 \
+        || log_warn "could not disable magic-dingus-audio.service"
+    local block_flag=""
+    [ "$BOOT_RECOVERY" = "true" ] && block_flag="--no-block"
+    run_systemctl $block_flag stop magic-dingus-audio.service 2>/dev/null \
+        || log_warn "could not stop magic-dingus-audio.service"
+    sudo -n rm -f "${sd_dir}/magic-dingus-box-cpp.service.d/audio-service.conf" 2>/dev/null \
+        || log_warn "could not remove the kiosk's audio-service.conf drop-in"
+    return 0
 }
 
 # A failed install: put the previous version back, then report the outcome
@@ -1534,7 +1619,8 @@ install_update() {
     else
         log "Phone Remote: uinput rule already installed"
     fi
-    ensure_web_server_dep
+    # python3-gunicorn (ensure_web_server_dep) is installed further down,
+    # after the kiosk's verified start — it only concerns the web server.
 
     # RetroArch core bootstrap (idempotent). New releases can reference new
     # emulator cores (v1.7.x added N64 + Dreamcast); the cores are binary
@@ -1694,6 +1780,13 @@ install_update() {
     # The update is committed; nothing left for the boot recovery to undo.
     clear_ota_marker
 
+    # Content Manager server package. Here, not with the other bootstraps
+    # before the kiosk start: the picture is already back, the update is
+    # already committed, and the web restart below is what picks it up.
+    # Never fails the update (see ensure_web_server_dep).
+    json_progress "web_server_dep" 95 "Checking Content Manager server..."
+    ensure_web_server_dep || true
+
     # Cleanup temp files
     rm -rf "$TEMP_DIR"
 
@@ -1794,6 +1887,10 @@ rollback_internal() {
     # delivered. Re-run the guard against the (already restored) in-tree
     # copy.
     ensure_compose_file
+
+    # A restored release without the audio unit gets its autospawn back
+    # (see retire_audio_service_if_absent).
+    retire_audio_service_if_absent
 
     # Put the /usr/local/bin helpers + usb0 dnsmasq conf back in step with
     # the restored tree (they are copies OF the tree; see
@@ -1933,6 +2030,9 @@ rollback() {
 
     # See rollback_internal: the backup can predate the compose repair.
     ensure_compose_file
+
+    # See rollback_internal: undo the audio unit's autospawn=no.
+    retire_audio_service_if_absent
 
     # See rollback_internal: helpers outside the tree follow the tree.
     refresh_out_of_tree_files

@@ -1105,6 +1105,18 @@ def _emulator_core_error(playlist: Any):
 #   * dingus.box — the name advertised for the USB-C cable
 #     (scripts/data/dnsmasq-usb0.conf, pairing_screen_renderer.cpp)
 #   * this machine's own hostname / FQDN
+#   * <this box's hostname>.<router suffix> for the suffixes home routers
+#     append in their own DNS (_ROUTER_DNS_SUFFIXES: magicpi-ab12.fritz.box,
+#     magicpi-ab12.attlocal.net, magicpi-ab12.router). The first label must
+#     equal socket.gethostname() exactly (case-insensitive). These suffixes
+#     sit under publicly registered domains (fritz.box is AVM's,
+#     attlocal.net AT&T's), so unlike .lan they are not accepted for ANY
+#     first label: the box's own unique name narrows them to this box. The
+#     suffix list stays explicit on purpose. "Own hostname + any suffix"
+#     would admit magicpi-ab12.<attacker's domain>: the hostname is visible
+#     to anything on the LAN (mDNS) and its magicpi-XXXX pattern is
+#     guessable, and the attacker controls the suffix, which is exactly
+#     what this check exists to refuse.
 #   * anything in MAGIC_ALLOWED_HOSTS (comma-separated; ".example.com" allows
 #     a whole suffix) — an escape hatch that needs no release
 _LOCAL_HOST_SUFFIXES = (
@@ -1112,6 +1124,10 @@ _LOCAL_HOST_SUFFIXES = (
     ".localdomain",
 )
 _BUILTIN_ALLOWED_HOSTS = frozenset({"dingus.box"})
+# Accepted only as <own hostname><suffix> (see above). Router DNS suffixes
+# that are NOT already in _LOCAL_HOST_SUFFIXES (.lan, .home, .home.arpa,
+# .localdomain, .internal and .local are accepted for any first label).
+_ROUTER_DNS_SUFFIXES = (".fritz.box", ".attlocal.net", ".router")
 
 
 def _split_host_header(host_header: str) -> str:
@@ -1125,7 +1141,8 @@ def _split_host_header(host_header: str) -> str:
     return host.rstrip(".")
 
 
-def _host_is_allowed(host_header: str, own_names=(), extra=()) -> bool:
+def _host_is_allowed(host_header: str, own_names=(), extra=(),
+                     own_label: str = "") -> bool:
     host = _split_host_header(host_header)
     if not host:
         # No Host header at all (HTTP/1.0 tooling). A browser — the only
@@ -1144,6 +1161,10 @@ def _host_is_allowed(host_header: str, own_names=(), extra=()) -> bool:
         return True
     if host in own_names:
         return True
+    if own_label:
+        first, _, suffix = host.partition(".")
+        if first == own_label.lower() and ("." + suffix) in _ROUTER_DNS_SUFFIXES:
+            return True
     for entry in extra:
         if entry.startswith("."):
             if host.endswith(entry) or host == entry[1:]:
@@ -1164,6 +1185,14 @@ def _own_host_names() -> frozenset:
             names.add(n)
             names.add(n.split(".", 1)[0] + ".local")
     return frozenset(names)
+
+
+def _own_host_label() -> str:
+    """This box's hostname, first label only, lowercase ("" if unknown)."""
+    try:
+        return (socket.gethostname() or "").strip().lower().split(".", 1)[0]
+    except Exception:
+        return ""
 
 
 def _extra_allowed_hosts() -> tuple:
@@ -2077,12 +2106,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # runs ahead of every other hook, including the phone-remote WebSocket
     # upgrade (flask-sock routes are ordinary Flask routes).
     _own_names = _own_host_names()
+    _own_label = _own_host_label()
     _extra_hosts = _extra_allowed_hosts()
 
     @app.before_request
     def _check_host_header():  # type: ignore[no-redef]
         host = request.headers.get("Host", "")
-        if _host_is_allowed(host, _own_names, _extra_hosts):
+        if _host_is_allowed(host, _own_names, _extra_hosts, _own_label):
             return None
         return error_response(
             "FORBIDDEN_HOST",

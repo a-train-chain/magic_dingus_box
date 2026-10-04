@@ -5,11 +5,19 @@ verify_box.sh is the single "is this box shippable?" command (see CLAUDE.md
 so an owner — or support, over the phone — can see the same verdict a
 technician would get over SSH, without SSH.
 
-* The command is FIXED: `sudo -n /bin/bash <install>/scripts/verify_box.sh`
-  plus an optional `--with-services`. No request value reaches the argv.
-  sudo because several checks need root (docker ps, cgroup files, other
-  users' processes); the script re-derives HOME from SUDO_USER, so the
-  per-user paths (cores, BIOS) still resolve to the web user's.
+* The command is FIXED: `sudo -n /usr/bin/timeout --kill-after=10 <secs>
+  /bin/bash <install>/scripts/verify_box.sh` plus an optional
+  `--with-services`. No request value reaches the argv. sudo because
+  several checks need root (docker ps, cgroup files, other users'
+  processes); the script re-derives HOME from SUDO_USER, so the per-user
+  paths (cores, BIOS) still resolve to the web user's.
+* The deadline is enforced AS ROOT by timeout(1) inside sudo. A Python-side
+  timeout alone only kills `sudo` — the unprivileged web user cannot signal
+  the root bash under it — so a hung verify_box.sh kept running while the
+  card already allowed the next run to start beside it. timeout(1) signals
+  the whole process group (docker, curl children included) and SIGKILLs
+  after the grace period. subprocess.run's own timeout stays as a backstop,
+  slightly longer, for a sudo that never even reaches timeout(1).
 * Single-flight, in-process: a run is ~30 s; a second request while one is
   running gets the running one's status instead of a second root process.
   The runner thread lives in the one gunicorn worker (see serve.py).
@@ -39,6 +47,24 @@ except ImportError:  # pragma: no cover - package form
 CACHE_NAME = "box_health_last.json"
 RUN_TIMEOUT_S = 180
 RUN_TIMEOUT_WITH_SERVICES_S = 600
+# timeout(1): SIGTERM at the deadline, SIGKILL this much later.
+KILL_AFTER_S = 10
+# subprocess.run's backstop fires this long after timeout(1)'s SIGKILL.
+BACKSTOP_MARGIN_S = 20
+TIMEOUT_BIN = "/usr/bin/timeout"
+# timeout(1)'s exit status: 124 = the deadline's SIGTERM ended it, 137 =
+# it had to SIGKILL. verify_box.sh itself only ever exits 0 or 1.
+_TIMED_OUT_CODES = (124, 137)
+
+
+def run_timeout(with_services: bool) -> int:
+    """The root-enforced deadline for a run, in seconds."""
+    return RUN_TIMEOUT_WITH_SERVICES_S if with_services else RUN_TIMEOUT_S
+
+
+def backstop_timeout(with_services: bool) -> int:
+    """subprocess.run's own timeout: only reached if timeout(1) never ran."""
+    return run_timeout(with_services) + KILL_AFTER_S + BACKSTOP_MARGIN_S
 MAX_OUTPUT_CHARS = 200_000
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -166,7 +192,8 @@ class HealthRunner:
     def argv(self, with_services: bool) -> list:
         # Fixed argv. bash explicitly: a tarball that lost the exec bit
         # (network_doctor.sh shipped 0644 once) must not break the card.
-        cmd = ["sudo", "-n", "/bin/bash", str(self.script)]
+        cmd = ["sudo", "-n", TIMEOUT_BIN, f"--kill-after={KILL_AFTER_S}",
+               str(run_timeout(with_services)), "/bin/bash", str(self.script)]
         if with_services:
             cmd.append("--with-services")
         return cmd
@@ -216,12 +243,13 @@ class HealthRunner:
             return {"sections": [], "passed": 0, "failed": 0, "warnings": 0,
                     "exit_code": None, "shippable": None,
                     "error": "verify_box.sh is not installed on this box"}
-        timeout = RUN_TIMEOUT_WITH_SERVICES_S if with_services else RUN_TIMEOUT_S
+        timeout = run_timeout(with_services)
         env = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "LC_ALL")}
         env.setdefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         try:
             proc = self._run(self.argv(with_services), capture_output=True, text=True,
-                             timeout=timeout, stdin=subprocess.DEVNULL, env=env)
+                             timeout=backstop_timeout(with_services),
+                             stdin=subprocess.DEVNULL, env=env)
         except subprocess.TimeoutExpired as e:
             out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
             result = self._parse(out, None)
@@ -231,6 +259,10 @@ class HealthRunner:
             return {"sections": [], "passed": 0, "failed": 0, "warnings": 0,
                     "exit_code": None, "shippable": None,
                     "error": f"could not start the check ({e.strerror or e})"}
+        if proc.returncode in _TIMED_OUT_CODES:
+            result = self._parse(proc.stdout or "", None)
+            result["error"] = f"the check did not finish within {timeout // 60} minutes"
+            return result
         result = self._parse(proc.stdout or "", proc.returncode)
         if not result["sections"]:
             err = (proc.stderr or "").strip()

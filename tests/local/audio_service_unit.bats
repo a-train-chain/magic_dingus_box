@@ -174,6 +174,21 @@ refute() {
     refute grep -q '^pulseaudio' "$CALLS"
 }
 
+@test "init_audio.sh: the retry after asking systemd uses a SHORT PulseAudio wait" {
+    # A dead PulseAudio must not double the dark screen: the first set-sink
+    # waits MAGIC_PA_WAIT_SECS, the retry only MAGIC_INIT_AUDIO_RETRY_WAIT_SECS
+    # (default 3 s), whatever MAGIC_PA_WAIT_SECS says.
+    touch "$T/unit" "$T/pa_down"
+    MAGIC_AUDIO_UNIT_FILE="$T/unit" run bash "$SCRIPTS/init_audio.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not answering after 1s"* ]]
+    [[ "$output" == *"not answering after 3s"* ]]
+    grep -q 'MAGIC_PA_WAIT_SECS="${MAGIC_INIT_AUDIO_RETRY_WAIT_SECS:-3}"' "$SCRIPTS/init_audio.sh"
+    # Default must stay well under the first wait's 10 s.
+    default="$(sed -n 's/.*MAGIC_INIT_AUDIO_RETRY_WAIT_SECS:-\([0-9]*\)}.*/\1/p' "$SCRIPTS/init_audio.sh" | head -1)"
+    [ "$default" -le 5 ]
+}
+
 @test "init_audio.sh WITHOUT the unit falls back to starting PulseAudio itself" {
     [[ $EUID -ne 0 ]] || skip "as root, legacy-start runs prepare directly instead of via sudo"
     MAGIC_AUDIO_UNIT_FILE="$T/missing" run bash "$SCRIPTS/init_audio.sh"

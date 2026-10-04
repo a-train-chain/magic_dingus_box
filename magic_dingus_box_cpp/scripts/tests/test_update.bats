@@ -1159,3 +1159,202 @@ set_phase() {
     grep -q '90-magicdingus-uinput.rules' "$SCRIPT_DIR/../setup_phone_remote_uinput.sh"
     grep -q 'usermod -a -G input' "$SCRIPT_DIR/../setup_phone_remote_uinput.sh"
 }
+
+# =============================================================================
+# python3-gunicorn (ensure_web_server_dep): after the kiosk is back, and
+# dpkg is never run under a timeout
+# =============================================================================
+
+# Source update.sh with gunicorn "missing" and sudo recorded, not run.
+# $1 = space-separated phases that fail: download | update | install
+setup_web_dep() {
+    load_update_functions
+    SKIP_SYSTEMCTL=false
+    WEB_DEP_FAIL="${1:-}"
+    APT_LOG="$TEST_TEMP_DIR/apt.log"
+    : > "$APT_LOG"
+    python3() { return 1; }
+    sudo() {
+        echo "$*" >> "$APT_LOG"
+        case "$*" in
+            *--download-only*) [[ " $WEB_DEP_FAIL " != *" download "* ]] ;;
+            *" update")        [[ " $WEB_DEP_FAIL " != *" update "* ]] ;;
+            *--no-download*)   [[ " $WEB_DEP_FAIL " != *" install "* ]] ;;
+            *) return 0 ;;
+        esac
+    }
+}
+
+@test "web dep: download is bounded by timeout, the dpkg install never is" {
+    setup_web_dep
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"python3-gunicorn installed"* ]]
+    grep -q '^-n timeout [0-9]* env DEBIAN_FRONTEND=noninteractive apt-get .* install --download-only ' "$APT_LOG"
+    grep -q '^-n env DEBIAN_FRONTEND=noninteractive apt-get .* install --no-download .*python3-gunicorn' "$APT_LOG"
+    # Nothing that runs dpkg is wrapped in timeout.
+    [ "$(grep -c -- '--no-download' "$APT_LOG")" -eq 1 ]
+    [ "$(grep -- '--no-download' "$APT_LOG" | grep -c 'timeout')" -eq 0 ]
+}
+
+@test "web dep: a stale package list is refreshed and the download retried" {
+    setup_web_dep
+    # First download fails, the retry after `update` succeeds.
+    sudo() {
+        echo "$*" >> "$APT_LOG"
+        case "$*" in
+            *--download-only*)
+                if grep -q ' update$' "$APT_LOG"; then return 0; fi
+                return 1 ;;
+            *) return 0 ;;
+        esac
+    }
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    grep -q '^-n timeout [0-9]* env .* update$' "$APT_LOG"
+    [ "$(grep -c -- '--download-only' "$APT_LOG")" -eq 2 ]
+    grep -q -- '--no-download' "$APT_LOG"
+}
+
+@test "web dep: an offline box never reaches dpkg and never fails the update" {
+    setup_web_dep "download update"
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not download python3-gunicorn"* ]]
+    [ "$(grep -c -- '--no-download' "$APT_LOG")" -eq 0 ]
+}
+
+@test "web dep: a failed install is a warning, not a failure" {
+    setup_web_dep "install"
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"could not install python3-gunicorn"* ]]
+}
+
+@test "web dep: already present is a no-op" {
+    setup_web_dep
+    python3() { return 0; }
+    run ensure_web_server_dep
+    [ "$status" -eq 0 ]
+    [ ! -s "$APT_LOG" ]
+}
+
+@test "install_update installs the web dep only after the verified start and the VERSION commit" {
+    local start end dep verify marker web_restart
+    start=$(grep -n '^install_update()' "$UPDATE_SCRIPT" | cut -d: -f1)
+    end=$(grep -n '^rollback_internal()' "$UPDATE_SCRIPT" | cut -d: -f1)
+    dep=$(awk -v s="$start" -v e="$end" 'NR>s && NR<e && /^[[:space:]]*ensure_web_server_dep/ {print NR}' "$UPDATE_SCRIPT")
+    # Exactly one call inside install_update.
+    [ "$(echo "$dep" | wc -l | tr -d ' ')" -eq 1 ]
+    [ -n "$dep" ]
+    verify=$(grep -n 'if ! verify_kiosk_started; then' "$UPDATE_SCRIPT" | head -1 | cut -d: -f1)
+    marker=$(awk -v s="$start" -v e="$end" 'NR>s && NR<e && /^    clear_ota_marker$/ {print NR}' "$UPDATE_SCRIPT")
+    web_restart=$(awk -v s="$start" -v e="$end" 'NR>s && NR<e && /restart magic-dingus-web.service/ {print NR}' "$UPDATE_SCRIPT")
+    [ "$dep" -gt "$verify" ]
+    [ "$dep" -gt "$marker" ]
+    [ "$dep" -lt "$web_restart" ]
+}
+
+@test "deploy_cpp.sh installs the web dep through the same function" {
+    grep -q 'update.sh && ensure_web_server_dep' "$SCRIPT_DIR/../deploy_cpp.sh"
+}
+
+# =============================================================================
+# Rollback to a release without magic-dingus-audio.service
+# =============================================================================
+
+AUDIO_MARKER_LINE='# magic-dingus-audio: written by audio_service.sh'
+
+# $1 = "with" / "without" audio_service.sh in the BACKUP (the restored tree)
+seed_audio_rollback() {
+    seed_installed_tree
+    echo "new" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/audio_service.sh"
+    mkdir -p "$MAGIC_BACKUP_DIR"
+    cp -R "$MAGIC_BASE_PATH/." "$MAGIC_BACKUP_DIR/"
+    echo "1.0.7" > "$MAGIC_BACKUP_DIR/VERSION"
+    if [ "$1" = "without" ]; then
+        rm -f "$MAGIC_BACKUP_DIR/magic_dingus_box_cpp/scripts/audio_service.sh"
+    fi
+    export MAGIC_AUDIO_HOME="$TEST_TEMP_DIR/home"
+    mkdir -p "$MAGIC_AUDIO_HOME/.config/pulse"
+    printf '%s\nautospawn = no\n' "$AUDIO_MARKER_LINE" > "$MAGIC_AUDIO_HOME/.config/pulse/client.conf"
+}
+
+@test "audio rollback: the marker matches audio_service.sh's CLIENT_CONF_MARKER" {
+    grep -qF "CLIENT_CONF_MARKER=\"${AUDIO_MARKER_LINE}\"" "$SCRIPT_DIR/../audio_service.sh"
+    grep -qF "AUDIO_CLIENT_CONF_MARKER=\"${AUDIO_MARKER_LINE}\"" "$UPDATE_SCRIPT"
+}
+
+@test "audio rollback (internal): to a tree without audio_service.sh removes our client.conf" {
+    seed_audio_rollback without
+    load_update_functions
+    rollback_internal 2>/dev/null
+    [ ! -f "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/audio_service.sh" ]
+    [ ! -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback (boot recover path): removes our client.conf too" {
+    seed_audio_rollback without
+    printf 'target=1.0.8\nfrom=1.0.7\n' > "${MAGIC_BACKUP_DIR}.ota_in_progress"
+    run "$UPDATE_SCRIPT" recover
+    [ "$status" -eq 0 ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.7" ]
+    [ ! -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback (user-initiated): to a tree without audio_service.sh removes our client.conf" {
+    seed_audio_rollback without
+    load_update_functions
+    rollback >/dev/null 2>&1
+    [ ! -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback: a tree that still has audio_service.sh keeps client.conf" {
+    seed_audio_rollback with
+    load_update_functions
+    rollback_internal 2>/dev/null
+    [ -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback: a client.conf we did not write is never removed" {
+    seed_audio_rollback without
+    printf 'autospawn = no\n' > "$MAGIC_AUDIO_HOME/.config/pulse/client.conf"
+    load_update_functions
+    rollback_internal 2>/dev/null
+    [ -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+}
+
+@test "audio rollback: disables + stops the unit and removes the kiosk drop-in" {
+    seed_audio_rollback without
+    load_update_functions
+    rm -f "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/audio_service.sh"
+    SKIP_SYSTEMCTL=false
+    export MAGIC_SYSTEMD_DIR="$TEST_TEMP_DIR/sd"
+    mkdir -p "$MAGIC_SYSTEMD_DIR/magic-dingus-box-cpp.service.d"
+    touch "$MAGIC_SYSTEMD_DIR/magic-dingus-audio.service" \
+          "$MAGIC_SYSTEMD_DIR/magic-dingus-box-cpp.service.d/audio-service.conf"
+    SUDO_LOG="$TEST_TEMP_DIR/sudo.log"
+    sudo() { echo "$*" >> "$SUDO_LOG"; [ "$1" = "-n" ] && shift; "$@"; }
+    systemctl() { return 0; }
+    run retire_audio_service_if_absent
+    [ "$status" -eq 0 ]
+    grep -qx 'systemctl disable --no-reload magic-dingus-audio.service' "$SUDO_LOG"
+    grep -qx 'systemctl stop magic-dingus-audio.service' "$SUDO_LOG"
+    [ ! -f "$MAGIC_SYSTEMD_DIR/magic-dingus-box-cpp.service.d/audio-service.conf" ]
+    [ ! -f "$MAGIC_AUDIO_HOME/.config/pulse/client.conf" ]
+
+    # Boot recovery never blocks on the stop job.
+    : > "$SUDO_LOG"
+    BOOT_RECOVERY=true
+    run retire_audio_service_if_absent
+    grep -qx 'systemctl --no-block stop magic-dingus-audio.service' "$SUDO_LOG"
+}
+
+@test "audio rollback: both rollback paths call retire_audio_service_if_absent" {
+    seed_audio_rollback without
+    load_update_functions
+    retire_audio_service_if_absent() { echo retired >> "$TEST_TEMP_DIR/retire.log"; }
+    rollback_internal 2>/dev/null
+    rollback >/dev/null 2>&1
+    [ "$(wc -l < "$TEST_TEMP_DIR/retire.log")" -eq 2 ]
+}

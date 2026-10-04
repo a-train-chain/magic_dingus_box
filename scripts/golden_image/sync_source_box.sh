@@ -133,6 +133,9 @@ push magic_dingus_box_cpp/scripts/setup_audio_service.sh \
 push magic_dingus_box_cpp/systemd/magic-dingus-audio.service \
      /opt/magic_dingus_box/magic_dingus_box_cpp/systemd/magic-dingus-audio.service 644 \
      "magic-dingus-audio.service (repo copy)"
+push magic_dingus_box_cpp/scripts/restart_stale_cascade_watcher.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/restart_stale_cascade_watcher.sh 755 \
+     "restart_stale_cascade_watcher.sh (setup_memory_tuning step 1e)"
 push magic_dingus_box_cpp/scripts/setup_memory_tuning.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh 755 \
      "setup_memory_tuning.sh (kiosk MemoryLow + zram tune + cgroup cmdline)"

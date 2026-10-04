@@ -19,7 +19,8 @@
 # Must always exit 0: a failing ExecStartPre would keep the kiosk (and
 # the picture) from starting over a sound problem.
 #
-# Test seam: MAGIC_AUDIO_UNIT_FILE (default: the installed unit path).
+# Test seams: MAGIC_AUDIO_UNIT_FILE (default: the installed unit path),
+# MAGIC_INIT_AUDIO_RETRY_WAIT_SECS (default 3: the retry's PulseAudio wait).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUDIO_SERVICE="${SCRIPT_DIR}/audio_service.sh"
@@ -36,7 +37,12 @@ if [ -f "$AUDIO_UNIT_FILE" ]; then
         # here, that would put it back in the kiosk's cgroup.
         echo "[audio] asking systemd to start ${AUDIO_UNIT}"
         sudo -n systemctl start --no-block "$AUDIO_UNIT" 2>/dev/null || true
-        bash "$AUDIO_SERVICE" set-sink \
+        # Short second wait: the first one already spent the full
+        # MAGIC_PA_WAIT_SECS (10 s) with the screen dark, and a PulseAudio
+        # that is still not up gets its sink from the audio unit's own
+        # ExecStartPost (and the kiosk's apply_output) once it is.
+        MAGIC_PA_WAIT_SECS="${MAGIC_INIT_AUDIO_RETRY_WAIT_SECS:-3}" \
+            bash "$AUDIO_SERVICE" set-sink \
             || echo "[audio] Warning: PulseAudio still not answering; starting the kiosk without a confirmed sink"
     fi
     exit 0
