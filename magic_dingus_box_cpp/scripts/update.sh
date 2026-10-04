@@ -42,6 +42,40 @@ GITHUB_REPO="${MAGIC_GITHUB_REPO:-a-train-chain/magic_dingus_box}"  # same overr
 GITHUB_API="${MAGIC_GITHUB_API:-https://api.github.com/repos/${GITHUB_REPO}/releases/latest}"
 VERSION_FILE="${INSTALL_DIR}/VERSION"
 
+# "An install is mid-flight" marker. Written once the backup is complete and
+# BEFORE the kiosk is stopped; removed only after a verified start (or a
+# completed rollback). If the box loses power in between, the marker
+# survives and magic-dingus-ota-recovery.service (ordered before the kiosk)
+# runs `update.sh recover` at the next boot, which restores the backup.
+#
+# It sits NEXT TO the backup dir — outside INSTALL_DIR, so no rsync
+# --delete ever touches it, and in the same home directory as the backup it
+# pairs with. The name deliberately starts with ".magic_dingus_box_backup"
+# so prepare_for_cloning.sh's secret tripwire (/home/magic/
+# .magic_dingus_box_backup*) refuses to clone a box that still carries one:
+# the marker can never ship in a golden image. first_boot.sh also deletes it.
+# The path is duplicated in systemd/magic-dingus-ota-recovery.service
+# (ConditionPathExists=) — change both.
+OTA_MARKER="${MAGIC_OTA_MARKER:-${BACKUP_DIR%/}.ota_in_progress}"
+
+# Kiosk start verification (see verify_kiosk_started).
+KIOSK_UNIT="magic-dingus-box-cpp.service"
+# "No connected display" — must match platform::kExitNoDisplay in
+# src/platform/kiosk_exit.h. The binary loaded and ran; there is no TV.
+KIOSK_EXIT_NO_DISPLAY=69
+# init_audio.sh (ExecStartPre) waits on HDMI audio, so the first start can
+# legitimately take a while; 90 s matches systemd's default start timeout.
+KIOSK_START_TIMEOUT="${MAGIC_KIOSK_START_TIMEOUT:-90}"
+# A kiosk that reaches READY and then crashes looked healthy to the old
+# "is-active after 2 s" check. It must stay up, same PID, no restarts, for
+# this long before an update is committed.
+KIOSK_STABLE_SECS="${MAGIC_KIOSK_STABLE_SECS:-10}"
+
+# Set by `update.sh recover` (boot-time recovery). Runs inside a oneshot
+# ordered BEFORE the kiosk unit, so it must never start/stop the kiosk or
+# block on any other unit's job — that would deadlock the boot.
+BOOT_RECOVERY="false"
+
 # Testing mode overrides
 # Set these environment variables to enable test mode:
 #   MAGIC_SKIP_SYSTEMCTL=true  - Skip all systemctl calls
@@ -125,10 +159,21 @@ run_build() {
     # is the correct trade against the failure it prevents. Rollback is
     # unaffected: create_backup() runs before this and deliberately includes
     # build/, so the previous working binary is still recoverable.
-    log "Building clean (removing stale build directory)"
-    rm -rf "$build_dir"
-    mkdir -p "$build_dir"
-    cd "$build_dir"
+    #
+    # The clean build happens in build.new/, NOT in build/. This used to
+    # `rm -rf build` first and then compile for 8-10 minutes: a power cut or
+    # a killed job anywhere in that window left a box with NO kiosk binary
+    # at all — the unit then crash-looped forever (StartLimitIntervalSec=0)
+    # while VERSION still named the old release. Now the old build/ stays
+    # in place, runnable, until the new tree has compiled AND its binary has
+    # passed verify_kiosk_binary; only then is it swapped in with renames
+    # (promote_build_dir). A failed build leaves build/ exactly as it was.
+    local new_dir="${build_dir}.new"
+    log "Building clean in $(basename "$new_dir")/ (the current build/ stays in place until the new one is verified)"
+    rm -rf "$new_dir" "${build_dir}.old"
+    if ! mkdir -p "$new_dir"; then
+        return 1
+    fi
 
     # ENABLE_MEDIA_BROWSER defaults OFF in CMakeLists; production boxes
     # always build with it ON (runtime triple-gating hides it until
@@ -139,15 +184,231 @@ run_build() {
     # BUILD_TESTS=OFF: the OTA rebuild used to compile the ENTIRE Catch2
     # test suite it never runs — real minutes on a Pi, plus a needless
     # GitHub fetch (Catch2) in the update path.
-    if ! cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF .. > /dev/null 2>&1; then
+    # Subshells: the cd must not leak into the rest of install_update.
+    if ! (cd "$new_dir" && cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF .. > /dev/null 2>&1); then
+        rm -rf "$new_dir"
         return 1
     fi
 
-    if ! make -j2 2>&1; then    # Reduced to prevent OOM on Pi 4B (1.5GB RAM)
+    if ! (cd "$new_dir" && make -j2 2>&1); then    # Reduced to prevent OOM on Pi 4B (1.5GB RAM)
+        rm -rf "$new_dir"
         return 1
     fi
 
+    if ! verify_kiosk_binary "$new_dir/magic_dingus_box_cpp"; then
+        log_error "Build produced no usable kiosk binary; keeping the current build/"
+        rm -rf "$new_dir"
+        return 1
+    fi
+
+    promote_build_dir "$new_dir"
+}
+
+# Swap a freshly built, verified build tree into place.
+#
+# Two renames (build -> build.old, build.new -> build) rather than an rm -rf
+# of the live tree: the gap between them is microseconds instead of a
+# 10-minute compile, and an interruption even there is covered by the
+# boot-time recovery (the OTA marker is still set, so the backup — which
+# includes build/ — is restored). The data is flushed first so a power cut
+# just after the rename cannot leave a renamed-but-empty binary behind.
+promote_build_dir() {
+    local new_dir="$1"
+    local build_dir="$INSTALL_DIR/magic_dingus_box_cpp/build"
+    local old_dir="${build_dir}.old"
+
+    sync 2>/dev/null || true
+    rm -rf "$old_dir"
+    if [ -d "$build_dir" ] && ! mv "$build_dir" "$old_dir"; then
+        log_error "Could not move the current build/ aside"
+        return 1
+    fi
+    if ! mv "$new_dir" "$build_dir"; then
+        log_error "Could not move the new build into place; restoring the previous build/"
+        [ -d "$old_dir" ] && mv "$old_dir" "$build_dir"
+        return 1
+    fi
+    rm -rf "$old_dir"
+    sync 2>/dev/null || true
     return 0
+}
+
+# The ELF e_machine low byte the kiosk binary must carry on this box
+# (EM_AARCH64 = 0xb7 on the Pis, EM_X86_64 = 0x3e on an x86 dev machine).
+# Empty = do not check the machine (unknown host; the ELF checks still
+# apply). MAGIC_EXPECT_ELF_MACHINE overrides for tests.
+expected_elf_machine() {
+    if [ -n "${MAGIC_EXPECT_ELF_MACHINE:-}" ]; then
+        echo "$MAGIC_EXPECT_ELF_MACHINE"
+        return 0
+    fi
+    case "$(uname -m)" in
+        aarch64) echo "b7" ;;
+        x86_64)  echo "3e" ;;
+        *)       echo "" ;;
+    esac
+}
+
+# Is this file a kiosk binary this box can actually run? Non-empty, a
+# 64-bit little-endian ELF for this CPU, and executable. Reads the ELF
+# header directly (od) rather than trusting `file`, which is not guaranteed
+# to be installed and whose wording varies between versions.
+verify_kiosk_binary() {
+    local bin="$1"
+    if [ ! -f "$bin" ] || [ ! -s "$bin" ]; then
+        log_error "Kiosk binary missing or empty: $bin"
+        return 1
+    fi
+
+    local -a h
+    read -r -a h <<<"$(od -An -tx1 -N20 "$bin" 2>/dev/null | tr '\n' ' ')"
+    if [ "${#h[@]}" -lt 20 ] || [ "${h[0]}${h[1]}${h[2]}${h[3]}" != "7f454c46" ]; then
+        log_error "Kiosk binary is not an ELF executable: $bin"
+        return 1
+    fi
+    if [ "${h[4]}" != "02" ] || [ "${h[5]}" != "01" ]; then
+        log_error "Kiosk binary is not a 64-bit little-endian ELF: $bin"
+        return 1
+    fi
+    local machine
+    machine="$(expected_elf_machine)"
+    if [ -n "$machine" ] && { [ "${h[18]}" != "$machine" ] || [ "${h[19]}" != "00" ]; }; then
+        log_error "Kiosk binary is built for a different CPU (e_machine ${h[19]}${h[18]}, expected 00${machine}): $bin"
+        return 1
+    fi
+    if [ ! -x "$bin" ]; then
+        log_error "Kiosk binary is not executable: $bin"
+        return 1
+    fi
+    return 0
+}
+
+# Put a single (pre-compiled) kiosk binary into build/ without ever leaving
+# a truncated or missing binary behind. The old code `cp`'d straight over
+# the live file: cp truncates the destination first, so a full SD card
+# (ENOSPC) or a power cut mid-copy left a zero-length or half-written
+# kiosk. Copy to <binary>.new, verify, flush, then rename over the live
+# path — rename is atomic, so the live path always holds a whole binary,
+# old or new.
+install_kiosk_binary() {
+    local src="$1"
+    local dest_dir="$INSTALL_DIR/magic_dingus_box_cpp/build"
+    local dest="$dest_dir/magic_dingus_box_cpp"
+    local tmp="${dest}.new"
+
+    if ! mkdir -p "$dest_dir"; then
+        log_error "Could not create $dest_dir"
+        return 1
+    fi
+    rm -f "$tmp"
+    if ! cp "$src" "$tmp" || ! chmod 0755 "$tmp"; then
+        log_error "Could not stage the new kiosk binary (disk full?)"
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! verify_kiosk_binary "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    sync 2>/dev/null || true
+    if ! mv -f "$tmp" "$dest"; then
+        log_error "Could not move the new kiosk binary into place"
+        rm -f "$tmp"
+        return 1
+    fi
+    return 0
+}
+
+# Make every file in the install tree owned by the user that runs updates.
+#
+# Root-owned files land in the tree whenever a sudo/systemd process writes
+# there (magic-first-boot.service and import_library_movies.sh both have).
+# update.sh runs as the unprivileged web-service user, so such a file
+# (a) fails the BACKUP rsync outright when it is root 0600 — unreadable —
+# which blocked every OTA on that box forever, and (b) makes the INSTALL
+# rsync exit 23 when it cannot replace it, which used to be accepted as
+# "OK" and reported a half-applied update as a success. deploy_cpp.sh's
+# Step 0.9 does the same normalization before its rsync.
+#
+# services/config (Docker-owned service state) and services/.env (root-
+# owned secrets read by systemd's EnvironmentFile=) MUST keep their
+# ownership and are pruned. -xdev keeps the walk off any drive mounted
+# inside the tree. Only files that are actually wrong are touched, so a
+# clean box costs one read-only walk. Best-effort: a failure is logged and
+# the rsync exit-code checks below still catch anything left unfixable.
+normalize_tree_ownership() {
+    local uid gid
+    if [ "$(id -u)" -eq 0 ]; then
+        # Run by hand as root: normalize to whoever owns the tree.
+        uid=$(stat -c '%u' "$INSTALL_DIR" 2>/dev/null || stat -f '%u' "$INSTALL_DIR" 2>/dev/null) || return 0
+        gid=$(stat -c '%g' "$INSTALL_DIR" 2>/dev/null || stat -f '%g' "$INSTALL_DIR" 2>/dev/null) || return 0
+        [ "$uid" -ne 0 ] || return 0
+    else
+        uid=$(id -u)
+        gid=$(id -g)
+    fi
+
+    local -a prune=( \( -path "$INSTALL_DIR/services/config" -o -path "$INSTALL_DIR/services/.env" \) -prune )
+    local -a wrong=( \( ! -user "$uid" -o ! -group "$gid" \) )
+
+    if [ -z "$(find "$INSTALL_DIR" -xdev "${prune[@]}" -o "${wrong[@]}" -print 2>/dev/null | head -1)" ]; then
+        return 0
+    fi
+
+    log "Normalizing ownership of $INSTALL_DIR (files left by root-run tools)"
+    local cmd=(find "$INSTALL_DIR" -xdev "${prune[@]}" -o "${wrong[@]}" -exec chown -h "${uid}:${gid}" {} +)
+    if [ "$(id -u)" -eq 0 ]; then
+        "${cmd[@]}" || log_warn "ownership normalization incomplete"
+    else
+        sudo -n "${cmd[@]}" 2>/dev/null || log_warn "ownership normalization failed (no passwordless sudo?)"
+    fi
+}
+
+# rsync exit codes: 0 = done; 24 = some SOURCE files vanished mid-transfer
+# (e.g. the running web admin's atomic-rename temp files) — harmless. 23 =
+# "partial transfer due to error": some files were NOT written. It used to
+# be accepted as OK, which reported a half-applied update as a success.
+rsync_exit_ok() {
+    [ "$1" -eq 0 ] || [ "$1" -eq 24 ]
+}
+
+# ---------------------------------------------------------------------------
+# Interrupted-install marker (see OTA_MARKER at the top)
+# ---------------------------------------------------------------------------
+write_ota_marker() {
+    local target="$1" from="$2"
+    mkdir -p "$(dirname "$OTA_MARKER")" 2>/dev/null || true
+    printf 'target=%s\nfrom=%s\nstarted=%s\n' "$target" "$from" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        > "${OTA_MARKER}.tmp" && mv -f "${OTA_MARKER}.tmp" "$OTA_MARKER"
+    sync 2>/dev/null || true
+}
+
+clear_ota_marker() {
+    rm -f "$OTA_MARKER" "${OTA_MARKER}.tmp"
+    sync 2>/dev/null || true
+}
+
+ota_marker_field() {
+    sed -n "s/^$1=//p" "$OTA_MARKER" 2>/dev/null | head -1
+}
+
+# Install (or refresh) the boot-time recovery unit. Runs at the start of
+# every install, before the marker is written, so a box gets the unit from
+# the update.sh that will rely on it — unit files are otherwise never
+# refreshed by an OTA (see OTA_UPDATE_GUARANTEES.md). Root-only work, so
+# `sudo -n`, skipped in test mode like every other system-touching call,
+# and never fatal: without the unit, an interrupted install is still
+# repaired by the NEXT install (install_update recovers first).
+ensure_ota_recovery_unit() {
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: OTA recovery unit install (test mode)"
+        return 0
+    fi
+    local installer="${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh"
+    if [ -f "$installer" ]; then
+        sudo -n bash "$installer" >&2 \
+            || log_warn "could not install the OTA recovery unit (power-loss recovery falls back to the next update)"
+    fi
 }
 
 # Retry download with exponential backoff
@@ -495,11 +756,160 @@ refresh_out_of_tree_files() {
     if [ -f "$dest" ] && [ -f "$src" ] && ! cmp -s "$src" "$dest"; then
         if sudo -n install -m 0644 "$src" "$dest"; then
             log "usb0 dnsmasq config updated; reloading dnsmasq"
-            run_systemctl reload-or-restart dnsmasq.service 2>/dev/null \
+            # At boot (recovery oneshot) never wait on another unit's job.
+            local block_flag=""
+            [ "$BOOT_RECOVERY" = "true" ] && block_flag="--no-block"
+            run_systemctl $block_flag reload-or-restart dnsmasq.service 2>/dev/null \
                 || log_warn "dnsmasq reload failed (usb0 DNS applies on next restart)"
         else
             log_warn "could not refresh $dest"
         fi
+    fi
+}
+
+# Read one property of the kiosk unit ("" when systemd cannot say).
+kiosk_prop() {
+    systemctl show -p "$1" --value "$KIOSK_UNIT" 2>/dev/null || true
+}
+
+# Classify ONE observation of the kiosk unit after an update started it.
+# Pure (no I/O) so it is unit-tested directly. Echoes one of:
+#   running     the unit is active
+#   no_display  a NEW main process exited with KIOSK_EXIT_NO_DISPLAY: the
+#               binary loaded and ran, there is just no TV connected
+#   failed      it ran (or tried to) and is down for any other reason
+#   pending     still starting; keep polling
+# Args: ActiveState SubState ExecMainCode ExecMainStatus new_main(0|1)
+#   new_main = 1 when ExecMainStartTimestampMonotonic changed since before
+#   the start, i.e. the status fields describe THIS update's binary and not
+#   a process from before the update (which may well have exited 69 too).
+#   ExecMainCode 1 = CLD_EXITED (a normal exit with a status).
+kiosk_start_verdict() {
+    local active="$1" sub="$2" code="$3" status="$4" new_main="$5"
+    if [ "$new_main" = "1" ] && [ "$active" != "active" ] \
+        && [ "$code" = "1" ] && [ "$status" = "$KIOSK_EXIT_NO_DISPLAY" ]; then
+        echo "no_display"
+    elif [ "$active" = "active" ]; then
+        echo "running"
+    elif [ "$active" = "failed" ]; then
+        echo "failed"
+    elif [ "$new_main" = "1" ] && [ "$sub" = "auto-restart" ]; then
+        echo "failed"
+    elif [ "$new_main" = "1" ] && [ "$active" = "inactive" ]; then
+        echo "failed"
+    else
+        echo "pending"
+    fi
+}
+
+# Start the kiosk and decide whether this update's binary is good.
+# Returns 0 when it is (running and stable, or no display connected), 1
+# otherwise. Replaces a single `is-active` probe 2 s after start, which
+# (a) rolled back every good update on a box with the TV off — the kiosk
+# exits when no display is connected — and (b) passed a kiosk that reached
+# READY and then crashed a moment later.
+verify_kiosk_started() {
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: kiosk start verification (test mode)"
+        return 0
+    fi
+
+    local start_before
+    start_before="$(kiosk_prop ExecMainStartTimestampMonotonic)"
+
+    run_systemctl reset-failed "$KIOSK_UNIT" 2>/dev/null || true
+    # --no-block: poll ourselves with our own deadline instead of relying on
+    # how a given systemd version reports a start job that hits auto-restart.
+    if ! run_systemctl start --no-block "$KIOSK_UNIT" 2>/dev/null; then
+        log_warn "Service start command failed, checking state..."
+    fi
+
+    local waited=0 verdict="pending" active sub code status start_now new_main
+    while [ "$waited" -lt "$KIOSK_START_TIMEOUT" ]; do
+        active="$(kiosk_prop ActiveState)"
+        sub="$(kiosk_prop SubState)"
+        code="$(kiosk_prop ExecMainCode)"
+        status="$(kiosk_prop ExecMainStatus)"
+        start_now="$(kiosk_prop ExecMainStartTimestampMonotonic)"
+        new_main=0
+        if [ -n "$start_now" ] && [ "$start_now" != "0" ] && [ "$start_now" != "$start_before" ]; then
+            new_main=1
+        fi
+        verdict="$(kiosk_start_verdict "$active" "$sub" "$code" "$status" "$new_main")"
+        [ "$verdict" = "pending" ] || break
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    case "$verdict" in
+        no_display)
+            log_warn "Kiosk started but found no connected display (exit ${KIOSK_EXIT_NO_DISPLAY}) — the update is good; it will show up as soon as a TV is connected"
+            return 0
+            ;;
+        running)
+            ;;
+        *)
+            log_error "Kiosk did not start (state: ${active:-?}/${sub:-?}, last exit: code ${code:-?} status ${status:-?})"
+            return 1
+            ;;
+    esac
+
+    # Stability window: same process, no automatic restarts, still active.
+    local pid restarts
+    pid="$(kiosk_prop MainPID)"
+    restarts="$(kiosk_prop NRestarts)"
+    sleep "$KIOSK_STABLE_SECS"
+    active="$(kiosk_prop ActiveState)"
+    if [ "$active" = "active" ] && [ "$(kiosk_prop MainPID)" = "$pid" ] \
+        && [ "$(kiosk_prop NRestarts)" = "$restarts" ]; then
+        return 0
+    fi
+
+    # It went down inside the window. A no-display exit is still a pass
+    # (e.g. the TV was switched off at exactly this moment).
+    if [ "$(kiosk_prop ExecMainCode)" = "1" ] \
+        && [ "$(kiosk_prop ExecMainStatus)" = "$KIOSK_EXIT_NO_DISPLAY" ] \
+        && [ "$active" != "active" ]; then
+        log_warn "Kiosk lost its display during the stability check — accepting the update"
+        return 0
+    fi
+    log_error "Kiosk started but did not stay up for ${KIOSK_STABLE_SECS}s (state: ${active:-?}, PID ${pid} -> $(kiosk_prop MainPID), restarts ${restarts} -> $(kiosk_prop NRestarts))"
+    return 1
+}
+
+# Phone Remote: the /dev/uinput udev rule + `input` group membership the
+# web service needs to create its virtual gamepad. Root work, delivered by
+# setup_phone_remote_uinput.sh (setup_services.sh calls the same script).
+# This used to run the WHOLE setup_services.sh, unprivileged — it died at
+# Step 0 on every box (it writes /etc), so the rule never got installed and
+# install_deps.sh re-ran on every OTA. setup_services.sh must never run
+# from an OTA anyway: it restarts the web service out from under the
+# update and brings Docker up on games-only boxes.
+ensure_phone_remote_uinput() {
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: Phone Remote uinput setup (test mode)"
+        return 0
+    fi
+    local helper="${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_phone_remote_uinput.sh"
+    if [ ! -f "$helper" ]; then
+        log_warn "setup_phone_remote_uinput.sh not found in this release; skipping"
+        return 0
+    fi
+    # The web service is restarted at the end of a successful install,
+    # which is what picks up a newly added input group.
+    sudo -n bash "$helper" >&2 \
+        || log_warn "Phone Remote uinput setup failed (Phone Remote will be degraded)"
+}
+
+# A failed install: put the previous version back, then report the outcome
+# as the job's final JSON (the web admin shows its message). Reported AFTER
+# the rollback so the message says what actually happened.
+fail_install() {
+    local why="$1"
+    if rollback_internal; then
+        json_response "false" "${why}; the previous version was restored"
+    else
+        json_response "false" "${why}; restoring the previous version did not finish and will be retried at the next restart or update"
     fi
 }
 
@@ -546,6 +956,19 @@ install_update() {
 
     # Pre-flight checks
     json_progress "preparing" 5 "Running pre-flight checks..."
+
+    # A previous install that never finished (killed, or power lost before
+    # the boot-time recovery could run) left the tree half-updated. Restore
+    # it BEFORE anything else: the backup step below would otherwise
+    # overwrite the only good backup with a copy of the half-installed tree.
+    if [ -f "$OTA_MARKER" ]; then
+        log_warn "A previous update did not finish ($(ota_marker_field from) -> $(ota_marker_field target)); restoring the previous version first"
+        json_progress "preparing" 5 "Finishing an interrupted update first..."
+        if ! rollback_internal; then
+            json_response "false" "A previous update was interrupted and the box could not be restored; try again"
+            return 1
+        fi
+    fi
 
     # Check disk space (need at least 500MB free)
     local free_space
@@ -627,6 +1050,14 @@ install_update() {
 
     json_progress "backing_up" 45 "Creating backup of current installation..."
 
+    # Boot-time power-loss recovery must be in place before the marker that
+    # arms it is written (see ensure_ota_recovery_unit).
+    ensure_ota_recovery_unit
+
+    # Root-owned files would make the backup fail (unreadable) or the
+    # install rsync exit 23 (unwritable). See normalize_tree_ownership.
+    normalize_tree_ownership
+
     # Backup current installation
     log "Creating backup at $BACKUP_DIR"
     rm -rf "$BACKUP_DIR"
@@ -652,32 +1083,55 @@ install_update() {
     # VERSION — it is transfer entry #9 of ~4,800 — so the UI offered a
     # Rollback whose `--delete` then wiped the real installation down to
     # whatever fragment the partial backup held, and reported success.
+    #
+    # `/VERSION` is anchored (leading /) to the transfer root: unanchored,
+    # it also matched every nested file named VERSION (e.g. the FetchContent
+    # deps under build/_deps), silently leaving them out of the backup.
+    #
+    # Exit 24 (a source file vanished mid-copy — the kiosk and web admin
+    # keep running during the backup and replace their status files by
+    # atomic rename) is harmless for a backup; anything else is a failure.
+    local backup_exit=0
     rsync -a --delete --no-group --no-owner \
         --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
-        --exclude 'VERSION' \
+        --exclude '/VERSION' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
         --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
-        "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || {
-        json_response "false" "Failed to create backup"
+        "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || backup_exit=$?
+    if ! rsync_exit_ok "$backup_exit"; then
+        json_response "false" "Failed to create backup (rsync exit code: $backup_exit)"
         # Reclaim the space and leave nothing that looks like a backup.
         # Without this the box is left with a full card AND a partial
         # BACKUP_DIR; the update is then not cleanly retryable.
         rm -rf "$BACKUP_DIR"
         rm -rf "$TEMP_DIR"
         return 1
-    }
+    fi
 
     # Completion marker (see the VERSION exclude above). Only written once
     # the backup rsync has fully succeeded.
+    local from_version
+    from_version="$(get_current_version)"
     if [ -f "$INSTALL_DIR/VERSION" ]; then
         cp "$INSTALL_DIR/VERSION" "$BACKUP_DIR/VERSION"
+    else
+        # A pre-versioning tree: still mark the backup complete, or no
+        # rollback (and no power-loss recovery) could ever use it.
+        echo "$from_version" > "$BACKUP_DIR/VERSION"
     fi
+
+    # From here until the verified start, the install tree is in flux. The
+    # marker lets the next boot (or the next install) put the backup back if
+    # this process dies — power cut, OOM, a killed job — before then.
+    write_ota_marker "$target_version" "$from_version"
 
     json_progress "stopping_services" 55 "Stopping C++ service..."
 
@@ -778,9 +1232,10 @@ install_update() {
     #     compose file on its first OTA instead. See the delivery
     #     guard after the rsync.
     #
-    # Use --no-group --no-owner to avoid permission errors
-    # Exit code 23 means "some files could not transfer attributes" which is OK
-    # `--exclude 'VERSION'` is deliberate and applies to THIS rsync only
+    # Use --no-group --no-owner to avoid permission errors.
+    # Exit code 23 is a FAILURE (see rsync_exit_ok): it means some files
+    # were not written, i.e. a half-applied update. It used to be accepted.
+    # `--exclude '/VERSION'` is deliberate and applies to THIS rsync only
     # (the two rollback rsyncs restore VERSION explicitly with `cp`, see
     # the comments there). The tarball contains exactly one file named
     # VERSION (./VERSION), and rsync --delete never deletes an excluded
@@ -793,9 +1248,16 @@ install_update() {
     # binary that answered "up to date" and hid the Install button.
     log "Installing new files..."
     local rsync_exit=0
+    #
+    # `/VERSION` and `/config/*` are anchored to the transfer root (leading
+    # /). Unanchored, 'config/*' matched ANY path ending in config/<name>
+    # anywhere in the tree, so a release adding e.g. a src/**/config/ dir
+    # would never have been delivered (or its stale files deleted); the
+    # only directory meant here is the top-level config/ holding
+    # settings.json. services/config/* keeps its own explicit exclude.
     rsync -av --delete --no-group --no-owner \
         --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
-        --exclude 'VERSION' \
+        --exclude '/VERSION' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
@@ -811,7 +1273,9 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
-        --exclude 'config/*' \
+        --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
+        --exclude '/config/*' \
         --exclude 'magic_dingus_box_cpp/build/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
@@ -882,19 +1346,21 @@ install_update() {
         done
     fi
 
-    # Exit code 23 = some files couldn't transfer attrs (OK), 24 = vanished files (OK)
-    if [ "$rsync_exit" -ne 0 ] && [ "$rsync_exit" -ne 23 ] && [ "$rsync_exit" -ne 24 ]; then
+    # 0 / 24 only (rsync_exit_ok). 23 used to pass here, so a root-owned
+    # file the rsync could not replace produced a half-applied update that
+    # reported success.
+    if ! rsync_exit_ok "$rsync_exit"; then
         log_error "Failed to install files (rsync exit code: $rsync_exit), attempting rollback..."
-        rollback_internal
+        fail_install "Failed to install files (rsync exit code: $rsync_exit)"
         return 1
     fi
 
     # Compose-file delivery guard (see ensure_compose_file above).
     ensure_compose_file
 
-    # Refresh the shipped copies that live outside $INSTALL_DIR
-    # (see refresh_out_of_tree_files above).
-    refresh_out_of_tree_files
+    # NOTE: the out-of-tree helper refresh (refresh_out_of_tree_files) runs
+    # only AFTER the verified kiosk start, so a rolled-back update can never
+    # leave /usr/local/bin helpers from the release it rolled back.
 
     # NOTE: VERSION file is written AFTER successful service start (see below)
     # This ensures version consistency if build fails
@@ -916,8 +1382,14 @@ install_update() {
                 if gzip -t "$TEMP_DIR/binary.tar.gz" 2>/dev/null; then
                     json_progress "installing_binary" 50 "Installing pre-compiled binary..."
 
+                    # Guarded: under `set -e` a failed extract used to exit
+                    # the whole script right here — kiosk stopped, no
+                    # rollback, nothing reported.
                     mkdir -p "$TEMP_DIR/binary_extracted"
-                    tar -xzf "$TEMP_DIR/binary.tar.gz" -C "$TEMP_DIR/binary_extracted"
+                    if ! tar -xzf "$TEMP_DIR/binary.tar.gz" -C "$TEMP_DIR/binary_extracted" 2>&2; then
+                        log_warn "Pre-compiled binary archive could not be extracted, will compile from source"
+                    elif [ ! -f "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" ]; then
+                        log_warn "Pre-compiled binary archive has no kiosk binary, will compile from source"
 
                     # Verify binary architecture AND loadability. The CI
                     # binary is built on Debian Trixie; on a box running an
@@ -929,14 +1401,20 @@ install_update() {
                     # libraries ("not found") and glibc version gaps
                     # ("version GLIBC_x.yz not found"); either means this
                     # box must compile from source instead.
-                    if ! file "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" 2>/dev/null | grep -q "aarch64"; then
+                    elif ! chmod +x "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" \
+                        || ! verify_kiosk_binary "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp"; then
                         log_warn "Binary architecture mismatch, will compile from source"
                     elif ldd "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" 2>&1 | grep -q "not found"; then
                         log_warn "Pre-compiled binary needs newer system libraries than this OS provides; will compile from source"
+                    elif ! install_kiosk_binary "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp"; then
+                        # The binary itself is fine — the box could not take
+                        # it (disk full, I/O error). Compiling would hit the
+                        # same wall, so restore the previous version.
+                        log_error "Could not install the pre-compiled binary, rolling back..."
+                        json_progress "error" 50 "Could not install the new program, rolling back..."
+                        fail_install "Could not install the new kiosk binary"
+                        return 1
                     else
-                        mkdir -p "$INSTALL_DIR/magic_dingus_box_cpp/build"
-                        cp "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" "$INSTALL_DIR/magic_dingus_box_cpp/build/"
-                        chmod +x "$INSTALL_DIR/magic_dingus_box_cpp/build/magic_dingus_box_cpp"
                         use_binary=true
                         log "Using pre-compiled ARM64 binary"
                     fi
@@ -963,7 +1441,7 @@ install_update() {
         if ! run_build; then
             log_error "Build failed, attempting rollback..."
             json_progress "error" 70 "Build failed, rolling back..."
-            rollback_internal
+            fail_install "Build failed"
             return 1
         fi
     fi
@@ -972,30 +1450,27 @@ install_update() {
     # new system deps (python3-pip, python3-evdev, flask-sock) and a udev
     # rule for /dev/uinput. An existing Pi OTA-updating to a release
     # introducing these would otherwise get the new binary but no deps,
-    # silently breaking the WS path. Check two markers; if either is
-    # missing, re-run install_deps.sh + setup_services.sh (both are
-    # idempotent — cheap on already-provisioned Pis).
+    # silently breaking the WS path. Two independent markers, two narrow
+    # fixes:
+    #   - flask-sock missing  -> install_deps.sh (apt + pip, via sudo)
+    #   - uinput rule missing -> setup_phone_remote_uinput.sh (via sudo -n)
+    # NOT setup_services.sh: it used to be run here, unprivileged, and
+    # failed at its Step 0 on every box, so the rule never arrived and this
+    # whole bootstrap re-ran on every OTA. setup_services.sh also restarts
+    # magic-dingus-web mid-update and brings Docker up on games-only boxes.
     json_progress "phone_remote_bootstrap" 85 "Checking Phone Remote dependencies..."
-    PHONE_REMOTE_DEPS_OK=1
     if ! python3 -c "import flask_sock" 2>/dev/null; then
-        log "Phone Remote: flask-sock not installed; bootstrap needed"
-        PHONE_REMOTE_DEPS_OK=0
-    fi
-    if [[ ! -f /etc/udev/rules.d/90-magicdingus-uinput.rules ]]; then
-        log "Phone Remote: uinput udev rule missing; bootstrap needed"
-        PHONE_REMOTE_DEPS_OK=0
-    fi
-    if [[ "$PHONE_REMOTE_DEPS_OK" -eq 0 ]]; then
+        log "Phone Remote: flask-sock not installed; running install_deps.sh"
         if [[ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/install_deps.sh" ]]; then
             bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/install_deps.sh" \
                 || log_warn "install_deps.sh failed (Phone Remote will be degraded)"
         fi
-        if [[ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_services.sh" ]]; then
-            bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_services.sh" \
-                || log_warn "setup_services.sh failed (Phone Remote will be degraded)"
-        fi
+    fi
+    if [[ ! -f /etc/udev/rules.d/90-magicdingus-uinput.rules ]]; then
+        log "Phone Remote: uinput udev rule missing; installing it"
+        ensure_phone_remote_uinput
     else
-        log "Phone Remote: deps already provisioned; skipping bootstrap"
+        log "Phone Remote: uinput rule already installed"
     fi
 
     # RetroArch core bootstrap (idempotent). New releases can reference new
@@ -1009,7 +1484,10 @@ install_update() {
     json_progress "cores_bootstrap" 87 "Checking emulator cores..."
     local cores_user="${SUDO_USER:-$(id -un)}"
     local cores_home
-    cores_home="$(getent passwd "$cores_user" | cut -d: -f6)"
+    # `|| true`: under set -e + pipefail a failed lookup (or no getent at
+    # all, e.g. a macOS dev run) must fall through to $HOME, not abort the
+    # install after the files are already in place.
+    cores_home="$(getent passwd "$cores_user" 2>/dev/null | cut -d: -f6)" || true
     [ -n "$cores_home" ] || cores_home="$HOME"
     local cores_dir="${cores_home}/.config/retroarch/cores"
     local missing_core=0
@@ -1123,24 +1601,29 @@ install_update() {
     # Reload systemd and start C++ app
     log "Restarting services..."
     run_systemctl daemon-reload
-    if ! run_systemctl start magic-dingus-box-cpp.service 2>/dev/null; then
-        log_warn "Service start command failed, checking if active..."
-    fi
-    sleep 2
 
-    # Verify service actually started
-    if [ "$SKIP_SYSTEMCTL" != "true" ]; then
-        if ! run_systemctl is-active magic-dingus-box-cpp.service >/dev/null 2>&1; then
-            log_error "Service failed to start, rolling back..."
-            json_progress "error" 90 "Service failed to start, rolling back..."
-            rollback_internal
-            return 1
-        fi
+    # Verify the new kiosk actually runs (verify_kiosk_started): it must
+    # come up AND stay up for KIOSK_STABLE_SECS, or exit with the
+    # "no display connected" code — a good binary on a box whose TV is off.
+    if ! verify_kiosk_started; then
+        log_error "Service failed to start, rolling back..."
+        json_progress "error" 90 "Service failed to start, rolling back..."
+        fail_install "The updated kiosk did not start"
+        return 1
     fi
+
+    # Refresh the shipped copies that live outside $INSTALL_DIR (see
+    # refresh_out_of_tree_files). Only now, after the verified start: done
+    # earlier, a rollback left /usr/local/bin + dnsmasq at the NEW release
+    # while the tree went back to the old one.
+    refresh_out_of_tree_files
 
     # Only commit VERSION after successful service start
     echo "$target_version" > "$INSTALL_DIR/VERSION"
     log "VERSION updated to $target_version"
+
+    # The update is committed; nothing left for the boot recovery to undo.
+    clear_ota_marker
 
     # Cleanup temp files
     rm -rf "$TEMP_DIR"
@@ -1178,8 +1661,17 @@ rollback_internal() {
 
     log "Rolling back to previous version..."
 
-    # Only stop C++ service - don't stop web service during rollback
-    run_systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
+    # Only stop C++ service - don't stop web service during rollback.
+    # Not at boot: the recovery oneshot is ordered BEFORE the kiosk, and a
+    # stop would cancel the kiosk's queued start job.
+    if [ "$BOOT_RECOVERY" != "true" ]; then
+        run_systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
+    fi
+
+    # Root-owned files would make the restore exit 23 (see
+    # normalize_tree_ownership).
+    normalize_tree_ownership
+    local restore_exit=0
 
     # Restore backup. Same exclude list as the install rsync — the
     # rollback should leave operator content alone, NOT roll it back
@@ -1214,10 +1706,12 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
-        --exclude 'config/*' \
+        --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
+        --exclude '/config/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
-        "$BACKUP_DIR/" "$INSTALL_DIR/" || true
+        "$BACKUP_DIR/" "$INSTALL_DIR/" || restore_exit=$?
 
     # Explicitly restore VERSION file from backup
     if [ -f "$BACKUP_DIR/VERSION" ]; then
@@ -1231,13 +1725,71 @@ rollback_internal() {
     # copy.
     ensure_compose_file
 
-    # Restart C++ service (web service will be restarted at end of main function)
-    run_systemctl daemon-reload
-    run_systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
+    # Put the /usr/local/bin helpers + usb0 dnsmasq conf back in step with
+    # the restored tree (they are copies OF the tree; see
+    # refresh_out_of_tree_files). Before this, a rollback left them at the
+    # release it had just rolled back.
+    refresh_out_of_tree_files
+
+    # Restart C++ service (web service will be restarted at end of main
+    # function). At boot the kiosk starts by itself right after us.
+    if [ "$BOOT_RECOVERY" != "true" ]; then
+        run_systemctl daemon-reload
+        run_systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
+    fi
 
     local restored_version
     restored_version=$(get_current_version)
+
+    if ! rsync_exit_ok "$restore_exit"; then
+        # Keep the in-progress marker: the boot recovery (or the next
+        # install) retries the restore instead of trusting this tree.
+        log_error "Restore from backup was incomplete (rsync exit code: $restore_exit); will retry at the next restart or update"
+        return 1
+    fi
+
+    clear_ota_marker
     log "Rolled back to version $restored_version"
+    return 0
+}
+
+# Boot-time recovery from an install that never finished (`update.sh
+# recover`, run by magic-dingus-ota-recovery.service before the kiosk
+# starts). The unit runs the BACKUP's copy of this script: that is the
+# update.sh that wrote the marker, while the copy in INSTALL_DIR may be
+# from the half-installed release.
+recover_interrupted_update() {
+    BOOT_RECOVERY="true"
+
+    if [ ! -f "$OTA_MARKER" ]; then
+        log "No interrupted update to recover"
+        return 0
+    fi
+
+    local target from current
+    target="$(ota_marker_field target)"
+    from="$(ota_marker_field from)"
+    current="$(get_current_version)"
+
+    # VERSION is stamped only after a verified start, so VERSION == target
+    # (and target != from) means the update DID complete and only the marker
+    # removal was lost. Nothing to undo.
+    if [ -n "$target" ] && [ "$target" != "$from" ] && [ "$current" = "$target" ]; then
+        log "Update to $target had completed; clearing the stale in-progress marker"
+        clear_ota_marker
+        return 0
+    fi
+
+    if [ ! -f "$BACKUP_DIR/VERSION" ]; then
+        # Nothing to restore from; a marker without a backup can never be
+        # acted on and would only re-run this at every boot.
+        log_error "Interrupted update found (${from:-?} -> ${target:-?}) but no complete backup exists; cannot restore"
+        clear_ota_marker
+        return 0
+    fi
+
+    log_warn "Update ${from:-?} -> ${target:-?} was interrupted (power loss?); restoring ${from:-the previous version}"
+    rollback_internal
 }
 
 # User-initiated rollback
@@ -1271,6 +1823,7 @@ rollback() {
     # As in rollback_internal: `VERSION` is deliberately NOT excluded —
     # a rollback must restore the old version number.
     log "Restoring from backup..."
+    normalize_tree_ownership
     local rsync_exit=0
     rsync -av --delete --no-group --no-owner \
         --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
@@ -1289,13 +1842,15 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
-        --exclude 'config/*' \
+        --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
+        --exclude '/config/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$BACKUP_DIR/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
 
-    if [ "$rsync_exit" -ne 0 ] && [ "$rsync_exit" -ne 23 ] && [ "$rsync_exit" -ne 24 ]; then
-        json_response "false" "Failed to restore backup"
+    if ! rsync_exit_ok "$rsync_exit"; then
+        json_response "false" "Failed to restore backup (rsync exit code: $rsync_exit)"
         return 1
     fi
 
@@ -1307,6 +1862,12 @@ rollback() {
 
     # See rollback_internal: the backup can predate the compose repair.
     ensure_compose_file
+
+    # See rollback_internal: helpers outside the tree follow the tree.
+    refresh_out_of_tree_files
+
+    # A restored tree supersedes any interrupted install.
+    clear_ota_marker
 
     json_progress "restarting_services" 80 "Restarting services..."
 
@@ -1345,6 +1906,7 @@ usage() {
     echo "  check                    Check for available updates"
     echo "  install <version> <url>  Install a specific version"
     echo "  rollback                 Rollback to previous version"
+    echo "  recover                  Undo an install interrupted by power loss (boot-time)"
     echo "  version                  Show current version"
     echo ""
     echo "Examples:"
@@ -1375,7 +1937,12 @@ acquire_update_lock() {
     fi
 }
 
-# Main command dispatcher
+# Main command dispatcher. Skipped when the file is SOURCED (the BATS suite
+# sources it to unit-test individual functions).
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0 2>/dev/null || true
+fi
+
 case "${1:-}" in
     check)
         check_update
@@ -1391,6 +1958,12 @@ case "${1:-}" in
     rollback)
         acquire_update_lock
         rollback
+        ;;
+    recover)
+        # Boot-time: nothing else should hold the lock. If something does,
+        # a live update/rollback owns the tree — leave it alone.
+        acquire_update_lock
+        recover_interrupted_update
         ;;
     version)
         echo "$(get_current_version)"

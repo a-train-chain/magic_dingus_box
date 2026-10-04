@@ -131,6 +131,29 @@ if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
 else
     echo -e "  ${RED}FAILED${NC}  memory tuning installer did not complete"; FAILED=1
 fi
+# OTA power-loss recovery: the update.sh that writes the in-progress
+# marker, the unit that acts on it at boot, and its installer. The image
+# must carry the unit ENABLED (live), not just the repo copy — same
+# present-but-not-correct trap as above. The helper setup_services.sh now
+# calls for the Phone Remote uinput step travels with it.
+push magic_dingus_box_cpp/scripts/update.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/update.sh 755 \
+     "update.sh              (atomic build swap, power-loss marker, headless OK)"
+push magic_dingus_box_cpp/scripts/setup_ota_recovery.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh 755 \
+     "setup_ota_recovery.sh  (installs the boot-time OTA recovery unit)"
+push magic_dingus_box_cpp/systemd/magic-dingus-ota-recovery.service \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/systemd/magic-dingus-ota-recovery.service 644 \
+     "magic-dingus-ota-recovery.service (repo copy)"
+push magic_dingus_box_cpp/scripts/setup_phone_remote_uinput.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_phone_remote_uinput.sh 755 \
+     "setup_phone_remote_uinput.sh (uinput rule + input group; called by setup_services.sh)"
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    "sudo bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh && systemctl is-enabled --quiet magic-dingus-ota-recovery.service" 2>&1 | sed 's/^/          /'; then
+    echo -e "  ${GREEN}OK${NC}      OTA recovery unit installed + enabled live"
+else
+    echo -e "  ${RED}FAILED${NC}  OTA recovery unit not installed/enabled"; FAILED=1
+fi
 push magic_dingus_box_cpp/scripts/verify_services.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/verify_services.sh 755 \
      "verify_services.sh     (Radarr root-folder check — 15 checks)"

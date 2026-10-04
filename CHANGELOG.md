@@ -53,6 +53,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for it once more.
 
 ### Fixed
+- **A power cut during a software update no longer leaves a box that
+  won't start.** If the power went out (or the update was stopped) while
+  the box was rebuilding itself, it could be left with no working program
+  at all and nothing on screen, forever. The old program now stays in
+  place until the new one is built and checked, and if an update is ever
+  interrupted, the box puts the previous version back by itself the next
+  time it's switched on.
+- **Updating with the TV off no longer undoes the update.** The box
+  checks that the new version starts before keeping it, and with no TV
+  connected that check used to fail — so a perfectly good update was
+  rolled back on any box nobody was watching. It now recognizes "no TV
+  connected" as fine, keeps the update, and the menu appears as soon as
+  the TV is switched on. The check also now waits a few seconds to make
+  sure the new version keeps running, instead of trusting the first
+  moment it starts.
+- **Updates no longer half-install and call it a success.** A file left
+  behind by an earlier setup step could stop parts of an update from
+  being copied — or stop the update from even starting, on every try —
+  while the box reported success. The box now fixes those files first,
+  and if anything still can't be copied it puts the previous version back
+  and says so.
+- **Rolling back an update now rolls everything back.** A few helper
+  programs kept the newer version after a rollback; they now return to
+  the matching version too.
+- **The phone remote setup no longer re-runs on every update.** A setup
+  step that could never finish made every update repeat part of the
+  phone remote installation; the one piece it actually needs is now
+  installed directly, once.
+- **Updates no longer forget phones you were unpairing, or uploads that
+  were still arriving.** Both used to be cleared by every software
+  update.
 - **No sound when the TV is plugged into the second HDMI port.** The box
   assumed the TV was always on the first port and switched the second
   one's audio off entirely, so a TV on the other port showed the picture

@@ -118,6 +118,10 @@ TRIPWIRE_HITS=(
     /home/magic/*.env.backup* /home/magic/.env.backup*
     /home/magic/*.env.bak* /home/magic/env-backup*
     /home/magic/state_backup*
+    # Also matches update.sh's power-loss marker
+    # (.magic_dingus_box_backup.ota_in_progress): an image carrying it
+    # would make every clone "restore" this box's pre-update tree at its
+    # first boot. Named that way on purpose so this glob catches it.
     /home/magic/.magic_dingus_box_backup*
     /home/magic/*secret* /home/magic/*credential*
     /root/db-backup-* /root/*.env*

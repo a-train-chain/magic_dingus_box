@@ -32,6 +32,7 @@ DrmDisplay::~DrmDisplay() {
 }
 
 bool DrmDisplay::initialize(const std::string& device_path) {
+    init_failure_ = DisplayInitFailure::None;
     // Try all available DRM devices
     std::vector<std::string> device_paths;
     
@@ -87,6 +88,7 @@ bool DrmDisplay::initialize(const std::string& device_path) {
                 std::cerr << "  " << path << " (exists)" << std::endl;
             }
         }
+        init_failure_ = DisplayInitFailure::NoDrmDevice;
         return false;
     }
     
@@ -117,18 +119,24 @@ bool DrmDisplay::initialize(const std::string& device_path) {
 
     if (drm_fd_ < 0) {
         std::cerr << "Failed to open any DRM device" << std::endl;
+        init_failure_ = DisplayInitFailure::NoDrmMaster;
         return false;
     }
 
-    // Find connector and CRTC
+    // Find connector and CRTC. find_connector() classifies its own
+    // failure: "nothing plugged in" (NoConnectedDisplay) vs. anything else.
     if (!find_connector()) {
         std::cerr << "Failed to find connector" << std::endl;
+        if (init_failure_ == DisplayInitFailure::None) {
+            init_failure_ = DisplayInitFailure::Other;
+        }
         cleanup();
         return false;
     }
 
     if (!find_crtc()) {
         std::cerr << "Failed to find CRTC" << std::endl;
+        init_failure_ = DisplayInitFailure::NoCrtc;
         cleanup();
         return false;
     }
@@ -197,6 +205,10 @@ bool DrmDisplay::find_connector() {
     }
 
     std::cerr << "No connected connector found" << std::endl;
+    // The only "no TV" outcome: DRM answered, we walked every connector,
+    // and none is connected with modes. Every other false return above is
+    // a real fault and stays unclassified (-> exit 1).
+    init_failure_ = DisplayInitFailure::NoConnectedDisplay;
     drmModeFreeResources(resources);
     return false;
 }

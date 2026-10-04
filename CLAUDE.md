@@ -270,6 +270,7 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
 - `scripts/update.sh` checks GitHub API for latest release
 - Downloads tarball, backs up current installation, extracts update
 - Rollback support if update fails
+- **Never leaves a box without a kiosk** (2026-10): builds in `build.new/` and swaps it in only after `verify_kiosk_binary`; an "install in progress" marker (`/home/magic/.magic_dingus_box_backup.ota_in_progress`) + `magic-dingus-ota-recovery.service` restore the backup at the next boot after a power cut. The kiosk exits **69** (`src/platform/kiosk_exit.h`) when no display is connected — `update.sh` accepts that as a good start; keep the two in sync. rsync exit 23 is a FAILURE. Details: `OTA_UPDATE_GUARANTEES.md` "2026-10 hardening".
 - Triggered via web admin `/admin/update/*` endpoints (`version`, `check`, `install`, `status/<job_id>`, `rollback`) — NOT `/api/update/*`
 
 ## Media Browser (Movie Playback + Downloads)

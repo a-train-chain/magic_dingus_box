@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "platform/kiosk_exit.h"
 #include <xf86drmMode.h>
 #include <string>
 #include <vector>
@@ -54,6 +55,10 @@ public:
     // Re-acquire DRM master
     bool acquire_master();
 
+    // Why the last initialize() failed (None after a success). main() maps
+    // this to the process exit code — see kiosk_exit.h.
+    DisplayInitFailure init_failure() const { return init_failure_; }
+
 private:
     int drm_fd_;
     uint32_t connector_id_;
@@ -63,6 +68,7 @@ private:
     void* saved_crtc_;
     DisplayMode current_mode_;
     drmModeModeInfo current_mode_info_{};
+    DisplayInitFailure init_failure_ = DisplayInitFailure::None;
     
     bool find_connector();
     bool find_crtc();

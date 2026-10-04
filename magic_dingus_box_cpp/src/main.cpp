@@ -219,8 +219,16 @@ int main(int /* argc */, char* /* argv */[]) {
         LOG_ERROR("  1. X11/lightdm is running (stop with: sudo systemctl stop lightdm)");
         LOG_ERROR("  2. Another process is using the display");
         LOG_ERROR("  3. No display connected");
+        // A missing/asleep TV exits 69, not 1: update.sh accepts 69 as
+        // "the new binary runs" instead of rolling a good OTA back, and
+        // systemd keeps retrying so plugging the TV in later still works.
+        // See platform/kiosk_exit.h.
+        const int rc = platform::exit_code_for_display_init_failure(display.init_failure());
+        if (rc == platform::kExitNoDisplay) {
+            LOG_ERROR("No connected display found - exiting {} so systemd retries until one is", rc);
+        }
         logging::shutdown();
-        return 1;
+        return rc;
     }
     
     // Set display mode. The target depends on the persisted display
