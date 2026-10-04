@@ -129,7 +129,7 @@ const char* outcome_name(SessionOutcome o) {
     switch (o) {
         case SessionOutcome::Exited: return "exited";
         case SessionOutcome::ExitedBeforeReady: return "exited before taking over KMS";
-        case SessionOutcome::StartupTimedOut: return "did not take over KMS in time";
+        case SessionOutcome::StartupTimedOut: return "did not take over KMS within 15 seconds";
         case SessionOutcome::StopRequested: return "stopped on kiosk shutdown request";
     }
     return "?";
@@ -731,6 +731,15 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
 
     std::cout << "RetroArch session: " << outcome_name(report.outcome)
               << " (" << stop_name(report.stop) << ")" << std::endl;
+    // Also into the launcher log: scripts/emulator_smoke_test.py greps it
+    // for "exited before taking over KMS" / "did not take over KMS within
+    // 15 seconds" (it reads that file, not the journal).
+    {
+        std::ofstream log(launcher_log, std::ios::app);
+        log << "=== " << timestamp_now() << " RetroArch session: "
+            << outcome_name(report.outcome) << " (" << stop_name(report.stop)
+            << ") ===\n";
+    }
     if (status < 0) {
         std::cerr << "Failed to reap RetroArch: " << std::strerror(errno) << std::endl;
     } else if (WIFEXITED(status)) {
