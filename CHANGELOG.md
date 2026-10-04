@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crafted update request could name a version that quietly pointed the
   box at someone else's download. The box now accepts only a plain
   version number and only the matching official release.
+- **Other websites can no longer poke the box through your browser.**
+  A page on the internet could make a phone or laptop at home quietly
+  ask the box to check for updates over and over, or use up the pairing
+  code's guesses. The box now ignores requests that a browser marks as
+  coming from another website. Scanning the pairing QR code, typing the
+  box's address, the home-screen app, and links to the box all work
+  exactly as before.
 
 ### Added
 - **Choose which season to download.** A show's page now suggests the

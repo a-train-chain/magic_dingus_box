@@ -387,10 +387,18 @@ def _media_browser_locked_response():
 # In production, consider using Redis or session storage
 _csrf_tokens: dict[str, float] = {}
 _CSRF_TOKEN_EXPIRY = 3600  # 1 hour
+# Bounded, and locked. GET /admin/csrf-token mints a token per call, so the
+# dict grew without limit for anything that looped it, and the cleanup
+# iterated it while request threads inserted ("dictionary changed size during
+# iteration" -> a 500 on a random request). A household holds a handful of
+# live tokens; at the cap the earliest-expiring (= oldest) are dropped, and
+# an operator whose token was evicted just reloads the page.
+_CSRF_TOKEN_MAX = 2048
+_csrf_lock = threading.Lock()
 
 
 def _cleanup_expired_tokens():
-    """Remove expired CSRF tokens."""
+    """Remove expired CSRF tokens. Caller holds _csrf_lock."""
     current_time = time.time()
     expired = [token for token, expiry in _csrf_tokens.items() if current_time > expiry]
     for token in expired:
@@ -399,9 +407,14 @@ def _cleanup_expired_tokens():
 
 def _generate_csrf_token() -> str:
     """Generate a new CSRF token."""
-    _cleanup_expired_tokens()
     token = secrets.token_urlsafe(32)
-    _csrf_tokens[token] = time.time() + _CSRF_TOKEN_EXPIRY
+    with _csrf_lock:
+        _cleanup_expired_tokens()
+        overflow = len(_csrf_tokens) - (_CSRF_TOKEN_MAX - 1)
+        if overflow > 0:
+            for old in sorted(_csrf_tokens, key=_csrf_tokens.get)[:overflow]:
+                del _csrf_tokens[old]
+        _csrf_tokens[token] = time.time() + _CSRF_TOKEN_EXPIRY
     return token
 
 
@@ -416,8 +429,9 @@ def _validate_csrf_token(token: str | None) -> bool:
     """
     if not token:
         return False
-    _cleanup_expired_tokens()
-    return token in _csrf_tokens
+    with _csrf_lock:
+        _cleanup_expired_tokens()
+        return token in _csrf_tokens
 
 
 def _derive_playlist_type(data: dict) -> str:
@@ -2036,6 +2050,37 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "FORBIDDEN_HOST",
             "Open the Content Manager by the box's address (its IP, "
             "<name>.local, or http://dingus.box over USB).",
+            status=403)
+
+    # Cross-site request defence — the half the Host check cannot cover.
+    # The allowlist must accept IP literals (the pairing QR and the Connect
+    # screen are the LAN IP), so any website could still make its visitor's
+    # browser hit http://<box-ip>:5000/...: spawn `update.sh check` and burn
+    # the GitHub rate limit shared by the whole household, mint CSRF tokens,
+    # or spend the pairing attempt budget with /?pair=000000. Browsers stamp
+    # every request with Sec-Fetch-Site and a page cannot forge it, so refuse
+    # 'cross-site'. Zero friction for real use:
+    #   * header absent  -> allowed (curl, Retro Ripper, Safari < 16.4)
+    #   * 'none'         -> allowed (camera-app QR scan, typed address,
+    #                       home-screen app launch, bookmark)
+    #   * same-origin / same-site -> allowed (the Content Manager itself)
+    #   * a cross-site TOP-LEVEL navigation to a page (a link in a router's
+    #     device list, a help article) still opens it — the user can see
+    #     it; only embedding (iframe), fetch/XHR, forms and subresources are
+    #     refused. One carrying a pairing code is bounced to the Connect
+    #     page (admin_interface) so the code is spent only by a tap there.
+    @app.before_request
+    def _check_fetch_site():  # type: ignore[no-redef]
+        if request.headers.get("Sec-Fetch-Site", "").lower() != "cross-site":
+            return None
+        if (request.method in ("GET", "HEAD")
+                and request.headers.get("Sec-Fetch-Mode", "").lower() == "navigate"
+                and request.headers.get("Sec-Fetch-Dest", "document").lower() == "document"):
+            return None
+        return error_response(
+            "CROSS_SITE_REQUEST",
+            "This request came from another website and was refused. Open "
+            "the Content Manager directly by the box's address.",
             status=403)
 
     # Optional simple token auth for admin APIs (disabled by default)
@@ -6237,6 +6282,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
         """
         pair_code = request.args.get("pair")
         if pair_code:
+            if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+                # A pairing code arriving by a link on ANOTHER website is
+                # never the kiosk's QR (a camera scan is Sec-Fetch-Site:
+                # none) — it is how a hostile page would spend the attempt
+                # budget. Show the Connect page instead: its button submits
+                # the same code same-origin, so a genuine link costs one tap.
+                code = pair_code.strip()
+                target = (f"/connect?code={code}"
+                          if re.fullmatch(r"[0-9]{6}", code) else "/connect")
+                return redirect(target, code=303)
             return remote_auth.handle_pair_param(pair_code)
         submitted_token = request.args.get("device_token")
         if submitted_token:
