@@ -91,9 +91,20 @@ public:
     // still be seeding in qBittorrent for a movie the user is
     // deleting — the active-queue cancel path only catches downloads
     // currently in progress; finished+seeding torrents don't appear
-    // there. Empty vector on error or when the movie has no history.
-    // Hashes are returned in lowercase for direct comparison with
+    // there. Hashes are returned in lowercase for direct comparison with
     // QbittorrentClient (which normalizes to lowercase internally).
+    //
+    // CHECKED shape (SonarrClient::get_series_download_hashes_checked's
+    // twin): nullopt on transport/HTTP failure or an unparseable body; an
+    // engaged empty vector means Radarr answered and the movie has no
+    // grab history. The Remove flow MUST use this one — "failed" and
+    // "nothing to purge" were indistinguishable in the bare shape, and the
+    // remove went on to delete the library record, orphaning every seeding
+    // torrent with nothing left to find them by.
+    virtual std::optional<std::vector<std::string>>
+    get_movie_download_hashes_checked(int movie_id);
+    // Bare-vector wrapper (empty on error). Do NOT use it to decide whether
+    // anything is left to clean up; see the checked shape above.
     virtual std::vector<std::string> get_movie_download_hashes(int movie_id);
 
     struct HistoryEvent {

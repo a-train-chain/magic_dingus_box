@@ -12,6 +12,7 @@
 #include <spdlog/spdlog.h>
 
 #include "media_browser/library/watch_store.h"
+#include "media_browser/movie_remove.h"
 #include "media_browser/qbittorrent/download_watchdog.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
@@ -942,104 +943,38 @@ Screen DetailScreen::drain_remove_result() {
 }
 
 void DetailScreen::run_remove(int radarr_id) {
-    // Four-step cleanup, in this order so each step's prerequisite has
-    // happened before it runs:
+    // WORKER thread. The cleanup itself — cancel this movie's queue rows,
+    // purge every torrent its history remembers from qBittorrent, then
+    // remove_movie(delete_files=true) — lives in remove_movie_orphan_proof
+    // (media_browser/movie_remove.h), where its abort rule is unit-tested:
+    // a failed queue or history READ aborts before the delete instead of
+    // reading as "nothing to clean up". This used the bare get_queue() /
+    // get_movie_download_hashes() and removed the record anyway, orphaning
+    // seeding torrents for good (the production 2.58 GB orphan that
+    // motivated step 2 in the first place).
     //
-    //  1. Cancel any in-flight Radarr queue items for this movie. Each
-    //     cancel uses removeFromClient=true, which tells Radarr to send
-    //     qBittorrent the delete-with-files command. This catches
-    //     downloads in progress (state=downloading/queued).
-    //
-    //  2. Purge any remaining qBit torrents associated with this movie
-    //     by walking Radarr's history. Step 1 only covers items in the
-    //     active queue — finished+seeding torrents (state=uploading on
-    //     qBit, no longer in Radarr's queue) slip through. Without this
-    //     step, removing a movie that has already been imported leaves
-    //     its torrent seeding forever, pinning disk + upload bandwidth
-    //     with no Radarr record to clean it up. We discovered this in
-    //     production: a HEVC release we cancelled and re-grabbed left
-    //     a 2.58 GB orphan that survived multiple Detail-Remove cycles.
-    //
-    //  3. Remove the movie record itself from Radarr's library, with
-    //     delete_files=true so the imported copy in /library is also
-    //     cleaned up. Steps 1-2 cover the qBit-side artifacts; step 3
-    //     covers Radarr's side and the host's library disk.
-    //
-    //  4. Navigate back to the library view (the screen the user
-    //     conceptually came from when they decided to remove).
-    auto publish = [this](bool ok, std::string err) {
-        remove_ok_ = ok;
-        remove_error_ = std::move(err);
-        remove_done_.store(true, std::memory_order_release);
-        remove_in_flight_.store(false, std::memory_order_release);
-    };
-
-    int cancelled = 0;
-    int cancel_failed = 0;
-    auto queue = radarr_.get_queue();
-    for (const auto& q : queue) {
-        if (q.movie_id == radarr_id) {
-            if (radarr_.cancel_queue_item(q.id)) {
-                ++cancelled;
-            } else {
-                ++cancel_failed;
-                spdlog::warn(
-                    "[detail] failed to cancel queue item {} for movie {}: {}",
-                    q.id, radarr_id, radarr_.last_error());
-            }
+    // Publishes on EVERY exit path, a throw included: run_guarded swallows
+    // the exception, and without this guard remove_in_flight_ stayed true
+    // and every later Confirm Remove was silently ignored for the session.
+    // The render-thread state invalidation on success (movie_.reset(),
+    // needs_refresh_, mode_, library-poll gen bump) is drain_remove_result's.
+    struct PublishGuard {
+        DetailScreen& self;
+        bool published = false;
+        void publish(bool ok, std::string err) {
+            self.remove_ok_ = ok;
+            self.remove_error_ = std::move(err);
+            published = true;
+            self.remove_done_.store(true, std::memory_order_release);
+            self.remove_in_flight_.store(false, std::memory_order_release);
         }
-    }
-    if (cancelled > 0) {
-        spdlog::info("[detail] cancelled {} in-flight queue item(s) "
-                     "before removing movie {}", cancelled, radarr_id);
-    }
-
-    // If any queue cancel failed, do NOT proceed. Same reasoning as
-    // before: orphan-torrent state is worse than a "remove failed"
-    // toast. User can fix qBit connectivity and retry.
-    if (cancel_failed > 0) {
-        publish(false,
-                "Cancel failed for " + std::to_string(cancel_failed)
-                + " in-flight torrent(s). Movie not removed; "
-                  "check qBittorrent connectivity and retry.");
-        return;
-    }
-
-    // Step 2: history-walk + qBit delete for any historical torrent
-    // hashes Radarr remembers for this movie. This is the new path
-    // that catches finished+seeding torrents step 1 can't see. We
-    // collect every distinct downloadId from grabbed/imported events
-    // (typically 1-2 hashes per movie, more if the user re-grabbed)
-    // and ask qBit to remove each with deleteFiles=true. qBit's
-    // delete is a no-op when the hash isn't present, so this is safe
-    // to call even when the cleanup already happened via step 1.
-    if (qbit_) {
-        auto hashes = radarr_.get_movie_download_hashes(radarr_id);
-        int purged = 0;
-        for (const auto& h : hashes) {
-            if (qbit_->delete_torrent(h, /*delete_files=*/true)) {
-                ++purged;
-            }
+        ~PublishGuard() {
+            if (!published) publish(false, "Remove failed \xE2\x80\x94 try again");
         }
-        if (!hashes.empty()) {
-            spdlog::info("[detail] purged {} of {} historical qBit "
-                         "torrent(s) for movie {}",
-                         purged, hashes.size(), radarr_id);
-        }
-    }
-
-    bool ok = radarr_.remove_movie(radarr_id, /*delete_files=*/true);
-    if (!ok) {
-        publish(false, "Remove failed: " + radarr_.last_error());
-        return;
-    }
-    // Success. The render-thread state invalidation (movie_.reset(),
-    // needs_refresh_, mode_, library-poll gen bump — see the comment in
-    // drain_remove_result) is applied by the drain: without it,
-    // navigating back into Detail for the same tmdb_id hits the enter()
-    // short-circuit and re-renders the stale InLibrary mode for a movie
-    // Radarr no longer knows about.
-    publish(true, {});
+    } guard{*this};
+    const MovieRemoveOutcome out =
+        remove_movie_orphan_proof(radarr_, qbit_, radarr_id);
+    guard.publish(out.removed, out.message);
 }
 
 DetailScreen::PlayTarget DetailScreen::get_play_target() const {

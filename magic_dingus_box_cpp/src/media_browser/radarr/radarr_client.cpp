@@ -450,7 +450,13 @@ RadarrClient::get_releases_for_movie(int radarr_movie_id) try {
 }
 
 std::vector<std::string>
-RadarrClient::get_movie_download_hashes(int movie_id) try {
+RadarrClient::get_movie_download_hashes(int movie_id) {
+    return get_movie_download_hashes_checked(movie_id)
+        .value_or(std::vector<std::string>{});
+}
+
+std::optional<std::vector<std::string>>
+RadarrClient::get_movie_download_hashes_checked(int movie_id) try {
     // Radarr's /api/v3/history endpoint takes movieId as a filter and
     // returns events newest-first. We pull a generous pageSize because
     // grabbed/imported/failed events for a single movie can pile up
@@ -459,7 +465,7 @@ RadarrClient::get_movie_download_hashes(int movie_id) try {
     auto resp = http_get("/api/v3/history?movieId="
                          + std::to_string(movie_id)
                          + "&pageSize=50");
-    if (resp.empty()) return {};
+    if (resp.empty()) return std::nullopt;
 
     // Parse manually rather than going through RadarrParsers — we only
     // need one specific field (downloadId) and the history shape is
@@ -474,7 +480,7 @@ RadarrClient::get_movie_download_hashes(int movie_id) try {
         set_error("history parse error");
         spdlog::warn("[radarr] history parse failed for movie {}: {}",
                      movie_id, err);
-        return {};
+        return std::nullopt;
     }
     const Json::Value* records = nullptr;
     if (root.isObject() && root.isMember("records")) {
@@ -483,7 +489,7 @@ RadarrClient::get_movie_download_hashes(int movie_id) try {
         // Older Radarr versions return a bare array.
         records = &root;
     }
-    if (!records || !records->isArray()) return {};
+    if (!records || !records->isArray()) return std::nullopt;  // unknown shape = no answer
 
     // Collect distinct hashes; preserve insertion order so the most-
     // recent grab gets cleaned up first (small UX win — qBit's delete
@@ -509,8 +515,8 @@ RadarrClient::get_movie_download_hashes(int movie_id) try {
     // Unexpected JSON shape/type (Json::LogicError): report failure — the
     // empty/nullopt/false this returns is each method's normal failure
     // value — instead of letting it escape into a worker and terminate.
-    spdlog::error("[radarr] get_movie_download_hashes: unexpected response shape: {}", e.what());
-    return {};
+    spdlog::error("[radarr] get_movie_download_hashes_checked: unexpected response shape: {}", e.what());
+    return std::nullopt;
 }
 
 std::vector<RadarrClient::HistoryEvent>
