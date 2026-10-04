@@ -2130,9 +2130,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # last slice of the card is gone, not after.
     STORAGE_HEADROOM_BYTES = 512 * 1024 * 1024
 
-    # A staged ZIP and its extracted contents coexist on disk at the peak, and
-    # video barely compresses, so budget for two copies. Same for the transcode
-    # endpoints, which hold the uploaded original while ffmpeg writes the .part.
+    # Every multipart upload is spooled to the card by werkzeug (TMPDIR is
+    # the SD card) and that spool lives until the request ends, so EVERY
+    # upload route holds at least two copies at its peak:
+    #   import-package    spool + extracted media (the ZIP is read in place)
+    #   /admin/upload     spool + the staging copy that is renamed into place
+    #   transcode routes  spool + the saved original during the request, then
+    #                     the original + ffmpeg's .part until the encode ends
+    # Video barely compresses, so two copies of the request size it is.
     IMPORT_PEAK_MULTIPLIER = 2
 
     def _storage_precondition(needed_bytes: int):
@@ -2996,7 +3001,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # Reading request.files makes werkzeug spool the whole multipart body
         # onto the SD card, so any validation placed above this line has
         # already spent the space we are trying to protect. Budget two copies:
-        # the staged ZIP and the extracted media coexist at the peak.
+        # werkzeug's spool of the ZIP and the extracted media coexist at the
+        # peak. (That is only true because the ZIP is opened straight from
+        # the spool below — it used to be copied a second time first.)
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
@@ -3019,24 +3026,27 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
             overwrite = request.args.get('overwrite', 'false').lower() == 'true'
 
-            # Hybrid Upload Handling
-            # < 100MB: RAM for speed
-            # >= 100MB or Unknown: Disk for safety
-            
-            RAM_LIMIT = 100 * 1024 * 1024  # 100MB
-            content_length = request.content_length or 0
+            # Open the ZIP straight from werkzeug's upload spool. It is
+            # already a complete, seekable copy of the upload (on the card
+            # once past 500 KB), and it lives until the request ends anyway.
+            # The old "hybrid" handling made a SECOND full copy first —
+            # file.save() to a mkstemp at >=100 MB (three copies on the card
+            # at the peak against a two-copy space budget), or the whole
+            # upload read() into RAM below 100 MB (up to 100 MB of heap on a
+            # 1.5 GB Pi 4B). The staged-copy path survives only as a
+            # fallback for a stream zipfile cannot seek.
             temp_path = None
-            
+
             try:
-                # Use RAM only if we know the size is safe
-                if content_length > 0 and content_length < RAM_LIMIT:
-                    # Small file: Load into RAM
-                    print(f"Upload size {content_length}: Processing in RAM", file=sys.stderr)
-                    source = io.BytesIO(file.read())
-                    zf = zipfile.ZipFile(source, 'r')
-                else:
-                    # Large file: Stream to Disk
-                    print(f"Upload size {content_length}: Processing on Disk", file=sys.stderr)
+                zf = None
+                stream = file.stream
+                if hasattr(stream, "seek") and hasattr(stream, "tell"):
+                    try:
+                        stream.seek(0)
+                        zf = zipfile.ZipFile(stream, 'r')
+                    except (io.UnsupportedOperation, AttributeError, OSError):
+                        zf = None
+                if zf is None:
                     fd, temp_path = tempfile.mkstemp(suffix='.zip')
                     os.close(fd)
                     file.save(temp_path)
@@ -3482,9 +3492,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
     def upload_media():  # type: ignore[no-redef]
         """Upload video file."""
         # Ahead of request.files for the reason given in _storage_precondition:
-        # touching it spools the body to the card. One copy here — the staged
-        # temp file is renamed into place, never duplicated.
-        _no_space = _storage_precondition(request.content_length or 0)
+        # touching it spools the body to the card. TWO copies here, not one:
+        # werkzeug's spool lives until the request ends, and
+        # _staged_save_upload copies it into a staging file beside the target
+        # before the rename (the rename itself duplicates nothing).
+        _no_space = _storage_precondition(
+            (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
             return _no_space
 
@@ -3959,8 +3972,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def upload_and_transcode():  # type: ignore[no-redef]
         """Upload video file and transcode it on the Pi."""
-        # Two copies: the uploaded original sits in upload_temp for the whole
-        # job while ffmpeg writes the .mp4.part next to the media library.
+        # Two copies: werkzeug's spool + the saved original during the
+        # request; then the original sits in upload_temp for the whole job
+        # while ffmpeg writes the .part next to the media library.
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
@@ -4146,8 +4160,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def smart_upload():  # type: ignore[no-redef]
         """Smart upload: probe video and decide whether to transcode or direct upload."""
-        # Probe first, so worst case is the same two copies as
-        # upload_and_transcode; the direct-move branch only needs one.
+        # Two copies on every branch: werkzeug's spool + the probe copy during
+        # the request, then the original + ffmpeg's .part if it transcodes
+        # (the direct branch renames the probe copy, adding nothing).
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
@@ -4302,7 +4317,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def upload_rom(system):  # type: ignore[no-redef]
         """Upload ROM for specific system."""
-        _no_space = _storage_precondition(request.content_length or 0)
+        # Spool + staging copy: two copies, exactly as for /admin/upload.
+        _no_space = _storage_precondition(
+            (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
             return _no_space
 
