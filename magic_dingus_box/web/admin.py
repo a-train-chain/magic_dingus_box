@@ -546,6 +546,39 @@ def _playlist_summary(path: Path) -> dict:
     }
 
 
+# Hard cap for the small text entries (playlist YAML, settings/device JSON,
+# manifest) read out of a backup or playlist-package ZIP. Real ones are a
+# few KB; 4 MB is ~1000x headroom. Without it, zf.read() allocated whatever
+# the archive declared — and deflate shrinks a run of spaces ~1000:1, so a
+# sub-MB upload could make the web service allocate gigabytes on a 1.5 GB
+# Pi 4B, where the OOM killer then picks the kiosk or the web service.
+_ZIP_TEXT_ENTRY_MAX = 4 * 1024 * 1024
+
+
+class _ZipEntryTooLarge(ValueError):
+    """A ZIP text entry exceeds _ZIP_TEXT_ENTRY_MAX."""
+
+
+def _read_zip_entry_capped(zf: "zipfile.ZipFile", name: str,
+                           cap: int = _ZIP_TEXT_ENTRY_MAX) -> bytes:
+    """Read one ZIP entry, refusing anything over `cap` bytes.
+
+    Two checks, because the first is the archive's own claim: the declared
+    (central-directory) size, which rejects an honest oversized entry before
+    any decompression; then a bounded read(cap + 1), so an archive that
+    under-declares can still never make us hold more than cap + 1 bytes.
+    """
+    info = zf.getinfo(name)
+    if info.file_size > cap:
+        raise _ZipEntryTooLarge(
+            f"{name} is too large ({info.file_size} bytes; limit {cap})")
+    with zf.open(info) as f:
+        data = f.read(cap + 1)
+    if len(data) > cap:
+        raise _ZipEntryTooLarge(f"{name} is too large (limit {cap} bytes)")
+    return data
+
+
 class _ExtractTooLarge(Exception):
     """Internal signal: a ZIP entry would push extraction past the byte cap.
 
@@ -2422,7 +2455,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 manifest = None
                 if "manifest.json" in names:
                     try:
-                        manifest_data = zf.read("manifest.json")
+                        manifest_data = _read_zip_entry_capped(zf, "manifest.json")
                         manifest = json.loads(manifest_data.decode('utf-8'))
                     except Exception as e:
                         errors.append(f"Could not read manifest: {e}")
@@ -2443,7 +2476,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                             continue
 
                         try:
-                            content = zf.read(name)
+                            content = _read_zip_entry_capped(zf, name)
                             # Validate it's valid YAML
                             restored_doc = yaml.safe_load(content.decode('utf-8'))
                             bad = _invalid_emulator_core(restored_doc)
@@ -2470,7 +2503,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 # Restore settings
                 if "config/settings.json" in names:
                     try:
-                        content = zf.read("config/settings.json")
+                        content = _read_zip_entry_capped(zf, "config/settings.json")
                         # Validate it's valid JSON
                         json.loads(content.decode('utf-8'))
 
@@ -2492,7 +2525,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 # Restore device info
                 if "data/device_info.json" in names:
                     try:
-                        content = zf.read("data/device_info.json")
+                        content = _read_zip_entry_capped(zf, "data/device_info.json")
                         # Validate it's valid JSON
                         json.loads(content.decode('utf-8'))
 
@@ -3029,9 +3062,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
                     # Parse playlist YAML
                     try:
-                        with zf.open(playlist_file) as pf:
-                            yaml_content = pf.read().decode('utf-8')
-                            playlist_data = yaml.safe_load(yaml_content)
+                        # Capped: see _ZIP_TEXT_ENTRY_MAX.
+                        yaml_content = _read_zip_entry_capped(
+                            zf, playlist_file).decode('utf-8')
+                        playlist_data = yaml.safe_load(yaml_content)
+                    except _ZipEntryTooLarge:
+                        return error_response(
+                            "VALIDATION_ERROR",
+                            "playlist.yaml is too large to be a playlist "
+                            f"(limit {_ZIP_TEXT_ENTRY_MAX // (1024 * 1024)} MB)")
                     except UnicodeDecodeError:
                         return error_response("VALIDATION_ERROR", "playlist.yaml must be valid UTF-8")
                     except yaml.YAMLError as e:
