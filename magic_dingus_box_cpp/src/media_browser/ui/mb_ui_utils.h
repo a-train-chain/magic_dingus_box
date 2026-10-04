@@ -37,9 +37,12 @@
 // extend the shared helper here and test the extension.
 // =========================================================================
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 #include "ui/theme.h"  // ::ui::Color
 
@@ -101,6 +104,87 @@ using TextMeasureFn = std::function<float(const std::string& text,
 // measurement.
 std::string truncate_to_width(const std::string& text, int font_size,
                               float max_w, const TextMeasureFn& measure);
+
+// Bounded memo for per-frame text layout (word-wrap, truncation) keyed by
+// (text, font_size, max_w, extra). The screens lay out the same synopsis /
+// title strings every frame; each wrap is dozens of candidate-string
+// allocations plus a width measure per word, and a truncation is ~11
+// measures plus substr+ellipsis allocations. Results are a pure function
+// of the key and the loaded font (whose advances never change at runtime),
+// so caching them is safe.
+//
+// Lookup does not allocate: entries are bucketed by a 64-bit hash and the
+// stored key is compared in full, so a hash collision just recomputes and
+// overwrites. Bounded by `max_entries`: on overflow the whole memo is
+// cleared (the per-frame working set repopulates within a frame) — size the
+// bound above one frame's distinct calls or it thrashes every frame.
+//
+// `extra` is a free caller-defined discriminator (e.g. a max-lines cap
+// applied inside `compute`). NOT thread-safe: the kiosk uses these from the
+// render thread only.
+template <class V>
+class TextLayoutMemo {
+public:
+    explicit TextLayoutMemo(std::size_t max_entries)
+        : max_entries_(max_entries == 0 ? 1 : max_entries) {}
+
+    template <class Compute>
+    const V& get_or_compute(const std::string& text, int font_size,
+                            float max_w, int extra, Compute&& compute) {
+        const std::uint64_t h = hash_key(text, font_size, max_w, extra);
+        auto it = entries_.find(h);
+        if (it != entries_.end() && it->second.font_size == font_size &&
+            it->second.max_w == max_w && it->second.extra == extra &&
+            it->second.text == text) {
+            ++hits_;
+            return it->second.value;
+        }
+        ++misses_;
+        if (it == entries_.end() && entries_.size() >= max_entries_) {
+            entries_.clear();
+        }
+        Entry& e = entries_[h];
+        e.text = text;
+        e.font_size = font_size;
+        e.max_w = max_w;
+        e.extra = extra;
+        e.value = compute();
+        return e.value;
+    }
+
+    std::size_t size() const { return entries_.size(); }
+    std::size_t hits() const { return hits_; }
+    std::size_t misses() const { return misses_; }
+
+private:
+    struct Entry {
+        std::string text;
+        int font_size = 0;
+        float max_w = 0.0f;
+        int extra = 0;
+        V value{};
+    };
+
+    static std::uint64_t hash_key(const std::string& text, int font_size,
+                                  float max_w, int extra) {
+        std::uint64_t h = std::hash<std::string>{}(text);
+        std::uint32_t wbits = 0;
+        static_assert(sizeof(wbits) == sizeof(max_w), "float is 32-bit");
+        std::memcpy(&wbits, &max_w, sizeof(wbits));
+        auto mix = [&h](std::uint64_t v) {
+            h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        };
+        mix(static_cast<std::uint32_t>(font_size));
+        mix(wbits);
+        mix(static_cast<std::uint32_t>(extra));
+        return h;
+    }
+
+    std::size_t max_entries_;
+    std::unordered_map<std::uint64_t, Entry> entries_;
+    std::size_t hits_ = 0;
+    std::size_t misses_ = 0;
+};
 
 // A stable, pseudo-random, mid-dark tint derived from any integer id.
 //

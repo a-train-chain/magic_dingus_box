@@ -557,3 +557,60 @@ TEST_CASE("format_bytes is defined but not meaningful at or below zero",
     CHECK(mbu::format_bytes(-1) == "0 B");
     CHECK(mbu::format_bytes(-1024LL * 1024) == "0 B");
 }
+
+// ---------------------------------------------------------------------------
+// TextLayoutMemo — the per-frame wrap/truncate memo
+// ---------------------------------------------------------------------------
+
+TEST_CASE("TextLayoutMemo computes once per distinct key",
+          "[mb_ui_utils][memo]") {
+    mbu::TextLayoutMemo<std::string> memo(16);
+    int calls = 0;
+    auto truncate = [&](const std::string& text, int px, float w) {
+        return memo.get_or_compute(text, px, w, 0, [&] {
+            ++calls;
+            return mbu::truncate_to_width(text, px, w, measure_10px_per_byte);
+        });
+    };
+    const std::string title = "The Lord of the Rings: The Fellowship";
+    // Same frame-after-frame call: one compute, identical result.
+    const std::string first = truncate(title, 14, 100.0f);
+    for (int frame = 0; frame < 60; ++frame) {
+        REQUIRE(truncate(title, 14, 100.0f) == first);
+    }
+    CHECK(calls == 1);
+    CHECK(first == mbu::truncate_to_width(title, 14, 100.0f,
+                                          measure_10px_per_byte));
+    CHECK(memo.hits() == 60);
+    CHECK(memo.misses() == 1);
+}
+
+TEST_CASE("TextLayoutMemo keys on text, font size, width and extra",
+          "[mb_ui_utils][memo]") {
+    mbu::TextLayoutMemo<int> memo(16);
+    int calls = 0;
+    auto get = [&](const std::string& t, int px, float w, int extra) {
+        return memo.get_or_compute(t, px, w, extra, [&] { return ++calls; });
+    };
+    const int a = get("abc", 14, 100.0f, 0);
+    CHECK(get("abc", 14, 100.0f, 0) == a);
+    CHECK(get("abd", 14, 100.0f, 0) != a);   // text
+    CHECK(get("abc", 16, 100.0f, 0) != a);   // font size
+    CHECK(get("abc", 14, 101.0f, 0) != a);   // width
+    CHECK(get("abc", 14, 100.0f, 3) != a);   // extra (e.g. max lines)
+    CHECK(calls == 5);
+    // All five are still resident.
+    CHECK(get("abc", 14, 100.0f, 0) == a);
+    CHECK(calls == 5);
+}
+
+TEST_CASE("TextLayoutMemo stays bounded", "[mb_ui_utils][memo]") {
+    mbu::TextLayoutMemo<std::string> memo(8);
+    for (int i = 0; i < 1000; ++i) {
+        const std::string t = "title " + std::to_string(i);
+        const std::string& v =
+            memo.get_or_compute(t, 14, 50.0f, 0, [&] { return t; });
+        REQUIRE(v == t);
+        REQUIRE(memo.size() <= 8);
+    }
+}
