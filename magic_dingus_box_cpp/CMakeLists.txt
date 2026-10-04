@@ -135,7 +135,16 @@ set(VIDEO_SOURCES
 )
 
 set(UI_SOURCES
+    # ui::Renderer is implemented across these TUs by responsibility
+    # (core / shaders / text / main menu / settings / Media Browser /
+    # CRT); shared private bits live in src/ui/renderer_internal.h.
     src/ui/renderer.cpp
+    src/ui/renderer_shaders.cpp
+    src/ui/renderer_text.cpp
+    src/ui/renderer_main_menu.cpp
+    src/ui/renderer_settings.cpp
+    src/ui/renderer_mb.cpp
+    src/ui/renderer_crt.cpp
     src/ui/renderer_batch.cpp
     src/ui/controller_wizard.cpp
     src/ui/controller_wizard_renderer.cpp
@@ -307,6 +316,12 @@ if(BUILD_KIOSK)
             src/media_browser/ui/mb_exit_modal.cpp
             src/media_browser/ui/stall_prompt_modal.cpp
             src/media_browser/ui/playback_overlay.cpp
+            # The kiosk side of the Media Browser: screens, dispatcher,
+            # render block and watch-state checkpoints, driven from
+            # main.cpp's frame loop. GL/EGL-dependent, so kiosk-only; its
+            # hand-off table (ui/mb_transition.h) is header-only and
+            # unit-tested in test_media_browser_unit.
+            src/media_browser/mb_host.cpp
         )
         # libcurl is required by radarr_client.cpp.
         pkg_check_modules(CURL REQUIRED libcurl)
@@ -540,6 +555,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_library_view.cpp
         tests/media_browser/test_queue_screen.cpp
         tests/media_browser/test_mb_entry_gate.cpp
+        tests/media_browser/test_mb_transition.cpp
         tests/media_browser/test_json_shapes.cpp
         tests/media_browser/test_service_gate.cpp
         tests/media_browser/test_movie_remove.cpp
