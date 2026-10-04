@@ -1563,6 +1563,7 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude 'services/.env' \
@@ -1753,6 +1754,7 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
@@ -2212,6 +2214,7 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
@@ -2353,6 +2356,7 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \

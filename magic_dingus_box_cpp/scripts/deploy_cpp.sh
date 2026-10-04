@@ -172,6 +172,7 @@ rsync -avz --checksum \
     --exclude 'data/pairing_session.json' \
     --exclude 'data/pairing_audit.log' \
     --exclude 'data/pending_revocations.txt' \
+    --exclude 'data/qbit_paused_by_kiosk' \
     --exclude 'data/flask_secret.key' \
     --exclude 'data/kiosk_status.json' \
     --exclude 'data/seek_request.json' \

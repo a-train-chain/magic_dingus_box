@@ -236,8 +236,12 @@ PY
     # uploads). deploy_cpp.sh has excluded both for a long time.
     parse_blocks
     local n
+    # qbit_paused_by_kiosk: the kiosk's crash-recovery record that IT paused
+    # the torrents (resumed at next start) — deleting it mid-recovery left
+    # downloads paused forever.
     for path in 'magic_dingus_box_cpp/data/pending_revocations.txt' \
-                'magic_dingus_box_cpp/data/upload_temp/'; do
+                'magic_dingus_box_cpp/data/upload_temp/' \
+                'magic_dingus_box_cpp/data/qbit_paused_by_kiosk'; do
         n=1
         for block in "$BLOCK1" "$BLOCK2" "$BLOCK3" "$BLOCK4"; do
             grep -qxF "$path" <<<"$block" || {
