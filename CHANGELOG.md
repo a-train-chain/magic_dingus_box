@@ -132,6 +132,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **"Start Season N" after a season finale now works on shows where
   earlier seasons were deleted** — it used to say the update didn't
   apply.
+- **Downloads can no longer fill the SD card while the movie drive is
+  unplugged.** The box paused downloads once when the drive went
+  missing, but finishing a game or a movie (or restarting the box)
+  started them again — straight onto the SD card, until it was full.
+  Downloads now stay stopped the whole time the drive is away, new ones
+  are added stopped, and when the drive comes back exactly the downloads
+  the box stopped start again — even across a restart. Downloads you
+  paused yourself stay paused.
+- **Movies repairs itself when one of its background services stops.**
+  If a download or search service was missing, never finished starting
+  after a slow boot, or stopped answering, it stayed that way until the
+  box was restarted. The box now checks every few minutes and brings it
+  back. Services set aside during a movie or game are left alone.
+- **Search sources come back after a bad morning for TV shows too.**
+  Sources that failed briefly were being cleared at start-up for movies
+  only; TV searches could stay locked out for up to a day. Both are now
+  cleared, and a hiccup during that clean-up can no longer leave Movies
+  switched off until the next restart.
+- **Downloads that found nothing at first are retried properly.** The
+  first automatic retry after switching on happened too early and did
+  nothing, so a box that is on for only a few hours a day never retried.
+- **Downloads stay quiet during a movie.** On boxes with enough memory to
+  keep downloading while a film plays, uploading is meant to drop to a
+  trickle so the film gets the drive — but a start-up step quietly raised
+  that limit again on every box. It now stays at the trickle.
+- **Re-running Movies setup no longer interrupts what's on screen.** It
+  used to restart the box's player every time, stopping a movie or game
+  in progress, even when nothing needed it.
+- **The box's player is protected when memory runs out.** If the box
+  ever runs completely out of memory, a background service is stopped
+  (it restarts by itself) instead of the picture or the game.
 
 ### Changed
 - **Movie availability appears faster.** Detail's availability check
@@ -167,6 +198,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restarts Docker partway through (which could end in "container name
   already in use"). The service log caps now live in
   `services/docker-compose.yml`, so they reach updated boxes too.
+- Media Browser service housekeeping: the weekly service check can no
+  longer hang forever on a stuck service (it times out and reports a
+  failure); the VPN container is pinned to the exact version the
+  production box runs instead of following whatever was newest; plugging
+  the movie drive back in no longer gets cut off halfway through
+  reconnecting; and the scripts that start and stop the Movies
+  containers now take turns instead of tripping over each other.
+  `verify_box.sh` additionally checks the player's out-of-memory
+  protection.
 - `verify_box.sh` now also fails a unit whose first boot didn't finish,
   whose first-boot service is still enabled, or whose `config.txt`
   Pi 4 / Pi 5 sections are wrong.
