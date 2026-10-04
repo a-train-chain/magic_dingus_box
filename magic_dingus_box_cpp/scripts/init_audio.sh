@@ -1,178 +1,46 @@
 #!/bin/bash
-# Wait for HDMI audio card to be available before starting PulseAudio
-# This prevents race conditions where PulseAudio starts before HDMI is initialized
-
-MAX_WAIT=10
-WAITED=0
-
-# Resolve the magic user's UID once. Pi OS's first-user creation flow puts
-# the operator at UID 1000 by default, but a Pi cloned from a distro that
-# created a `pi` user first (or any non-default install order) can land
-# `magic` at UID 1001+. Hardcoding 1000 in the runtime-dir paths used to
-# break audio silently in those cases — XDG_RUNTIME_DIR points nowhere,
-# PulseAudio fails to start, kiosk boots to black screen with no audio.
-MAGIC_UID="$(id -u magic)"
-RUNTIME_DIR="/run/user/${MAGIC_UID}"
-
-# Enable systemd linger for the magic user. Without linger, systemd-logind
-# tears down /run/user/$UID whenever there's no active login session for
-# the user — which on a headless kiosk is "always". The teardown happens
-# every ~20s after the last process exits, wiping pulseaudio's per-user
-# state directory and causing libpulse clients (GStreamer's pulsesink
-# inside the kiosk) to fail with "Failed to create secure directory
-# /run/user/1000/pulse" the next time they try to connect. Symptom from
-# the user's perspective: video plays once after boot, then silently
-# refuses to play any subsequent file.
+# Kiosk ExecStartPre: make sure PulseAudio is up and the default sink
+# matches settings.json BEFORE the kiosk starts.
 #
-# Linger is a one-time persistent setting (stored in
-# /var/lib/systemd/linger/magic) so the enable call below is idempotent
-# across reboots and re-deploys.
-if [ "$(loginctl show-user magic --property=Linger --value 2>/dev/null)" != "yes" ]; then
-    echo "Enabling systemd linger for magic user (persistent /run/user/1000)..."
-    sudo loginctl enable-linger magic
-fi
+# PulseAudio is NOT started here any more. It runs as its own unit,
+# magic-dingus-audio.service (see audio_service.sh for why: started from
+# here, it daemonized into the kiosk's cgroup and was SIGKILLed on every
+# kiosk stop, restart and crash). The kiosk unit is ordered After= that
+# unit, so by now PulseAudio is normally already answering and this is a
+# quick sink refresh.
+#
+# Fallback: a box whose audio unit file is NOT installed (an OTA from an
+# update.sh too old to run setup_memory_tuning.sh, or a hand-built box)
+# still gets sound — audio_service.sh legacy-start does the old
+# kill-and-start dance inside this unit. The next install path that runs
+# setup_memory_tuning.sh (OTA, deploy_cpp.sh, first_boot.sh,
+# sync_source_box.sh) installs the unit and this branch goes dormant.
+#
+# Must always exit 0: a failing ExecStartPre would keep the kiosk (and
+# the picture) from starting over a sound problem.
+#
+# Test seam: MAGIC_AUDIO_UNIT_FILE (default: the installed unit path).
 
-# Mask the systemd USER-SESSION PulseAudio units. This script owns
-# PulseAudio on the kiosk (writes default.pa with the correct sink, then
-# starts the daemon) — but linger (above) means user@$MAGIC_UID runs at
-# every boot, and the distro-default user units (pulseaudio.socket +
-# pulseaudio.service, --global enabled) socket-activate a SECOND, config-
-# less PA instance that races ours during boot. Observed live 2026-07-16:
-# the user-session instance won the race, wedged (pactl: "Connection
-# refused"), and every gst_element_set_state(PLAYING) in the kiosk failed
-# synchronously — no intro video, no video playback at all for the whole
-# boot. Masking (symlink to /dev/null in /etc/systemd/user) is persistent
-# and clone-safe; the check makes re-runs a silent no-op.
-if [ "$(systemctl --global is-enabled pulseaudio.socket 2>/dev/null)" != "masked" ]; then
-    echo "Masking user-session PulseAudio units (init_audio owns PA)..."
-    sudo systemctl --global mask pulseaudio.service pulseaudio.socket
-    # Stop any already-running user-session instance so it can't linger
-    # into this boot. Ignore errors — the user manager may not be up yet.
-    systemctl --user stop pulseaudio.socket pulseaudio.service 2>/dev/null || true
-fi
-
-# Mask PipeWire the same way. Stock Trixie images ship PipeWire as the
-# default audio server: pipewire-pulse holds the PulseAudio socket (so
-# our PA daemon can't bind it) and WirePlumber holds the ALSA devices
-# (so module-alsa-card can't open them). The kiosk stack owns audio via
-# real PulseAudio — first hit on the Pi 5 bench install, 2026-07-22.
-# Idempotent: no-op once masked, and harmless on Pis without PipeWire.
-if systemctl --global is-enabled pipewire-pulse.socket >/dev/null 2>&1 && \
-   [ "$(systemctl --global is-enabled pipewire-pulse.socket 2>/dev/null)" != "masked" ]; then
-    echo "Masking user-session PipeWire units (init_audio owns PA)..."
-    sudo systemctl --global mask pipewire.service pipewire.socket \
-        pipewire-pulse.service pipewire-pulse.socket wireplumber.service
-    systemctl --user stop pipewire.socket pipewire-pulse.socket \
-        pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
-fi
-
-# Remove the old "ignore HDMI1" udev rule. It was installed to silence
-#   module-alsa-card.c: Failed to find a working profile.
-# for whichever HDMI port has nothing plugged in — but it hardcoded HDMI1
-# as "the unused one". The TV may be on EITHER port; with it on HDMI1
-# (observed live on a Pi 5, 2026-10-03) the rule hid the only working
-# sink and the box had no sound at all. That warning is harmless log
-# noise for an empty port; a hidden real port is not. Boxes that
-# installed the rule heal here, before PulseAudio enumerates cards.
-UDEV_RULE=/etc/udev/rules.d/91-pulse-ignore-unused-hdmi.rules
-if [ -f "$UDEV_RULE" ]; then
-    echo "Removing udev rule that hid the HDMI1 audio port..."
-    sudo rm -f "$UDEV_RULE"
-    sudo udevadm control --reload-rules
-    sudo udevadm trigger --subsystem-match=sound --action=change
-    sudo udevadm settle --timeout=5 || true
-fi
-
-# Kill any existing PulseAudio and clean up stale socket
-echo "Cleaning up existing PulseAudio processes..."
-sudo killall pulseaudio 2>/dev/null || true
-sleep 1
-
-# Ensure XDG_RUNTIME_DIR exists (may not exist on cold boot before user login)
-if [ ! -d "${RUNTIME_DIR}" ]; then
-    echo "Creating ${RUNTIME_DIR}..."
-    sudo mkdir -p "${RUNTIME_DIR}"
-    sudo chown magic:magic "${RUNTIME_DIR}"
-    sudo chmod 700 "${RUNTIME_DIR}"
-fi
-
-# Remove stale PulseAudio socket to prevent "Address already in use"
-rm -f "${RUNTIME_DIR}/pulse/native" "${RUNTIME_DIR}/pulse/pid" 2>/dev/null
-
-echo "Waiting for HDMI audio card..."
-
-while [ $WAITED -lt $MAX_WAIT ]; do
-    # Check if vc4hdmi0 (HDMI audio) is available
-    if aplay -l 2>/dev/null | grep -q "vc4hdmi"; then
-        echo "HDMI audio card detected after ${WAITED}s"
-        break
-    fi
-    sleep 1
-    WAITED=$((WAITED + 1))
-done
-
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo "Warning: HDMI audio card not detected after ${MAX_WAIT}s, proceeding anyway"
-fi
-
-# Determine desired audio output from saved settings. The actual sink
-# NAME is resolved AFTER PulseAudio starts (below) — sink names embed
-# SoC platform bus addresses that differ between Pi 4 and Pi 5, and
-# hardcoding the Pi 4 names here used to mean silent no-audio on any
-# other board.
-SETTINGS_FILE="/opt/magic_dingus_box/config/settings.json"
-PULSE_CONFIG="$HOME/.config/pulse/default.pa"
-AUDIO_OUTPUT="auto"
-
-if [ -f "$SETTINGS_FILE" ]; then
-    AUDIO_OUTPUT=$(python3 -c "import json; d=json.load(open('$SETTINGS_FILE')); print(d.get('audio',{}).get('output','auto'))" 2>/dev/null || echo auto)
-    echo "Audio output setting: $AUDIO_OUTPUT"
-fi
-
-# Write PulseAudio config BEFORE starting PulseAudio. restore_device=false
-# keeps streams following the default sink we set post-start, instead of
-# PA remembering a per-stream device from a previous boot.
-mkdir -p "$(dirname "$PULSE_CONFIG")"
-cat > "$PULSE_CONFIG" <<PAEOF
-.include /etc/pulse/default.pa
-load-module module-stream-restore restore_device=false
-PAEOF
-
-# Disable PulseAudio's 20-second idle-exit. Without this, PA shuts down
-# whenever no audio sinks are connected (e.g., between the intro video
-# ending and the user starting movie playback in the Media Browser).
-# When the next audio client tries to connect, autospawn fails ("Failed
-# to create secure directory /run/user/1000/pulse"), causing GStreamer's
-# pipeline state-change to PLAYING to fail. -1 = run forever, ready for
-# the next client.
-PULSE_DAEMON_CONFIG="$HOME/.config/pulse/daemon.conf"
-cat > "$PULSE_DAEMON_CONFIG" <<PAEOF
-exit-idle-time = -1
-PAEOF
-echo "PulseAudio idle-exit disabled (daemon.conf)"
-
-# Start PulseAudio (--start daemonizes, so no exec needed)
-/usr/bin/pulseaudio --start --log-target=syslog
-
-# Wait for PulseAudio to be ready
-for i in $(seq 1 10); do
-    if pactl info >/dev/null 2>&1; then
-        break
-    fi
-    sleep 0.5
-done
-
-# Resolve and set the default sink now that PulseAudio has enumerated the
-# actual cards on this board (Pi 4 vs Pi 5 vs USB DAC). On a board with no
-# analog jack a saved "headphone" preference degrades to HDMI rather than
-# silence — resolve_audio_sink.sh handles the fallback.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_SINK="$(pactl list short sinks 2>/dev/null | "$SCRIPT_DIR/resolve_audio_sink.sh" "$AUDIO_OUTPUT" || true)"
-if [ -n "$DEFAULT_SINK" ]; then
-    pactl set-default-sink "$DEFAULT_SINK"
-    echo "PulseAudio default sink configured: $DEFAULT_SINK"
-else
-    echo "Warning: no usable audio sink found; leaving PulseAudio default unchanged"
+AUDIO_SERVICE="${SCRIPT_DIR}/audio_service.sh"
+AUDIO_UNIT="magic-dingus-audio.service"
+AUDIO_UNIT_FILE="${MAGIC_AUDIO_UNIT_FILE:-/etc/systemd/system/${AUDIO_UNIT}}"
+
+# `-f` is false for a masked unit (a symlink to /dev/null), so masking the
+# audio unit deliberately falls back to the legacy path.
+if [ -f "$AUDIO_UNIT_FILE" ]; then
+    if ! bash "$AUDIO_SERVICE" set-sink; then
+        # Not answering: the unit may have been installed after the kiosk's
+        # start job was queued (no After= ordering yet) or PulseAudio is
+        # between restarts. Ask systemd for it — never start a PulseAudio
+        # here, that would put it back in the kiosk's cgroup.
+        echo "[audio] asking systemd to start ${AUDIO_UNIT}"
+        sudo -n systemctl start --no-block "$AUDIO_UNIT" 2>/dev/null || true
+        bash "$AUDIO_SERVICE" set-sink \
+            || echo "[audio] Warning: PulseAudio still not answering; starting the kiosk without a confirmed sink"
+    fi
+    exit 0
 fi
 
-echo "PulseAudio ready, default sink: $(pactl info 2>/dev/null | grep 'Default Sink' | cut -d: -f2 | tr -d ' ')"
+bash "$AUDIO_SERVICE" legacy-start
+exit 0

@@ -16,8 +16,16 @@ Description=Magic Dingus Box C++ Kiosk Engine
 # STAYS in After= (below): the phone-remote virtual gamepad must exist
 # before the kiosk's input scan (see note above), and that service starts
 # fast without waiting on network.
-After=systemd-user-sessions.service sound.target magic-dingus-web.service
-Wants=network-online.target sound.target magic-dingus-web.service
+#
+# magic-dingus-audio.service is PulseAudio, which used to be started by
+# this unit's ExecStartPre and so lived (and was SIGKILLed) in this
+# unit's cgroup. Wants=, not Requires=: a sound-server failure must never
+# keep the picture from starting, and Requires= would also restart the
+# kiosk whenever the audio unit restarts. setup_audio_service.sh writes
+# the same Wants=/After= as a drop-in for boxes whose installed copy of
+# this file predates it (OTA never replaces unit files).
+After=systemd-user-sessions.service sound.target magic-dingus-web.service magic-dingus-audio.service
+Wants=network-online.target sound.target magic-dingus-web.service magic-dingus-audio.service
 # Start early, before X11 (we use DRM/KMS directly)
 Before=graphical.target lightdm.service
 # Don't require X11 - we bypass it entirely
@@ -58,10 +66,13 @@ Group=magic
 # Working directory where executable and assets are located
 # Adjust this path to match your installation location
 WorkingDirectory=/opt/magic_dingus_box/magic_dingus_box_cpp/build
-# Wait for HDMI audio and start PulseAudio
+# Confirm PulseAudio (magic-dingus-audio.service) answers and set the
+# default sink from settings.json. Starts PulseAudio itself ONLY on a box
+# where the audio unit is not installed (legacy fallback). There is no
+# ExecStopPost any more: the old `pulseaudio --kill` here killed the
+# sound server on every kiosk stop.
 ExecStartPre=/bin/bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/init_audio.sh
 ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp
-ExecStopPost=/usr/bin/pulseaudio --kill
 # Restart policy:
 #   - on-failure: covers segfaults, asserts, and watchdog timeouts. RetroArch
 #     integration is unaffected — the kiosk waitpid()'s on RetroArch and
@@ -85,6 +96,9 @@ StandardError=journal
 # Environment (if needed)
 Environment=HOME=/home/magic
 Environment=DISPLAY=
+# /run/user/1000 is only the default: setup_audio_service.sh's drop-in
+# overrides it with the magic user's real uid, so the kiosk reaches the
+# audio unit's PulseAudio socket on any box.
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 # API keys for Radarr / Prowlarr / qBittorrent are written to
 # services/.env by setup_services.sh (or copied from a clone source).
@@ -96,15 +110,16 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 EnvironmentFile=-/opt/magic_dingus_box/services/.env
 # --- Scheduling priority for smooth video playback ---
 # Pi 4B: 1.6 GB RAM + 4 cores, shared with Docker stack (Radarr,
-# Prowlarr, qBit, Byparr, Gluetun) and PulseAudio. Without explicit
+# Prowlarr, qBit, Byparr, Gluetun) and PulseAudio (its own unit, with
+# matching priority — see magic-dingus-audio.service). Without explicit
 # priority the kiosk's render thread can be preempted by background
 # work (Prowlarr index sync, Radarr metadata fetch, etc.) mid-frame,
 # producing visible stutter on 1080p H.264 playback even though the
 # v4l2h264dec hardware decoder is keeping up. Three-layer priority:
 #
 #   - Nice=-10 lifts the kiosk above default-niceness siblings in the
-#     CFS scheduler. -10 is conservative (PulseAudio at -5 still beats
-#     us for audio servicing); going lower (-15+) starves the I/O
+#     CFS scheduler. -10 is conservative (PulseAudio runs at -11 in its
+#     own unit, so audio servicing still beats us); going lower (-15+) starves the I/O
 #     waiters in the kernel mutexes.
 #   - CPUWeight=1000 (cgroup v2) gives the kiosk's cgroup 10× the CPU
 #     allocation of default-weight (100) cgroups when under contention.

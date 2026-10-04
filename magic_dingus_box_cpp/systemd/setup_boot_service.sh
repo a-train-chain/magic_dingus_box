@@ -117,6 +117,16 @@ cp "$CANONICAL_UNIT" "$SERVICE_FILE"
 echo "  ✓ Canonical service file installed at: $SERVICE_FILE"
 echo "    Source: $CANONICAL_UNIT"
 
+# PulseAudio runs in its own unit (magic-dingus-audio.service) that the
+# kiosk Wants=/After=. Without it the kiosk still has sound via
+# init_audio.sh's legacy path, but PulseAudio then lives (and dies) in
+# the kiosk's cgroup.
+if bash "$PROJECT_ROOT_ABS/scripts/setup_audio_service.sh"; then
+    echo "  ✓ magic-dingus-audio.service installed + enabled"
+else
+    echo "  ⚠ magic-dingus-audio.service install failed (kiosk falls back to starting PulseAudio itself)"
+fi
+
 # Step 5: Reload systemd
 echo ""
 echo "Step 5: Reloading systemd..."

@@ -115,6 +115,24 @@ if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
 else
     echo -e "  ${RED}FAILED${NC}  network hardening installer did not complete"; FAILED=1
 fi
+# PulseAudio as its own unit (magic-dingus-audio.service). setup_memory_tuning
+# below installs it via setup_audio_service.sh, so every file the unit and
+# the kiosk's ExecStartPre execute must be on the box FIRST.
+push magic_dingus_box_cpp/scripts/audio_service.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/audio_service.sh 755 \
+     "audio_service.sh       (PulseAudio prepare/run/set-sink for its own unit)"
+push magic_dingus_box_cpp/scripts/init_audio.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/init_audio.sh 755 \
+     "init_audio.sh          (kiosk ExecStartPre: sink only; legacy fallback)"
+push magic_dingus_box_cpp/scripts/resolve_audio_sink.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/resolve_audio_sink.sh 755 \
+     "resolve_audio_sink.sh  (default-sink resolver)"
+push magic_dingus_box_cpp/scripts/setup_audio_service.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_audio_service.sh 755 \
+     "setup_audio_service.sh (installs the audio unit + kiosk drop-in)"
+push magic_dingus_box_cpp/systemd/magic-dingus-audio.service \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/systemd/magic-dingus-audio.service 644 \
+     "magic-dingus-audio.service (repo copy)"
 push magic_dingus_box_cpp/scripts/setup_memory_tuning.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh 755 \
      "setup_memory_tuning.sh (kiosk MemoryLow + zram tune + cgroup cmdline)"
@@ -130,6 +148,15 @@ if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
     echo -e "  ${GREEN}OK${NC}      memory posture applied live (MemoryLow + zram + cmdline)"
 else
     echo -e "  ${RED}FAILED${NC}  memory tuning installer did not complete"; FAILED=1
+fi
+# The image must carry the audio unit ENABLED with the kiosk ordered after
+# it — otherwise every clone boots with PulseAudio back in the kiosk's
+# cgroup (init_audio.sh's legacy fallback).
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    "systemctl is-enabled --quiet magic-dingus-audio.service && test -f /etc/systemd/system/magic-dingus-box-cpp.service.d/audio-service.conf" 2>/dev/null; then
+    echo -e "  ${GREEN}OK${NC}      magic-dingus-audio.service enabled + kiosk drop-in installed"
+else
+    echo -e "  ${RED}FAILED${NC}  magic-dingus-audio.service not enabled or kiosk drop-in missing"; FAILED=1
 fi
 # OTA power-loss recovery: the update.sh that writes the in-progress
 # marker, the unit that acts on it at boot, and its installer. The image

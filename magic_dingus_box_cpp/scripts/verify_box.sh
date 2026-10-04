@@ -218,7 +218,25 @@ SINKS="$(pa list short sinks 2>/dev/null || true)"
 HDMI_SINKS="$(grep -ci hdmi <<<"$SINKS" || true)"
 DEF_SINK="$(pa get-default-sink 2>/dev/null || true)"
 if [[ -e /etc/udev/rules.d/91-pulse-ignore-unused-hdmi.rules ]]; then
-    fail "udev rule hides an HDMI port from PulseAudio (91-pulse-ignore-unused-hdmi.rules) — restart the kiosk; init_audio.sh removes it"
+    fail "udev rule hides an HDMI port from PulseAudio (91-pulse-ignore-unused-hdmi.rules) — restart magic-dingus-audio; its prepare step removes it"
+fi
+# PulseAudio must live in its OWN unit. Inside the kiosk's cgroup (the
+# pre-2026-10 layout, or init_audio.sh's legacy fallback) every kiosk
+# restart SIGKILLs it.
+AUDIO_UNIT=magic-dingus-audio.service
+PA_PID="$(pgrep -u magic -x pulseaudio 2>/dev/null | head -1 || true)"
+PA_CGROUP=""
+[[ -n "$PA_PID" ]] && PA_CGROUP="$(cat "/proc/${PA_PID}/cgroup" 2>/dev/null || true)"
+if [[ ! -f "/etc/systemd/system/${AUDIO_UNIT}" ]]; then
+    warn "${AUDIO_UNIT} not installed — PulseAudio runs inside the kiosk (legacy); run setup_memory_tuning.sh or OTA"
+elif ! systemctl is-active --quiet "$AUDIO_UNIT"; then
+    fail "${AUDIO_UNIT} is $(systemctl is-active "$AUDIO_UNIT" 2>/dev/null) — journalctl -u ${AUDIO_UNIT}"
+elif [[ "$PA_CGROUP" == *"magic-dingus-box-cpp.service"* ]]; then
+    fail "PulseAudio (pid ${PA_PID}) is in the kiosk's cgroup, not ${AUDIO_UNIT} — restart the kiosk"
+elif [[ -n "$PA_PID" && "$PA_CGROUP" != *"${AUDIO_UNIT}"* ]]; then
+    warn "PulseAudio (pid ${PA_PID}) is outside ${AUDIO_UNIT}: ${PA_CGROUP##*:}"
+else
+    pass "PulseAudio runs in ${AUDIO_UNIT}"
 fi
 if [[ -z "$SINKS" ]]; then
     fail "PulseAudio not answering — no audio for videos, menus or games"

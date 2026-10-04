@@ -226,9 +226,9 @@ rsync -avz --checksum \
 
 # Make update.sh executable on Pi
 ssh "${PI_HOST}" "chmod +x ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh" 2>/dev/null || true
-# resolve_audio_sink.sh is invoked directly by path from init_audio.sh
+# resolve_audio_sink.sh is invoked directly by path from audio_service.sh
 # (not via `bash ...`), so it must keep its executable bit — a lost mode
-# bit would silently disable sink resolution (init_audio's `|| true`
+# bit would silently disable sink resolution (the caller's `|| true`
 # swallows the failure) and boot every Pi with no default audio sink.
 ssh "${PI_HOST}" "chmod +x ${PI_DIR}/magic_dingus_box_cpp/scripts/resolve_audio_sink.sh" 2>/dev/null || true
 echo "  ✓ VERSION file and update script synced"
@@ -410,10 +410,22 @@ echo ""
 # half). Idempotent; on a box whose cmdline gains the cgroup flags here
 # the script prints REBOOT_REQUIRED and the posture arms on the next
 # reboot — deploys never power-cycle the box themselves.
-echo "Step 1.68: Converging playback memory posture (MemoryLow + zram + cgroup cmdline)..."
+#
+# This also installs + enables magic-dingus-audio.service (PulseAudio in
+# its own unit) and the kiosk drop-in that orders the kiosk after it —
+# setup_memory_tuning.sh calls setup_audio_service.sh, so the OTA path
+# and this one share one installer. Nothing is started here: the kiosk
+# restart below (or after --build) stops the old kiosk, taking its
+# kiosk-cgroup PulseAudio with it, and its start pulls the audio unit in.
+echo "Step 1.68: Converging playback memory posture (MemoryLow + zram + cgroup cmdline + audio unit)..."
 ssh "${PI_HOST}" "sudo ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh" \
     | sed 's/^/  /'
-echo "  ✓ memory posture converged"
+if ssh "${PI_HOST}" "systemctl is-enabled --quiet magic-dingus-audio.service"; then
+    echo "  ✓ memory posture converged; magic-dingus-audio.service enabled"
+else
+    echo "  ⚠ memory posture converged, but magic-dingus-audio.service is NOT enabled —"
+    echo "    the kiosk falls back to starting PulseAudio itself (init_audio.sh legacy path)"
+fi
 echo ""
 
 # Step 1.69: OTA power-loss recovery unit. update.sh also installs it at
@@ -445,8 +457,9 @@ rsync -avz --checksum \
 # Restart the kiosk the careful way: stop, WAIT for the process to actually
 # exit, then start and confirm it came up.
 #
-# `systemctl restart` is not safe here. The kiosk holds DRM master, an
-# exclusive grab on every input device, and a PulseAudio child; systemd's stop
+# `systemctl restart` is not safe here. The kiosk holds DRM master and an
+# exclusive grab on every input device (and, before magic-dingus-audio
+# existed, a PulseAudio child); systemd's stop
 # can return before all of that is released, so the replacement instance races
 # the corpse of the old one and dies. Worse, Restart=always then retries
 # immediately, trips systemd's start-rate limiter, and the unit latches into

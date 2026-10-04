@@ -18,6 +18,9 @@
 #   1c. Media Browser unit timing drop-ins (storage-attach TimeoutStartSec,
 #        smoke-test TimeoutStartSec, missing-search timer OnBootSec) — same
 #        OTA delivery path as 1b
+#   1d. magic-dingus-audio.service + its kiosk drop-in, via
+#        setup_audio_service.sh (PulseAudio out of the kiosk's cgroup) —
+#        same OTA delivery path as 1b
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -135,6 +138,21 @@ OnBootSec=
 OnBootSec=11min
 EOF
 log "service timing drop-ins installed (storage-attach, smoke-test, missing-search)"
+
+# --- 1d. PulseAudio as its own unit -----------------------------------------
+# Not memory posture either (though it does take PulseAudio out from under
+# the kiosk's MemoryLow/OOMScoreAdjust above): this script is the one
+# root-run hook every delivery path executes — including the OLD update.sh
+# on the OTA that first ships the audio unit — so setup_audio_service.sh
+# rides it. Placed before step 4, which can exit early. Best-effort: a
+# box without the unit still gets sound (init_audio.sh's legacy path).
+AUDIO_INSTALLER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup_audio_service.sh"
+if [[ -f "$AUDIO_INSTALLER" ]]; then
+    bash "$AUDIO_INSTALLER" 2>&1 | sed 's/^/  /' \
+        || log "WARNING: audio service install failed (init_audio.sh keeps starting PulseAudio itself)"
+else
+    log "setup_audio_service.sh not found; skipping audio service install"
+fi
 
 # --- 2. system.slice companion ----------------------------------------------
 install -d -m 0755 "${ETC}/systemd/system/system.slice.d"

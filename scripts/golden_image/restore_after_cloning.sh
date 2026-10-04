@@ -268,6 +268,13 @@ systemctl start magic-dingus-services.service 2>&1 | sed 's/^/    /' || \
 systemctl start magic-dingus-web.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-web.service failed to start"
 
+# PulseAudio (stopped by prepare). The kiosk's Wants= would pull it in
+# anyway; starting it first just makes a failure visible here.
+if systemctl is-enabled magic-dingus-audio.service &>/dev/null; then
+    systemctl start magic-dingus-audio.service 2>&1 | sed 's/^/    /' || \
+        log "[3/4] WARN: magic-dingus-audio.service failed to start"
+fi
+
 systemctl start magic-dingus-box-cpp.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-box-cpp.service failed to start"
 

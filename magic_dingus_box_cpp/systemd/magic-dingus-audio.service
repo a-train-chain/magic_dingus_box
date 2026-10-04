@@ -1,0 +1,63 @@
+[Unit]
+Description=Magic Dingus Box - PulseAudio sound server
+# PulseAudio as its own unit, for the magic user. It used to be started by
+# the kiosk's ExecStartPre (init_audio.sh) and daemonized INTO the kiosk's
+# cgroup, so every kiosk stop/restart/crash SIGKILLed the sound server —
+# which can corrupt PulseAudio's tdb state — and the kiosk's MemoryLow /
+# OOMScoreAdjust silently covered it. Here it outlives kiosk restarts.
+#
+# Installed + enabled by scripts/setup_audio_service.sh, which every
+# install path reaches through setup_memory_tuning.sh (deploy_cpp.sh,
+# update.sh's OTA hook, first_boot.sh, sync_source_box.sh). The same
+# installer writes the kiosk drop-in that orders the kiosk After= this.
+#
+# The script lives in the install tree. If a rollback restores a release
+# that predates this unit, the script is gone and the unit is skipped
+# cleanly (that release's init_audio.sh starts PulseAudio itself) instead
+# of crash-looping.
+ConditionPathExists=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/audio_service.sh
+# logind must have read the linger state before prepare starts user@<uid>;
+# the OTA recovery oneshot may swap the tree the Condition above checks.
+After=systemd-user-sessions.service sound.target magic-dingus-ota-recovery.service
+Before=magic-dingus-box-cpp.service
+# Never give up (same reasoning as the kiosk unit): a box with no sound
+# server until the next power cycle is worse than a retry every 2 s.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=magic
+Group=magic
+# '+' = full privileges for this step only: linger, masking the
+# user-session PulseAudio/PipeWire units, removing the old HDMI-hiding
+# udev rule, pinning /run/user/<uid>, then waiting for the HDMI card.
+ExecStartPre=+/bin/bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/audio_service.sh prepare
+# Writes ~/.config/pulse, then execs `pulseaudio --daemonize=no
+# --exit-idle-time=-1` so PulseAudio is this unit's main process. The
+# script resolves XDG_RUNTIME_DIR=/run/user/$(id -u) at runtime: the uid
+# must not be hardcoded, and %U in a system unit is the manager's uid (0),
+# not User='s.
+ExecStart=/bin/bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/audio_service.sh run
+# Waits until PulseAudio answers, then sets the default sink from
+# settings.json audio.output. The unit is not "active" until this
+# returns, so the kiosk (After= this unit) starts with sound ready. '-' =
+# a sink problem never fails the unit.
+ExecStartPost=-/bin/bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/audio_service.sh set-sink
+Restart=always
+RestartSec=2
+TimeoutStartSec=90
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+# Parity with what PulseAudio had inside the kiosk's cgroup (Nice=-10,
+# CPUWeight=1000, OOMScoreAdjust=-500): audio servicing must not lose to
+# the Docker stack under load. -11 is PulseAudio's own high-priority nice
+# level, which it cannot set itself without RLIMIT_NICE. No MemoryLow: the
+# system.slice companion (setup_memory_tuning.sh) sizes protection for
+# the kiosk alone, and PulseAudio's working set is small and hot.
+Nice=-11
+CPUWeight=1000
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

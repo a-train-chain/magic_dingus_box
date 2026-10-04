@@ -70,22 +70,27 @@ PI5_USB_DAC_SINKS='0	alsa_output.platform-107c701400.hdmi.hdmi-stereo	module-als
     [ "$status" -ne 0 ]
 }
 
-@test "init_audio.sh no longer hardcodes Pi 4 platform sink addresses" {
-    run grep -E 'platform-(fef00700|fe00b840)' "$CPP_DIR/scripts/init_audio.sh"
+# The PulseAudio setup moved from init_audio.sh into audio_service.sh
+# (magic-dingus-audio.service, 2026-10); init_audio.sh is now a thin
+# dispatcher that calls it. Check both.
+@test "audio scripts no longer hardcode Pi 4 platform sink addresses" {
+    run grep -E 'platform-(fef00700|fe00b840)' \
+        "$CPP_DIR/scripts/init_audio.sh" "$CPP_DIR/scripts/audio_service.sh"
     [ "$status" -ne 0 ]
 }
 
-@test "init_audio.sh masks PipeWire units (stock Trixie ships PipeWire)" {
-    grep -q "systemctl --global mask pipewire" "$CPP_DIR/scripts/init_audio.sh"
-    grep -q "wireplumber.service" "$CPP_DIR/scripts/init_audio.sh"
+@test "audio_service.sh masks PipeWire units (stock Trixie ships PipeWire)" {
+    grep -q "systemctl --global mask pipewire" "$CPP_DIR/scripts/audio_service.sh"
+    grep -q "wireplumber.service" "$CPP_DIR/scripts/audio_service.sh"
 }
 
-@test "init_audio.sh never hides an HDMI port from PulseAudio" {
+@test "audio scripts never hide an HDMI port from PulseAudio" {
     # The TV may be on either HDMI port. A PULSE_IGNORE rule for vc4hdmi1
     # left a Pi 5 with its TV on HDMI1 with no sound at all (2026-10-03).
-    run grep -E 'PULSE_IGNORE|ENV\{PULSE_IGNORE\}' "$CPP_DIR/scripts/init_audio.sh"
+    run grep -E 'PULSE_IGNORE|ENV\{PULSE_IGNORE\}' \
+        "$CPP_DIR/scripts/init_audio.sh" "$CPP_DIR/scripts/audio_service.sh"
     [ "$status" -ne 0 ]
-    grep -q 'rm -f "\$UDEV_RULE"' "$CPP_DIR/scripts/init_audio.sh"
+    grep -q 'rm -f "\$UDEV_RULE"' "$CPP_DIR/scripts/audio_service.sh"
 }
 
 @test "Pi 5 TV on HDMI1: hdmi request resolves the HDMI1 sink" {

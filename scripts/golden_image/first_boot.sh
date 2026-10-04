@@ -935,7 +935,9 @@ fi
 # Clones cut from a current donor image inherit all four artifacts (the
 # drop-ins and cmdline flags live on the image), making this a no-op.
 # It exists for clones cut from OLDER donor images: they get the
-# MemoryLow drop-ins, the zram tune, and the cmdline append here. A
+# MemoryLow drop-ins, the zram tune, the cmdline append, and (via
+# setup_audio_service.sh, which the script calls) PulseAudio's own unit,
+# magic-dingus-audio.service, plus the kiosk drop-in ordering after it. A
 # cmdline change on that path logs REBOOT_REQUIRED and simply arms on
 # the box's next natural power cycle — first_boot must not add a reboot
 # to the sequence (Step 2's online expand never reboots, and neither does
