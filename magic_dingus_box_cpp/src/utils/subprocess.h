@@ -57,10 +57,16 @@ struct Options {
 struct Result {
     // WEXITSTATUS when the child exited; 128+signal when a signal killed
     // it; 127 when the program could not be exec'd (not installed);
-    // -1 when it could not be started at all (empty argv, fork/pipe failure).
+    // -1 when it could not be started at all (empty argv, fork/pipe failure)
+    // or its exit status was lost (lost_child).
     int exit_code = -1;
     std::string out;
     bool timed_out = false;
+    // waitpid failed with ECHILD: the child was reaped by someone else
+    // (SIGCHLD ignored, or a stray waitpid(-1) elsewhere in the process).
+    // The command's outcome is UNKNOWN, so exit_code is -1 and ok() is
+    // false — it used to read as status 0, i.e. success.
+    bool lost_child = false;
 
     bool ok() const { return !timed_out && exit_code == 0; }
 };

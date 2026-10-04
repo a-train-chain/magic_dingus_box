@@ -49,29 +49,30 @@ int decode_status(int status) {
 }
 
 // waitpid(WNOHANG), EINTR-safe. true once the child has been reaped.
-bool try_reap(pid_t pid, int* status) {
+// `lost` is set when waitpid fails (ECHILD: someone else reaped it) —
+// nothing left to wait for, and the exit status is unknown.
+bool try_reap(pid_t pid, int* status, bool* lost) {
     for (;;) {
         const pid_t r = ::waitpid(pid, status, WNOHANG);
         if (r == pid) return true;
         if (r < 0 && errno == EINTR) continue;
-        // r == 0: still running. r < 0 (ECHILD): someone else reaped it —
-        // nothing left to wait for; report as reaped with an unknown status.
-        if (r < 0) { *status = 0; return true; }
+        // r == 0: still running.
+        if (r < 0) { *status = 0; *lost = true; return true; }
         return false;
     }
 }
 
-void reap_blocking(pid_t pid, int* status) {
+void reap_blocking(pid_t pid, int* status, bool* lost) {
     while (::waitpid(pid, status, 0) < 0) {
-        if (errno != EINTR) { *status = 0; return; }
+        if (errno != EINTR) { *status = 0; *lost = true; return; }
     }
 }
 
 // Poll for exit until `until`, sleeping in short steps. true if reaped.
-bool reap_until(pid_t pid, int* status, Clock::time_point until) {
+bool reap_until(pid_t pid, int* status, bool* lost, Clock::time_point until) {
     milliseconds step(1);
     for (;;) {
-        if (try_reap(pid, status)) return true;
+        if (try_reap(pid, status, lost)) return true;
         const auto now = Clock::now();
         if (now >= until) return false;
         const auto left = std::chrono::duration_cast<milliseconds>(until - now);
@@ -158,6 +159,7 @@ Result run(const std::vector<std::string>& argv, const Options& opts) {
 
     int status = 0;
     bool reaped = false;
+    bool lost = false;
 
     if (opts.capture_stdout) {
         const int rfd = out_pipe[0];
@@ -176,7 +178,7 @@ Result run(const std::vector<std::string>& argv, const Options& opts) {
                 break;   // poll itself failed: stop reading, still reap below
             }
             if (pr == 0) {
-                if (try_reap(pid, &status)) {
+                if (try_reap(pid, &status, &lost)) {
                     reaped = true;
                     // Take whatever is already buffered, without blocking.
                     const int fl = ::fcntl(rfd, F_GETFL);
@@ -210,7 +212,7 @@ Result run(const std::vector<std::string>& argv, const Options& opts) {
     }
 
     if (!reaped && !result.timed_out) {
-        reaped = reap_until(pid, &status, deadline);
+        reaped = reap_until(pid, &status, &lost, deadline);
         if (!reaped) result.timed_out = true;
     }
 
@@ -219,14 +221,15 @@ Result run(const std::vector<std::string>& argv, const Options& opts) {
         // root child, which SIGKILL to sudo would orphan — then KILL.
         ::kill(-pid, SIGTERM);
         ::kill(pid, SIGTERM);   // in case setpgid lost a race with exec
-        if (!reap_until(pid, &status, Clock::now() + opts.kill_grace)) {
+        if (!reap_until(pid, &status, &lost, Clock::now() + opts.kill_grace)) {
             ::kill(-pid, SIGKILL);
             ::kill(pid, SIGKILL);
-            reap_blocking(pid, &status);
+            reap_blocking(pid, &status, &lost);
         }
     }
 
-    result.exit_code = decode_status(status);
+    result.lost_child = lost;
+    result.exit_code = lost ? -1 : decode_status(status);
     return result;
 }
 

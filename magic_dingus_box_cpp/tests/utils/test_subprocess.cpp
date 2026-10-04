@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <csignal>
 #include <fcntl.h>
 #include <string>
 #include <unistd.h>
@@ -45,6 +46,35 @@ TEST_CASE("subprocess: missing program is 127, empty argv is -1", "[subprocess]"
     CHECK(sp::run({"/nonexistent/mdb-no-such-program"}, milliseconds(5000)).exit_code == 127);
     CHECK(sp::run({"mdb-no-such-program-on-path"}, milliseconds(5000)).exit_code == 127);
     CHECK(sp::run({}, milliseconds(5000)).exit_code == -1);
+}
+
+TEST_CASE("subprocess: a child reaped by someone else is an error, never success",
+          "[subprocess]") {
+    // With SIGCHLD ignored the kernel reaps children itself, so waitpid
+    // fails with ECHILD — the same thing a stray waitpid(-1) elsewhere in
+    // the process would cause. That used to report exit_code 0 / ok():
+    // a command whose outcome is unknown claimed it succeeded.
+    struct sigaction ign {}, old {};
+    ign.sa_handler = SIG_IGN;
+    sigemptyset(&ign.sa_mask);
+    REQUIRE(::sigaction(SIGCHLD, &ign, &old) == 0);
+    const auto plain = sp::run({"false"}, milliseconds(5000));
+    const auto captured = sp::run({"sh", "-c", "echo hi; exit 3"},
+                                  milliseconds(5000), /*capture_stdout=*/true);
+    ::sigaction(SIGCHLD, &old, nullptr);
+
+    CHECK(plain.exit_code == -1);
+    CHECK(plain.lost_child);
+    CHECK_FALSE(plain.ok());
+    CHECK_FALSE(plain.timed_out);
+    CHECK(captured.exit_code == -1);
+    CHECK(captured.lost_child);
+    CHECK_FALSE(captured.ok());
+
+    // And a normal run afterwards reports normally.
+    const auto normal = sp::run({"true"}, milliseconds(5000));
+    CHECK(normal.ok());
+    CHECK_FALSE(normal.lost_child);
 }
 
 TEST_CASE("subprocess: stdout capture is opt-in", "[subprocess]") {
