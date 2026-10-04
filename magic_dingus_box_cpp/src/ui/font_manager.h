@@ -110,7 +110,9 @@ private:
     std::unordered_map<std::string, int> width_cache_;
     
     // ── Glyph atlas ──────────────────────────────────────────────────
-    // Shelf-packed 1024x1024 RGBA pages; new pages are appended when the
+    // Shelf-packed 1024x1024 GL_R8 pages (1 MB each; a swizzle presents
+    // them to the shader as white RGB + coverage alpha — was RGBA8,
+    // 4 MB/page); new pages are appended when the
     // current one fills. Each glyph gets a 1px transparent border so
     // LINEAR sampling at sub-pixel positions can't bleed a neighbor in.
     // Pages are the ONLY glyph GL objects now — cleanup/reset_textures
