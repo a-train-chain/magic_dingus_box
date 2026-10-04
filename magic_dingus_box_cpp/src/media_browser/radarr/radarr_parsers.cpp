@@ -1,4 +1,5 @@
 #include "media_browser/radarr/radarr_parsers.h"
+#include "media_browser/tmdb_image.h"
 
 #include <json/json.h>
 #include <spdlog/spdlog.h>
@@ -119,16 +120,13 @@ void fill_library_fields(const Json::Value& r, Movie& m) {
 // directly — see tmdb_client.cpp kImageBase), so a movie's poster is
 // fetched once and reused everywhere. Non-TMDB / unrecognized URLs pass
 // through unchanged.
+//
+// Only http(s)://image.tmdb.org URLs are rewritten (tmdb_image.h); a
+// "/t/p/" substring on any other host is left alone. Grid cards further
+// downsize to w185 at draw time (tmdb_poster_url_for_card) — the data
+// layer keeps w500 so hero posters stay sharp.
 std::string RadarrParsers::normalize_tmdb_poster_url(const std::string& url) {
-    // Match ".../t/p/<size>/..." and replace <size> with w500. <size> is
-    // "original" or a "w###"/"h###" token; we only touch that one segment.
-    static const std::string kMarker = "/t/p/";
-    auto marker_pos = url.find(kMarker);
-    if (marker_pos == std::string::npos) return url;  // not a TMDB image URL
-    const std::size_t size_start = marker_pos + kMarker.size();
-    const auto size_end = url.find('/', size_start);
-    if (size_end == std::string::npos) return url;    // malformed — leave it
-    return url.substr(0, size_start) + "w500" + url.substr(size_end);
+    return tmdb_image_url_with_size(url, kTmdbHeroPosterSize);
 }
 
 std::vector<MovieSearchHit> RadarrParsers::parse_movie_lookup(const std::string& json) {

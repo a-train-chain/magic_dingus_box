@@ -499,6 +499,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_qbit_alt_speed.cpp
         tests/media_browser/test_vpn_health_monitor.cpp
         tests/media_browser/test_mb_ui_utils.cpp
+        tests/media_browser/test_tmdb_image.cpp
         tests/media_browser/test_library_view.cpp
         tests/media_browser/test_queue_screen.cpp
         tests/media_browser/test_mb_entry_gate.cpp

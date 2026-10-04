@@ -13,6 +13,7 @@
 // Everything in this header is pure logic (no /dev, no forking) except
 // detect_platform(), which only reads a file — all unit-testable off-Pi.
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -109,6 +110,23 @@ struct PlatformProfile {
     //   Pi 4: the two N64 cores + flycast.
     //   Pi 5 / Unknown: empty.
     std::vector<std::string> unsupported_emulator_cores;
+
+    // Media Browser poster-texture budget (ArtworkCache LRU threshold),
+    // in bytes of GPU texture INCLUDING mipmaps. On both boards GPU
+    // memory is unswappable system RAM shared with the video decoder and
+    // the Docker stack, so this is a straight RAM reservation.
+    // Grid cards fetch TMDB w185 (~274 KB per texture) and only hero
+    // posters stay w500 (~2 MB) — see media_browser/tmdb_image.h.
+    //   Pi 4: 64 MB  — ~230 grid posters (25+ rows of the 9-column grid;
+    //                 a screen shows 18-27) plus a handful of heroes, on
+    //                 the 1.5 GB envelope board.
+    //   Pi 5: 128 MB — ~460 grid posters: a whole typical library stays
+    //                 resident on the 2 GB board.
+    //   Unknown: 128 MB — dev machines and unrecognized (newer) boards;
+    //                 still half the old fixed 256 MB.
+    // Movie playback still trims to 32 MB and a game launch frees it all
+    // (main.cpp), independent of this ceiling.
+    std::size_t artwork_cache_budget_bytes = 128u * 1024u * 1024u;
 };
 
 // Parse the contents of /proc/device-tree/model (may carry a trailing

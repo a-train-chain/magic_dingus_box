@@ -1,5 +1,6 @@
 #include "media_browser/ui/mb_chrome.h"
 
+#include "media_browser/tmdb_image.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -476,7 +477,10 @@ void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
     // for the same URL is cheap, and the first call kicks off a
     // background fetch that completes asynchronously.
     if (!poster_url.empty()) {
-        r.mb_draw_poster_or_tint(poster_url,
+        // Grid-sized cards fetch the w185 variant (tmdb_image.h): ~274 KB
+        // of texture instead of ~2 MB for the w500 the data layer emits.
+        // Wider (hero) cards keep the URL as given.
+        r.mb_draw_poster_or_tint(media_browser::tmdb_poster_url_for_card(poster_url, w),
                                  static_cast<float>(x), static_cast<float>(y),
                                  static_cast<float>(w), static_cast<float>(h),
                                  tint, 1.0f);

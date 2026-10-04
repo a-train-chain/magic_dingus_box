@@ -28,7 +28,7 @@ std::string pick_image(const Json::Value& images, const std::string& coverType) 
         if (!img.isObject()) continue;  // operator[] on a non-object throws
         if (img["coverType"].asString() == coverType) {
             // Sonarr mixes TMDB and TVDB/fanart.tv artwork. The TMDB ones get
-            // downsized to w500 (shared artwork-cache key + the 256MB budget);
+            // downsized to w500 (shared artwork-cache key + the poster budget);
             // the rest pass through untouched.
             return RadarrParsers::normalize_tmdb_poster_url(
                 img["remoteUrl"].asString());

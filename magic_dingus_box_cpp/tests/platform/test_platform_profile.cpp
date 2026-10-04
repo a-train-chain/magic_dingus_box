@@ -498,3 +498,34 @@ TEST_CASE("read_mem_available_kib reads a meminfo-format file; missing file yiel
     std::remove(path.string().c_str());
     REQUIRE(read_mem_available_kib("/nonexistent/meminfo") == -1);
 }
+
+// ---------------------------------------------------------------
+// Media Browser poster-texture budget
+// ---------------------------------------------------------------
+
+TEST_CASE("artwork cache budget is 64 MB on Pi 4 (1.5 GB envelope)") {
+    REQUIRE(profile_for(PiModel::Pi4).artwork_cache_budget_bytes ==
+            64u * 1024u * 1024u);
+}
+
+TEST_CASE("artwork cache budget is 128 MB on Pi 5") {
+    REQUIRE(profile_for(PiModel::Pi5).artwork_cache_budget_bytes ==
+            128u * 1024u * 1024u);
+}
+
+TEST_CASE("artwork cache budget is 128 MB on unknown boards") {
+    REQUIRE(profile_for(PiModel::Unknown).artwork_cache_budget_bytes ==
+            128u * 1024u * 1024u);
+}
+
+TEST_CASE("artwork cache budget never exceeds the old fixed 256 MB and "
+          "stays above the 32 MB playback trim") {
+    for (PiModel m : {PiModel::Pi4, PiModel::Pi5, PiModel::Unknown}) {
+        const auto b = profile_for(m).artwork_cache_budget_bytes;
+        CHECK(b <= 256u * 1024u * 1024u);
+        CHECK(b > 32u * 1024u * 1024u);
+    }
+    // The envelope board never gets more than the roomy one.
+    CHECK(profile_for(PiModel::Pi4).artwork_cache_budget_bytes <=
+          profile_for(PiModel::Pi5).artwork_cache_budget_bytes);
+}
