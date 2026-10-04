@@ -11,6 +11,12 @@ bool is_static_main_menu(const MainMenuActivity& a) {
              a.crt_time_effects);
 }
 
+bool is_crt_field_rate_main_menu(const MainMenuActivity& a) {
+    MainMenuActivity without_crt = a;
+    without_crt.crt_time_effects = false;
+    return a.crt_time_effects && is_static_main_menu(without_crt);
+}
+
 RedrawGate::RedrawGate(bool enabled, std::chrono::milliseconds max_idle)
     : enabled_(enabled), max_idle_(max_idle) {}
 
@@ -24,6 +30,7 @@ bool RedrawGate::should_draw(const RedrawInputs& in, Clock::time_point now) {
         draw = active ||
                active_last_ ||                      // settle frame
                in.content_signature != last_signature_ ||
+               (in.crt_field_rate && !drew_last_) ||
                now - last_draw_ >= max_idle_;
     }
     active_last_ = active;
@@ -36,6 +43,8 @@ bool RedrawGate::should_draw(const RedrawInputs& in, Clock::time_point now) {
     } else {
         ++window_.skipped;
     }
+    if (in.crt_field_rate) ++window_.crt_field_rate;
+    drew_last_ = draw;
     return draw;
 }
 

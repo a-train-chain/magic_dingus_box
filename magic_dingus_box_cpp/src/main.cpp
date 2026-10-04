@@ -65,6 +65,7 @@
 #include "app/auto_advance.h"
 #include "app/redraw_gate.h"
 #include "debug/screenshot_capture.h"
+#include "ui/crt_time.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
@@ -1634,6 +1635,13 @@ int main(int /* argc */, char* /* argv */[]) {
     // frame is saved to <data>/screenshots/<UTC>.bmp (newest 10 kept). See
     // debug/screenshot_capture.h.
     debug::ScreenshotCapture screenshot_capture(config::get_data_path());
+
+    // CRT field rate (redraw gate, static CRT menu at 30 fps): the field
+    // the last drawn frame showed, and when that frame's present returned
+    // (field_rate_skip_sleep paces the skipped iteration off it).
+    int64_t crt_last_drawn_field = 0;
+    bool crt_field_rate_logged = false;
+    auto last_present_done = std::chrono::steady_clock::now();
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -3636,6 +3644,7 @@ int main(int /* argc */, char* /* argv */[]) {
         // frame is drawn on any input, any change in what it shows, and at
         // least every RedrawGate::kDefaultMaxIdle. See app/redraw_gate.h.
         bool draw_this_frame = true;
+        bool crt_field_rate_this_iteration = false;
         {
             app::MainMenuActivity act;
             act.intro = !state.intro_complete || state.showing_intro_video ||
@@ -3693,28 +3702,67 @@ int main(int /* argc */, char* /* argv */[]) {
             gate_in.input_event = input_this_iteration;
             gate_in.video_frame = act.video;
             gate_in.animation_active = act.ui_fade || act.transient_overlay;
-            gate_in.screen_requests_continuous = !app::is_static_main_menu(act);
+            // CRT flicker/interlacing on the otherwise static menu: the
+            // shaders change the picture once per interlace field (30 Hz),
+            // so draw every other vblank instead of every one. Only on a
+            // >= 48 Hz mode (a 24/30 Hz mode already draws at <= 30), and
+            // only with the gate on (MDB_REDRAW_GATE=0 = every vblank).
+            gate_in.crt_field_rate = redraw_gate.enabled() &&
+                                     mode_info.vrefresh >= 48 &&
+                                     app::is_crt_field_rate_main_menu(act);
+            gate_in.screen_requests_continuous =
+                !app::is_static_main_menu(act) && !gate_in.crt_field_rate;
             // A pending screenshot must be drawn, or it would capture
             // whatever stale buffer the skip streak left behind.
             gate_in.forced = display_reset_this_iteration ||
                              screenshot_capture.poll(gate_now);
             gate_in.content_signature = sig.value();
             draw_this_frame = redraw_gate.should_draw(gate_in, gate_now);
+            crt_field_rate_this_iteration = gate_in.crt_field_rate;
+
+            // Which interlace field the CRT shaders draw. At field rate the
+            // frame is pinned to the field after the last drawn one
+            // (opposite parity, within one field of the clock) — frames are
+            // vblank-locked and fields are not, so the raw clock can show
+            // the same field twice. Otherwise: wall clock, as before.
+            if (draw_this_frame) {
+                const int64_t wall_field = ui::crt_field_index(gate_now);
+                if (gate_in.crt_field_rate) {
+                    crt_last_drawn_field =
+                        ui::crt_render_field(wall_field, crt_last_drawn_field);
+                    ui_renderer.set_crt_field_override(crt_last_drawn_field);
+                } else {
+                    crt_last_drawn_field = wall_field;
+                    ui_renderer.set_crt_field_override(-1);
+                }
+            }
+            if (gate_in.crt_field_rate && !crt_field_rate_logged) {
+                crt_field_rate_logged = true;
+                LOG_INFO("Redraw gate: CRT field rate active — static CRT menu "
+                         "drawn every other vblank ({} Hz mode)",
+                         static_cast<int>(mode_info.vrefresh));
+            }
 
             // Per-minute counts at DEBUG (file log only). The first window
             // goes to INFO as well, so `journalctl -u magic-dingus-box-cpp`
             // alone shows whether the gate is actually skipping on a box.
             if (auto report = redraw_gate.take_report(gate_now)) {
                 static bool first_report = true;
+                // crt30 = iterations on the CRT-only static menu, drawn
+                // at field rate (~half of them should be skipped).
                 if (first_report) {
                     first_report = false;
-                    LOG_INFO("Redraw gate: drew {} / skipped {} iterations in the last {}s",
+                    LOG_INFO("Redraw gate: drew {} / skipped {} iterations in the last {}s "
+                             "(crt30 {})",
                              report->drawn, report->skipped,
-                             app::RedrawGate::kReportInterval.count());
+                             app::RedrawGate::kReportInterval.count(),
+                             report->crt_field_rate);
                 } else {
-                    LOG_DEBUG("Redraw gate: drew {} / skipped {} iterations in the last {}s",
+                    LOG_DEBUG("Redraw gate: drew {} / skipped {} iterations in the last {}s "
+                              "(crt30 {})",
                               report->drawn, report->skipped,
-                              app::RedrawGate::kReportInterval.count());
+                              app::RedrawGate::kReportInterval.count(),
+                              report->crt_field_rate);
                 }
             }
         }
@@ -4710,6 +4758,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // Present the GBM buffer to the display using page flip
             // Use shared lambda
             present_frame();
+            last_present_done = std::chrono::steady_clock::now();
         }  // if (draw_this_frame) — drawing, part 2
         
         // BARE BONES: Removed periodic audio checks - let MPV handle audio
@@ -4748,9 +4797,21 @@ int main(int /* argc */, char* /* argv */[]) {
         // without spinning a core.
         const auto pacing = utils::frame_pacing_for(
             mb_movie_active ? 30 : 60, static_cast<int>(mode_info.vrefresh));
-        const auto pace_sleep = utils::frame_cap_sleep(
-            pacing, std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - now));
+        // CRT field rate: a skipped iteration sleeps until just past the
+        // vblank it skips, so the drawing iteration after it has a full
+        // refresh to render and flips exactly two vblanks after the last
+        // flip (utils::field_rate_skip_sleep).
+        const auto pace_now = std::chrono::steady_clock::now();
+        const auto iteration_elapsed =
+            std::chrono::duration_cast<std::chrono::microseconds>(pace_now - now);
+        const auto pace_sleep =
+            (crt_field_rate_this_iteration && !draw_this_frame)
+                ? utils::field_rate_skip_sleep(
+                      pacing, static_cast<int>(mode_info.vrefresh),
+                      std::chrono::duration_cast<std::chrono::microseconds>(
+                          pace_now - last_present_done),
+                      iteration_elapsed)
+                : utils::frame_cap_sleep(pacing, iteration_elapsed);
         if (pace_sleep.count() > 0) std::this_thread::sleep_for(pace_sleep);
     }
     

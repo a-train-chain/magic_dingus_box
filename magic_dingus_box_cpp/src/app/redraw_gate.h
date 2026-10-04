@@ -23,6 +23,11 @@
 //   - max_idle has passed since the last draw. This is the safety net: a
 //     dirty source nobody wired up shows as slight latency, never as a
 //     frozen screen.
+// The bare main menu with CRT flicker/interlacing on is a half-way case
+// (is_crt_field_rate_main_menu): those shaders only change the picture once
+// per interlace field, so it is drawn every other vblank (30 fps at 60 Hz)
+// rather than every vblank — see RedrawInputs::crt_field_rate,
+// utils::field_rate_skip_sleep and ui/crt_time.h.
 // Every drawn frame is a full clear + redraw (nothing reads back the
 // previous back buffer), so a frame drawn after a skip streak is correct
 // whatever EGL buffer it lands in.
@@ -55,6 +60,13 @@ struct MainMenuActivity {
 // construction, static between inputs except what ContentSignature covers.
 bool is_static_main_menu(const MainMenuActivity& a);
 
+// The bare main menu whose ONLY animation is the CRT time effects
+// (flicker / interlacing). Those shaders change the picture once per
+// interlace field — 30 times a second — so the gate draws it at field rate
+// (RedrawInputs::crt_field_rate) instead of every vblank. Everything that
+// makes the menu non-static besides CRT still means continuous drawing.
+bool is_crt_field_rate_main_menu(const MainMenuActivity& a);
+
 struct RedrawInputs {
     bool input_event = false;
     bool video_frame = false;
@@ -64,6 +76,14 @@ struct RedrawInputs {
     // Hash of everything the static screen draws that can change without
     // an input or activity flag (e.g. the selection blink phase).
     uint64_t content_signature = 0;
+    // CRT time effects on an otherwise static screen: draw every OTHER
+    // iteration (the one after a skipped one) — with the loop's
+    // field-rate pacing (utils::field_rate_skip_sleep) that is every other
+    // vblank, 30 fps at 60 Hz. Any other reason to draw (input, signature,
+    // forced, activity) still draws on the iteration it happens. The
+    // renderer pairs this with ui::crt_render_field so each drawn frame
+    // shows the opposite interlace field to the one before.
+    bool crt_field_rate = false;
 };
 
 class RedrawGate {
@@ -84,6 +104,8 @@ public:
     struct Report {
         uint64_t drawn = 0;
         uint64_t skipped = 0;
+        // Iterations spent in CRT field-rate mode (subset of drawn+skipped).
+        uint64_t crt_field_rate = 0;
     };
     // Counts for the window since the previous report, once per
     // kReportInterval; nullopt otherwise. The first call starts the window.
@@ -96,6 +118,7 @@ private:
     bool active_last_ = false;
     Clock::time_point last_draw_{};
     uint64_t last_signature_ = 0;
+    bool drew_last_ = false;
 
     bool report_started_ = false;
     Clock::time_point report_start_{};

@@ -243,6 +243,13 @@ public:
                    now - blink_epoch_).count() / 500;
     }
 
+    // Pin the CRT shaders' time to one interlace field for the next frames
+    // (ui::crt_field_time), or -1 to follow the wall clock
+    // (ui::crt_shader_time). The main loop pins it while the redraw gate
+    // draws the static CRT menu at field rate (30 fps), so every drawn
+    // frame shows the opposite field (ui::crt_render_field).
+    void set_crt_field_override(int64_t field) { crt_field_override_ = field; }
+
     // Marquee wood-grain frame — the "TV cabinet" outer 30px border.
     // Used ONLY when the kiosk is on Marquee (Media Browser) screens. Other
     // surfaces (main playlist, settings, RetroArch handoff) keep their
@@ -295,6 +302,9 @@ private:
     // phase the renderer draws.
     std::chrono::steady_clock::time_point blink_epoch_ =
         std::chrono::steady_clock::now();
+    // See set_crt_field_override(); -1 = wall clock.
+    int64_t crt_field_override_ = -1;
+    float crt_time_uniform(std::chrono::steady_clock::time_point now) const;
 
     uint32_t width_;
     uint32_t height_;

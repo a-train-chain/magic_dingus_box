@@ -5,6 +5,7 @@
 #include "renderer.h"
 
 #include "theme.h"
+#include "crt_time.h"
 #include "font_manager.h"
 #include "settings_menu.h"
 #include "controller_wizard.h"
@@ -874,6 +875,11 @@ void Renderer::render_bezel() {
     glBindVertexArray(0);
 
     glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+float Renderer::crt_time_uniform(std::chrono::steady_clock::time_point now) const {
+    return crt_field_override_ >= 0 ? ui::crt_field_time(crt_field_override_)
+                                    : ui::crt_shader_time(now);
 }
 
 void Renderer::render_post_game_fade(float alpha) {
@@ -3975,7 +3981,10 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
                 static_cast<float>(original_height_));
 
     auto now = std::chrono::steady_clock::now();
-    float time = std::chrono::duration<float>(now.time_since_epoch()).count();
+    // Wrapped, field-parity-preserving clock shared with the redraw gate
+    // (ui/crt_time.h): raw uptime seconds lose sub-field precision in a
+    // float after a few days up.
+    float time = crt_time_uniform(now);
     glUniform1f(cached_uniform(crt_composite_shader_program_, "time"), time);
 
     float effective_scanline_intensity =
@@ -4078,7 +4087,10 @@ void Renderer::render_crt_effects(const app::AppState& state, bool scanlines_ena
     glUniform2f(cached_uniform(crt_shader_program_, "screenSize"), static_cast<float>(width_), static_cast<float>(height_));
     
     auto now = std::chrono::steady_clock::now();
-    float time = std::chrono::duration<float>(now.time_since_epoch()).count();
+    // Wrapped, field-parity-preserving clock shared with the redraw gate
+    // (ui/crt_time.h): raw uptime seconds lose sub-field precision in a
+    // float after a few days up.
+    float time = crt_time_uniform(now);
     glUniform1f(cached_uniform(crt_shader_program_, "time"), time);
     
     // Scanlines are only enabled if the UI is visible (scanlines_enabled flag)
