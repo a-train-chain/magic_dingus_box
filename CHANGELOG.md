@@ -325,6 +325,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep the TV on, don't power the box off while it says "Installing", and
   quit any game first. Boxes pick up the web server package and the new
   sound service on their own; nothing to do by hand.
+- **A box whose phone remote was never set up** re-runs its
+  phone-remote package setup during this update (a step the previous
+  updater already had). The update takes a few minutes longer, and the box's
+  short web address (the one without `:5000`) and its USB-cable address
+  may stop answering for a moment. Nothing to do; it comes back by itself.
 - **Cloning can't damage the source box.** If the source box rebooted
   partway through a clone, its first-boot cleanup ran on the source
   itself and wiped its saves, pairings and settings. It now recognises
