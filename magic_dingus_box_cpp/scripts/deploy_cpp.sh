@@ -290,6 +290,18 @@ rsync -avz --checksum \
     "${PI_HOST}:${PI_DIR}/services/"
 echo "  ✓ Compose file + .env template synced"
 
+# Step 1.59: Refresh the service helpers installed OUTSIDE the tree
+# (/usr/local/bin/*, /etc/dnsmasq.d/usb0.conf). The systemd units run those
+# copies, not the ones Step 1 just synced, so before this step a deploy
+# left every service-script fix inert on the box until the next OTA or
+# setup_services.sh run (observed 2026-10-03: the cascade watcher kept
+# running a weeks-old copy). Calls update.sh's own function so the helper
+# list lives in exactly one place.
+echo "Step 1.59: Refreshing out-of-tree service helpers..."
+ssh "${PI_HOST}" "bash -c 'source ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh && refresh_out_of_tree_files'" 2>&1 \
+    | sed 's/^/  /'
+echo "  ✓ service helpers current"
+
 # Step 1.6: Install Web UI Service
 echo "Step 1.6: Installing Web UI Service..."
 rsync -avz --checksum \

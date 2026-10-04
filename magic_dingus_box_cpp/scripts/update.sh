@@ -724,7 +724,10 @@ refresh_out_of_tree_files() {
     fi
 
     local script_dir="${INSTALL_DIR}/magic_dingus_box_cpp/scripts"
-    local src dest
+    local src dest watcher_changed=false
+    # At boot (recovery oneshot) never wait on another unit's job.
+    local block_flag=""
+    [ "$BOOT_RECOVERY" = "true" ] && block_flag="--no-block"
 
     # Same name in both places.
     for helper in playback_services_pause.sh \
@@ -734,11 +737,26 @@ refresh_out_of_tree_files() {
                   auto_blocklist_stuck_warnings.py; do
         src="${script_dir}/${helper}"
         dest="/usr/local/bin/${helper}"
-        if [ -f "$dest" ] && [ -f "$src" ]; then
-            sudo -n install -m 0755 "$src" "$dest" \
-                || log_warn "could not refresh $dest"
+        if [ -f "$dest" ] && [ -f "$src" ] && ! cmp -s "$src" "$dest"; then
+            if sudo -n install -m 0755 "$src" "$dest"; then
+                if [ "$helper" = "gluetun_cascade_restart.sh" ]; then
+                    watcher_changed=true
+                fi
+            else
+                log_warn "could not refresh $dest"
+            fi
         fi
     done
+
+    # The cascade watcher is a long-running bash loop: it keeps executing
+    # the OLD file (install(1) swaps the inode) until restarted, so a fix
+    # to it would otherwise land only at the next reboot. try-restart is a
+    # no-op on boxes where the watcher isn't running (no Media Browser).
+    if [ "$watcher_changed" = "true" ]; then
+        log "cascade watcher script changed; restarting it"
+        run_systemctl $block_flag try-restart gluetun-cascade-restart.service 2>/dev/null \
+            || log_warn "cascade watcher restart failed (new script applies on next restart)"
+    fi
 
     # The one rename: qbit_port_sync.sh -> qbit-port-sync.sh.
     if [ -f /usr/local/bin/qbit-port-sync.sh ] && [ -f "${script_dir}/qbit_port_sync.sh" ]; then
@@ -756,9 +774,6 @@ refresh_out_of_tree_files() {
     if [ -f "$dest" ] && [ -f "$src" ] && ! cmp -s "$src" "$dest"; then
         if sudo -n install -m 0644 "$src" "$dest"; then
             log "usb0 dnsmasq config updated; reloading dnsmasq"
-            # At boot (recovery oneshot) never wait on another unit's job.
-            local block_flag=""
-            [ "$BOOT_RECOVERY" = "true" ] && block_flag="--no-block"
             run_systemctl $block_flag reload-or-restart dnsmasq.service 2>/dev/null \
                 || log_warn "dnsmasq reload failed (usb0 DNS applies on next restart)"
         else
