@@ -3158,11 +3158,16 @@ int main(int /* argc */, char* /* argv */[]) {
                         }
                     }
 
-                    // If load failed, clear the flag and restore UI state
+                    // If load failed, the old video is already stopped:
+                    // land on the menu. stop_to_menu, not the three flags
+                    // this used to clear — current_playlist_index /
+                    // current_item_index were set to the NEW playlist above,
+                    // and indexes set with no video is the Renderer's
+                    // "between items" early-out, so the menu AND the error
+                    // banner just raised stayed blank until another press.
+                    // (An empty message leaves that banner in place.)
                     if (!load_success) {
-                        state.is_switching_playlist = false;
-                        state.ui_visible_when_playing = true;
-                        state.video_active = false;
+                        app::stop_to_menu(state);
                         std::cerr << "Playlist switch failed - flag cleared, ready for retry" << std::endl;
                     }
                     // Otherwise, the flag will be cleared when the new video becomes active
