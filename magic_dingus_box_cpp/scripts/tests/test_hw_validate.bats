@@ -197,19 +197,37 @@ EOF
 }
 
 @test "SAFETY: a restore that cannot be verified keeps the backup and FAILs" {
-    [ "$(id -u)" -ne 0 ] || skip "root ignores the read-only dir this test relies on"
+    # Force the restore itself to fail with an rsync shim that refuses any
+    # real (non -n) --delete copy OUT of the backup dir. A read-only dir
+    # used to be the trigger, but GNU rsync makes a dir it owns writable to
+    # delete inside it, so on Linux the restore genuinely succeeded.
     pair_fake_remote
-    cat > "$HWV_SMOKE" <<'EOF'
-import os
-d = os.environ["MAGIC_DATA_DIR"]
-locked = f"{d}/saves/locked"
-os.makedirs(locked)
-open(f"{locked}/junk.srm", "w").write("x")
-os.chmod(locked, 0o555)   # restore cannot delete junk.srm
-print("EMULATOR SMOKE TEST REPORT")
-print("Games: 0/0 clean pass")
-EOF
-    run bash "$HWV" --yes --skip-audio --skip-screenshots
+    real_rsync="$(command -v rsync)"
+    mkdir -p "$T/shim"
+    {
+        echo '#!/bin/bash'
+        echo 'dry=0; del=0; src=""'
+        echo 'for a in "$@"; do'
+        echo '  case "$a" in'
+        echo '    --delete) del=1 ;;'
+        echo '    -n|--dry-run) dry=1 ;;'
+        echo '    --*) ;;'
+        echo '    -*) [[ "$a" == *n* ]] && dry=1 ;;'
+        echo '    *) [ -z "$src" ] && src="$a" ;;'
+        echo '  esac'
+        echo 'done'
+        echo 'if [ $del = 1 ] && [ $dry = 0 ] && [[ "$src" == *hw_validate_backup_* ]]; then'
+        echo '  echo "rsync shim: simulated restore failure" >&2; exit 23'
+        echo 'fi'
+        echo "exec \"$real_rsync\" \"\$@\""
+    } > "$T/shim/rsync"
+    chmod +x "$T/shim/rsync"
+    printf '%s\n' 'import os' \
+        'd = os.environ["MAGIC_DATA_DIR"]' \
+        'open(f"{d}/saves/PCSX-ReARMed/game.srm", "w").write("CLOBBERED")' \
+        'print("EMULATOR SMOKE TEST REPORT")' \
+        'print("Games: 0/0 clean pass")' > "$HWV_SMOKE"
+    PATH="$T/shim:$PATH" run bash "$HWV" --yes --skip-audio --skip-screenshots
     [ "$status" -eq 1 ]
     [[ "$output" == *"backup KEPT at $HOME/hw_validate_backup_"* ]]
     ls -d "$HOME"/hw_validate_backup_*
