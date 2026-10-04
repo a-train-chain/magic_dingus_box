@@ -4,6 +4,7 @@
 #include "platform/input_manager.h"
 #include "platform/gpio_manager.h"
 #include "platform/platform_profile.h"
+#include "platform/frame_presenter.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
@@ -131,19 +132,6 @@ using namespace ui;
 using namespace app;
 
 namespace fs = std::filesystem;
-
-struct PageFlipContext {
-    bool waiting_for_flip;
-};
-
-static void page_flip_handler(int /*fd*/, unsigned int /*frame*/,
-                              unsigned int /*sec*/, unsigned int /*usec*/,
-                              void *data) {
-    PageFlipContext *ctx = (PageFlipContext*)data;
-    if (ctx) {
-        ctx->waiting_for_flip = false;
-    }
-}
 
 // Rebuild the per-model kiosk MENU-navigation overlays from the captured
 // profile store and hand them to InputManager. Called once at startup and
@@ -1493,262 +1481,13 @@ int main(int /* argc */, char* /* argv */[]) {
 
     std::cout << "Entering main loop..." << std::endl;
 
-    // Frame presentation context - encapsulates all GBM/DRM state
-    // Using a struct instead of static variables allows proper cleanup and reset
-    struct FrameContext {
-        std::unordered_map<uint32_t, uint32_t> fb_cache;  // bo_handle -> fb_id
-        struct gbm_bo* previous_bo = nullptr;             // Buffer from previous frame
-        uint32_t previous_bo_handle = 0;
-        uint32_t current_fb_id = 0;
-        bool first_frame = true;
-        int force_setcrtc_frames = 0;      // Force SetCrtc for multiple frames after reset
-        int consecutive_buffer_failures = 0;  // Track consecutive buffer lock failures
-        int page_flip_failures = 0;           // Track page flip failures
-        int successful_page_flips = 0;        // Track successful page flips for counter reset
-
-        // Reset all state for display recovery
-        void reset(int drm_fd, struct gbm_surface* gbm_surface) {
-            // Clean up framebuffers
-            for (auto& pair : fb_cache) {
-                drmModeRmFB(drm_fd, pair.second);
-            }
-            fb_cache.clear();
-
-            // Release GBM buffer
-            if (previous_bo && gbm_surface) {
-                gbm_surface_release_buffer(gbm_surface, previous_bo);
-            }
-            previous_bo = nullptr;
-            previous_bo_handle = 0;
-            current_fb_id = 0;
-
-            // Reset flags
-            first_frame = true;
-            force_setcrtc_frames = 10;  // Force SetCrtc for stability after reset
-            consecutive_buffer_failures = 0;
-            page_flip_failures = 0;
-            successful_page_flips = 0;
-        }
-    };
-
-    FrameContext frame_ctx;
-
-    // Frame presentation lambda
-    // Encapsulates GBM/DRM logic to be shared between main loop and loading callback
+    // Scan-out of each rendered frame (GBM buffer -> DRM fb -> SetCrtc /
+    // page flip). See platform/frame_presenter.h for the lifecycle. The
+    // lambda keeps one name for both callers (main loop + game-loading
+    // progress callback) and reads `mode` live, as the old inline code did.
+    platform::FramePresenter frame_presenter(display, egl, mode_info);
     auto present_frame = [&]() {
-        // Double buffering strategy (GBM pools typically have only 2-3 buffers):
-        // - previous_bo: previous frame (release after we've presented next frame)
-        // - current bo: being presented now
-
-        // Release the previous buffer BEFORE locking a new one
-        // This ensures GBM pool has an available buffer
-        // We release after 1 frame delay (previous frame is safe after we present next)
-        if (frame_ctx.previous_bo != nullptr) {
-            // CRITICAL: DO NOT remove framebuffer from cache when releasing GBM buffer
-            // The framebuffer should stay in cache so we can reuse it if the buffer cycles back
-            // Only remove framebuffers that are definitely no longer needed (old entries in cache)
-
-            // CRITICAL: Release the GBM buffer BEFORE locking a new one
-            // This prevents GBM from trying to allocate new buffers
-            // Validate that previous_bo is actually different from what we're about to lock
-            gbm_surface_release_buffer(egl.get_gbm_surface(), frame_ctx.previous_bo);
-            frame_ctx.previous_bo = nullptr;
-            frame_ctx.previous_bo_handle = 0;
-        }
-
-        // Clean up old framebuffers that are no longer in use
-        // Keep only framebuffers for buffers we might reuse (limit cache to 4 for better stability)
-        constexpr size_t MAX_FB_CACHE = 4;
-        while (frame_ctx.fb_cache.size() > MAX_FB_CACHE) {
-            // Remove oldest entry if it's not the current framebuffer
-            auto oldest = frame_ctx.fb_cache.begin();
-            uint32_t old_fb_id = oldest->second;
-            if (old_fb_id != frame_ctx.current_fb_id) {
-                drmModeRmFB(display.get_fd(), old_fb_id);
-            }
-            frame_ctx.fb_cache.erase(oldest);
-        }
-
-        // Now lock the front buffer (should succeed since we just released one)
-        struct gbm_bo* bo = gbm_surface_lock_front_buffer(egl.get_gbm_surface());
-        if (!bo) {
-            frame_ctx.consecutive_buffer_failures++;
-            std::cerr << "Failed to lock front buffer! GPU memory may be exhausted." << std::endl;
-            std::cerr << "  Consecutive failures: " << frame_ctx.consecutive_buffer_failures << std::endl;
-            std::cerr << "  This usually means GBM buffer pool is exhausted." << std::endl;
-
-            // If we've had too many consecutive failures, force recovery
-            if (frame_ctx.consecutive_buffer_failures > 5) {
-                std::cerr << "CRITICAL: Too many consecutive buffer failures - attempting recovery" << std::endl;
-                // Force cleanup of all cached framebuffers
-                for (auto& pair : frame_ctx.fb_cache) {
-                    if (pair.second != frame_ctx.current_fb_id) {
-                        drmModeRmFB(display.get_fd(), pair.second);
-                    }
-                }
-                frame_ctx.fb_cache.clear();
-                // Re-add current framebuffer if we have one
-                if (frame_ctx.current_fb_id != 0) {
-                    // We can't recover the handle, so we'll lose this framebuffer
-                    // But it's better than freezing
-                }
-                if (frame_ctx.previous_bo != nullptr) {
-                    gbm_surface_release_buffer(egl.get_gbm_surface(), frame_ctx.previous_bo);
-                    frame_ctx.previous_bo = nullptr;
-                    frame_ctx.previous_bo_handle = 0;
-                }
-                frame_ctx.consecutive_buffer_failures = 0;  // Reset counter after recovery
-                std::cerr << "Recovery complete - cleared framebuffer cache" << std::endl;
-            }
-
-            // Sleep a bit and try again next frame
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            return;
-        }
-
-        // Successfully locked buffer - reset failure counter
-        frame_ctx.consecutive_buffer_failures = 0;
-
-        uint32_t bo_handle = gbm_bo_get_handle(bo).u32;
-        uint32_t fb_id = 0;
-
-        // Check if we already have a framebuffer for this buffer handle
-        auto it = frame_ctx.fb_cache.find(bo_handle);
-        if (it != frame_ctx.fb_cache.end()) {
-            // Reuse existing framebuffer
-            fb_id = it->second;
-        } else {
-            // Create new framebuffer for this buffer
-            uint32_t handles[4] = {0};
-            uint32_t strides[4] = {0};
-            uint32_t offsets[4] = {0};
-
-            handles[0] = bo_handle;
-            strides[0] = gbm_bo_get_stride(bo);
-            offsets[0] = 0;
-
-            // Use the format we set when creating the GBM surface (GBM_FORMAT_XRGB8888)
-            uint32_t format = GBM_FORMAT_XRGB8888;
-
-            // Try AddFB2 first (modern API)
-            int ret = drmModeAddFB2(display.get_fd(), mode.width, mode.height, format,
-                                    handles, strides, offsets, &fb_id, 0);
-            if (ret != 0) {
-                // Fallback to AddFB (legacy API)
-                ret = drmModeAddFB(display.get_fd(), mode.width, mode.height, 24, 32,
-                                  strides[0], handles[0], &fb_id);
-                if (ret != 0 && frame_ctx.first_frame) {
-                    std::cerr << "AddFB2 failed (ret=" << ret << "), AddFB also failed (ret=" << ret << ")" << std::endl;
-                }
-            }
-
-            if (ret == 0 && fb_id != 0) {
-                // Cache the framebuffer (cache is cleaned up above, so just add it)
-                frame_ctx.fb_cache[bo_handle] = fb_id;
-            } else {
-                std::cerr << "ERROR: Failed to create DRM framebuffer (ret=" << ret << "): " << strerror(errno) << std::endl;
-                std::cerr << "  width=" << mode.width << ", height=" << mode.height << std::endl;
-                std::cerr << "  stride=" << strides[0] << ", handle=" << handles[0] << std::endl;
-                std::cerr << "  fb_cache size=" << frame_ctx.fb_cache.size() << std::endl;
-                gbm_surface_release_buffer(egl.get_gbm_surface(), bo);
-                return;  // Skip this frame if framebuffer creation failed
-            }
-        }
-
-        frame_ctx.current_fb_id = fb_id;
-        
-        // Present the framebuffer
-        if (fb_id != 0) {
-            if (frame_ctx.first_frame || frame_ctx.force_setcrtc_frames > 0) {
-                // Use SetCrtc for first frame and for several frames after reset
-                // This helps stabilize after RetroArch returns control
-                uint32_t connector_id = display.get_connector_id();
-                if (frame_ctx.first_frame) {
-                    std::cout << "Setting initial CRTC: fb_id=" << fb_id << ", crtc_id=" << display.get_crtc_id() << std::endl;
-                }
-                int ret = drmModeSetCrtc(display.get_fd(), display.get_crtc_id(), fb_id, 0, 0,
-                                       &connector_id, 1, &mode_info);
-                if (ret == 0) {
-                    if (frame_ctx.first_frame) {
-                        std::cout << "Initial CRTC set successfully!" << std::endl;
-                        frame_ctx.first_frame = false;
-                    }
-                    if (frame_ctx.force_setcrtc_frames > 0) {
-                        frame_ctx.force_setcrtc_frames--;
-                    }
-                } else {
-                    std::cerr << "Failed to set CRTC (ret=" << ret << "): " << strerror(errno) << std::endl;
-                }
-            } else {
-                // Subsequent frames: use page flip
-                // Static: persists across frames intentionally for DRM page flip callback
-                static PageFlipContext flip_ctx;
-                flip_ctx.waiting_for_flip = true;
-
-                int ret = drmModePageFlip(display.get_fd(), display.get_crtc_id(), fb_id,
-                                         DRM_MODE_PAGE_FLIP_EVENT, &flip_ctx);
-                if (ret != 0) {
-                    // Page flip failed - increment counter and log periodically
-                    frame_ctx.page_flip_failures++;
-                    int err = errno;
-                    if (frame_ctx.page_flip_failures % 10 == 0 || frame_ctx.page_flip_failures < 5) {
-                        std::cerr << "Warning: Page flip failed (ret=" << ret << ", errno=" << err << ": " << strerror(err) << ")" << std::endl;
-                        std::cerr << "  (Failures: " << frame_ctx.page_flip_failures << ", Successes: " << frame_ctx.successful_page_flips << ")" << std::endl;
-                    }
-
-                    // If page flip fails, fall back to SetCrtc
-                    uint32_t connector_id = display.get_connector_id();
-                    ret = drmModeSetCrtc(display.get_fd(), display.get_crtc_id(), fb_id, 0, 0,
-                                       &connector_id, 1, &mode_info);
-                    if (ret != 0) {
-                        std::cerr << "Failed to set CRTC: " << strerror(errno) << std::endl;
-                    }
-                } else {
-                    // Page flip succeeded - wait for flip to complete
-                    drmEventContext evctx = {};
-                    evctx.version = 2;
-                    evctx.page_flip_handler = page_flip_handler;
-
-                    fd_set fds;
-                    FD_ZERO(&fds);
-                    FD_SET(display.get_fd(), &fds);
-
-                    // Wait with timeout (e.g. 100ms) to avoid hanging if event is lost
-                    struct timeval timeout;
-                    timeout.tv_sec = 0;
-                    timeout.tv_usec = 100000; // 100ms
-
-                    while (flip_ctx.waiting_for_flip) {
-                        int sret = select(display.get_fd() + 1, &fds, NULL, NULL, &timeout);
-                        if (sret > 0) {
-                            drmHandleEvent(display.get_fd(), &evctx);
-                        } else {
-                            // Timeout or error
-                            if (sret == 0) std::cerr << "Warning: Page flip wait timed out" << std::endl;
-                            break;
-                        }
-                    }
-
-                    // Reset failure counter periodically
-                    frame_ctx.successful_page_flips++;
-                    if (frame_ctx.successful_page_flips >= 100) {
-                        // Reset page flip failure counter every 100 successful flips
-                        if (frame_ctx.page_flip_failures > 0) {
-                            std::cout << "Page flip recovery: " << frame_ctx.page_flip_failures
-                                      << " failures in last " << frame_ctx.successful_page_flips << " frames" << std::endl;
-                        }
-                        frame_ctx.page_flip_failures = 0;
-                        frame_ctx.successful_page_flips = 0;
-                    }
-                }
-            }
-        }
-
-        // Save this buffer to be released on the next frame
-        // After we present the next frame, this one will be safe to release
-        // We only keep 2 buffers: current (being scanned) and previous (just finished)
-        frame_ctx.previous_bo = bo;
-        frame_ctx.previous_bo_handle = bo_handle;
+        frame_presenter.present(mode.width, mode.height);
     };
     
     // Initialize resolution rendering state
@@ -1943,7 +1682,7 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 
             // Reset all frame presentation state (framebuffers, GBM buffers, counters)
-            frame_ctx.reset(display.get_fd(), egl.get_gbm_surface());
+            frame_presenter.reset();
             state.reset_display = false;
             
             // CRITICAL: Re-make EGL context current after RetroArch released it
@@ -2025,7 +1764,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // letterbox, bezel) and defer ONLY the mode switch. The
             // setting is already persisted by the settings menu, so a
             // restart completes it. Doing the full teardown here
-            // (frame_ctx.reset + GBM/EGL recreate + reset_gl on both
+            // (frame_presenter.reset + GBM/EGL recreate + reset_gl on both
             // renderers + re-snapshot mode_info) is possible, but it is
             // by far the riskiest change available here and buys only the
             // avoidance of one restart.
@@ -4814,7 +4553,7 @@ int main(int /* argc */, char* /* argv */[]) {
         //
         // -1 is the "requested" sentinel from prepare_kiosk_state_after_game;
         // the clock starts at the FIRST FRAME WE ACTUALLY DRAW, not when the
-        // request was made — the reset_display work (frame_ctx/EGL/GStreamer
+        // request was made — the reset_display work (frame_presenter/EGL/GStreamer
         // re-init) between the two can eat 200ms+, and a wall-clock start
         // would leave the fade mostly over before the first frame rendered.
         {
@@ -4937,6 +4676,8 @@ int main(int /* argc */, char* /* argv */[]) {
     gst_renderer.cleanup();
     player.cleanup();
     input.cleanup();
+    // Before egl/gbm: the buffer it still holds belongs to their surface.
+    frame_presenter.shutdown();
     egl.cleanup();
     gbm.cleanup();
     display.cleanup();

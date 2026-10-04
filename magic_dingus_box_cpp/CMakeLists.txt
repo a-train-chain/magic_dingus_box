@@ -114,6 +114,7 @@ set(PLATFORM_SOURCES
     src/platform/drm_display.cpp
     src/platform/gbm_context.cpp
     src/platform/egl_context.cpp
+    src/platform/frame_presenter.cpp
     src/platform/input_manager.cpp
     src/platform/gpio_manager.cpp
     src/platform/platform_profile.cpp
