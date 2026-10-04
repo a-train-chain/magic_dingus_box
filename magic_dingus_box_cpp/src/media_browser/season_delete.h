@@ -33,8 +33,10 @@ class QbittorrentClient;
 // Abort rule: any read or mutation in (a)-(d), or the (f) listing, that
 // cannot get an authoritative answer stops the sequence before (f)'s delete
 // runs. The guard is restored on EVERY exit path — normal, abort, and a
-// throw out of either client (the optional<AutoRedownloadGuard> lives on
-// this function's stack).
+// throw out of either client. A std::exception from either client is an
+// abort like any other ("something went wrong", at the stage that was
+// running), so its toast still discloses earlier cancels/purges and a
+// defeated restore; it does not propagate.
 //
 // qbit may be null (no qBittorrent on this box): stage (e) is skipped,
 // exactly the whole-series remove's contract.
@@ -46,6 +48,7 @@ enum class SeasonDeleteStage {
     ArmGuard,      // couldn't switch Sonarr's auto-redownload off
     CancelQueue,   // (c) queue read or a cancel
     MarkFailed,    // (d)
+    PurgeTorrents, // (e) — only ever via a throw; refusals warn-and-continue
     DeleteFiles,   // (f) fresh listing or the delete itself
 };
 

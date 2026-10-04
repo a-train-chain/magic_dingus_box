@@ -9,7 +9,8 @@
 //   * the toast-disclosure rules — an abort after (c) or (e) says what was
 //     already destroyed, a defeated guard restore says the flag is stuck
 //     OFF, and a run with no history record says nothing was blocklisted;
-//   * the guard is restored on every exit path, including a throw.
+//   * the guard is restored on every exit path, and a throw from either
+//     client is a disclosed abort rather than an escaping exception.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -181,8 +182,10 @@ public:
     explicit RecordingQbit(std::vector<std::string>& log)
         : mb::QbittorrentClient(Config{}), log_(log) {}
     std::set<std::string> fail_hashes;
+    bool throw_on_delete = false;
     bool delete_torrent(const std::string& hash, bool delete_files) override {
         log_.push_back("qbit_delete:" + hash + (delete_files ? ":files" : ""));
+        if (throw_on_delete) throw std::runtime_error("scripted qbit throw");
         return fail_hashes.count(hash) == 0;
     }
 
@@ -582,20 +585,49 @@ TEST_CASE("season delete: a defeated guard restore is SAID in the toast",
     }
 }
 
-TEST_CASE("season delete: a throw from the client still restores the guard",
+// A throw out of either client is an abort like any other: the guard is
+// restored, and the toast still discloses what earlier stages destroyed.
+// It used to escape to spawn_mutation's generic "something went wrong —
+// try again", which named neither the cancels nor the purge and could not
+// carry the stuck-OFF warning.
+TEST_CASE("season delete: a throw from the client is a disclosed abort with "
+          "the guard restored",
           "[season_delete]") {
     std::vector<std::string> log;
     ScriptedSonarr sonarr(log);
     RecordingQbit qbit(log);
-    SECTION("throw during (c)") { sonarr.throw_at = "cancel:"; }
-    SECTION("throw during (d)") { sonarr.throw_at = "failed:502"; }
-    SECTION("throw during (f)") { sonarr.throw_at = "delete_files:"; }
-    CHECK_THROWS_AS(
-        mb::run_delete_season(sonarr, &qbit, kSeries, kSeason, inputs()),
-        std::runtime_error);
+    mb::SeasonDeleteStage stage = mb::SeasonDeleteStage::None;
+    std::string done;
+    SECTION("throw during (c)") {
+        sonarr.throw_at = "cancel:";
+        stage = mb::SeasonDeleteStage::CancelQueue;
+    }
+    SECTION("throw during (d)") {
+        sonarr.throw_at = "failed:502";
+        stage = mb::SeasonDeleteStage::MarkFailed;
+        done = kCancelDisclosure;
+    }
+    SECTION("throw during (e)") {
+        qbit.throw_on_delete = true;
+        stage = mb::SeasonDeleteStage::PurgeTorrents;
+        done = kCancelDisclosure;
+    }
+    SECTION("throw during (f)") {
+        sonarr.throw_at = "delete_files:";
+        stage = mb::SeasonDeleteStage::DeleteFiles;
+        done = kCancelDisclosure + kPurgeDisclosure;
+    }
+    mb::SeasonDeleteOutcome out;
+    REQUIRE_NOTHROW(out = mb::run_delete_season(sonarr, &qbit, kSeries,
+                                                kSeason, inputs()));
+    CHECK_FALSE(out.removed);
+    CHECK(out.abort_stage == stage);
     CHECK(log.back() == "redl:on");
     CHECK(sonarr.redownload_on);
     CHECK(sonarr.restore_attempts == 1);
+    CHECK_FALSE(out.redownload_restore_failed);
+    CHECK(mb::compose_season_delete_toast(out) ==
+          "Show: something went wrong" + done + kAbortTail);
 }
 
 TEST_CASE("season delete: a throw before the guard arms makes no PUT",
@@ -604,8 +636,29 @@ TEST_CASE("season delete: a throw before the guard arms makes no PUT",
     ScriptedSonarr sonarr(log);
     sonarr.throw_at = "history:";
     RecordingQbit qbit(log);
-    CHECK_THROWS(
-        mb::run_delete_season(sonarr, &qbit, kSeries, kSeason, inputs()));
+    const auto out =
+        mb::run_delete_season(sonarr, &qbit, kSeries, kSeason, inputs());
+    CHECK(out.abort_stage == mb::SeasonDeleteStage::History);
     CHECK_FALSE(logged(log, "redl:"));
     check_nothing_destructive(log);
+    CHECK(mb::compose_season_delete_toast(out) ==
+          "Show: something went wrong" + kAbortTail);
+}
+
+TEST_CASE("season delete: a restore that throws is warned about",
+          "[season_delete]") {
+    std::vector<std::string> log;
+    ScriptedSonarr sonarr(log);
+    sonarr.throw_at = "redl:on";
+    RecordingQbit qbit(log);
+    mb::SeasonDeleteOutcome out;
+    REQUIRE_NOTHROW(out = mb::run_delete_season(sonarr, &qbit, kSeries,
+                                                kSeason, inputs()));
+    // The files really were deleted; only the flag's state is unconfirmed.
+    CHECK(out.removed);
+    CHECK(out.redownload_restore_failed);
+    CHECK(mb::compose_season_delete_toast(out) ==
+          "Show: Season 3 removed " + kDash +
+              " pick Season 3 in the list to download it again" +
+              kStuckOffWarning);
 }
