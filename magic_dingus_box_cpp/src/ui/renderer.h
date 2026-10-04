@@ -183,6 +183,13 @@ public:
     // frame when posters land).
     std::size_t pump_artwork();
 
+    // Called at the start of every DRAWN Media Browser frame (never on a
+    // frame the redraw gate skips). Drives the artwork cache's on-screen
+    // eviction protection: posters drawn this or last frame are never
+    // evicted, so a visible set larger than the budget overshoots instead
+    // of thrashing. See ArtworkCache::begin_frame().
+    void begin_artwork_frame();
+
     // Renders the same seek bar overlay the main UI draws during scrubs.
     // The Media Browser's PlaybackScreen calls this so its scrub feedback
     // is visually identical to the kiosk's playlist scrubbing — same

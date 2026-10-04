@@ -4112,6 +4112,9 @@ int main(int /* argc */, char* /* argv */[]) {
             // calls silently target the wrong shader (invisible scrub
             // overlay; "green rect" garbage on Playback→Detail exit).
             ui_renderer.mb_begin_2d_state();
+            // Drawn-frame tick for the artwork cache's eviction guard
+            // (this block only runs on frames the redraw gate draws).
+            ui_renderer.begin_artwork_frame();
 
             // LOGICAL canvas size, not the physical mode. mb_begin_2d_state
             // pins the shader's screenSize uniform to the renderer's

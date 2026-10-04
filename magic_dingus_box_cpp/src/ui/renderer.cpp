@@ -2652,7 +2652,10 @@ void Renderer::mb_draw_poster_or_tint(const std::string& url,
         return;
     }
 
-    uint32_t tex_id = artwork_cache().get_or_fetch(url);
+    // Grid-sized slots get the downscaled Card variant (artwork_sizing.h)
+    // whatever host the URL is on; hero slots keep the decoded size.
+    uint32_t tex_id = artwork_cache().get_or_fetch(
+        url, media_browser::artwork_variant_for_slot(w));
     if (tex_id == 0) {
         // Not yet loaded — draw placeholder tint, the fetch is already
         // enqueued by get_or_fetch.
@@ -2672,7 +2675,8 @@ void Renderer::mb_draw_poster_fit(const std::string& url,
         return;
     }
 
-    uint32_t tex_id = artwork_cache().get_or_fetch(url);
+    const auto variant = media_browser::artwork_variant_for_slot(w);
+    uint32_t tex_id = artwork_cache().get_or_fetch(url, variant);
     if (tex_id == 0) {
         // Texture still loading — fill the whole slot so the layout doesn't
         // jump on arrival.
@@ -2680,7 +2684,7 @@ void Renderer::mb_draw_poster_fit(const std::string& url,
         return;
     }
 
-    auto dims = artwork_cache().get_dims(url);
+    auto dims = artwork_cache().get_dims(url, variant);
     if (!dims || dims->w <= 0 || dims->h <= 0) {
         // Defensive — entry exists but dims unknown. Stretch like the
         // legacy variant rather than skipping the draw entirely.
@@ -2707,6 +2711,13 @@ void Renderer::mb_draw_poster_fit(const std::string& url,
     // them subtle without making the bars look like part of the image.
     draw_quad(x, y, w, h, fallback_tint, alpha_multiplier * 0.35f);
     draw_textured_quad(tex_id, out_x, out_y, out_w, out_h, alpha_multiplier);
+}
+
+void Renderer::begin_artwork_frame() {
+    // No lazy init: a frame that never touches the cache needs no tick.
+    if (artwork_cache_) {
+        artwork_cache_->begin_frame();
+    }
 }
 
 std::size_t Renderer::pump_artwork() {

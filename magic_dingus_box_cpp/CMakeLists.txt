@@ -529,6 +529,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_sonarr_parsers.cpp
         tests/media_browser/test_sonarr_client.cpp
         tests/media_browser/test_artwork_cache.cpp
+        tests/media_browser/test_artwork_sizing.cpp
         tests/media_browser/test_prowlarr_client.cpp
         tests/media_browser/test_release_picker.cpp
         tests/media_browser/test_download_watchdog.cpp

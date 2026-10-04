@@ -13,6 +13,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "media_browser/artwork/artwork_cache.h"
+#include "media_browser/artwork/artwork_sizing.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -268,4 +269,131 @@ TEST_CASE("trim_textures_to evicts LRU down to the target and keeps the "
     REQUIRE(cache.trim_textures_to(10 * one) == 0);
     REQUIRE(cache.trim_textures_to(0) == 2);
     REQUIRE(cache.bytes_in_use() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Card variants + no-thrash eviction (RC finding: TV-heavy Library pages on
+// a Pi 4B uploaded and evicted posters every frame).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Card and Full requests for one URL are independent entries",
+          "[artwork][variant]") {
+    using media_browser::ArtworkVariant;
+    using media_browser::artwork_cache_key;
+    ArtworkCache cache;
+    const std::string u = "https://artworks.thetvdb.com/banners/p.jpg";
+
+    REQUIRE(cache.get_or_fetch(u, ArtworkVariant::Card) == 0);
+    REQUIRE(cache.test_is_in_flight(artwork_cache_key(u, ArtworkVariant::Card)));
+    REQUIRE_FALSE(cache.test_is_in_flight(u));
+    REQUIRE(cache.get_or_fetch(u) == 0);  // Full: its own fetch
+    REQUIRE(cache.test_is_in_flight(u));
+
+    cache.test_inject_ready_upload(
+        make_upload(artwork_cache_key(u, ArtworkVariant::Card), 37, 54));
+    cache.test_inject_ready_upload(make_upload(u, 68, 100));
+    REQUIRE(cache.pump_for_tests() == 2);
+
+    const auto card = cache.get_dims(u, ArtworkVariant::Card);
+    const auto full = cache.get_dims(u);
+    REQUIRE(card);
+    REQUIRE(full);
+    CHECK(card->w == 37);
+    CHECK(full->w == 68);
+    CHECK(cache.get_or_fetch(u, ArtworkVariant::Card) !=
+          cache.get_or_fetch(u, ArtworkVariant::Full));
+}
+
+TEST_CASE("Eviction never drops a texture drawn this or last frame",
+          "[artwork][thrash]") {
+    const int dim = 16;
+    const std::size_t one = ArtworkCache::texture_bytes(dim, dim);
+    ArtworkCache cache(2 * one);  // budget: 2 posters
+
+    // Frame 1 draws a and b.
+    cache.begin_frame();
+    cache.test_inject_ready_upload(make_upload("a", dim, dim));
+    cache.test_inject_ready_upload(make_upload("b", dim, dim));
+    cache.pump_for_tests();
+    REQUIRE(cache.get_or_fetch("a") != 0);
+    REQUIRE(cache.get_or_fetch("b") != 0);
+
+    // c arrives while a and b are on screen: nothing may go, the cache
+    // overshoots instead (and says so once).
+    cache.test_inject_ready_upload(make_upload("c", dim, dim));
+    cache.pump_for_tests();
+    CHECK(cache.entries_count() == 3);
+    CHECK(cache.bytes_in_use() == 3 * one);
+    CHECK(cache.budget_overshoots() == 1);
+
+    // Frame 2 draws a and c only; b (drawn in frame 1) is still protected.
+    cache.begin_frame();
+    REQUIRE(cache.get_or_fetch("a") != 0);
+    REQUIRE(cache.get_or_fetch("c") != 0);
+    CHECK(cache.entries_count() == 3);
+
+    // Frame 3: b is two drawn frames stale, so the overshoot heals by
+    // evicting exactly b.
+    cache.begin_frame();
+    CHECK(cache.entries_count() == 2);
+    CHECK(cache.bytes_in_use() == 2 * one);
+    CHECK(cache.get_or_fetch("b") == 0);
+    CHECK(cache.get_or_fetch("a") != 0);
+    CHECK(cache.get_or_fetch("c") != 0);
+    CHECK(cache.budget_overshoots() == 1);  // one episode, logged once
+}
+
+TEST_CASE("A visible set larger than the budget does not thrash",
+          "[artwork][thrash]") {
+    const int dim = 16;
+    const std::size_t one = ArtworkCache::texture_bytes(dim, dim);
+    ArtworkCache cache(2 * one);
+    const std::vector<std::string> visible = {"p0", "p1", "p2", "p3"};
+
+    std::size_t uploads = 0;
+    for (int frame = 0; frame < 20; ++frame) {
+        cache.begin_frame();
+        // Simulate the fetcher completing whatever the last frame asked for.
+        for (const auto& u : visible) {
+            if (cache.test_is_in_flight(u)) {
+                cache.test_inject_ready_upload(make_upload(u, dim, dim));
+            }
+        }
+        uploads += cache.pump_for_tests();
+        for (const auto& u : visible) cache.get_or_fetch(u);  // draw
+    }
+    // Each poster uploaded exactly once; none was ever evicted and refetched.
+    CHECK(uploads == visible.size());
+    CHECK(cache.entries_count() == visible.size());
+    for (const auto& u : visible) CHECK(cache.get_or_fetch(u) != 0);
+}
+
+TEST_CASE("Newly uploaded textures survive later uploads in the same pump",
+          "[artwork][thrash]") {
+    const int dim = 16;
+    const std::size_t one = ArtworkCache::texture_bytes(dim, dim);
+    ArtworkCache cache(one);
+    cache.begin_frame();
+    cache.test_inject_ready_upload(make_upload("x", dim, dim));
+    cache.test_inject_ready_upload(make_upload("y", dim, dim));
+    cache.pump_for_tests();
+    // Both just landed for the frame about to draw them: neither may be
+    // dropped before it is ever shown.
+    CHECK(cache.entries_count() == 2);
+}
+
+TEST_CASE("trim_textures_to is forced: it ignores the on-screen protection",
+          "[artwork][thrash]") {
+    const int dim = 16;
+    const std::size_t one = ArtworkCache::texture_bytes(dim, dim);
+    ArtworkCache cache(10 * one);
+    cache.begin_frame();
+    for (const char* u : {"a", "b", "c"}) {
+        cache.test_inject_ready_upload(make_upload(u, dim, dim));
+    }
+    cache.pump_for_tests();
+    for (const char* u : {"a", "b", "c"}) REQUIRE(cache.get_or_fetch(u) != 0);
+    // Movie playback start must still be able to free memory.
+    CHECK(cache.trim_textures_to(one) == 2);
+    CHECK(cache.entries_count() == 1);
 }

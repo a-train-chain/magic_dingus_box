@@ -16,7 +16,18 @@
 //
 // LRU eviction: if total bytes_in_use() exceeds max_bytes_ after an
 // upload, the least-recently-accessed textures are dropped until we are
-// back under budget.
+// back under budget — EXCEPT textures drawn in the current or previous
+// drawn frame (begin_frame()) and the one just uploaded. When the visible
+// set alone exceeds the budget the cache overshoots (logged once per
+// episode) instead of evicting what is on screen: evicting a visible
+// poster only re-fetches it next frame, which on a Pi 4B was a per-frame
+// upload/evict churn with posters flickering to tint. The overshoot heals
+// at the next begin_frame() after those posters leave the screen.
+//
+// Variants: a request carries an ArtworkVariant (artwork_sizing.h). Card
+// requests are downscaled after decode to the card box; Full keeps the
+// decoded size. The two are separate entries keyed by artwork_cache_key()
+// and share one on-disk JPEG (the disk cache is keyed by URL).
 
 #include <atomic>
 #include <chrono>
@@ -31,6 +42,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "media_browser/artwork/artwork_sizing.h"
 
 namespace media_browser {
 
@@ -69,7 +82,16 @@ public:
     // tint. Auto-enqueues a fetch on first call for a given URL. Safe to
     // call every frame for the same URL — it's cheap (hash-map lookup +
     // timestamp bump) once the URL is known.
-    std::uint32_t get_or_fetch(const std::string& url);
+    std::uint32_t get_or_fetch(const std::string& url,
+                               ArtworkVariant variant = ArtworkVariant::Full);
+
+    // Main thread only: call once at the start of every DRAWN frame that
+    // may request artwork (not on frames the redraw gate skips — a static
+    // screen must keep its posters protected). Advances the frame counter
+    // behind eviction protection and heals a budget overshoot once the
+    // over-budget posters are no longer on screen. Until the first call,
+    // protection is unarmed and eviction is plain LRU.
+    void begin_frame();
 
     // Main thread only: called once per frame. Drains the "ready uploads"
     // queue filled by the background thread and performs the GL upload
@@ -81,7 +103,9 @@ public:
     // for `url`, or std::nullopt if the URL is not yet uploaded. Used by
     // the renderer to preserve aspect ratio when letterboxing/pillarboxing
     // an image into an arbitrary slot.
-    std::optional<TextureDims> get_dims(const std::string& url) const;
+    std::optional<TextureDims> get_dims(
+        const std::string& url,
+        ArtworkVariant variant = ArtworkVariant::Full) const;
 
     // Pause/resume the background fetcher. Call pause() before video
     // playback starts to prevent the artwork worker from contending with
@@ -108,7 +132,8 @@ public:
     // unswappable system RAM, and a full 256 MB poster cache competes with
     // the video pipeline on a 1.5 GB Pi 4B. Trim, not clear, so the posters
     // touched most recently (the playing film's, the overlay's) survive.
-    // Returns the number of textures released.
+    // Returns the number of textures released. Forced: ignores the
+    // on-screen protection (playback must be able to free memory).
     std::size_t trim_textures_to(std::size_t target_bytes);
 
     // GPU bytes of an RGBA8 w x h texture INCLUDING its full mipmap chain
@@ -125,13 +150,16 @@ public:
     std::size_t disk_cache_bytes() const  { return disk_bytes_in_use_.load(); }
     std::size_t disk_cache_evictions() const { return disk_evictions_.load(); }
     std::size_t dead_url_skips() const    { return dead_url_skips_.load(); }
+    // Episodes in which the on-screen set alone exceeded the budget and
+    // the cache overshot rather than thrash. Main-thread counter.
+    std::size_t budget_overshoots() const;
 
     // --- Test-only hooks (no GL). Lets the unit test simulate a
     // completed fetch by directly injecting a decoded pixel buffer, and
     // verify book-keeping without needing a real EGL context. ---
 #ifdef ARTWORK_CACHE_TEST_MODE
     struct TestPendingUpload {
-        std::string url;
+        std::string url;  // the CACHE KEY (artwork_cache_key for a Card)
         int width = 0;
         int height = 0;
         std::vector<std::uint8_t> pixels_rgba;
@@ -152,7 +180,7 @@ private:
     // What the fetcher thread pushes onto the "ready" queue when a
     // download + decode succeeds.
     struct PendingUpload {
-        std::string url;
+        std::string url;  // cache key (artwork_cache_key(url, variant))
         int width = 0;
         int height = 0;
         std::vector<std::uint8_t> pixels_rgba;  // always 4-channel (RGBA8)
@@ -166,14 +194,34 @@ private:
         int width = 0;          // pixel width — used by get_dims() for aspect-fit
         int height = 0;         // pixel height
         std::chrono::steady_clock::time_point last_access;
+        // Drawn-frame number of the last get_or_fetch hit (or the upload
+        // frame). 0 = never; see artwork_drawn_recently().
+        std::uint64_t last_drawn_frame = 0;
+    };
+
+    // One queued fetch: the source URL, the cache key it lands under, and
+    // the variant deciding the post-decode downscale.
+    struct WorkItem {
+        std::string key;
+        std::string url;
+        ArtworkVariant variant = ArtworkVariant::Full;
     };
 
     // Background thread entry point.
     void fetcher_thread_main();
 
     // Evict LRU entries until bytes_in_use_ <= limit. Must be called
-    // with entries_mutex_ held. Returns the number evicted.
-    std::size_t evict_lru_locked(std::size_t limit);
+    // with entries_mutex_ held. Returns the number evicted. With
+    // protect_on_screen, entries drawn in the current/previous drawn frame
+    // and `keep_key` (the entry just uploaded) are never evicted; if that
+    // leaves the cache over `limit` it overshoots and logs once.
+    std::size_t evict_lru_locked(std::size_t limit,
+                                 bool protect_on_screen = false,
+                                 const std::string* keep_key = nullptr);
+
+    // Fetcher thread: downscale freshly decoded pixels for a Card request.
+    static void apply_variant(ArtworkVariant variant, int& w, int& h,
+                              std::vector<std::uint8_t>& pixels_rgba);
 
     // Actual GL upload of a pending item. Returns the new texture_id
     // and its byte size via out params. In TEST_MODE the GL portion is
@@ -251,13 +299,16 @@ private:
     mutable std::mutex entries_mutex_;
     std::unordered_map<std::string, Entry> entries_;
     std::size_t bytes_in_use_ = 0;  // guarded by entries_mutex_
+    std::uint64_t current_frame_ = 0;     // guarded by entries_mutex_; 0 = unarmed
+    bool in_overshoot_ = false;           // guarded by entries_mutex_
+    std::size_t overshoot_episodes_ = 0;  // guarded by entries_mutex_
 
     // --- Work queue: main thread pushes URLs, background thread pops ---
     std::mutex work_mutex_;
     std::condition_variable work_cv_;
-    std::deque<std::string> work_queue_;       // URLs to download
-    std::unordered_set<std::string> in_flight_;  // URLs already enqueued
-                                                 // (dedup guard)
+    std::deque<WorkItem> work_queue_;          // fetches to run
+    std::unordered_set<std::string> in_flight_;  // cache keys already
+                                                 // enqueued (dedup guard)
 
     // --- Ready queue: background thread pushes, main thread (pump) pops ---
     std::mutex ready_mutex_;

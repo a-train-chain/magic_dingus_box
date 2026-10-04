@@ -24,7 +24,12 @@
 //
 // The artwork cache (GPU and on-disk) is keyed by the full URL, so the
 // w185 and w500 variants of one poster are independent entries that
-// coexist; nothing else has to know about sizes.
+// coexist.
+//
+// This rewrite only helps image.tmdb.org URLs. Every other host (TVDB's
+// ~680x1000 Sonarr posters above all) is handled host-independently by
+// the artwork pipeline: a grid-sized slot requests the Card variant,
+// which is downscaled after decode (artwork/artwork_sizing.h).
 
 #include <string>
 #include <string_view>

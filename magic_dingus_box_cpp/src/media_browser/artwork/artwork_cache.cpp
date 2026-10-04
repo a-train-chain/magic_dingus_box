@@ -110,15 +110,19 @@ ArtworkCache::~ArtworkCache() {
 #endif
 }
 
-std::uint32_t ArtworkCache::get_or_fetch(const std::string& url) {
+std::uint32_t ArtworkCache::get_or_fetch(const std::string& url,
+                                         ArtworkVariant variant) {
     if (url.empty()) return 0;
+    const std::string key = artwork_cache_key(url, variant);
 
-    // Hot path: URL already cached as a GL texture — bump LRU, return id.
+    // Hot path: already cached as a GL texture — bump LRU + the drawn-
+    // frame stamp that protects it from eviction, return id.
     {
         std::lock_guard<std::mutex> lock(entries_mutex_);
-        auto it = entries_.find(url);
+        auto it = entries_.find(key);
         if (it != entries_.end()) {
             it->second.last_access = std::chrono::steady_clock::now();
+            it->second.last_drawn_frame = current_frame_;
             return it->second.texture_id;
         }
         // Poison-pill: URL has failed to decode 3+ times this session
@@ -149,14 +153,45 @@ std::uint32_t ArtworkCache::get_or_fetch(const std::string& url) {
     // frame for a URL that's still downloading.
     {
         std::lock_guard<std::mutex> lock(work_mutex_);
-        if (in_flight_.insert(url).second) {
-            work_queue_.push_back(url);
+        if (in_flight_.insert(key).second) {
+            work_queue_.push_back(WorkItem{key, url, variant});
             work_cv_.notify_one();
-            spdlog::info("[artwork] enqueued url='{}' (queue_size={})",
-                         url.substr(0, 80), work_queue_.size());
+            spdlog::info("[artwork] enqueued url='{}'{} (queue_size={})",
+                         url.substr(0, 80),
+                         variant == ArtworkVariant::Card ? " [card]" : "",
+                         work_queue_.size());
         }
     }
     return 0;
+}
+
+void ArtworkCache::begin_frame() {
+    std::lock_guard<std::mutex> lock(entries_mutex_);
+    ++current_frame_;
+    // Heal an overshoot once its posters have left the screen. Cheap when
+    // under budget (one compare).
+    if (bytes_in_use_ > max_bytes_) {
+        evict_lru_locked(max_bytes_, /*protect_on_screen=*/true);
+    }
+}
+
+std::size_t ArtworkCache::budget_overshoots() const {
+    std::lock_guard<std::mutex> lock(entries_mutex_);
+    return overshoot_episodes_;
+}
+
+void ArtworkCache::apply_variant(ArtworkVariant variant, int& w, int& h,
+                                 std::vector<std::uint8_t>& pixels_rgba) {
+    const PixelSize target = target_size_for_variant(w, h, variant);
+    if (target.w <= 0 || target.h <= 0 || (target.w == w && target.h == h)) {
+        return;
+    }
+    auto scaled = downscale_rgba_area(pixels_rgba.data(), w, h,
+                                      target.w, target.h);
+    if (scaled.empty()) return;  // keep the original rather than nothing
+    pixels_rgba = std::move(scaled);
+    w = target.w;
+    h = target.h;
 }
 
 std::size_t ArtworkCache::pump() {
@@ -211,9 +246,23 @@ void ArtworkCache::upload_one(PendingUpload&& p) {
 
     {
         std::lock_guard<std::mutex> lock(entries_mutex_);
+        // An upload forces the frame that shows it, so it counts as drawn
+        // now: a texture must never be evicted before it is ever shown.
+        entry.last_drawn_frame = current_frame_;
+        auto existing = entries_.find(p.url);
+        if (existing != entries_.end()) {
+            // Re-upload of a key we already hold (a clear/refetch race):
+            // replace it instead of leaking the old texture + its bytes.
+#ifndef ARTWORK_CACHE_TEST_MODE
+            if (existing->second.texture_id != 0) {
+                glDeleteTextures(1, &existing->second.texture_id);
+            }
+#endif
+            bytes_in_use_ -= existing->second.bytes;
+        }
         entries_[p.url] = entry;
         bytes_in_use_ += entry.bytes;
-        evict_lru_locked(max_bytes_);
+        evict_lru_locked(max_bytes_, /*protect_on_screen=*/true, &p.url);
     }
 
     // Drop the in-flight marker. (Not strictly needed — the entries_
@@ -256,17 +305,40 @@ std::size_t ArtworkCache::trim_textures_to(std::size_t target_bytes) {
     return evicted;
 }
 
-std::size_t ArtworkCache::evict_lru_locked(std::size_t limit) {
+std::size_t ArtworkCache::evict_lru_locked(std::size_t limit,
+                                           bool protect_on_screen,
+                                           const std::string* keep_key) {
     // Called with entries_mutex_ held. Walk entries, find the oldest
-    // last_access, drop it, repeat until under budget. Simple O(n*k)
-    // algorithm — fine for n in the low thousands (our budget size).
+    // evictable last_access, drop it, repeat until under budget. Simple
+    // O(n*k) algorithm — fine for n in the low thousands (our budget size).
     std::size_t evicted = 0;
     while (bytes_in_use_ > limit && !entries_.empty()) {
-        auto oldest = entries_.begin();
+        auto oldest = entries_.end();
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {
-            if (it->second.last_access < oldest->second.last_access) {
+            if (keep_key && it->first == *keep_key) continue;
+            if (protect_on_screen &&
+                artwork_drawn_recently(it->second.last_drawn_frame,
+                                       current_frame_)) {
+                continue;
+            }
+            if (oldest == entries_.end() ||
+                it->second.last_access < oldest->second.last_access) {
                 oldest = it;
             }
+        }
+        if (oldest == entries_.end()) {
+            // Everything left is on screen (or just landed): overshoot
+            // rather than thrash. Logged once per episode.
+            if (!in_overshoot_) {
+                in_overshoot_ = true;
+                ++overshoot_episodes_;
+                spdlog::warn("[artwork] on-screen posters exceed the texture "
+                             "budget ({} > {} bytes, {} entries) — holding "
+                             "them over budget instead of evicting visible "
+                             "art; heals when they leave the screen",
+                             bytes_in_use_, limit, entries_.size());
+            }
+            return evicted;
         }
 #ifndef ARTWORK_CACHE_TEST_MODE
         if (oldest->second.texture_id != 0) {
@@ -278,6 +350,11 @@ std::size_t ArtworkCache::evict_lru_locked(std::size_t limit) {
                       oldest->first, oldest->second.bytes);
         entries_.erase(oldest);
         ++evicted;
+    }
+    if (in_overshoot_ && bytes_in_use_ <= max_bytes_) {
+        in_overshoot_ = false;
+        spdlog::info("[artwork] texture budget overshoot healed ({} bytes)",
+                     bytes_in_use_);
     }
     return evicted;
 }
@@ -297,9 +374,9 @@ std::size_t ArtworkCache::bytes_waiting_upload() const {
 }
 
 std::optional<ArtworkCache::TextureDims>
-ArtworkCache::get_dims(const std::string& url) const {
+ArtworkCache::get_dims(const std::string& url, ArtworkVariant variant) const {
     std::lock_guard<std::mutex> lock(entries_mutex_);
-    auto it = entries_.find(url);
+    auto it = entries_.find(artwork_cache_key(url, variant));
     if (it == entries_.end()) return std::nullopt;
     if (it->second.width <= 0 || it->second.height <= 0) return std::nullopt;
     return TextureDims{it->second.width, it->second.height};
@@ -365,6 +442,7 @@ void ArtworkCache::clear_textures() {
 #endif
         entries_.clear();
         bytes_in_use_ = 0;
+        in_overshoot_ = false;
     }
     spdlog::info("[artwork] cleared {} textures + {} queued uploads",
                  dropped, discarded.size());
@@ -582,7 +660,7 @@ void ArtworkCache::fetcher_thread_main() {
             if (stop_.load(std::memory_order_acquire)) break;
         }
 
-        std::string url;
+        WorkItem item;
         {
             std::unique_lock<std::mutex> lock(work_mutex_);
             work_cv_.wait(lock, [&] {
@@ -590,9 +668,11 @@ void ArtworkCache::fetcher_thread_main() {
                        !work_queue_.empty();
             });
             if (stop_.load(std::memory_order_acquire)) break;
-            url = std::move(work_queue_.front());
+            item = std::move(work_queue_.front());
             work_queue_.pop_front();
         }
+        const std::string& url = item.url;
+        const std::string& key = item.key;
         spdlog::info("[artwork] fetcher picked up url='{}'", url.substr(0, 80));
 
         // 1) Disk-cache hit path: skip network entirely. Median lookup
@@ -601,8 +681,9 @@ void ArtworkCache::fetcher_thread_main() {
             int dw = 0, dh = 0;
             std::vector<std::uint8_t> dpixels;
             if (try_load_from_disk(url, dw, dh, dpixels) && !dpixels.empty()) {
+                apply_variant(item.variant, dw, dh, dpixels);
                 PendingUpload pu;
-                pu.url = url;
+                pu.url = key;
                 pu.width = dw;
                 pu.height = dh;
                 pu.pixels_rgba = std::move(dpixels);
@@ -653,7 +734,7 @@ void ArtworkCache::fetcher_thread_main() {
             // Drop the in-flight marker so a future get_or_fetch() can
             // retry once the hold expires.
             std::lock_guard<std::mutex> lock(work_mutex_);
-            in_flight_.erase(url);
+            in_flight_.erase(key);
             continue;
         }
 
@@ -680,7 +761,7 @@ void ArtworkCache::fetcher_thread_main() {
                 }
             }
             std::lock_guard<std::mutex> lock(work_mutex_);
-            in_flight_.erase(url);
+            in_flight_.erase(key);
             continue;
         }
 
@@ -690,16 +771,20 @@ void ArtworkCache::fetcher_thread_main() {
         write_to_disk(url, body);
 
         PendingUpload pu;
-        pu.url = url;
+        pu.url = key;
+        const std::size_t decoded_n = static_cast<std::size_t>(w) *
+                                      static_cast<std::size_t>(h) * 4u;
+        pu.pixels_rgba.assign(decoded, decoded + decoded_n);
+        stbi_image_free(decoded);
+        const int src_w = w;
+        const int src_h = h;
+        apply_variant(item.variant, w, h, pu.pixels_rgba);
         pu.width = w;
         pu.height = h;
-        const std::size_t n = static_cast<std::size_t>(w) *
-                              static_cast<std::size_t>(h) * 4u;
-        pu.pixels_rgba.assign(decoded, decoded + n);
-        stbi_image_free(decoded);
+        const std::size_t n = pu.pixels_rgba.size();
 
-        spdlog::info("[artwork] fetched poster url='{}' {}x{} bytes={}",
-                     url, w, h, body.size());
+        spdlog::info("[artwork] fetched poster url='{}' {}x{} -> {}x{} bytes={}",
+                     url, src_w, src_h, w, h, body.size());
 
         bytes_waiting_upload_.fetch_add(n, std::memory_order_relaxed);
         {
