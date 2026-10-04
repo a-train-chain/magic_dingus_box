@@ -48,12 +48,15 @@ app::AppState::DisplaySettings::MbLibraryFilter mb_library_filter_from_string(co
     return R::All;
 }
 
+#ifdef MEDIA_BROWSER_ENABLED
 // True iff services/.env sets WIREGUARD_PRIVATE_KEY to a non-empty value.
-// Failure-closed: a missing file or any I/O error reads as false.
+// Failure-closed: a missing file or any I/O error reads as false. MB-only
+// caller, so guarded (the MB-OFF test build compiles this file with -Wextra).
 bool read_vpn_configured_from_services_env() {
     return !utils::read_env_value(utils::kServicesEnvPath,
                                   "WIREGUARD_PRIVATE_KEY").empty();
 }
+#endif
 
 }  // namespace
 
