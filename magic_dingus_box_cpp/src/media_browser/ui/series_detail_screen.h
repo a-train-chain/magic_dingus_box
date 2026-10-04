@@ -80,11 +80,15 @@ public:
 
     // One-shot "Start Season N" intent from Playback's season-end card.
     // Set by the dispatcher on the Playback->SeriesDetail transition
-    // (PRE-leave); consumed in enter(), which honours exactly that season
-    // (start_season_download) while it is still in eligible_seasons —
-    // drift (record gone, unsettled, season no longer downloadable) means
-    // the world changed while playing, and the safe answer is a no-op said
-    // out loud ("Season update didn't apply — try from this screen").
+    // (PRE-leave); consumed in enter(), which does NOT start it there: on a
+    // FullPause box Sonarr is still restarting at that instant. enter()
+    // hands it to begin_deferred_season_start(), which holds it until a
+    // ServiceGate says Sonarr answers and a fresh Sonarr answer has landed,
+    // then honours exactly that season (start_season_download) while it is
+    // still in eligible_seasons. Drift (record gone, never settled, season
+    // no longer downloadable) is a no-op said out loud ("Season update
+    // didn't apply — try from this screen"); an outage past the deadline
+    // says Sonarr didn't come back.
     void set_pending_intent_next_season(int season) {
         pending_intent_next_season_ = season;
     }
@@ -99,6 +103,10 @@ public:
     Screen origin() const { return origin_; }
 
     void enter() override;
+    // Drops a still-pending season-end start (said out loud): its decision
+    // needs this page's update() ticks, and acting later against whatever
+    // page is shown then would be the unasked-for mutation.
+    void leave() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
@@ -121,6 +129,10 @@ private:
         // Sonarr half
         bool sonarr_done = false;
         bool sonarr_ok = false;
+        // Sonarr actually ANSWERED this publish (the load's library read,
+        // or the poll's get_series). sonarr_ok can't say that: the poll
+        // carries the previous verdict forward on a failure.
+        bool sonarr_fresh = false;
         bool in_library = false;
         std::optional<Series> series;
         std::vector<QualityDefinition> quality_defs;
@@ -365,9 +377,48 @@ private:
     // Drain-set by start_playback_for, consumed by handle_input in the same
     // frame (the navigate_back_ idiom). Cleared in fetch().
     bool navigate_playback_ = false;
-    // See set_pending_intent_next_season(); consumed in enter(), cleared by
-    // fetch() (a full reload = a new world; the intent belonged to the old).
+    // See set_pending_intent_next_season(); consumed in enter() (which hands
+    // it to begin_deferred_season_start), cleared by fetch().
     std::optional<int> pending_intent_next_season_;
+
+    // ---- season-end card: deferred "Start Season N" ----
+    // RENDER thread. Replaces any earlier deferral, spawns the ServiceGate
+    // worker (into workers_, DoneFlag-reaped) that pings Sonarr until it
+    // answers, and records the intent. Never starts anything itself.
+    void begin_deferred_season_start(int season);
+    // RENDER thread, every update() after apply_pending(): reads the gate
+    // verdict, forces one fresh Sonarr answer once the gate is Ready, and
+    // acts on decide_deferred_season_start (series_detail_logic.h).
+    void step_deferred_season_start();
+    // RENDER thread. Cancels the gate worker and forgets the intent;
+    // `toast` (may be empty) tells the user what did not happen.
+    void drop_deferred_season_start(const std::string& toast);
+    struct DeferredSeasonStart {
+        int season = 0;
+        int tmdb_id = 0;
+        std::string title;
+        // Written by the gate worker: 0 pending, 1 ready, 2 timed out (a
+        // cancelled gate writes nothing). shared_ptr so a worker that
+        // outlives a replaced deferral writes into its OWN mailbox.
+        std::shared_ptr<std::atomic<int>> gate;
+        std::shared_ptr<std::atomic<bool>> cancel;
+        std::chrono::steady_clock::time_point began_at{};
+        bool announced = false;          // the "once services are back" toast
+        bool gate_seen_ready = false;
+        uint64_t answers_at_ready = 0;   // sonarr_answers_ when Ready was seen
+        std::chrono::steady_clock::time_point settle_deadline{};
+    };
+    std::optional<DeferredSeasonStart> deferred_start_;
+    // Count of APPLIED publishes that carried a real Sonarr answer
+    // (PendingLoad::sonarr_fresh). Render-thread only.
+    uint64_t sonarr_answers_ = 0;
+    // After the gate says Ready: how long a fresh, settled record may take
+    // to land before the intent is dropped (three 9 s polls).
+    static constexpr int kDeferredSettleMs = 30000;
+    // Only say "once services are back" if the start didn't happen almost
+    // at once — on a trickle box Sonarr never stopped, and the toast would
+    // just flash before "starting Season N…".
+    static constexpr int kDeferredAnnounceMs = 1500;
 
     SonarrClient& sonarr_;
     TmdbClient& tmdb_;

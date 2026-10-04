@@ -7,6 +7,7 @@
 
 #include "media_browser/library/watch_store.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
+#include "media_browser/service_gate.h"
 #include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/ui/mb_chrome.h"
 #include "media_browser/ui/mb_ui_utils.h"
@@ -112,6 +113,10 @@ SeriesDetailScreen::~SeriesDetailScreen() {
     // poll_gen_ gates the re-poll, and they publish into the SAME pending_.
     fetch_gen_.fetch_add(1);
     poll_gen_.fetch_add(1);
+    // A season-end gate worker may be mid-wait (up to 90 s): cancel it so
+    // the workers_ join below costs at most one in-flight ping.
+    if (deferred_start_.has_value() && deferred_start_->cancel)
+        deferred_start_->cancel->store(true, std::memory_order_release);
     if (mut_worker_.joinable()) mut_worker_.join();
     if (poll_worker_.joinable()) poll_worker_.join();
     for (auto& w : workers_) {
@@ -144,11 +149,15 @@ void SeriesDetailScreen::set_tmdb_id(int tmdb_id) {
 }
 
 void SeriesDetailScreen::enter() {
+    // Take the season-end intent BEFORE a possible reload: fetch() clears
+    // it, and the only setter (Playback -> SeriesDetail) never changes the
+    // series, so a same-series reload here must not silently swallow it.
+    // The deferral re-validates everything against fresh Sonarr data anyway.
+    const std::optional<int> intent = pending_intent_next_season_;
+    pending_intent_next_season_.reset();
     if (needs_refresh_) {
         needs_refresh_ = false;
         fetch();
-        // fetch() cleared pending_intent_next_season_: a full reload is a
-        // new world, and the intent belonged to the page it was set on.
     } else if (tmdb_id_ > 0) {
         // UNCONDITIONAL watch-state re-join on same-id re-entry. The
         // Playback->SeriesDetail return never calls set_tmdb_id, so
@@ -166,25 +175,146 @@ void SeriesDetailScreen::enter() {
         rebuild_buttons();
     }
     // Season-end card intent ("Start Season N" pressed during playback).
-    // Honour the offered season exactly while it is still eligible
-    // (eligible_seasons). Drift means the world changed while playing
-    // (another remote monitored it, the poll hasn't settled, the record
-    // vanished, the season is already on disk) — safest is no-op, said out
-    // loud.
-    if (pending_intent_next_season_.has_value()) {
-        const int want = *pending_intent_next_season_;
-        pending_intent_next_season_.reset();
-        // The card offered the season after the one just finished. Honour
-        // exactly that season while it is still downloadable; comparing it to
-        // the lowest unmonitored season (the old button target) refused it on any show with a deleted
-        // earlier season (emptied GoT: finish S5, offered S6, refused).
-        const auto elig = eligible_seasons(rows_);
-        if (series_.has_value() && series_->sonarr_id > 0 && series_settled_ &&
-            std::find(elig.begin(), elig.end(), want) != elig.end()) {
-            start_season_download(want);
+    // NOT started here: on a FullPause box Sonarr's container is still
+    // restarting at this instant (leave() only queued the resume), and the
+    // page's rows are a pre-playback snapshot. Starting now failed with
+    // "couldn't monitor season" or refused with "didn't apply" for a season
+    // that was downloadable. The deferral holds it until Sonarr answers and
+    // a fresh record lands — see step_deferred_season_start.
+    if (intent.has_value()) begin_deferred_season_start(*intent);
+}
+
+void SeriesDetailScreen::leave() {
+    if (deferred_start_.has_value()) {
+        const auto& d = *deferred_start_;
+        drop_deferred_season_start(
+            d.title + ": Season " + std::to_string(d.season) +
+            " not started \xE2\x80\x94 open the show again to start it");
+    }
+}
+
+void SeriesDetailScreen::begin_deferred_season_start(int season) {
+    // A previous deferral (only reachable by two card presses in a row) is
+    // superseded silently: this one is the user's latest word.
+    drop_deferred_season_start({});
+    reap_finished_workers();
+    DeferredSeasonStart d;
+    d.season = season;
+    d.tmdb_id = tmdb_id_;
+    d.title = detail_.has_value() ? detail_->title : std::string("This series");
+    d.gate = std::make_shared<std::atomic<int>>(0);
+    d.cancel = std::make_shared<std::atomic<bool>>(false);
+    d.began_at = std::chrono::steady_clock::now();
+    try {
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        std::thread t([this, gate = d.gate, cancel = d.cancel, done]() {
+            DoneFlag df{done};
+            run_guarded("season-end service gate", [&] {
+                // No MovieQuietMode is reachable from this screen, so the
+                // gate runs its ping phase only. That is still correct
+                // here: the card is pressed at the END of an episode, so
+                // the session's pause completed long ago, and a stopped
+                // container cannot answer a status request.
+                ServiceGateHooks hooks;
+                hooks.ping = [this] { return sonarr_.get_status().has_value(); };
+                hooks.cancelled = [cancel] {
+                    return cancel->load(std::memory_order_acquire);
+                };
+                const GateResult res = wait_for_service(hooks);
+                if (res == GateResult::Ready) {
+                    gate->store(1, std::memory_order_release);
+                } else if (res == GateResult::TimedOut) {
+                    gate->store(2, std::memory_order_release);
+                }
+            });
+        });
+        workers_.push_back(FetchWorker{std::move(t), std::move(done)});
+    } catch (const std::system_error& e) {
+        spdlog::warn("[SeriesDetail] season-end gate spawn failed: {}",
+                     e.what());
+        ::ui::Toast::show("Season update didn't apply \xE2\x80\x94 try from "
+                          "this screen");
+        return;
+    }
+    spdlog::info("[SeriesDetail] season-end intent: Season {} for '{}' held "
+                 "until Sonarr answers", season, d.title);
+    deferred_start_ = std::move(d);
+}
+
+void SeriesDetailScreen::drop_deferred_season_start(const std::string& toast) {
+    if (!deferred_start_.has_value()) return;
+    if (deferred_start_->cancel)
+        deferred_start_->cancel->store(true, std::memory_order_release);
+    deferred_start_.reset();
+    if (!toast.empty()) ::ui::Toast::show(toast);
+}
+
+void SeriesDetailScreen::step_deferred_season_start() {
+    if (!deferred_start_.has_value()) return;
+    auto& d = *deferred_start_;
+    const auto now = std::chrono::steady_clock::now();
+    const int g = d.gate->load(std::memory_order_acquire);
+    const DeferredGate gate = g == 1   ? DeferredGate::Ready
+                              : g == 2 ? DeferredGate::TimedOut
+                                       : DeferredGate::Pending;
+    if (gate == DeferredGate::Ready && !d.gate_seen_ready) {
+        d.gate_seen_ready = true;
+        d.answers_at_ready = sonarr_answers_;
+        d.settle_deadline =
+            now + std::chrono::milliseconds(kDeferredSettleMs);
+        // Ask for the fresh answer NOW rather than at the next 9 s poll.
+        // A page whose Sonarr half never loaded has no poll to bring
+        // forward, so it reloads — fetch() keeps this deferral (same id).
+        if (in_library_ && sonarr_ok_ && series_.has_value() &&
+            series_->sonarr_id > 0) {
+            last_poll_at_ = {};
         } else {
-            ::ui::Toast::show(
-                "Season update didn't apply — try from this screen");
+            fetch();
+        }
+    }
+    DeferredStartInputs in;
+    in.gate = gate;
+    in.fresh_answer =
+        d.gate_seen_ready && sonarr_answers_ > d.answers_at_ready;
+    in.has_series =
+        in_library_ && series_.has_value() && series_->sonarr_id > 0;
+    in.settled = series_settled_;
+    in.mutation_in_flight = mut_in_flight_.load();
+    const auto elig = eligible_seasons(rows_);
+    in.want_eligible =
+        std::find(elig.begin(), elig.end(), d.season) != elig.end();
+    in.past_deadline = d.gate_seen_ready && now >= d.settle_deadline;
+    switch (decide_deferred_season_start(in)) {
+        case DeferredStartStep::Wait:
+            if (!d.announced &&
+                now - d.began_at >=
+                    std::chrono::milliseconds(kDeferredAnnounceMs)) {
+                d.announced = true;
+                ::ui::Toast::show(d.title + ": starting Season " +
+                                  std::to_string(d.season) +
+                                  " once services are back\xE2\x80\xA6");
+            }
+            return;
+        case DeferredStartStep::Start: {
+            // Honour exactly the season the card offered (not the lowest
+            // unmonitored one: that refused it on any show with a deleted
+            // earlier season — emptied GoT: finish S5, offered S6, refused).
+            const int want = d.season;
+            drop_deferred_season_start({});
+            start_season_download(want);
+            return;
+        }
+        case DeferredStartStep::Drifted:
+            drop_deferred_season_start(
+                "Season update didn't apply \xE2\x80\x94 try from this screen");
+            return;
+        case DeferredStartStep::ServicesDown: {
+            const std::string msg =
+                d.title + ": Sonarr didn't come back \xE2\x80\x94 Season " +
+                std::to_string(d.season) +
+                " not started; try from this screen";
+            drop_deferred_season_start(msg);
+            return;
         }
     }
 }
@@ -258,6 +388,11 @@ void SeriesDetailScreen::fetch() {
     season_del_armed_ = false;
     season_del_inflight_ = false;
     pending_intent_next_season_.reset();
+    // A held season-end start survives a reload of the SAME series (the
+    // deferral itself reloads a page whose Sonarr half never loaded); a
+    // different series is a new world. leave() already said so out loud.
+    if (deferred_start_.has_value() && deferred_start_->tmdb_id != tmdb_id_)
+        drop_deferred_season_start({});
     const int id = tmdb_id_;
     if (id <= 0) {
         tmdb_done_ = true;  // resolver -> TmdbError; nothing to fetch
@@ -336,6 +471,7 @@ void SeriesDetailScreen::run_sonarr_fetch(uint64_t gen, int tmdb_id,
     if (gen != fetch_gen_.load()) return;  // preempted — discard
     pending_.sonarr_done = true;
     pending_.sonarr_ok = lib.has_value();
+    pending_.sonarr_fresh = lib.has_value();
     pending_.in_library = match.has_value();
     if (match.has_value()) {
         pending_.settled = record_refreshed(*match);
@@ -430,6 +566,8 @@ void SeriesDetailScreen::apply_pending() {
     if (p.sonarr_done) {
         sonarr_done_ = true;
         sonarr_ok_ = p.sonarr_ok;
+        // The season-end deferral's "has a fresh answer landed?" signal.
+        if (p.sonarr_fresh) ++sonarr_answers_;
         in_library_ = p.in_library;
         if (p.series.has_value()) series_ = std::move(p.series);
         if (p.has_settled) series_settled_ = p.settled;
@@ -895,6 +1033,11 @@ void SeriesDetailScreen::start_season_download(int season) {
         return;
     }
     const int sid = series_->sonarr_id;
+    // The user got there first (pressed the same season by hand while the
+    // season-end deferral was still waiting): the deferral would only find
+    // the season in flight and toast a misleading "didn't apply" later.
+    if (deferred_start_.has_value() && deferred_start_->season == season)
+        drop_deferred_season_start({});
     // Same immediate-feedback rule as AddSeason.
     ::ui::Toast::show(title + ": starting Season " + std::to_string(season) +
                       "\xE2\x80\xA6");
@@ -2482,6 +2625,7 @@ void SeriesDetailScreen::run_series_poll(uint64_t gen, int sonarr_id,
     // failure leaves the original fetch's verdict standing. Both priors
     // arrive by value so nothing here reads render-thread state.
     pending_.sonarr_ok = fresh.has_value() ? true : prev_sonarr_ok;
+    pending_.sonarr_fresh = fresh.has_value();
     if (fresh.has_value()) {
         pending_.in_library = true;
         // The settle signal for an existing record: has Sonarr ever
@@ -2512,6 +2656,10 @@ void SeriesDetailScreen::update() {
     drain_mutation();
     expire_confirms();
     apply_pending();
+    // After the drain (it may carry the fresh answer the deferral waits
+    // for) and before the re-poll (a Ready gate brings the poll forward to
+    // this very frame).
+    step_deferred_season_start();
     maybe_repoll_series();
 }
 

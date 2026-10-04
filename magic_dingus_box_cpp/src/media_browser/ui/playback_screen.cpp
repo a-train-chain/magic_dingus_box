@@ -1,6 +1,8 @@
 #include "media_browser/ui/playback_screen.h"
 
+#include <algorithm>
 #include <cstdlib>  // std::system — used to call playback_services_pause.sh
+#include <system_error>
 #include <filesystem>  // exists() guard before the in-place episode advance
 #include <spdlog/spdlog.h>
 
@@ -9,8 +11,10 @@
 #include "app/controller.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/service_gate.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_chrome.h"
+#include "media_browser/ui/worker_pool.h"  // run_guarded
 #include "platform/input_manager.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -212,6 +216,9 @@ void PlaybackScreen::enter() {
     // edge detection. Starts false; update() needs to see false→true (play
     // started) before a later true→false transition reads as natural EOS.
     was_video_active_ = false;
+    // Decided below with the quiet mode; reset first so an early return
+    // never inherits the previous session's verdict.
+    session_full_pause_ = false;
 
     if (movie_path_.empty()) {
         deferred_toast_ = "No movie file path";
@@ -275,6 +282,12 @@ void PlaybackScreen::enter() {
                                   : app::MovieQuietMode::Mode::FullPause);
         quiet_requested_ = true;
     }
+    // Radarr's container is stopped for this whole session exactly when a
+    // FullPause was requested — the overlay's quick-add then defers to
+    // after the movie instead of firing into it (see DeferredAdd).
+    session_full_pause_ =
+        quiet_ != nullptr && quiet_mode == platform::ServiceQuietMode::FullPause;
+    session_deferred_adds_.clear();
 
     // Empty playlist_dir disables the playlist-dir-relative resolution
     // strategy in path_resolver. The path is already host-absolute (passed
@@ -392,6 +405,12 @@ void PlaybackScreen::leave() {
         quiet_->request_resume();
     }
     quiet_requested_ = false;
+
+    // Quick-adds deferred during a FullPause session run now — AFTER the
+    // resume was queued, so the gate's quiet-idle wait covers it. Never
+    // blocks: the worker waits on the gate, not this thread.
+    if (!session_deferred_adds_.empty()) start_deferred_adds();
+    session_full_pause_ = false;
 
     // One-shot watch-state carriers die with the session. start_position_
     // must not leak into a later playback that never called
@@ -528,6 +547,24 @@ Screen PlaybackScreen::handle_input(
                 return Screen::Playback;
             }
 
+            // FullPause session: Radarr's container is stopped until this
+            // movie ends, so an add now could only time out and say
+            // "Couldn't add". Queue it for after the movie instead (see
+            // DeferredAdd in the header); leave() starts the worker.
+            if (session_full_pause_) {
+                const int id = film->tmdb_id;
+                const bool queued = std::any_of(
+                    session_deferred_adds_.begin(),
+                    session_deferred_adds_.end(),
+                    [id](const DeferredAdd& d) { return d.tmdb_id == id; });
+                if (!queued) {
+                    session_deferred_adds_.push_back(
+                        DeferredAdd{id, film->title});
+                }
+                overlay_.show_toast("Will add after the movie");
+                return Screen::Playback;
+            }
+
             // Quick-add runs on a worker — get_quality_profiles +
             // add_movie are two 5s-timeout HTTP calls, and this handler
             // runs while a MOVIE IS PLAYING (see the header note on
@@ -544,39 +581,11 @@ Screen PlaybackScreen::handle_input(
             try {
                 quickadd_worker_ = std::thread([this, add_tmdb_id]() {
                     std::string toast;
-                    // Profile pick mirrors detail_screen.cpp's
-                    // pick_quality_profile_id heuristic: prefer "Any" so
-                    // we don't block on a profile mismatch.
-                    int qp = 0;
-                    auto profiles = radarr_.get_quality_profiles();
-                    for (const auto& p : profiles) {
-                        if (p.name == "Any") { qp = p.id; break; }
-                    }
-                    if (qp == 0) {
-                        for (const auto& p : profiles) {
-                            if (p.name == "HD - 720p/1080p") { qp = p.id; break; }
-                        }
-                    }
-                    if (qp == 0 && !profiles.empty()) qp = profiles.front().id;
-
-                    if (qp == 0) {
-                        toast = "No quality profile";
-                    } else if (radarr_.add_movie(add_tmdb_id, qp,
-                                                 /*monitor=*/true)) {
-                        toast = "Added \xe2\x80\x94 searching";
-                    } else {
-                        const std::string err = radarr_.last_error();
-                        // Radarr returns HTTP 400 with "This movie has
-                        // already been added" in the body when the title is
-                        // already in the library; the error string is
-                        // "HTTP 400: <json body>".
-                        if (err.find("already") != std::string::npos ||
-                            err.find("Already") != std::string::npos) {
-                            toast = "Already in library";
-                        } else {
-                            toast = "Couldn\xe2\x80\x99t add \xe2\x80\x94 try again";
-                        }
-                    }
+                    run_guarded("playback quick-add", [&] {
+                        toast = run_quick_add(add_tmdb_id);
+                    });
+                    if (toast.empty())
+                        toast = "Couldn\xe2\x80\x99t add \xe2\x80\x94 try again";
                     quickadd_toast_ = std::move(toast);
                     quickadd_done_.store(true, std::memory_order_release);
                     quickadd_in_flight_.store(false, std::memory_order_release);
@@ -1209,6 +1218,134 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
                     end_overlay_.has_primary ? mc::ButtonKind::Ok
                                              : mc::ButtonKind::Neutral,
                     /*focused=*/true);
+}
+
+std::string PlaybackScreen::run_quick_add(int tmdb_id) {
+    // WORKER thread. Profile pick mirrors detail_screen.cpp's
+    // pick_quality_profile_id heuristic: prefer "Any" so we don't block on
+    // a profile mismatch.
+    int qp = 0;
+    auto profiles = radarr_.get_quality_profiles();
+    for (const auto& p : profiles) {
+        if (p.name == "Any") { qp = p.id; break; }
+    }
+    if (qp == 0) {
+        for (const auto& p : profiles) {
+            if (p.name == "HD - 720p/1080p") { qp = p.id; break; }
+        }
+    }
+    if (qp == 0 && !profiles.empty()) qp = profiles.front().id;
+
+    if (qp == 0) return "No quality profile";
+    if (radarr_.add_movie(tmdb_id, qp, /*monitor=*/true)) {
+        return "Added \xe2\x80\x94 searching";
+    }
+    const std::string err = radarr_.last_error();
+    // Radarr returns HTTP 400 with "This movie has already been added" in
+    // the body when the title is already in the library; the error string
+    // is "HTTP 400: <json body>".
+    if (err.find("already") != std::string::npos ||
+        err.find("Already") != std::string::npos) {
+        return "Already in library";
+    }
+    return "Couldn\xe2\x80\x99t add \xe2\x80\x94 try again";
+}
+
+void PlaybackScreen::start_deferred_adds() {
+    // RENDER thread (leave()). Hand this session's queue to the worker. One
+    // worker at a time: if it is still running (a previous session's batch
+    // is mid-gate) the new items join its queue and it picks them up on its
+    // next round; otherwise the finished thread is reaped — it cleared
+    // deferred_add_running_ as its last act under the mutex, so the join is
+    // near-instant — and a new one starts.
+    bool spawn = false;
+    {
+        std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+        for (auto& d : session_deferred_adds_)
+            deferred_add_queue_.push_back(std::move(d));
+        if (!deferred_add_running_) {
+            deferred_add_running_ = true;
+            spawn = true;
+        }
+    }
+    session_deferred_adds_.clear();
+    if (!spawn) return;
+    if (deferred_add_worker_.joinable()) deferred_add_worker_.join();
+    try {
+        deferred_add_worker_ = std::thread([this] {
+            bool finished = false;
+            run_guarded("playback deferred quick-add", [&] {
+                run_deferred_adds();
+                finished = true;
+            });
+            // Backstop for a throw out of the body ONLY: never leave the
+            // running flag latched (every later deferral would queue into
+            // a worker that no longer exists). On the normal path the body
+            // already cleared it under the mutex — clearing it again here
+            // could clobber a newer worker's claim made in between.
+            if (!finished) {
+                std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+                deferred_add_running_ = false;
+            }
+        });
+    } catch (const std::system_error&) {
+        std::vector<DeferredAdd> dropped;
+        {
+            std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+            dropped.swap(deferred_add_queue_);
+            deferred_add_running_ = false;
+        }
+        for (const auto& d : dropped) {
+            ::ui::Toast::show("Couldn\xe2\x80\x99t add " + d.title +
+                              " \xe2\x80\x94 add it from Browse");
+        }
+    }
+}
+
+void PlaybackScreen::run_deferred_adds() {
+    // WORKER thread. Gate, take the batch, add, repeat until the queue is
+    // empty. The gate is re-run per round so items queued by a LATER
+    // session (which stopped Radarr again) also wait for it to come back.
+    for (;;) {
+        ServiceGateHooks hooks;
+        if (quiet_ != nullptr) {
+            // quiet_ is owned by main.cpp and outlives this screen.
+            hooks.wait_quiet_idle = [q = quiet_](std::chrono::milliseconds d) {
+                return q->wait_until_idle_for(d);
+            };
+        }
+        hooks.ping = [this] { return radarr_.get_status().has_value(); };
+        hooks.cancelled = [this] {
+            return shutting_down_.load(std::memory_order_acquire);
+        };
+        const GateResult gate = wait_for_service(hooks);
+
+        std::vector<DeferredAdd> batch;
+        {
+            std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+            batch.swap(deferred_add_queue_);
+            if (batch.empty() || gate == GateResult::Cancelled) {
+                deferred_add_running_ = false;
+                return;
+            }
+        }
+        for (const auto& d : batch) {
+            const std::string name =
+                d.title.empty() ? std::string("Movie") : d.title;
+            if (gate != GateResult::Ready) {
+                spdlog::warn("[playback] deferred quick-add of tmdb:{} "
+                             "dropped: Radarr didn't come back", d.tmdb_id);
+                ::ui::Toast::post("Couldn\xe2\x80\x99t add " + name +
+                                  " \xe2\x80\x94 Radarr didn't come back; "
+                                  "add it from Browse");
+                continue;
+            }
+            const std::string outcome = run_quick_add(d.tmdb_id);
+            spdlog::info("[playback] deferred quick-add of tmdb:{}: {}",
+                         d.tmdb_id, outcome);
+            ::ui::Toast::post(name + ": " + outcome);
+        }
+    }
 }
 
 }  // namespace media_browser::ui
