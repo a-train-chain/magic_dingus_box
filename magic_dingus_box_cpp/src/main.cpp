@@ -64,6 +64,7 @@
 #include "app/playback_reset.h"
 #include "app/auto_advance.h"
 #include "app/redraw_gate.h"
+#include "app/post_game_gate.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
@@ -1295,6 +1296,9 @@ int main(int /* argc */, char* /* argv */[]) {
     // systemd SIGABRT'd the kiosk (KillMode=mixed took RetroArch with it).
     std::atomic<bool> game_session_running{false};
     std::thread game_session_gpio_thread;
+    // Return-from-game window: armed by the end hook below, released by the
+    // main loop once the post-game reset has run (app/post_game_gate.h).
+    app::PostGameGate post_game_gate;
     controller.set_session_watchdog([](retroarch::SessionWatchdog ev) {
 #ifdef HAVE_SYSTEMD
         switch (ev) {
@@ -1377,12 +1381,17 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             game_quiet_mode.request_resume();
 #endif
-            // Clear the retroarch fields so kiosk_status.json never has
-            // stale ROM/core values.
-            state.retroarch_rom_name.clear();
-            state.retroarch_core.clear();
-            state.screen_mode.store(app::ScreenMode::Playlist);
-            try { status_writer.write_now(state); } catch (...) {}
+            // Do NOT publish the menu from here. This hook runs while the
+            // main loop is still inside the dispatch of the launching press:
+            // the Settings fields in AppState are the pre-launch snapshot
+            // (menu open, game list showing) that main.cpp is about to
+            // force-close, and the post-game reset has not run. Publishing
+            // "playlist" now let a client aim a SELECT at that stale game
+            // list and land it on Master Shuffle (Pi 5, 2026-10-03). The
+            // gate keeps "retroarch" published until the main loop's ready
+            // edge, which clears the ROM/core fields and lets the live
+            // screen through — see app/post_game_gate.h.
+            post_game_gate.session_ended();
         });
 
     // Try to load intro video at startup
@@ -1809,7 +1818,21 @@ int main(int /* argc */, char* /* argv */[]) {
                  std::cout << "Initial swap buffers after reset success." << std::endl;
             }
         }
-        
+
+        // Return-from-game ready edge: the reset above has run (or none was
+        // needed — a launch that failed before the handover), so the kiosk
+        // can take input again. Anything queued since the input devices
+        // reopened was pressed at a dissolving plate or a black screen, not
+        // at the menu that is about to fade in — drain it unseen. Only
+        // after that does the status stop saying "retroarch".
+        if (post_game_gate.take_ready(state.reset_display.load())) {
+            (void)input.poll();
+            if (gpio.is_available()) (void)gpio.poll();
+            state.retroarch_rom_name.clear();
+            state.retroarch_core.clear();
+            std::cout << "Post-game reset complete; accepting input" << std::endl;
+        }
+
         // Check for display mode changes from Settings Menu
         if (state.display_settings.mode != current_display_mode) {
             std::cout << "Display Mode changed! Switching resolution..." << std::endl;
@@ -2552,6 +2575,10 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
 
         for (const auto& ev : input_events) {
+            // A game session ended inside an earlier event of THIS batch:
+            // the remaining events were pressed before the game ran, and
+            // the screen they were aimed at is gone (app/post_game_gate.h).
+            if (!post_game_gate.accepts_input()) break;
             // Handle Menu button hold logic
             if (ev.action == InputAction::SETTINGS_MENU) {
                 if (ev.pressed) {
@@ -4139,7 +4166,9 @@ int main(int /* argc */, char* /* argv */[]) {
         // NOTE: RetroArch mode is NOT derived here — it is set explicitly at
         // the fork/waitpid transition point above so the companion app sees
         // "retroarch" immediately even though the main loop blocks on waitpid.
-        state.screen_mode = [&]() -> app::ScreenMode {
+        // It also STAYS "retroarch" after the game, until the post-game
+        // reset is done (post_game_gate) — see the session end hook.
+        state.screen_mode = post_game_gate.published_screen([&]() -> app::ScreenMode {
             // Settings overlay first — covers the entire screen when active
             // and is conceptually a modal layer on top of any underlying
             // mode, so the phone remote should reflect Settings even if a
@@ -4161,7 +4190,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 return app::ScreenMode::MediaBrowser;
 #endif
             return app::ScreenMode::Playlist;
-        }();
+        }());
 
         {
             auto sw_now = std::chrono::steady_clock::now();
