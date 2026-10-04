@@ -53,12 +53,18 @@ mkdir -p "${WORK}/logs" "${WORK}/release" "${WORK}/steps"
 
 git_rev() { git -C "${REPO}" rev-parse --verify "$1^{commit}"; }
 
-# actions/checkout@v4 runs with lfs: false, so CI packages LFS POINTER files.
-# Disable the smudge filter here too, or the rehearsal would ship content CI
-# never does.
+# release.yml's build-source checkout runs with lfs: true (and refuses LFS
+# pointers in the tarball), so the archive must carry real LFS content too.
+# `git archive` emits the blobs as stored (pointers); materialise them by
+# overlaying the working tree's LFS files, which `git lfs pull` populated.
 git_archive() {
-    git -C "${REPO}" -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false \
-        archive --format=tar "$1" > "$2"
+    local tmp; tmp="$(mktemp -d)"
+    git -C "${REPO}" archive --format=tar "$1" | tar -x -C "${tmp}"
+    while IFS= read -r f; do
+        [ -f "${REPO}/${f}" ] && cp "${REPO}/${f}" "${tmp}/${f}"
+    done < <(git -C "${REPO}" lfs ls-files -n "$1" 2>/dev/null || true)
+    tar -C "${tmp}" -cf "$2" .
+    rm -rf "${tmp}"
 }
 
 ensure_pisim() {
