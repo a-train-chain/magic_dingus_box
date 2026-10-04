@@ -119,6 +119,7 @@ set(PLATFORM_SOURCES
     src/platform/gpio_manager.cpp
     src/platform/platform_profile.cpp
     src/platform/udev_wake.cpp
+    src/platform/input_mapping.cpp
 )
 
 # Media Browser unlock sequence detector — compiled into the kiosk binary
@@ -770,6 +771,9 @@ if(PLATFORM_TEST_SOURCES)
         src/platform/platform_profile.cpp
         # Controller-wake node selection (skips virtual/uinput devices).
         src/platform/udev_wake.cpp
+        # Built-in button/key tables + phone-remote parity (parses the
+        # web remote's uinput_writer.py).
+        src/platform/input_mapping.cpp
         src/utils/subprocess.cpp
     )
     target_include_directories(test_platform_unit PRIVATE src)
