@@ -621,6 +621,8 @@ void GstPlayer::request_seek(gint64 target_ns, GstSeekFlags snap) {
 }
 
 void GstPlayer::fire_seek() {
+    // Never serve a pre-seek position from the per-frame memo.
+    position_query_.invalidate();
     seek_in_progress_ = true;
     has_pending_seek_ = false;
     // A FLUSH seek out of EOS resumes playback — the stream is no longer
@@ -667,6 +669,8 @@ void GstPlayer::stop() {
     has_error_ = false;
     position_ = 0.0;
     duration_ = 0.0;
+    position_query_.invalidate();
+    duration_query_.invalidate();
 
     // Reset seek-coalescing state so the next stream starts clean — a
     // leftover seek_in_progress_ from the prior file would block its
@@ -686,6 +690,8 @@ bool GstPlayer::is_paused() const {
 
 double GstPlayer::get_position() const {
     if (!initialized_) return 0.0;
+    // This frame's update_position() already asked the pipeline.
+    if (position_query_.fresh(QueryCache::now_ns())) return position_;
     gint64 pos = 0;
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
         return static_cast<double>(pos) / GST_SECOND;
@@ -701,6 +707,7 @@ double GstPlayer::get_position() const {
 
 double GstPlayer::get_duration() const {
     if (!initialized_) return 0.0;
+    if (duration_query_.fresh(QueryCache::now_ns())) return duration_;
     gint64 dur = 0;
     if (gst_element_query_duration(pipeline_, GST_FORMAT_TIME, &dur)) {
         return static_cast<double>(dur) / GST_SECOND;
@@ -863,13 +870,22 @@ void GstPlayer::update_state() {
 void GstPlayer::update_position() {
     if (!initialized_ || !pipeline_) return;
 
-    // Update position and duration
+    // Update position and duration — the frame's one real query of each;
+    // the getters reuse these for the rest of the frame (query_cache.h).
+    // A failed query leaves its memo stale so the getters retry.
+    const std::int64_t now = QueryCache::now_ns();
     gint64 pos, dur;
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
         position_ = static_cast<double>(pos) / GST_SECOND;
+        position_query_.store(now);
+    } else {
+        position_query_.invalidate();
     }
     if (gst_element_query_duration(pipeline_, GST_FORMAT_TIME, &dur)) {
         duration_ = static_cast<double>(dur) / GST_SECOND;
+        duration_query_.store(now);
+    } else {
+        duration_query_.invalidate();
     }
 }
 
