@@ -540,6 +540,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_library_view.cpp
         tests/media_browser/test_queue_screen.cpp
         tests/media_browser/test_mb_entry_gate.cpp
+        tests/media_browser/test_mb_transition.cpp
         tests/media_browser/test_json_shapes.cpp
         tests/media_browser/test_service_gate.cpp
         tests/media_browser/test_movie_remove.cpp
