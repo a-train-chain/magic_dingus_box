@@ -162,6 +162,8 @@ set(APP_SOURCES
     src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
     src/app/playback_stall_watchdog.cpp
+    src/app/playback_reset.cpp
+    src/app/auto_advance.cpp
 )
 
 set(UTILS_SOURCES
@@ -690,6 +692,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         ${APP_TEST_SOURCES}
         src/app/rom_title.cpp
         src/app/playback_stall_watchdog.cpp
+        # stop_to_menu + auto-advance decisions: main.cpp/controller.cpp are
+        # in no test target, so their end-of-item logic lives here.
+        src/app/playback_reset.cpp
+        src/app/auto_advance.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp

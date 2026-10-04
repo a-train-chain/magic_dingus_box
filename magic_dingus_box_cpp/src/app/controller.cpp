@@ -1,5 +1,7 @@
 #include "controller.h"
 #include "game_launch_recovery.h"
+#include "playback_reset.h"
+#include "auto_advance.h"
 #include "../video/video_player.h"
 #include "../video/gst_player.h"
 #include "../utils/path_resolver.h"
@@ -338,16 +340,12 @@ void Controller::update_state(AppState& state) {
     
     // Check if video has ended (for auto-advancing to next item in playlist)
     bool video_ended = false;
-    // An item's `end` trims playback short: treat it as the effective duration
-    // so the existing auto-advance path fires there instead of at the real end
-    // of the file. Clamped to the real duration, because an `end` past the end
-    // of the media would otherwise never be reached and would hang the item.
+    // An item's `end` trims playback short. Same effective end main.cpp's
+    // auto-advance uses (see auto_advance.h), so "ended" means one thing.
     double effective_duration = cur_duration;
     {
         const PlaylistItem* cur = current_item(state);
-        if (cur && cur->end > 0.0 && cur->end < cur_duration) {
-            effective_duration = cur->end;
-        }
+        if (cur) effective_duration = effective_end(cur_duration, cur->end);
     }
     if (state.video_active && effective_duration > 0.0) {
         // Check if we're at or past the end (with small tolerance for rounding)
@@ -1067,13 +1065,14 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
                 // Loop back to start
                 next_index = 0;
             } else {
-                // Stop playback if looping is disabled
+                // Stop playback if looping is disabled. Back to the menu,
+                // NOT "cursor to item 0": indexes left >= 0 with no video
+                // read as a between-items transition and the renderer drew
+                // nothing until reboot. Nothing needs the cursor — starting
+                // a playlist from the menu always loads item 0 itself.
                 std::cout << "Playlist finished and looping disabled. Stopping playback." << std::endl;
                 stop();
-                // Reset to start for next play, but don't load it
-                state.current_item_index = 0;
-                state.video_active = false;
-                state.ui_visible_when_playing = true; // Show UI when stopped
+                stop_to_menu(state);
                 return;
             }
         }
@@ -1124,12 +1123,12 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
         }
 
         if (!found) {
-            // All items failed - stop and show UI
+            // All items failed - stop and show UI. Return so the UI
+            // visibility restore below can't re-hide the menu.
             std::cerr << "All playlist items failed to load, stopping." << std::endl;
             stop();
-            state.video_active = false;
-            state.ui_visible_when_playing = true;
-            state.set_error("No playable content in playlist");
+            stop_to_menu(state, "No playable content in playlist");
+            return;
         }
     }
 
