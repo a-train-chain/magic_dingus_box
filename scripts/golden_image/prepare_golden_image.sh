@@ -189,6 +189,12 @@ systemctl stop magic-dingus-box-cpp.service 2>/dev/null && \
     echo -e "  ${GREEN}Stopped${NC} magic-dingus-box-cpp.service" || \
     echo -e "  ${DIM}magic-dingus-box-cpp.service was not running${NC}"
 
+# PulseAudio has its own unit; stop it so it cannot rewrite the
+# ~/.config/pulse state cleared below.
+systemctl stop magic-dingus-audio.service 2>/dev/null && \
+    echo -e "  ${GREEN}Stopped${NC} magic-dingus-audio.service" || \
+    echo -e "  ${DIM}magic-dingus-audio.service was not running${NC}"
+
 systemctl stop magic-dingus-web.service 2>/dev/null && \
     echo -e "  ${GREEN}Stopped${NC} magic-dingus-web.service" || \
     echo -e "  ${DIM}magic-dingus-web.service was not running${NC}"
@@ -421,7 +427,8 @@ if [[ -d "$disabled_dir" ]]; then
     echo -e "  ${RED}Removed${NC} disabled playlists directory"
 fi
 
-# Clean PulseAudio state (will regenerate on boot via init_audio.sh)
+# Clean PulseAudio state (regenerated on boot by magic-dingus-audio.service,
+# audio_service.sh run)
 if [[ -d "${MAGIC_HOME}/.config/pulse" ]]; then
     rm -rf "${MAGIC_HOME}/.config/pulse"
     echo -e "  ${RED}Cleared${NC} PulseAudio state"

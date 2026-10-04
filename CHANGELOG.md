@@ -53,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for it once more.
 
 ### Fixed
+- **Sound no longer gets cut off every time the box's main program
+  restarts.** The part of the box that plays sound used to be switched
+  on by the main program and was forcibly killed whenever that program
+  stopped, restarted or crashed — which could damage its saved settings
+  and left sound depending on a clean restart every time. It now runs
+  as its own background service that starts before the main program and
+  keeps running through restarts, and comes back by itself within a
+  couple of seconds if it ever stops. Updates, deploys and new boxes all
+  set this up automatically; a box that somehow misses it still has
+  sound the old way.
 - **A power cut during a software update no longer leaves a box that
   won't start.** If the power went out (or the update was stopped) while
   the box was rebuilding itself, it could be left with no working program

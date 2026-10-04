@@ -317,6 +317,10 @@ unset _u
 log "[1/5] Periodic timers + cascade watcher stopped for the duration of the clone"
 
 systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
+# PulseAudio is its own unit now, so stopping the kiosk no longer stops it.
+# Quiesce it explicitly: a running daemon keeps rewriting its tdb state in
+# ~/.config/pulse, and a copy caught mid-write would ship in every clone.
+systemctl stop magic-dingus-audio.service 2>/dev/null || true
 systemctl stop magic-dingus-web.service 2>/dev/null || true
 
 # Stop docker-compose stack via the systemd unit so its ExecStop runs

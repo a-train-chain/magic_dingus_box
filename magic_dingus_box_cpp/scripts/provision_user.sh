@@ -56,7 +56,8 @@ chmod 440 "/etc/sudoers.d/010_$USERNAME-nopasswd"
 
 # Base PulseAudio config. No default sink here: sink names embed the SoC
 # bus address (Pi 4 and Pi 5 differ) and which HDMI port has the TV —
-# init_audio.sh resolves the real sink at every kiosk start.
+# audio_service.sh set-sink resolves the real sink at every audio-unit
+# and kiosk start.
 echo "Configuring PulseAudio..."
 mkdir -p "/home/$USERNAME/.config/pulse"
 echo ".include /etc/pulse/default.pa" > "/home/$USERNAME/.config/pulse/default.pa"

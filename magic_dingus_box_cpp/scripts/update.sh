@@ -63,7 +63,8 @@ KIOSK_UNIT="magic-dingus-box-cpp.service"
 # "No connected display" — must match platform::kExitNoDisplay in
 # src/platform/kiosk_exit.h. The binary loaded and ran; there is no TV.
 KIOSK_EXIT_NO_DISPLAY=69
-# init_audio.sh (ExecStartPre) waits on HDMI audio, so the first start can
+# The kiosk waits on magic-dingus-audio.service (HDMI card wait + PulseAudio
+# ready) and init_audio.sh (ExecStartPre), so the first start can
 # legitimately take a while; 90 s matches systemd's default start timeout.
 KIOSK_START_TIMEOUT="${MAGIC_KIOSK_START_TIMEOUT:-90}"
 # A kiosk that reaches READY and then crashes looked healthy to the old
@@ -1573,6 +1574,12 @@ install_update() {
     # REBOOT_REQUIRED rather than rebooting — an OTA must never
     # power-cycle the box, and the posture simply arms on the next
     # natural restart (inert-but-harmless until then).
+    #
+    # It also installs magic-dingus-audio.service (PulseAudio in its own
+    # unit) + the kiosk drop-in ordering the kiosk after it, via
+    # setup_audio_service.sh. The kiosk is stopped at this point, so its
+    # start below pulls the audio unit in (Wants=); a box where this
+    # fails keeps sound through init_audio.sh's legacy path.
     if [ "$SKIP_SYSTEMCTL" = "true" ]; then
         log "SKIP: memory tuning (test mode)"
     elif [ -f "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh" ]; then

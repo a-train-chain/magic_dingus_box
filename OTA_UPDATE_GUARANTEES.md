@@ -57,7 +57,10 @@ system-side fix (a unit setting, a service restart, anything under `/etc`)
 must ride one of them — as a systemd drop-in rather than a unit-file edit,
 idempotent, and never able to fail the script. Examples: the kiosk's
 `TimeoutStopSec=20` is a drop-in written by `setup_memory_tuning.sh`; the
-port-80 redirect is `try-restart`ed by `setup_network_hardening.sh`.
+port-80 redirect is `try-restart`ed by `setup_network_hardening.sh`; the
+PulseAudio unit (`magic-dingus-audio.service`) and the kiosk drop-in that
+orders the kiosk after it are installed by `setup_audio_service.sh`, which
+`setup_memory_tuning.sh` calls.
 
 ## What's PRESERVED — the contract
 
