@@ -23,6 +23,8 @@ enum class Renderer {
     GL
 };
 
+enum class SessionWatchdog { Arm, Ping, Disarm };
+
 struct LaunchOptions {
     app::DisplayMode display_mode = app::DisplayMode::CRT_NATIVE;
     std::string bezel_file;
@@ -55,6 +57,13 @@ struct LaunchOptions {
     // Must not throw. Anything it does is unrecoverable from here: the fork
     // follows immediately.
     std::function<void()> before_fork;
+
+    // systemd watchdog control for the supervised play phase. The launcher
+    // calls Arm right after RetroArch is spawned, Ping on every supervision
+    // tick (~50 ms) and Disarm when the session is over, before the kiosk's
+    // DRM/input restore runs — that restore and the pre-launch teardown stay
+    // unwatched, as before. Empty = no watchdog (tests, dev machines).
+    std::function<void(SessionWatchdog)> watchdog;
 };
 
 // Display aspect an N64 title ends up with once its measured overscan crop is
@@ -164,50 +173,22 @@ std::string core_options_key_prefix(const std::string& core_name);
 const char* audio_driver_for_gameplay();
 int audio_latency_ms_for_core(const std::string& core_name);
 
-enum class StartupStatus {
-    Ready,
-    Exited,
-    TimedOut,
-    WaitError,
-};
+// Written with RetroArch's pid once it opens the KMS node, removed when the
+// session ends. Nothing in the kiosk reads it any more (readiness is
+// detected in-process), but scripts/emulator_smoke_test.py does.
+inline constexpr const char* kReadyMarkerPath = "/tmp/retroarch_mdb.ready";
 
-struct ReadyWatchOptions {
-    std::string ready_file = "/tmp/retroarch_mdb.ready";
-    std::string drm_card_pattern = "/dev/dri/card*";
-};
+// The bash launcher used to append to this tmpfs file on every launch and
+// never rotated it. It is no longer written; the launcher deletes any
+// leftover copy. Everything now goes to the rotated
+// config::retroarch::get_launcher_log().
+inline constexpr const char* kLegacyTmpLauncherLog = "/tmp/retroarch_launcher.log";
 
-std::string build_kms_ready_watch_block(const std::string& command,
-                                        const ReadyWatchOptions& options);
-
-StartupStatus wait_for_startup(
-    pid_t launcher_pid,
-    const std::string& ready_file,
-    std::chrono::milliseconds timeout,
-    std::chrono::milliseconds poll_interval = std::chrono::milliseconds(50));
-
-bool terminate_process_group(pid_t launcher_pid,
-                             std::chrono::milliseconds grace);
-
-// Post-game safety net for a RetroArch that outlived its launcher. It used
-// to be an unconditional `pkill -9 retroarch`, which on a mid-game kiosk
-// stop landed while RetroArch was still writing its auto save-state/SRAM.
-// Now: SIGTERM, poll up to `grace` for it to exit on its own (saving on the
-// way), and SIGKILL only if it is still there. I/O is injected so the
-// escalation is testable; the kiosk wires it to pgrep/pkill.
-struct StragglerOps {
-    std::function<bool()> running;
-    std::function<void(int signal)> signal;
-    std::function<void(std::chrono::milliseconds)> sleep;
-};
-
-enum class StragglerResult {
-    None,        // nothing was running; no signal sent
-    Terminated,  // exited within the grace period after SIGTERM
-    Killed,      // still running after the grace period; SIGKILLed
-};
-
-StragglerResult reap_retroarch_stragglers(const StragglerOps& ops,
-                                          std::chrono::milliseconds grace,
-                                          std::chrono::milliseconds poll);
+// True when an existing core .opt file would shadow the options
+// write_core_options() emits: some line begins with `prefix` (the
+// `grep -l '^<prefix>'` the old launcher script ran). An empty prefix never
+// matches — a core we write no options for must not lose its .opt.
+bool opt_file_shadows_options(const std::string& opt_contents,
+                              const std::string& prefix);
 
 }  // namespace retroarch

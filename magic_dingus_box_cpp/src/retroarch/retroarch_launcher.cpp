@@ -2,9 +2,11 @@
 #include "controller_detector.h"
 #include "controller_mapping.h"
 #include "controller_profile.h"
+#include "game_session.h"
 #include "../utils/config.h"
 #include <iostream>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <unistd.h>
 #include <sys/types.h>
@@ -15,58 +17,135 @@
 #include <thread>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <vector>
 #include <errno.h>
 #include <ctime>
 #include <sstream>
-#include <regex>
 #include <cmath>
+
+extern char** environ;
 
 namespace fs = std::filesystem;
 
 namespace retroarch {
 
-volatile sig_atomic_t g_active_session_pgid = 0;
-
 namespace {
-    // Escape a string for safe embedding inside a SINGLE-QUOTED shell context.
-    //
-    // Use this for any C++ value that ends up between single quotes in a
-    // shell command emitted by the launcher script — for example:
-    //
-    //   script_file << "echo 'Core: " << shell_sq_escape(core_name)
-    //               << "' >> /tmp/log\n";
-    //
-    // The result becomes literal '<value>' in the shell, with embedded single
-    // quotes correctly escaped via the canonical close-quote/escape/reopen
-    // pattern: ' → '\''. Backslashes, $, backticks, and double quotes survive
-    // unchanged because the surrounding single quotes prevent shell expansion.
-    //
-    // This is NOT needed for values written inside `cat > ... << 'EOF' ... EOF`
-    // heredoc bodies — the single-quoted delimiter makes those literal already.
-    // It IS needed anywhere a value is emitted in the launcher script outside
-    // a single-quoted heredoc: shell echo statements, `mkdir -p "$path"`,
-    // anywhere bash actually evaluates the line.
-    //
-    // INVARIANT: any C++ value embedded in shell context that could contain
-    // operator-controlled input (ROM titles, paths, custom names) MUST go
-    // through this helper. Values that are programmatic identifiers
-    // (core_name like "pcsx_rearmed_libretro", static map names) are safe in
-    // practice but routed through this helper anyway as defense-in-depth.
-    std::string shell_sq_escape(const std::string& s) {
-        std::string out;
-        out.reserve(s.size() + 8);
-        for (char c : s) {
-            if (c == '\'') {
-                out += "'\\''";
-            } else {
-                out += c;
+
+// Run a helper (udevadm, pkill) to completion with its output discarded.
+int run_quiet(std::vector<const char*> argv) {
+    argv.push_back(nullptr);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+        execvp(argv[0], const_cast<char* const*>(argv.data()));
+        _exit(127);
+    }
+    if (pid < 0) return -1;
+    int status = 0;
+    pid_t r;
+    do { r = waitpid(pid, &status, 0); } while (r < 0 && errno == EINTR);
+    if (r != pid) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+std::string timestamp_now() {
+    const std::time_t t = std::time(nullptr);
+    char buf[64];
+    std::tm tm_buf{};
+    if (localtime_r(&t, &tm_buf) == nullptr ||
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_buf) == 0) {
+        return "?";
+    }
+    return buf;
+}
+
+// Write `contents` to `path` (truncating). false + log on failure.
+bool write_file(const std::string& path, const std::string& contents) {
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open()) {
+        std::cerr << "Failed to write " << path << std::endl;
+        return false;
+    }
+    out << contents;
+    out.close();
+    if (!out) {
+        std::cerr << "Failed to write " << path << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// Delete the per-core .opt files that would shadow the options we write.
+// RetroArch's config/<Core Name>/<Core Name>.opt takes precedence over
+// core_options_path, so a stale one silently wins and every value in
+// write_core_options() becomes a no-op — no error, no log line, just the
+// core's defaults.
+//
+// This used to name PCSX-ReARMed's file literally, which meant PS1 worked
+// and nothing else did. Verified on hardware 2026-07-28: with Flycast.opt in
+// place a Dreamcast launch ran on "TV (Composite)" with DCNet enabled; with
+// it parked, the same launch came up "VGA" with DCNet disabled.
+// Mupen64Plus-Next.opt had been shadowing the N64 options the same way.
+//
+// Matched by option-key prefix rather than by core display name: the
+// directory names are RetroArch's, not ours ("ParaLLEl N64", "Beetle PCE
+// Fast"), and a hardcoded map silently stops matching when one is renamed
+// upstream. The prefix comes from core_options_key_prefix(), which is
+// unit-tested to cover every line write_core_options() emits.
+void remove_shadowing_opt_files(const std::string& home,
+                                const std::string& prefix) {
+    if (prefix.empty()) return;
+    std::error_code ec;
+    const fs::path config_dir = fs::path(home) / ".config/retroarch/config";
+    for (fs::directory_iterator core_dir(config_dir, ec), end;
+         !ec && core_dir != end; core_dir.increment(ec)) {
+        std::error_code inner_ec;
+        if (!core_dir->is_directory(inner_ec)) continue;
+        for (fs::directory_iterator f(core_dir->path(), inner_ec), fend;
+             !inner_ec && f != fend; f.increment(inner_ec)) {
+            if (f->path().extension() != ".opt") continue;
+            std::ifstream in(f->path());
+            const std::string contents((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+            if (opt_file_shadows_options(contents, prefix)) {
+                std::error_code rm_ec;
+                fs::remove(f->path(), rm_ec);
+                std::cout << "Removed shadowing core options file: "
+                          << f->path().string() << std::endl;
             }
         }
-        return out;
     }
-
 }
+
+std::vector<std::string> current_environment() {
+    std::vector<std::string> env;
+    for (char** e = environ; e != nullptr && *e != nullptr; ++e) env.emplace_back(*e);
+    return env;
+}
+
+const char* outcome_name(SessionOutcome o) {
+    switch (o) {
+        case SessionOutcome::Exited: return "exited";
+        case SessionOutcome::ExitedBeforeReady: return "exited before taking over KMS";
+        case SessionOutcome::StartupTimedOut: return "did not take over KMS in time";
+        case SessionOutcome::StopRequested: return "stopped on kiosk shutdown request";
+    }
+    return "?";
+}
+
+const char* stop_name(StopResult r) {
+    switch (r) {
+        case StopResult::AlreadyExited: return "quit on its own";
+        case StopResult::Terminated: return "exited after SIGTERM";
+        case StopResult::Killed: return "ignored SIGTERM; SIGKILLed";
+    }
+    return "?";
+}
+
+}  // namespace
+
 
 RetroArchLauncher::RetroArchLauncher() : retroarch_available_(false) {
 }
@@ -134,9 +213,51 @@ bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_
 }
 
 
-bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output, const LaunchOptions& opts) {
-    const ReadyWatchOptions ready_options;
 
+// RetroArch is exec'd DIRECTLY from here — there is no generated bash
+// launcher any more. Everything that script did is either done below in C++
+// or was deleted on purpose; the full inventory (2026-10-03):
+//
+//   PORTED: mkdir of ~/.config/retroarch, the save/state dirs and
+//     /tmp/empty_autoconfig; the core options, override and main config
+//     files (byte-for-byte the same content, minus two `echo ... >>` shell
+//     lines that had been written INSIDE the main config's heredoc and so
+//     landed in retroarch_mdb.cfg as junk); the stale-.opt purge; the
+//     environment (`unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE
+//     SDL_VIDEODRIVER`, `export HOME`, `export XDG_RUNTIME_DIR`) — see
+//     build_child_environment(); stdout/stderr to the rotated launcher log;
+//     one `udevadm settle` (RetroArch's udev joypad driver enumerates by the
+//     udev DB's ID_INPUT_JOYSTICK, so the DB must be quiet after the
+//     controller's `udevadm trigger`); the KMS readiness watch (now an
+//     in-process /proc/<pid>/fd scan) and its /tmp/retroarch_mdb.ready
+//     marker; the TERM-trap/wait dance (now stop_game_session()).
+//
+//   DELETED, with reasons:
+//     - Autoconfig-file creation/backup-restore for 0e6d_111d / 0079_0006:
+//       the script created the file and then `rm -f`'d it a few lines later,
+//       and RetroArch is pointed at an empty autoconfig dir anyway — net
+//       effect nothing, plus a "WARNING - Autoconfig file missing!" on every
+//       launch.
+//     - The controller "wake-up": `hexdump` of a hardcoded /dev/input/event0
+//       (not the pad on a Pi) and js0 with `WAKE_PID=$!`, which never
+//       captured a PID because the reader ran in a subshell; RetroArch opens
+//       the pad itself, which is what resumes a USB HID device. ~1.7 s of
+//       sleeps, all of it AFTER the display was handed over (a frozen frame).
+//     - The script's two extra `sudo udevadm trigger` passes: the controller
+//       already triggers js*/event* right before this (load_playlist_item).
+//     - Diagnostics nobody read: `fuser -v /dev/input/event0` (wrong
+//       device), `aplay -l`, `whoami`/`groups` (single-quoted, so they
+//       logged the literal text `$(whoami)`), the js* permission listing
+//       (the C++ accessibility check below still logs to the journal).
+//     - Every `>> /tmp/retroarch_launcher.log` line: that tmpfs file grew
+//       on every launch and was never rotated. A session header now opens
+//       the rotated ~/retroarch_launcher.log instead.
+//     - Deleting retroarch_mdb.cfg / retroarch_core_options.cfg on exit:
+//       they are overwritten on every launch, so keeping the last one costs
+//       nothing and lets a post-mortem see exactly what RetroArch was given.
+//     - The find of *.backup.* autoconfig files older than a day: no code
+//       has created one since the backup scheme was retired.
+bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output, const LaunchOptions& opts) {
     std::cout << "=== RetroArch Launcher Called ===" << std::endl;
     std::cout << "ROM: " << game_info.rom_path << std::endl;
     std::cout << "Core: " << game_info.core_name << std::endl;
@@ -144,7 +265,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     std::cout << "Display mode: " << (opts.display_mode == app::DisplayMode::MODERN_TV ? "MODERN_TV" : "CRT_NATIVE") << std::endl;
     std::cout << "Bezel file: " << (opts.bezel_file.empty() ? "(none)" : opts.bezel_file) << std::endl;
     std::cout << "Launching RetroArch in DRM/KMS mode" << std::endl;
-    
+
     // RetroArch expects the full core name with _libretro suffix for -L
     const std::string core_name = libretro_core_name(game_info.core_name);
 
@@ -164,17 +285,33 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     std::cout << "Found core: " << libretro_dir << "/" << core_name << ".so"
               << std::endl;
 
+    // A shutdown that landed during the controller's teardown: do not even
+    // start. (Sticky flag — see request_session_stop().)
+    if (session_stop_requested()) {
+        std::cout << "Kiosk is shutting down; not launching RetroArch" << std::endl;
+        return false;
+    }
+
     // One session per log file: move last session's to .1 so the full
     // --verbose output cannot grow ~/retroarch_launcher.log forever.
-    if (!rotate_launcher_log(config::retroarch::get_launcher_log())) {
+    const std::string launcher_log = config::retroarch::get_launcher_log();
+    if (!rotate_launcher_log(launcher_log)) {
         std::cerr << "Could not rotate launcher log (appending)" << std::endl;
+    }
+    {
+        // Leftovers of the bash launcher: the unrotated tmpfs log, and the
+        // last generated script (stale, and misleading to anyone reading it
+        // as "what the kiosk runs").
+        std::error_code ec;
+        fs::remove(kLegacyTmpLauncherLog, ec);
+        fs::remove(config::get_home_path() + "/retroarch_launcher.sh", ec);
     }
 
     // Stop GStreamer and cleanup audio resources first
     stop_gstreamer_and_cleanup();
 
     std::vector<std::string> cmd = {
-        retroarch_bin_.value(),
+        "retroarch",
         "--config", "/tmp/retroarch_mdb.cfg",
         // --appendconfig is applied AFTER the main config, so anything in
         // here always wins. Needed because RetroArch can end up with its
@@ -192,24 +329,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     cmd.push_back(game_info.rom_path);
     cmd.push_back("--verbose");
 
-    // DRM cleanup will be handled by the main application shutdown
-    // The systemd-run service will wait for cleanup to complete before launching RetroArch
-
-    // Build the RetroArch command (skip the binary path which is already in cmd[0])
-    // Use single-quote wrapping for shell safety - handles $, `, ", spaces, etc.
-    // Only need to escape literal single quotes: ' -> '\''
-    std::string retroarch_cmd = "/usr/bin/retroarch";
-    for (size_t i = 1; i < cmd.size(); ++i) {
-        const auto& arg = cmd[i];
-        std::string escaped_arg = arg;
-        size_t pos = 0;
-        while ((pos = escaped_arg.find("'", pos)) != std::string::npos) {
-            escaped_arg.replace(pos, 1, "'\\''");
-            pos += 4;
-        }
-        retroarch_cmd += " '" + escaped_arg + "'";
-    }
-
     // Select ALSA device based on user's audio output preference
     // audio_output: 0=AUTO, 1=HDMI, 2=HEADPHONE
     std::string alsa_device;
@@ -222,687 +341,395 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         alsa_device = detect_alsa_device();
     }
 
-    // Create a simple launcher script (persistent for debugging)
-    std::string launcher_script = config::retroarch::get_launcher_script();
+    // Directories RetroArch writes into. Saves/states come from
+    // config::retroarch::*() and may contain spaces (MAGIC_DATA_DIR under
+    // "magic_dingus_box /"), which is why this is no longer a shell line.
     {
-        std::ofstream script_file(launcher_script);
-        if (script_file.is_open()) {
-            script_file << "#!/bin/bash\n";
-            // NOTE: deliberately NO `set -e`. This script is ~90 lines of
-            // best-effort setup (controller wake-ups, udev triggers,
-            // permission probes, autoconfig housekeeping) BEFORE the
-            // RetroArch invocation. Under `set -e`, any one of those
-            // non-critical commands returning non-zero — a udevadm trigger
-            // that momentarily fails, a js* glob that doesn't expand
-            // because the controller hasn't re-enumerated yet after the
-            // DRM/input handoff, an empty-variable reference — silently
-            // aborts the whole script and the game never launches. That
-            // was the intermittent "launch didn't reach RetroArch" bug:
-            // the log ended mid-preamble with no RetroArch line. We WANT
-            // the launch to proceed even if a cosmetic setup step hiccups;
-            // RetroArch's own exit code is captured explicitly after it
-            // runs (RETROARCH_EXIT=$?), which is the outcome that matters.
+        std::error_code ec;
+        fs::create_directories(config::get_home_path() + "/.config/retroarch", ec);
+        fs::create_directories("/tmp/empty_autoconfig", ec);
+        fs::create_directories(config::retroarch::get_saves_dir(), ec);
+        if (ec) std::cerr << "Could not create saves dir: " << ec.message() << std::endl;
+        ec.clear();
+        fs::create_directories(config::retroarch::get_states_dir(), ec);
+        if (ec) std::cerr << "Could not create states dir: " << ec.message() << std::endl;
+    }
 
-            // ISOLATED CONFIG STRATEGY (Matches Manual Test)
-            // We write a fresh config to /tmp/retroarch_ui.cfg and pass it via --config
-            script_file << "# Use isolated temp config to avoid overwriting user's RetroArch config\n";
-            script_file << "UI_CONFIG=\"/tmp/retroarch_mdb.cfg\"\n";
-            
-            script_file << "# CRITICAL: Create a minimal default config to prevent RetroArch from creating one with autoconfig enabled\n";
-            script_file << "mkdir -p \"$HOME/.config/retroarch\"\n";
-            script_file << "mkdir -p \"/tmp/empty_autoconfig\"\n";
-            
-            // Create save directories. Paths come from config::retroarch::*()
-            // which are programmatic but may contain spaces (e.g., MAGIC_DATA_DIR
-            // pointing under "magic_dingus_box /" with the trailing-space quirk).
-            // Single-quote-wrap with shell_sq_escape so the path is literal.
-            script_file << "# Create save directories for game progress persistence\n";
-            script_file << "mkdir -p '" << shell_sq_escape(config::retroarch::get_saves_dir()) << "'\n";
-            script_file << "mkdir -p '" << shell_sq_escape(config::retroarch::get_states_dir()) << "'\n";
-            
-            // No backup needed - using isolated temp config in /tmp
+    // Controller type of the first recognized pad: the fallback mapping
+    // when no pad is enumerated at all (resolve_port_mappings()).
+    ControllerType controller_type = detect_primary_controller();
+    std::cout << "Controller detected: " << controller_type_name(controller_type) << std::endl;
 
-            // 1. Detect the connected controller for both autoconfig emission and mapping dispatch
-            ControllerType controller_type = detect_primary_controller();
-            std::cout << "Controller detected: " << controller_type_name(controller_type) << std::endl;
-
-            script_file << "# CRITICAL: Ensure autoconfig file exists and is accessible (DO NOT disable it!)\n";
-            script_file << "# Autoconfig is ENABLED, so we need the autoconfig file to be present\n";
-            script_file << "AUTOCONFIG_DIR=\"$HOME/.config/retroarch/autoconfig/udev\"\n";
-            script_file << "mkdir -p \"$AUTOCONFIG_DIR\"\n";
-            // Defensive default: AUTOCONFIG_FILE is only assigned a real
-            // path inside the N64_ADAPTER controller branch below, but it
-            // is referenced UNCONDITIONALLY later (rm -f "$AUTOCONFIG_FILE"
-            // and [ ! -f "$AUTOCONFIG_FILE" ]). On the PS-style / unknown
-            // controller paths those references would otherwise expand to
-            // an empty string ("rm -f ''", "[ ! -f '' ]") — harmless with
-            // `set -e` removed, but the empty-path test spuriously logged
-            // "Autoconfig file missing!" and, under the old `set -e`, was a
-            // coin-flip abort. Seed it to a harmless sentinel so every
-            // reference is well-defined regardless of controller type; the
-            // N64 branch overrides it with the real path when applicable.
-            script_file << "AUTOCONFIG_FILE=\"$AUTOCONFIG_DIR/.mdb_unused_autoconfig\"\n";
-
-            // Autoconfig file emission is controller-specific. RetroArch's autoconfig
-            // is disabled at runtime (see input_autoconfig_enable below), so this is
-            // mainly for backup/restore hygiene and future-proofing.
-            if (controller_type == ControllerType::N64_ADAPTER) {
-                script_file << "AUTOCONFIG_FILE=\"$AUTOCONFIG_DIR/0e6d_111d.cfg\"\n";
-                // Restore any backup files from previous runs
-                script_file << "for backup in \"$AUTOCONFIG_FILE.backup.\"*; do\n";
-                script_file << "    if [ -f \"$backup\" ]; then\n";
-                script_file << "        mv \"$backup\" \"$AUTOCONFIG_FILE\" 2>/dev/null || true\n";
-                script_file << "        echo 'Launcher: Restored autoconfig file from backup' >> /tmp/retroarch_launcher.log\n";
-                script_file << "        break\n";
-                script_file << "    fi\n";
-                script_file << "done\n";
-                script_file << "if [ ! -f \"$AUTOCONFIG_FILE\" ]; then\n";
-                script_file << "    echo '# RetroArch Autoconfig for SWITCH CO.,LTD. Controller' > \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_device = \"SWITCH CO.,LTD. Controller\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_driver = \"udev\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_vendor_id = \"3677\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_product_id = \"4381\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_a_btn = \"0\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_b_btn = \"1\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_x_btn = \"4\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_y_btn = \"3\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_l_btn = \"5\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_r_btn = \"6\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_start_btn = \"2\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_select_btn = \"10\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_up_btn = \"h0up\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_down_btn = \"h0down\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_left_btn = \"h0left\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_right_btn = \"h0right\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'Launcher: Created N64 autoconfig file' >> /tmp/retroarch_launcher.log\n";
-                script_file << "fi\n";
-            } else if (controller_type == ControllerType::PS_STYLE_DRAGONRISE) {
-                script_file << "AUTOCONFIG_FILE=\"$AUTOCONFIG_DIR/0079_0006.cfg\"\n";
-                script_file << "if [ ! -f \"$AUTOCONFIG_FILE\" ]; then\n";
-                script_file << "    echo '# RetroArch Autoconfig for DragonRise/Microntek Generic USB Joystick' > \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_device = \"USB Joystick\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_driver = \"udev\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_vendor_id = \"121\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_product_id = \"6\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_a_btn = \"1\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_b_btn = \"2\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_x_btn = \"0\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_y_btn = \"3\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_l_btn = \"4\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_r_btn = \"5\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_l2_btn = \"6\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_r2_btn = \"7\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_select_btn = \"8\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_start_btn = \"9\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_up_btn = \"h0up\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_down_btn = \"h0down\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_left_btn = \"h0left\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_right_btn = \"h0right\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_l_x_plus_axis = \"+0\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_l_x_minus_axis = \"-0\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_l_y_plus_axis = \"+1\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'input_l_y_minus_axis = \"-1\"' >> \"$AUTOCONFIG_FILE\"\n";
-                script_file << "    echo 'Launcher: Created PS-style autoconfig file' >> /tmp/retroarch_launcher.log\n";
-                script_file << "fi\n";
-            }
-            // UNKNOWN: skip autoconfig write entirely; RetroArch's autoconfig is
-            // disabled anyway and the explicit input_player1_*_btn lines drive input.
-            script_file << "# CRITICAL: Audio settings will be in the main config file (simpler approach)\n";
-            // Get service name for restart
-            const char* service_name_env = std::getenv("MAGIC_UI_SERVICE");
-            if (!service_name_env) {
-                service_name_env = "magic-dingus-box-cpp.service";
-            }
-
-            // Service name already obtained above
-
-            script_file << "echo \"$(date): Launcher: Starting RetroArch launcher script\" >> /tmp/retroarch_launcher.log\n";
-            // Use printf with separate %s args to keep $(date) evaluating at run
-            // time while keeping alsa_device (and any other interpolated value)
-            // hermetically sealed against $/`/" expansion.
-            script_file << "printf '%s: Launcher: Detected ALSA device: %s\\n' \"$(date)\" '" << shell_sq_escape(alsa_device) << "' >> /tmp/retroarch_launcher.log\n";
-            script_file << "echo \"$(date): Launcher: GStreamer cleanup completed\" >> /tmp/retroarch_launcher.log\n";
-            script_file << "# Running in background of main service - DRM master already dropped\n";
-            script_file << "echo 'Launcher: Preparing to launch RetroArch...'\n";
-            script_file << "echo 'Launcher: DRM master access already dropped by main service, launching RetroArch...'\n";
-            script_file << "echo 'Launcher: Creating RetroArch config...'\n";
-            script_file << "echo 'Launcher: ALSA device: " << shell_sq_escape(alsa_device) << "'\n";
-            script_file << "echo 'Launcher: aplay -l output:' >> /tmp/retroarch_launcher.log\n";
-            script_file << "aplay -l >> /tmp/retroarch_launcher.log 2>&1 || true\n";
-            
-            // Create Core Options file with performance-tuned settings
-            script_file << "cat > /tmp/retroarch_core_options.cfg << 'OPTS'\n";
-            write_core_options(script_file, core_name, game_info.rom_path);
-            script_file << "OPTS\n";
-
-            // Delete the per-core .opt files that would shadow the options we
-            // just wrote. RetroArch's config/<Core Name>/<Core Name>.opt takes
-            // precedence over core_options_path, so a stale one silently wins
-            // and every value above becomes a no-op — no error, no log line,
-            // just the core's defaults.
-            //
-            // This used to name PCSX-ReARMed's file literally, which meant PS1
-            // worked and nothing else did. Verified on hardware 2026-07-28:
-            // with Flycast.opt in place a Dreamcast launch ran on
-            // "TV (Composite)" with DCNet enabled; with it parked, the same
-            // launch came up "VGA" with DCNet disabled. Mupen64Plus-Next.opt
-            // had been shadowing the N64 options the same way since they were
-            // written — its ThreadedRenderer read "False" against the "True"
-            // in write_n64_core_options().
-            //
-            // Matched by option-key prefix rather than by core display name:
-            // the directory names are RetroArch's, not ours ("ParaLLEl N64",
-            // "Beetle PCE Fast"), and a hardcoded map silently stops matching
-            // when one is renamed upstream. The prefix comes from
-            // core_options_key_prefix(), which is unit-tested to cover every
-            // line write_core_options() emits.
-            {
-                const std::string opt_prefix = core_options_key_prefix(core_name);
-                if (!opt_prefix.empty()) {
-                    script_file
-                        << "grep -l '^" << opt_prefix
-                        << "' \"$HOME/.config/retroarch/config/\"*/*.opt "
-                           "2>/dev/null | while IFS= read -r f; do "
-                           "rm -f \"$f\"; done\n";
-                }
-            }
-            
-            // Override file, applied via --appendconfig AFTER the main
-            // config so these can never be clobbered by RetroArch's own
-            // defaults (see the --appendconfig note where cmd is built).
-            script_file << "cat > \"/tmp/retroarch_mdb_override.cfg\" << 'EOF'\n";
-            {
-                std::ostringstream remote_quit;
-                retroarch::write_remote_quit_config(remote_quit);
-                retroarch::write_menu_disabled_config(remote_quit);
-                script_file << remote_quit.str();
-            }
-            script_file << "EOF\n";
-
-            // Write the FULL config to our ISOLATED config location
-            script_file << "cat > \"$UI_CONFIG\" << 'EOF'\n";
-            script_file << "# DRM/KMS RetroArch config for Magic Dingus Box (Isolated)\n";
-            script_file << "libretro_system_directory = \"" << config::retroarch::get_system_dir() << "\"\n";
-            
-            // Save/State directories for game progress persistence
-            script_file << "savefile_directory = \"" << config::retroarch::get_saves_dir() << "\"\n";
-            script_file << "savestate_directory = \"" << config::retroarch::get_states_dir() << "\"\n";
-            script_file << "sort_savefiles_by_content_enable = \"true\"\n";
-            script_file << "sort_savestates_by_content_enable = \"true\"\n";
-            script_file << "savestate_auto_save = \"true\"\n";
-            script_file << "savestate_auto_load = \"true\"\n";
-            // Without these RA's auto-save state silently no-ops: with no global retroarch.cfg the default libretro_info_path points to a non-existent dir, core_info_list ends up empty, savestate_support_level reads 0, and command_event_save_auto_state early-returns at the support check.
-            script_file << "libretro_info_path = \"/usr/share/libretro/info\"\n";
-            script_file << "core_info_savestate_bypass = \"true\"\n";
-            
-            // Video config (driver, resolution, viewport, sync).
-            // Pick the renderer from the core: N64 (GLideN64) needs the GL
-            // path, everything else stays on Vulkan/khr_display. opts is
-            // const&, so copy it to stamp the renderer.
-            {
-                LaunchOptions video_opts = opts;
-                video_opts.renderer = renderer_for_core(core_name);
-                // Size the viewport to the shape the core will actually hand
-                // over. Only N64 differs from 4:3, and only for titles whose
-                // measured overscan crop is lopsided — see n64_content_aspect.
-                // Renderer::GL is precisely the N64 cores (renderer_for_core
-                // returns it for mupen64plus/parallel_n64 and nothing else),
-                // so it doubles as the family check without exporting one.
-                if (video_opts.renderer == Renderer::GL) {
-                    video_opts.content_aspect =
-                        n64_content_aspect(core_name, game_info.rom_path);
-                }
-                write_video_config(script_file, video_opts);
-            }
-            // RetroArch's threaded ALSA wrapper keeps the HDMI device fed
-            // independently of brief emulation or Vulkan present stalls.
-            script_file << "audio_driver = \"" << audio_driver_for_gameplay()
-                        << "\"\n";
-            script_file << "audio_resampler = \"sinc\"\n"; // High-quality gameplay resampling
-
-            script_file << "input_joypad_driver = \"udev\"\n";
-            script_file << "input_max_users = \"4\"\n";
-            script_file << "# Enhanced controller detection and configuration\n";
-            script_file << "# CRITICAL: Enable autodetect so RetroArch detects the controller\n";
-            script_file << "# But disable autoconfig so it doesn't load autoconfig files\n";
-            script_file << "input_autodetect_enable = \"true\"\n";
-            script_file << "# CRITICAL: Disable remap binds since autoconfig is disabled\n";
-            script_file << "input_remap_binds_enable = \"true\"\n";  // CRITICAL: Enable so core can receive input
-            script_file << "input_player1_analog_dpad_mode = \"0\"\n";  // Digital only for NES (matches working test)
-            script_file << "# CRITICAL: Force RetroArch to use built-in default button mappings (auto-assignment)\n";
-            script_file << "input_player1_bind_defaults = \"false\"\n";
-            script_file << "# CRITICAL: This forces RetroArch to automatically assign standard button mappings\n";
-            script_file << "# RetroArch will map: A=0, B=1, X=2, Y=3, L=4, R=5, Start=6, Select=7, D-pad=hat0\n";
-            script_file << "# CRITICAL: Ensure player 1 controller is enabled and working\n";
-            script_file << "input_player1_joypad_index = \"0\"\n";
-            script_file << "input_player1_enable = \"true\"\n";
-            // Player 2 setup mirrors player 1 — same analog mode + bind_defaults
-            // policy, but tied to joypad index 1. Without these explicit lines
-            // RetroArch leaves player 2 unbound (no autoconfig is present;
-            // we deleted that file to force manual mappings) and a 2nd
-            // identical PS-pad shows up in /dev/input/js1 but generates no
-            // input events the core can see. Per-core button mappings for
-            // player 2 are emitted alongside player 1 below.
-            script_file << "input_player2_analog_dpad_mode = \"0\"\n";
-            script_file << "input_player2_bind_defaults = \"false\"\n";
-            script_file << "input_player2_joypad_index = \"1\"\n";
-            script_file << "input_player2_enable = \"true\"\n";
-            script_file << "# Default mappings removed to prevent conflict with core-specific overrides\n";
-            script_file << "# We rely on core-specific sections to define mappings\n";
-            script_file << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
-            script_file << "input_enable_hotkey = \"true\"\n";
-            // Menu chord/key/updater disabled in the override file above
-            // (write_menu_disabled_config) -- the kiosk ships no RA menu.
-            script_file << "input_auto_game_focus = \"true\"\n";
-            script_file << "input_game_focus_enable = \"true\"\n";
-            script_file << "input_logging_enable = \"false\"\n";
-            script_file << "input_logging_level = \"0\"\n";
-            script_file << "input_block_timeout = \"0\"\n";
-            script_file << "input_hotkey_block_delay = \"0\"\n";
-            script_file << "# CRITICAL: Ensure input is enabled and controller works in-game\n";
-            script_file << "input_enabled = \"true\"\n";
-            script_file << "input_driver = \"udev\"\n";
-            script_file << "input_poll_type_behavior = \"0\"\n";
-            script_file << "input_all_users_control_menu = \"true\"\n";
-            script_file << "# CRITICAL: Ensure controller input reaches the core\n";
-            script_file << "input_descriptor_label_show = \"true\"\n";  // Show descriptors (matches working test)
-            script_file << "input_descriptor_hide_unbound = \"false\"\n";
-            script_file << "# CRITICAL: Enable autoconfig to load button mappings from autoconfig file\n";
-            script_file << "input_autoconfig_enable = \"false\"\n";
-            script_file << "input_joypad_driver_autoconfig_dir = \"/tmp/empty_autoconfig\"\n"; // Hide autoconfig files
-            script_file << "# CRITICAL: Ensure joypad driver is set (required for controller detection)\n";
-            script_file << "input_joypad_driver = \"udev\"\n";
-            script_file << "# CRITICAL: Force RetroArch to auto-assign default button mappings if autoconfig fails\n";
-            script_file << "# When bind_defaults=true, RetroArch will automatically assign standard button mappings\n";
-            script_file << "# This ensures buttons work even if autoconfig doesn't match perfectly\n";
-            script_file << "input_joypad_driver_mapping_dir = \"\"\n";
-            script_file << "# Don't save config on exit (prevents overwriting our settings)\n";
-            script_file << "config_save_on_exit = \"false\"\n";
-            script_file << "# CRITICAL: Single press to quit (don't require double press)\n";
-            script_file << "quit_press_twice = \"false\"\n";
-            {
-                // Phone remote QUIT_GAME support (KEY_Z exit bind) —
-                // see retroarch::write_remote_quit_config().
-                std::ostringstream remote_quit;
-                retroarch::write_remote_quit_config(remote_quit);
-                retroarch::write_menu_disabled_config(remote_quit);
-                script_file << remote_quit.str();
-            }
-            script_file << "core_options_path = \"/tmp/retroarch_core_options.cfg\"\n";
-            script_file << "# Audio settings - use ALSA to match GStreamer (simplified for reliability)\n";
-            script_file << "audio_device = \"" << alsa_device << "\"\n";
-            script_file << "audio_enable = \"true\"\n";
-            script_file << "audio_mute_enable = \"false\"\n";
-            // Convert system volume (0-100) to RetroArch dB format
-            // RetroArch uses decibels: 0 dB = 100%, negative dB = quieter
-            // Formula: dB = 20 * log10(volume_percent / 100)
-            // For safety, clamp to reasonable range: -60 dB to 0 dB
-            float volume_decimal = system_volume_percent / 100.0f;
-            float volume_db = (volume_decimal > 0.001f) ? (20.0f * log10f(volume_decimal)) : -60.0f;
-            // Clamp to valid range
-            if (volume_db > 0.0f) volume_db = 0.0f;
-            if (volume_db < -60.0f) volume_db = -60.0f;
-            // Apply user's game volume offset (e.g., -3dB, -6dB, -12dB)
-            float final_volume_db = volume_db + volume_offset_db;
-            if (final_volume_db < -60.0f) final_volume_db = -60.0f;
-            script_file << "audio_volume = \"" << final_volume_db << "\"\n";
-            script_file << "audio_mixer_volume = \"1.0\"\n";
-            script_file << "audio_mixer_mute_enable = \"false\"\n";
-            script_file << "# Simplified audio settings (matches Pi game version)\n";
-            script_file << "audio_sync = \"true\"\n";
-//             script_file << "audio_resampler = \"sinc\"\n";
-            script_file << "audio_out_rate = \"48000\"\n";
-            script_file << "audio_latency = \""
-                        << audio_latency_ms_for_core(core_name) << "\"\n";
-            script_file << "# Audio buffer settings - ensure audio callback works\n";
-//             script_file << "audio_block_frames = \"512\"\n";
-//             script_file << "audio_rate_control = \"true\"\n";
-//             script_file << "audio_rate_control_delta = \"0.005000\"\n";
-            script_file << "audio_enable_menu = \"false\"\n";
-            script_file << "audio_fastforward_mute = \"false\"\n";
-            script_file << "audio_dsp_plugin = \"\"\n";
-            script_file << "input_keyboard_layout = \"us\"\n";
-            script_file << "libretro_directory = \"" << libretro_dir << "\"\n";
-            script_file << "core_updater_buildbot_cores_url = \"https://buildbot.libretro.com/nightly/linux/aarch64/latest\"\n";
-            script_file << "core_updater_buildbot_assets_url = \"https://buildbot.libretro.com/assets/\"\n";
-            script_file << "core_updater_auto_extract_archive = \"true\"\n";
-            script_file << "# Ensure core actually runs\n";
-            script_file << "rewind_enable = \"false\"\n";
-            script_file << "run_ahead_enabled = \"false\"\n";
-            script_file << "netplay_enable = \"false\"\n";
-            script_file << "# CRITICAL: Ensure content actually loads and runs\n";
-            script_file << "content_load_auto_remap = \"false\"\n";
-            script_file << "content_load_mode_manual = \"false\"\n";
-            script_file << "pause_nonactive = \"false\"\n";
-            
-            // Trojan Horse moved to after EOF
-            script_file << "echo 'Launcher: Core name is " << shell_sq_escape(core_name) << "' >> /tmp/retroarch_launcher.log\n";
-
-            // 2. Resolve each port's mapping independently: captured profile
-            // -> builtin -> legacy N64 fallback (resolve_mapping_for_pad's
-            // precedence, via resolve_port_mappings() in
-            // controller_mapping.cpp). A missing P2 pad mirrors P1 exactly,
-            // and no detected pads at all falls back to today's single
-            // get_mapping(controller_type, core_name) path unchanged --
-            // see resolve_port_mappings() for the exact preserved-behavior
-            // contract (also unit-tested on Mac against a synthetic pad
-            // list, since this /dev/input scan itself has no Mac build).
-            const auto pads = detect_connected_controllers();
-            const auto profile_store = load_profile_store();
-            const auto port_mappings =
-                resolve_port_mappings(pads, controller_type, profile_store, core_name);
-            ControllerMapping map = port_mappings.p1;
-            ControllerMapping map_p2 = port_mappings.p2;
-
-            // map.name is a hardcoded string in get_mapping_*() helpers, but
-            // route through shell_sq_escape anyway as defense-in-depth.
-            script_file << "# === Controller Mapping: " << map.name << " ===\n";
-            script_file << "echo 'Launcher: Applying controller mapping for: " << shell_sq_escape(map.name) << "' >> /tmp/retroarch_launcher.log\n";
-
-            // 2-5. Apply the full input_player1_* bind block (settings,
-            // buttons, d-pad, analog axes, right stick, d-pad axes). See
-            // write_player_binds() in controller_mapping.cpp for the exact
-            // field order and the unconditional-emission rule (empty
-            // in-memory button tokens still write a line, serialized as
-            // `= "nul"` rather than omitted).
-            write_player_binds(script_file, map, 1);
-
-            // 5b. Player 2's own mapping, resolved above from port 1's
-            // VID/PID (or mirrored from player 1 when no second pad is
-            // connected -- see resolve_port_mappings()). Historically P2
-            // always mirrored P1 outright, because every fielded box ships
-            // two identical pads; without SOME P2 emission at all,
-            // RetroArch's per-core remap covers only player 1 and the 2nd
-            // pad shows up in /dev/input/js1 but produces no in-game effect
-            // — symptom: P2 character sits motionless in 2-player Twisted
-            // Metal / Tony Hawk / Doom split-screen. Task 7 lets each port
-            // resolve independently instead, so two DIFFERENT controller
-            // models can each get their own correct mapping in the same
-            // two-player game, while the one-pad-detected case still
-            // produces an exact mirror (verified above).
-            //
-            // Both calls MUST go through write_player_binds() — the P2
-            // block used to be a hand-duplicated copy of the P1 block, and
-            // that copy once drifted out of sync and shipped without the
-            // right-stick lines, leaving P2 with no camera control in every
-            // two-player N64 game. Routing both players through the same
-            // function makes that class of drift structurally impossible.
-            //
-            // Hotkeys (below) intentionally stay player-1-only so both
-            // controllers don't fight over the RA menu toggle.
-            write_player_binds(script_file, map_p2, 2);
-
-            // 5c. Apply Hotkeys
-            write_hotkey_binds(script_file, map);
-
-            // 8. Apply Extra Config (if any)
-            if (!map.extra_config.empty()) {
-                script_file << map.extra_config;
-            }
-            script_file << "# CRITICAL: Ensure input reaches the core (not just RetroArch menu)\n";
-            script_file << "input_driver_block_input = \"false\"\n";  // Don't block input
-            script_file << "input_driver_block_libretro_input = \"false\"\n";  // Don't block libretro input
-            script_file << "# Controller auto-configuration enabled - configure when game launches\n";
-            script_file << "\n";
-            script_file << "EOF\n";
-
-
-
-            // NUCLEAR OPTION 2.0: Delete autoconfig file to FORCE manual mapping from retroarch.cfg
-            // The Trojan Horse method (overwriting autoconfig) failed to produce correct results.
-            // By deleting the file and disabling autoconfig, we force RetroArch to use the explicit
-            // mappings defined in the main config file.
-            script_file << "echo 'Launcher: Deleting autoconfig file to force manual mapping' >> /tmp/retroarch_launcher.log\n";
-            script_file << "rm -f \"$AUTOCONFIG_FILE\"\n";
-            // Also ensure no other autoconfigs are found
-            script_file << "mkdir -p /tmp/empty_autoconfig\n";
-
-                script_file << "echo 'Launcher: Starting RetroArch...'\n";
-            script_file << "echo 'Launcher: User: $(whoami)' >> /tmp/retroarch_launcher.log\n";
-            script_file << "echo 'Launcher: Groups: $(groups)' >> /tmp/retroarch_launcher.log\n";
-
-            script_file << "# CRITICAL: Verify controller devices are accessible before launching RetroArch\n";
-            script_file << "echo 'Launcher: Verifying controller device accessibility...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "CONTROLLER_ACCESSIBLE=false\n";
-            script_file << "for js_device in /dev/input/js*; do\n";
-            script_file << "    if [ -c \"$js_device\" ] && [ -r \"$js_device\" ]; then\n";
-            script_file << "        echo \"Launcher: Controller device accessible: $js_device\" >> /tmp/retroarch_launcher.log\n";
-            script_file << "        CONTROLLER_ACCESSIBLE=true\n";
-            script_file << "        # Get device permissions for debugging\n";
-            script_file << "        ls -la \"$js_device\" >> /tmp/retroarch_launcher.log 2>&1 || true\n";
-            script_file << "        break\n";
-            script_file << "    fi\n";
-            script_file << "done\n";
-            script_file << "if [ \"$CONTROLLER_ACCESSIBLE\" = \"false\" ]; then\n";
-            script_file << "    echo 'Launcher: WARNING - No accessible controller devices found!' >> /tmp/retroarch_launcher.log\n";
-            script_file << "    echo 'Launcher: Checking user groups...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "    groups >> /tmp/retroarch_launcher.log 2>&1 || true\n";
-            script_file << "    echo 'Launcher: Checking device permissions...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "    ls -la /dev/input/js* >> /tmp/retroarch_launcher.log 2>&1 || true\n";
-            script_file << "fi\n";
-            script_file << "# Set essential environment for RetroArch\n";
-            script_file << "export XDG_RUNTIME_DIR=/run/user/" << getuid() << "\n";
-            script_file << "export HOME=" << config::get_home_path() << "\n";
-            script_file << "# CRITICAL: Check who is holding the input device\n";
-            script_file << "echo 'Launcher: Checking input device usage...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "fuser -v /dev/input/event0 >> /tmp/retroarch_launcher.log 2>&1 || true\n";
-            
-            script_file << "# CRITICAL: Wake up controller and ensure it's ready before RetroArch starts\n";
-            script_file << "# Controller may be in sleep mode after GStreamer/DRM cleanup\n";
-            script_file << "# The manual test works because the USER presses buttons, waking the controller\n";
-            script_file << "# We need to simulate this by actually reading from the controller\n";
-            script_file << "echo 'Launcher: Waking up controller...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "# Trigger udev events to ensure controller is active\n";
-            script_file << "sudo udevadm trigger --action=change --sysname-match=js* 2>/dev/null || true\n";
-            script_file << "sudo udevadm trigger --action=change --sysname-match=event* 2>/dev/null || true\n";
-            script_file << "udevadm settle --timeout=2 2>/dev/null || true\n";
-            script_file << "# CRITICAL: Actually read from controller to wake it (like user pressing buttons)\n";
-            script_file << "# This simulates the manual test where user interaction wakes the controller\n";
-            script_file << "echo 'Launcher: Reading from controller to wake it (simulating user interaction)...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "# Open device and read a few events (this wakes it up)\n";
-            script_file << "( timeout 0.5 hexdump -C /dev/input/event0 2>/dev/null | head -5 >/dev/null 2>&1 & )\n";
-            script_file << "WAKE_PID=$!\n";
-            script_file << "sleep 0.6\n";
-            script_file << "kill $WAKE_PID 2>/dev/null || true\n";
-            script_file << "# Also try js device\n";
-            script_file << "( timeout 0.5 hexdump -C /dev/input/js0 2>/dev/null | head -5 >/dev/null 2>&1 & )\n";
-            script_file << "WAKE_PID2=$!\n";
-            script_file << "sleep 0.6\n";
-            script_file << "kill $WAKE_PID2 2>/dev/null || true\n";
-            script_file << "# Small delay to ensure controller is fully ready\n";
-            script_file << "sleep 0.3\n";
-            script_file << "echo 'Launcher: Controller wake-up complete' >> /tmp/retroarch_launcher.log\n";
-            script_file << "# NOTE: We rely on the main app releasing its grab (InputManager::cleanup)\n";
-            script_file << "# and the wake-up sequence above to ensure controller works.\n";
-            script_file << "# Background keepalive processes are removed as they may steal events from RetroArch.\n";
-            script_file << "sleep 0.2\n";
-            script_file << "# CRITICAL: Autoconfig file should already exist (we ensured it above)\n";
-            script_file << "# Verify it exists before launching RetroArch\n";
-            script_file << "if [ ! -f \"$AUTOCONFIG_FILE\" ]; then\n";
-            script_file << "    echo 'Launcher: WARNING - Autoconfig file missing!' >> /tmp/retroarch_launcher.log\n";
-            script_file << "fi\n";
-            script_file << "# CRITICAL: Ensure udev has processed controller events before RetroArch starts\n";
-            script_file << "sudo udevadm trigger --action=change --sysname-match=js* 2>/dev/null || true\n";
-            script_file << "sudo udevadm trigger --action=change --sysname-match=event* 2>/dev/null || true\n";
-            script_file << "udevadm settle --timeout=1 2>/dev/null || true\n";
-            script_file << "# CRITICAL: Redirect stdout/stderr to log file\n";
-            script_file << "exec 1>>" << config::retroarch::get_launcher_log() << " 2>&1\n";
-            script_file << "echo 'Launcher: Launching RetroArch directly...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "# Launch RetroArch under the KMS readiness watcher so the parent can\n";
-            script_file << "# distinguish real display takeover from a stuck startup.\n";
-            script_file << build_kms_ready_watch_block(retroarch_cmd, ready_options);
-            script_file << "echo \"Launcher: RetroArch exited with code $RETROARCH_EXIT\" >> /tmp/retroarch_launcher.log\n";
-            // Clean up temp config files (no restore needed - we used isolated /tmp config)
-            script_file << "rm -f \"$UI_CONFIG\"\n";
-            script_file << "rm -f /tmp/retroarch_core_options.cfg\n";
-            script_file << "rm -f \"$RETROARCH_READY_FILE\"\n";
-            script_file << "# CRITICAL: Autoconfig file should remain in place (not backed up/restored)\n";
-            script_file << "# Clean up any old backup files from previous runs\n";
-            script_file << "find \"$AUTOCONFIG_DIR\" -name '*.backup.*' -type f -mtime +1 -delete 2>/dev/null || true\n";
-                script_file << "echo 'Launcher: RetroArch finished'\n";
-                script_file << "# Script will exit, main service continues running\n";
-                script_file << "exit \"$RETROARCH_EXIT\"\n";
-
-            script_file.close();
-
-            // Make script executable
-            chmod(launcher_script.c_str(), 0755);
-            std::cout << "Created launcher script: " << launcher_script << std::endl;
-        } else {
-            std::cerr << "Failed to create launcher script" << std::endl;
-            return false;
-            }
-        }
-
-        // CRITICAL: Verify controller device is accessible before forking
-        std::cout << "Verifying controller device accessibility..." << std::endl;
-        bool controller_accessible = false;
-        for (int i = 0; i < 4; ++i) {
-            std::string js_path = "/dev/input/js" + std::to_string(i);
-            if (access(js_path.c_str(), R_OK) == 0) {
-                std::cout << "Controller device accessible: " << js_path << std::endl;
-                controller_accessible = true;
-                break;
-            }
-        }
-        if (!controller_accessible) {
-            std::cerr << "WARNING: No accessible controller devices found before RetroArch launch!" << std::endl;
-            std::cerr << "This may cause controller input to not work in RetroArch" << std::endl;
-        }
-
-        // CRITICAL: Launch RetroArch DIRECTLY (no systemd-run)
-        // The service already has correct permissions and session access.
-        // Using systemd-run --user was isolating the process from the input devices.
-        // Since we manually drop DRM master and release input devices, direct launch is safe.
-        std::cout << "Launching RetroArch DIRECTLY (inheriting service environment)..." << std::endl;
-        
-        // Execute the launcher script directly
-        std::string launch_cmd = "/bin/bash " + launcher_script;
-        
-        std::cout << "Command: " << launch_cmd << std::endl;
-
-        // LAST POSSIBLE MOMENT to hand over the display. The launcher script is
-        // written, chmod'd and verified; everything above needed no display at
-        // all, so the kiosk has been able to keep its launch screen animating
-        // through all of it. The caller uses this hook to present its final
-        // frame and release DRM master, and the fork happens immediately after.
-        if (opts.before_fork) {
-            opts.before_fork();
-        }
-
-        // A stale marker must never make a new launch look ready. The script
-        // removes it again immediately before starting RetroArch, but doing it
-        // synchronously here closes the pre-fork window as well.
-        std::error_code ready_remove_error;
-        fs::remove(ready_options.ready_file, ready_remove_error);
-        if (ready_remove_error) {
-            std::cerr << "Failed to clear RetroArch readiness marker: "
-                      << ready_remove_error.message() << std::endl;
+    // Core options, performance-tuned per core/title.
+    {
+        std::ostringstream core_opts;
+        write_core_options(core_opts, core_name, game_info.rom_path);
+        if (!write_file("/tmp/retroarch_core_options.cfg", core_opts.str())) {
             return false;
         }
-        
-        // CRITICAL: Fork to run command in background (non-blocking for UI)
-        pid_t launch_pid = fork();
-        if (launch_pid == 0) {
-            // Isolate every pre-launch helper and RetroArch itself in one
-            // process group so a startup timeout can terminate all of them.
-            if (setpgid(0, 0) != 0) {
-                _exit(126);
-            }
+    }
+    remove_shadowing_opt_files(config::get_home_path(),
+                               core_options_key_prefix(core_name));
 
-            // Child process - execute the launch command
-            // Redirect output to log file
-            int log_fd = open(config::retroarch::get_launcher_log().c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-            if (log_fd != -1) {
-                dup2(log_fd, STDOUT_FILENO);
-                dup2(log_fd, STDERR_FILENO);
-                close(log_fd);
-            }
-            
-            // Reset signal handlers
-            signal(SIGCHLD, SIG_DFL);
-            signal(SIGPIPE, SIG_DFL);
-            
-            // Close file descriptors 3 and up to prevent inheritance
-            // This is crucial to ensure RetroArch doesn't inherit input FDs
-            long max_fd = sysconf(_SC_OPEN_MAX);
-            if (max_fd < 0) max_fd = 1024;
-            for (int fd = 3; fd < max_fd; fd++) {
-                close(fd);
-            }
-
-            execl("/bin/bash", "bash", launcher_script.c_str(), nullptr);
-            // If we reach here, exec failed
-            std::cerr << "Failed to execute launch command" << std::endl;
-            _exit(127);
-        } else if (launch_pid > 0) {
-            // Repeat setpgid in the parent to close the fork/exec race. EACCES
-            // means the child already exec'd after successfully grouping itself.
-            if (setpgid(launch_pid, launch_pid) != 0 && errno != EACCES &&
-                errno != ESRCH) {
-                std::cerr << "Failed to create RetroArch launch process group: "
-                          << std::strerror(errno) << std::endl;
-                terminate_process_group(launch_pid, std::chrono::milliseconds(500));
-                return false;
-            }
-            g_active_session_pgid = launch_pid;
-            struct ClearActiveSession {
-                ~ClearActiveSession() { g_active_session_pgid = 0; }
-            } clear_active_session;
-
-            std::cout << "RetroArch launch initiated (PID: " << launch_pid
-                      << ", waiting up to 15 seconds for KMS)" << std::endl;
-            const StartupStatus startup = wait_for_startup(
-                launch_pid, ready_options.ready_file, std::chrono::seconds(15));
-            if (startup != StartupStatus::Ready) {
-                switch (startup) {
-                    case StartupStatus::Exited:
-                        std::cerr << "RetroArch exited before taking over KMS" << std::endl;
-                        break;
-                    case StartupStatus::TimedOut:
-                        std::cerr << "RetroArch did not take over KMS within 15 seconds"
-                                  << std::endl;
-                        break;
-                    case StartupStatus::WaitError:
-                        std::cerr << "Unable to supervise RetroArch startup" << std::endl;
-                        break;
-                    case StartupStatus::Ready:
-                        break;
-                }
-                terminate_process_group(launch_pid, std::chrono::milliseconds(500));
-                fs::remove(ready_options.ready_file, ready_remove_error);
-                return false;
-            }
-
-            std::cout << "RetroArch has taken over the KMS display" << std::endl;
-
-            // KMS is ready; supervision is finished and adds no gameplay
-            // overhead. Block until the user exits RetroArch as before.
-            int status = 0;
-            pid_t wait_result;
-            do {
-                wait_result = waitpid(launch_pid, &status, 0);
-            } while (wait_result < 0 && errno == EINTR);
-
-            fs::remove(ready_options.ready_file, ready_remove_error);
-            if (wait_result < 0) {
-                std::cerr << "Failed while waiting for RetroArch to exit: "
-                          << std::strerror(errno) << std::endl;
-                return true;
-            }
-
-            if (WIFEXITED(status)) {
-                std::cout << "RetroArch exited with status " << WEXITSTATUS(status) << std::endl;
-            } else if (WIFSIGNALED(status)) {
-                std::cout << "RetroArch killed by signal " << WTERMSIG(status) << std::endl;
-            }
-        } else {
-            std::cerr << "Failed to fork launch process" << std::endl;
+    // Override file, applied via --appendconfig AFTER the main config so
+    // these can never be clobbered by RetroArch's own defaults (see the
+    // --appendconfig note where cmd is built).
+    {
+        std::ostringstream override_cfg;
+        retroarch::write_remote_quit_config(override_cfg);
+        retroarch::write_menu_disabled_config(override_cfg);
+        if (!write_file("/tmp/retroarch_mdb_override.cfg", override_cfg.str())) {
             return false;
         }
+    }
 
-        // Return true indicating game has finished
-        return true;
+    // The FULL config, written to our ISOLATED config location.
+    std::ostringstream cfg;
+    cfg << "# DRM/KMS RetroArch config for Magic Dingus Box (Isolated)\n";
+    cfg << "libretro_system_directory = \"" << config::retroarch::get_system_dir() << "\"\n";
+    
+    // Save/State directories for game progress persistence
+    cfg << "savefile_directory = \"" << config::retroarch::get_saves_dir() << "\"\n";
+    cfg << "savestate_directory = \"" << config::retroarch::get_states_dir() << "\"\n";
+    cfg << "sort_savefiles_by_content_enable = \"true\"\n";
+    cfg << "sort_savestates_by_content_enable = \"true\"\n";
+    cfg << "savestate_auto_save = \"true\"\n";
+    cfg << "savestate_auto_load = \"true\"\n";
+    // Without these RA's auto-save state silently no-ops: with no global retroarch.cfg the default libretro_info_path points to a non-existent dir, core_info_list ends up empty, savestate_support_level reads 0, and command_event_save_auto_state early-returns at the support check.
+    cfg << "libretro_info_path = \"/usr/share/libretro/info\"\n";
+    cfg << "core_info_savestate_bypass = \"true\"\n";
+    
+    // Video config (driver, resolution, viewport, sync).
+    // Pick the renderer from the core: N64 (GLideN64) needs the GL
+    // path, everything else stays on Vulkan/khr_display. opts is
+    // const&, so copy it to stamp the renderer.
+    {
+        LaunchOptions video_opts = opts;
+        video_opts.renderer = renderer_for_core(core_name);
+        // Size the viewport to the shape the core will actually hand
+        // over. Only N64 differs from 4:3, and only for titles whose
+        // measured overscan crop is lopsided — see n64_content_aspect.
+        // Renderer::GL is precisely the N64 cores (renderer_for_core
+        // returns it for mupen64plus/parallel_n64 and nothing else),
+        // so it doubles as the family check without exporting one.
+        if (video_opts.renderer == Renderer::GL) {
+            video_opts.content_aspect =
+                n64_content_aspect(core_name, game_info.rom_path);
+        }
+        write_video_config(cfg, video_opts);
+    }
+    // RetroArch's threaded ALSA wrapper keeps the HDMI device fed
+    // independently of brief emulation or Vulkan present stalls.
+    cfg << "audio_driver = \"" << audio_driver_for_gameplay()
+                << "\"\n";
+    cfg << "audio_resampler = \"sinc\"\n"; // High-quality gameplay resampling
+
+    cfg << "input_joypad_driver = \"udev\"\n";
+    cfg << "input_max_users = \"4\"\n";
+    cfg << "# Enhanced controller detection and configuration\n";
+    cfg << "# CRITICAL: Enable autodetect so RetroArch detects the controller\n";
+    cfg << "# But disable autoconfig so it doesn't load autoconfig files\n";
+    cfg << "input_autodetect_enable = \"true\"\n";
+    cfg << "# CRITICAL: Disable remap binds since autoconfig is disabled\n";
+    cfg << "input_remap_binds_enable = \"true\"\n";  // CRITICAL: Enable so core can receive input
+    cfg << "input_player1_analog_dpad_mode = \"0\"\n";  // Digital only for NES (matches working test)
+    cfg << "# CRITICAL: Force RetroArch to use built-in default button mappings (auto-assignment)\n";
+    cfg << "input_player1_bind_defaults = \"false\"\n";
+    cfg << "# CRITICAL: This forces RetroArch to automatically assign standard button mappings\n";
+    cfg << "# RetroArch will map: A=0, B=1, X=2, Y=3, L=4, R=5, Start=6, Select=7, D-pad=hat0\n";
+    cfg << "# CRITICAL: Ensure player 1 controller is enabled and working\n";
+    cfg << "input_player1_joypad_index = \"0\"\n";
+    cfg << "input_player1_enable = \"true\"\n";
+    // Player 2 setup mirrors player 1 — same analog mode + bind_defaults
+    // policy, but tied to joypad index 1. Without these explicit lines
+    // RetroArch leaves player 2 unbound (no autoconfig is present;
+    // we deleted that file to force manual mappings) and a 2nd
+    // identical PS-pad shows up in /dev/input/js1 but generates no
+    // input events the core can see. Per-core button mappings for
+    // player 2 are emitted alongside player 1 below.
+    cfg << "input_player2_analog_dpad_mode = \"0\"\n";
+    cfg << "input_player2_bind_defaults = \"false\"\n";
+    cfg << "input_player2_joypad_index = \"1\"\n";
+    cfg << "input_player2_enable = \"true\"\n";
+    cfg << "# Default mappings removed to prevent conflict with core-specific overrides\n";
+    cfg << "# We rely on core-specific sections to define mappings\n";
+    cfg << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
+    cfg << "input_enable_hotkey = \"true\"\n";
+    // Menu chord/key/updater disabled in the override file above
+    // (write_menu_disabled_config) -- the kiosk ships no RA menu.
+    cfg << "input_auto_game_focus = \"true\"\n";
+    cfg << "input_game_focus_enable = \"true\"\n";
+    cfg << "input_logging_enable = \"false\"\n";
+    cfg << "input_logging_level = \"0\"\n";
+    cfg << "input_block_timeout = \"0\"\n";
+    cfg << "input_hotkey_block_delay = \"0\"\n";
+    cfg << "# CRITICAL: Ensure input is enabled and controller works in-game\n";
+    cfg << "input_enabled = \"true\"\n";
+    cfg << "input_driver = \"udev\"\n";
+    cfg << "input_poll_type_behavior = \"0\"\n";
+    cfg << "input_all_users_control_menu = \"true\"\n";
+    cfg << "# CRITICAL: Ensure controller input reaches the core\n";
+    cfg << "input_descriptor_label_show = \"true\"\n";  // Show descriptors (matches working test)
+    cfg << "input_descriptor_hide_unbound = \"false\"\n";
+    cfg << "# CRITICAL: Enable autoconfig to load button mappings from autoconfig file\n";
+    cfg << "input_autoconfig_enable = \"false\"\n";
+    cfg << "input_joypad_driver_autoconfig_dir = \"/tmp/empty_autoconfig\"\n"; // Hide autoconfig files
+    cfg << "# CRITICAL: Ensure joypad driver is set (required for controller detection)\n";
+    cfg << "input_joypad_driver = \"udev\"\n";
+    cfg << "# CRITICAL: Force RetroArch to auto-assign default button mappings if autoconfig fails\n";
+    cfg << "# When bind_defaults=true, RetroArch will automatically assign standard button mappings\n";
+    cfg << "# This ensures buttons work even if autoconfig doesn't match perfectly\n";
+    cfg << "input_joypad_driver_mapping_dir = \"\"\n";
+    cfg << "# Don't save config on exit (prevents overwriting our settings)\n";
+    cfg << "config_save_on_exit = \"false\"\n";
+    cfg << "# CRITICAL: Single press to quit (don't require double press)\n";
+    cfg << "quit_press_twice = \"false\"\n";
+    {
+        // Phone remote QUIT_GAME support (KEY_Z exit bind) —
+        // see retroarch::write_remote_quit_config().
+        std::ostringstream remote_quit;
+        retroarch::write_remote_quit_config(remote_quit);
+        retroarch::write_menu_disabled_config(remote_quit);
+        cfg << remote_quit.str();
+    }
+    cfg << "core_options_path = \"/tmp/retroarch_core_options.cfg\"\n";
+    cfg << "# Audio settings - use ALSA to match GStreamer (simplified for reliability)\n";
+    cfg << "audio_device = \"" << alsa_device << "\"\n";
+    cfg << "audio_enable = \"true\"\n";
+    cfg << "audio_mute_enable = \"false\"\n";
+    // Convert system volume (0-100) to RetroArch dB format
+    // RetroArch uses decibels: 0 dB = 100%, negative dB = quieter
+    // Formula: dB = 20 * log10(volume_percent / 100)
+    // For safety, clamp to reasonable range: -60 dB to 0 dB
+    float volume_decimal = system_volume_percent / 100.0f;
+    float volume_db = (volume_decimal > 0.001f) ? (20.0f * log10f(volume_decimal)) : -60.0f;
+    // Clamp to valid range
+    if (volume_db > 0.0f) volume_db = 0.0f;
+    if (volume_db < -60.0f) volume_db = -60.0f;
+    // Apply user's game volume offset (e.g., -3dB, -6dB, -12dB)
+    float final_volume_db = volume_db + volume_offset_db;
+    if (final_volume_db < -60.0f) final_volume_db = -60.0f;
+    cfg << "audio_volume = \"" << final_volume_db << "\"\n";
+    cfg << "audio_mixer_volume = \"1.0\"\n";
+    cfg << "audio_mixer_mute_enable = \"false\"\n";
+    cfg << "# Simplified audio settings (matches Pi game version)\n";
+    cfg << "audio_sync = \"true\"\n";
+//             cfg << "audio_resampler = \"sinc\"\n";
+    cfg << "audio_out_rate = \"48000\"\n";
+    cfg << "audio_latency = \""
+                << audio_latency_ms_for_core(core_name) << "\"\n";
+    cfg << "# Audio buffer settings - ensure audio callback works\n";
+//             cfg << "audio_block_frames = \"512\"\n";
+//             cfg << "audio_rate_control = \"true\"\n";
+//             cfg << "audio_rate_control_delta = \"0.005000\"\n";
+    cfg << "audio_enable_menu = \"false\"\n";
+    cfg << "audio_fastforward_mute = \"false\"\n";
+    cfg << "audio_dsp_plugin = \"\"\n";
+    cfg << "input_keyboard_layout = \"us\"\n";
+    cfg << "libretro_directory = \"" << libretro_dir << "\"\n";
+    cfg << "core_updater_buildbot_cores_url = \"https://buildbot.libretro.com/nightly/linux/aarch64/latest\"\n";
+    cfg << "core_updater_buildbot_assets_url = \"https://buildbot.libretro.com/assets/\"\n";
+    cfg << "core_updater_auto_extract_archive = \"true\"\n";
+    cfg << "# Ensure core actually runs\n";
+    cfg << "rewind_enable = \"false\"\n";
+    cfg << "run_ahead_enabled = \"false\"\n";
+    cfg << "netplay_enable = \"false\"\n";
+    cfg << "# CRITICAL: Ensure content actually loads and runs\n";
+    cfg << "content_load_auto_remap = \"false\"\n";
+    cfg << "content_load_mode_manual = \"false\"\n";
+    cfg << "pause_nonactive = \"false\"\n";
+    
+
+    // 2. Resolve each port's mapping independently: captured profile
+    // -> builtin -> legacy N64 fallback (resolve_mapping_for_pad's
+    // precedence, via resolve_port_mappings() in
+    // controller_mapping.cpp). A missing P2 pad mirrors P1 exactly,
+    // and no detected pads at all falls back to today's single
+    // get_mapping(controller_type, core_name) path unchanged --
+    // see resolve_port_mappings() for the exact preserved-behavior
+    // contract (also unit-tested on Mac against a synthetic pad
+    // list, since this /dev/input scan itself has no Mac build).
+    const auto pads = detect_connected_controllers();
+    const auto profile_store = load_profile_store();
+    const auto port_mappings =
+        resolve_port_mappings(pads, controller_type, profile_store, core_name);
+    ControllerMapping map = port_mappings.p1;
+    ControllerMapping map_p2 = port_mappings.p2;
+
+    cfg << "# === Controller Mapping: " << map.name << " ===\n";
+
+    // 2-5. Apply the full input_player1_* bind block (settings,
+    // buttons, d-pad, analog axes, right stick, d-pad axes). See
+    // write_player_binds() in controller_mapping.cpp for the exact
+    // field order and the unconditional-emission rule (empty
+    // in-memory button tokens still write a line, serialized as
+    // `= "nul"` rather than omitted).
+    write_player_binds(cfg, map, 1);
+
+    // 5b. Player 2's own mapping, resolved above from port 1's
+    // VID/PID (or mirrored from player 1 when no second pad is
+    // connected -- see resolve_port_mappings()). Historically P2
+    // always mirrored P1 outright, because every fielded box ships
+    // two identical pads; without SOME P2 emission at all,
+    // RetroArch's per-core remap covers only player 1 and the 2nd
+    // pad shows up in /dev/input/js1 but produces no in-game effect
+    // — symptom: P2 character sits motionless in 2-player Twisted
+    // Metal / Tony Hawk / Doom split-screen. Task 7 lets each port
+    // resolve independently instead, so two DIFFERENT controller
+    // models can each get their own correct mapping in the same
+    // two-player game, while the one-pad-detected case still
+    // produces an exact mirror (verified above).
+    //
+    // Both calls MUST go through write_player_binds() — the P2
+    // block used to be a hand-duplicated copy of the P1 block, and
+    // that copy once drifted out of sync and shipped without the
+    // right-stick lines, leaving P2 with no camera control in every
+    // two-player N64 game. Routing both players through the same
+    // function makes that class of drift structurally impossible.
+    //
+    // Hotkeys (below) intentionally stay player-1-only so both
+    // controllers don't fight over the RA menu toggle.
+    write_player_binds(cfg, map_p2, 2);
+
+    // 5c. Apply Hotkeys
+    write_hotkey_binds(cfg, map);
+
+    // 8. Apply Extra Config (if any)
+    if (!map.extra_config.empty()) {
+        cfg << map.extra_config;
+    }
+    cfg << "# CRITICAL: Ensure input reaches the core (not just RetroArch menu)\n";
+    cfg << "input_driver_block_input = \"false\"\n";  // Don't block input
+    cfg << "input_driver_block_libretro_input = \"false\"\n";  // Don't block libretro input
+    cfg << "# Controller auto-configuration enabled - configure when game launches\n";
+    cfg << "\n";
+    if (!write_file("/tmp/retroarch_mdb.cfg", cfg.str())) {
+        return false;
+    }
+
+    // Session header for the rotated launcher log; RetroArch's own
+    // --verbose output is appended below it by the child.
+    {
+        std::ofstream log(launcher_log, std::ios::app);
+        log << "=== " << timestamp_now() << " Magic Dingus Box game session ===\n"
+            << "ROM: " << game_info.rom_path << "\n"
+            << "Core: " << core_name << " (" << libretro_dir << ")\n"
+            << "ALSA device: " << alsa_device << "\n"
+            << "Mapping P1: " << map.name << "\n"
+            << "Mapping P2: " << map_p2.name << "\n";
+        for (const auto& pad : pads) {
+            char vidpid[16];
+            std::snprintf(vidpid, sizeof(vidpid), "%04x:%04x", pad.vid, pad.pid);
+            log << "Pad port " << pad.port << ": " << vidpid << " " << pad.name << "\n";
+        }
+        log << "Command:";
+        for (const auto& arg : cmd) log << " '" << arg << "'";
+        log << "\n";
+    }
+
+    // RetroArch's udev joypad driver builds its pad list from the udev DB
+    // (ID_INPUT_JOYSTICK). The controller's `udevadm trigger` just queued a
+    // change event for every input device; let udev finish them so the DB
+    // is not mid-rewrite when RetroArch enumerates. Bounded at 2 s. Done
+    // BEFORE the display handoff, so it costs no frozen-frame time.
+    run_quiet({"udevadm", "settle", "--timeout=2"});
+
+    // Verify controller device is accessible before forking (journal only).
+    bool controller_accessible = false;
+    for (int i = 0; i < 4; ++i) {
+        std::string js_path = "/dev/input/js" + std::to_string(i);
+        if (access(js_path.c_str(), R_OK) == 0) {
+            std::cout << "Controller device accessible: " << js_path << std::endl;
+            controller_accessible = true;
+            break;
+        }
+    }
+    if (!controller_accessible) {
+        std::cerr << "WARNING: No accessible controller devices found before RetroArch launch!" << std::endl;
+        std::cerr << "This may cause controller input to not work in RetroArch" << std::endl;
+    }
+
+    // Everything the child needs is computed BEFORE the display handoff.
+    SpawnSpec spec;
+    spec.executable = retroarch_bin_.value();
+    spec.argv = cmd;
+    spec.envp = build_child_environment(current_environment(),
+                                        config::get_home_path(), getuid());
+    spec.log_path = launcher_log;
+
+    // A stale marker must never make a new launch look ready to the smoke
+    // test.
+    {
+        std::error_code ec;
+        fs::remove(kReadyMarkerPath, ec);
+    }
+
+    if (session_stop_requested()) {
+        std::cout << "Kiosk is shutting down; not launching RetroArch" << std::endl;
+        return false;
+    }
+
+    // LAST POSSIBLE MOMENT to hand over the display. The configs are
+    // written; everything above needed no display at all, so the kiosk has
+    // been able to keep its launch screen animating through all of it. The
+    // caller uses this hook to present its final frame and release DRM
+    // master, and the fork happens immediately after.
+    if (opts.before_fork) {
+        opts.before_fork();
+    }
+    // A SIGTERM during the handoff: DRM is already released, so return
+    // "not launched" and let the controller's normal restore re-acquire it.
+    if (session_stop_requested()) {
+        std::cout << "Kiosk is shutting down; launch aborted after DRM handoff" << std::endl;
+        return false;
+    }
+
+    std::cout << "Launching RetroArch directly: " << spec.executable << std::endl;
+    std::string spawn_error;
+    const pid_t pid = spawn_session(spec, &spawn_error);
+    if (pid <= 0) {
+        std::cerr << "Failed to start RetroArch: " << spawn_error << std::endl;
+        return false;
+    }
+
+    // Supervise instead of blocking in waitpid(): the main thread keeps
+    // feeding the systemd watchdog and notices a shutdown request within one
+    // poll, so the watchdog no longer has to be switched off for the game.
+    auto watchdog = [&opts](SessionWatchdog ev) {
+        if (opts.watchdog) opts.watchdog(ev);
+    };
+    watchdog(SessionWatchdog::Arm);
+    std::cout << "RetroArch started (PID " << pid
+              << "), waiting up to 15 seconds for KMS" << std::endl;
+    SessionOps ops = real_session_ops(pid, kReadyMarkerPath, [&watchdog] {
+        watchdog(SessionWatchdog::Ping);
+    });
+    auto mark_ready = ops.on_ready;
+    ops.on_ready = [mark_ready] {
+        std::cout << "RetroArch has taken over the KMS display" << std::endl;
+        if (mark_ready) mark_ready();
+    };
+    const SessionReport report = supervise_session(ops, SupervisePolicy{});
+    // The DRM/input restore that follows stays unwatched, as it always was;
+    // the controller's session-end hook re-arms the watchdog after it.
+    watchdog(SessionWatchdog::Disarm);
+
+    const int status = reap_session(pid);
+    std::error_code ec;
+    fs::remove(kReadyMarkerPath, ec);
+
+    std::cout << "RetroArch session: " << outcome_name(report.outcome)
+              << " (" << stop_name(report.stop) << ")" << std::endl;
+    if (status < 0) {
+        std::cerr << "Failed to reap RetroArch: " << std::strerror(errno) << std::endl;
+    } else if (WIFEXITED(status)) {
+        std::cout << "RetroArch exited with status " << WEXITSTATUS(status) << std::endl;
+    } else if (WIFSIGNALED(status)) {
+        std::cout << "RetroArch killed by signal " << WTERMSIG(status) << std::endl;
+    }
+
+    // true = a game actually ran (the kiosk shows no launch error).
+    return report.ready;
 }
 
 void RetroArchLauncher::release_controllers() {

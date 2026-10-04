@@ -156,10 +156,6 @@ std::string get_system_dir() {
     return get_config_dir() + "/system";
 }
 
-std::string get_launcher_script() {
-    return get_home_path() + "/retroarch_launcher.sh";
-}
-
 std::string get_launcher_log() {
     return get_home_path() + "/retroarch_launcher.log";
 }

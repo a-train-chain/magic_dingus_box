@@ -1,18 +1,14 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-#include <cerrno>
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <string>
-#include <sys/wait.h>
-#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -25,24 +21,6 @@ using namespace std::chrono_literals;
 
 void require_line(const std::string& config, const std::string& line) {
     REQUIRE(config.find(line + "\n") != std::string::npos);
-}
-
-std::string temp_path(const char* leaf) {
-    return (fs::temp_directory_path() /
-            (std::string("mdb-ra-") + std::to_string(getpid()) + "-" + leaf))
-        .string();
-}
-
-pid_t spawn_group(const std::string& command) {
-    const pid_t pid = fork();
-    REQUIRE(pid >= 0);
-    if (pid == 0) {
-        setpgid(0, 0);
-        execl("/bin/bash", "bash", "-c", command.c_str(), nullptr);
-        _exit(127);
-    }
-    setpgid(pid, pid);
-    return pid;
 }
 
 }  // namespace
@@ -768,211 +746,21 @@ TEST_CASE("gameplay uses RetroArch threaded ALSA", "[retroarch][audio]") {
             "alsathread");
 }
 
-TEST_CASE("KMS marker makes startup ready without waiting for game exit",
-          "[retroarch][startup]") {
-    const std::string marker = temp_path("ready");
-    fs::remove(marker);
-    const pid_t pid = spawn_group("sleep 0.10; printf '1234\\n' > '" + marker +
-                                  "'; sleep 5");
-
-    REQUIRE(retroarch::wait_for_startup(pid, marker, 2s, 20ms) ==
-            retroarch::StartupStatus::Ready);
-    REQUIRE(retroarch::terminate_process_group(pid, 500ms));
-    fs::remove(marker);
-}
-
-TEST_CASE("child exit before KMS marker is a startup failure",
-          "[retroarch][startup]") {
-    const std::string marker = temp_path("early-ready");
-    fs::remove(marker);
-    const pid_t pid = spawn_group("exit 7");
-
-    REQUIRE(retroarch::wait_for_startup(pid, marker, 2s, 20ms) ==
-            retroarch::StartupStatus::Exited);
-    fs::remove(marker);
-}
-
-TEST_CASE("startup timeout terminates the entire launch group",
-          "[retroarch][startup]") {
-    const std::string marker = temp_path("timeout-ready");
-    fs::remove(marker);
-    const pid_t pid = spawn_group("sleep 10");
-
-    REQUIRE(retroarch::wait_for_startup(pid, marker, 200ms, 20ms) ==
-            retroarch::StartupStatus::TimedOut);
-    REQUIRE(retroarch::terminate_process_group(pid, 200ms));
-    int status = 0;
-    REQUIRE(waitpid(pid, &status, WNOHANG) == -1);
-    fs::remove(marker);
-}
-
-TEST_CASE("generated watcher removes compositor hints and publishes real PID",
-          "[retroarch][startup]") {
-    retroarch::ReadyWatchOptions options;
-    options.ready_file = "/tmp/mdb-ready";
-    options.drm_card_pattern = "/dev/dri/card*";
-
-    const std::string block = retroarch::build_kms_ready_watch_block(
-        "/usr/bin/retroarch --verbose", options);
-
-    REQUIRE(block.find(
-                "unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE SDL_VIDEODRIVER") !=
-            std::string::npos);
-    REQUIRE(block.find("/proc/$RETROARCH_PID/fd/*") != std::string::npos);
-    REQUIRE(block.find("printf '%s\\n' \"$RETROARCH_PID\"") !=
-            std::string::npos);
-    REQUIRE(block.find("/dev/dri/card*") != std::string::npos);
-}
-
-TEST_CASE("generated KMS watcher is valid Bash", "[retroarch][startup]") {
-    const std::string script_path = temp_path("watcher.sh");
-    retroarch::ReadyWatchOptions options;
-    options.ready_file = temp_path("watcher-ready");
-
-    {
-        std::ofstream script(script_path);
-        REQUIRE(script.is_open());
-        script << "#!/bin/bash\n";
-        script << retroarch::build_kms_ready_watch_block(
-            "/usr/bin/retroarch --verbose", options);
-        script << "exit \"$RETROARCH_EXIT\"\n";
-    }
-
-    REQUIRE(std::system(("/bin/bash -n '" + script_path + "'").c_str()) == 0);
-    fs::remove(script_path);
-}
-
-namespace {
-
-// Writes the launcher the way RetroArchLauncher does (watch block + exit
-// with RetroArch's code) around `command`, and starts it in its own
-// process group like launch_drm's fork.
-pid_t spawn_watcher_script(const std::string& command, const char* leaf) {
-    const std::string script_path = temp_path(leaf);
-    retroarch::ReadyWatchOptions options;
-    options.ready_file = temp_path((std::string(leaf) + "-ready").c_str());
-    {
-        std::ofstream script(script_path);
-        REQUIRE(script.is_open());
-        script << "#!/bin/bash\n";
-        script << retroarch::build_kms_ready_watch_block(command, options);
-        script << "exit \"$RETROARCH_EXIT\"\n";
-    }
-    const pid_t pid = fork();
-    REQUIRE(pid >= 0);
-    if (pid == 0) {
-        setpgid(0, 0);
-        execl("/bin/bash", "bash", script_path.c_str(), nullptr);
-        _exit(127);
-    }
-    setpgid(pid, pid);
-    return pid;
-}
-
-}  // namespace
-
-TEST_CASE("SIGTERM to the launch group outlives RetroArch's auto-save",
-          "[retroarch][startup][shutdown]") {
-    // `systemctl stop` mid-game: the kiosk's SIGTERM handler forwards SIGTERM
-    // to this process group. Untrapped, bash died at once, waitpid() in
-    // launch_drm returned while RetroArch was still writing its auto
-    // save-state/SRAM, and the kiosk went on to reclaim the display (and,
-    // then, pkill -9 retroarch) mid-write. The launcher must not exit
-    // before RetroArch has. The stand-in "RetroArch" takes 0.4 s to save.
-    const std::string saved = temp_path("saved");
-    fs::remove(saved);
-    const pid_t pid = spawn_watcher_script(
-        "bash -c 'trap \"sleep 0.4; echo saved > " + saved +
-            "; exit 0\" TERM; while :; do sleep 0.05; done'",
-        "term-watcher.sh");
-
-    std::this_thread::sleep_for(300ms);  // let it install its TERM trap
-    REQUIRE(kill(-pid, SIGTERM) == 0);
-
-    int status = 0;
-    pid_t r;
-    do { r = waitpid(pid, &status, 0); } while (r < 0 && errno == EINTR);
-    REQUIRE(r == pid);
-    CHECK(fs::exists(saved));  // the save landed BEFORE the launcher exited
-    REQUIRE(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 0);  // RetroArch's own exit code
-    fs::remove(saved);
-}
-
-namespace {
-
-// Scripted stand-in for "is a retroarch process running?" + the signals the
-// reaper sends. `exits_after_term` = polls RetroArch survives once TERMed
-// (-1 = ignores TERM); KILL always ends it.
-struct FakeRetroArch {
-    bool running = true;
-    int exits_after_term = 0;
-    bool termed = false;
-    std::vector<int> signals;
-    std::chrono::milliseconds slept{0};
-
-    retroarch::StragglerOps ops() {
-        retroarch::StragglerOps o;
-        o.running = [this] {
-            if (termed && running && exits_after_term >= 0) {
-                if (exits_after_term == 0) running = false;
-                else --exits_after_term;
-            }
-            return running;
-        };
-        o.signal = [this](int sig) {
-            signals.push_back(sig);
-            if (sig == SIGTERM) termed = true;
-            if (sig == SIGKILL) running = false;
-        };
-        o.sleep = [this](std::chrono::milliseconds d) { slept += d; };
-        return o;
-    }
-};
-
-}  // namespace
-
-TEST_CASE("no straggler: the reaper sends nothing", "[retroarch][shutdown]") {
-    // The normal case now that the launcher waits for RetroArch.
-    FakeRetroArch ra;
-    ra.running = false;
-    CHECK(retroarch::reap_retroarch_stragglers(ra.ops(), 5000ms, 100ms) ==
-          retroarch::StragglerResult::None);
-    CHECK(ra.signals.empty());
-}
-
-TEST_CASE("a straggler gets SIGTERM and time to save, not SIGKILL",
-          "[retroarch][shutdown]") {
-    // The old unconditional `pkill -9 retroarch` killed an auto-save mid-write.
-    FakeRetroArch ra;
-    ra.exits_after_term = 10;  // ~1 s of saving at 100 ms polls
-    CHECK(retroarch::reap_retroarch_stragglers(ra.ops(), 5000ms, 100ms) ==
-          retroarch::StragglerResult::Terminated);
-    CHECK(ra.signals == std::vector<int>{SIGTERM});
-    CHECK(ra.slept < 5000ms);
-}
-
-TEST_CASE("a wedged straggler is SIGKILLed after the grace period",
-          "[retroarch][shutdown]") {
-    FakeRetroArch ra;
-    ra.exits_after_term = -1;
-    CHECK(retroarch::reap_retroarch_stragglers(ra.ops(), 5000ms, 100ms) ==
-          retroarch::StragglerResult::Killed);
-    CHECK(ra.signals == std::vector<int>{SIGTERM, SIGKILL});
-    // Bounded: the kiosk's whole stop must fit TimeoutStopSec=20.
-    CHECK(ra.slept >= 5000ms);
-    CHECK(ra.slept <= 5100ms);
-}
-
-TEST_CASE("the launcher still exits with RetroArch's code", "[retroarch][startup]") {
-    const pid_t pid = spawn_watcher_script("bash -c 'sleep 0.1; exit 3'",
-                                           "exit-code-watcher.sh");
-    int status = 0;
-    pid_t r;
-    do { r = waitpid(pid, &status, 0); } while (r < 0 && errno == EINTR);
-    REQUIRE(r == pid);
-    REQUIRE(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 3);
+TEST_CASE("a stale core .opt is purged only when it carries our option keys",
+          "[retroarch][core-options]") {
+    // Port of the launcher script's `grep -l '^<prefix>'`.
+    const std::string mupen = "mupen64plus-cpucore = \"dynamic_recompiler\"\n"
+                              "mupen64plus-43screensize = \"320x240\"\n";
+    CHECK(retroarch::opt_file_shadows_options(mupen, "mupen64plus-"));
+    CHECK(retroarch::opt_file_shadows_options("x = 1\nreicast_region = \"USA\"",
+                                              "reicast_"));
+    // Prefix must start a LINE, not appear mid-line.
+    CHECK_FALSE(retroarch::opt_file_shadows_options("# see mupen64plus-cpucore\n",
+                                                    "mupen64plus-"));
+    CHECK_FALSE(retroarch::opt_file_shadows_options(mupen, "pcsx_rearmed_"));
+    // A core we write no options for never loses its .opt.
+    CHECK_FALSE(retroarch::opt_file_shadows_options(mupen, ""));
+    CHECK_FALSE(retroarch::opt_file_shadows_options("", "reicast_"));
 }
 
 TEST_CASE("video contract pins the swapchain workarounds on every board",

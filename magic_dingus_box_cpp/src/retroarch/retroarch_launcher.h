@@ -1,21 +1,13 @@
 #pragma once
 
-#include <csignal>
 #include <string>
 #include <optional>
 #include <vector>
 
 #include "launch_contract.h"
+#include "game_session.h"
 
 namespace retroarch {
-
-// Process group of the running game session, 0 when none. Read by the
-// kiosk's SIGTERM handler (hence sig_atomic_t, no locks): a service stop
-// mid-game — OTA install, reboot, poweroff — forwards SIGTERM to RetroArch
-// so it quits through its own shutdown path and auto-saves, instead of
-// being SIGKILLed by systemd's stop timeout while the kiosk sits blocked
-// in waitpid() never looking at its shutdown flag.
-extern volatile sig_atomic_t g_active_session_pgid;
 
 struct GameLaunchInfo {
     std::string rom_path;
