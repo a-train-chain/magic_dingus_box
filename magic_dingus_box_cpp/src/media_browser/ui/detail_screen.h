@@ -246,10 +246,6 @@ private:
         std::optional<TmdbMovieDetail> detail;
         std::vector<Movie>             library;
         std::vector<QualityProfile>    profiles;
-        // Captured from radarr_.last_error() at the time get_library()
-        // returned an empty list. Mirrors the sync path's reachability
-        // heuristic (empty + clean error == empty library, not failure).
-        std::string                    radarr_library_error;
         bool detail_ok   = false;
         bool library_ok  = false;
         bool profiles_ok = false;

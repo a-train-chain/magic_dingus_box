@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <spdlog/spdlog.h>
@@ -265,8 +266,23 @@ void DetailScreen::fetch() {
     spdlog::info("[DetailScreen] fetch: tmdb_id={} (gen={})",
                  tmdb_id_, my_gen);
     auto done = std::make_shared<std::atomic<bool>>(false);
-    std::thread t(&DetailScreen::run_fetch, this, my_gen, tmdb_id_, done);
-    tmdb_workers_.push_back(FetchWorker{std::move(t), std::move(done)});
+    try {
+        std::thread t([this, my_gen, id = tmdb_id_, done]() {
+            run_guarded("detail fetch", [&] { run_fetch(my_gen, id, done); });
+            // run_fetch's DoneFlag already fired on a normal return; this
+            // covers a throw before it was constructed (it never is today,
+            // but the reaper must never be left waiting on this thread).
+            done->store(true, std::memory_order_release);
+        });
+        tmdb_workers_.push_back(FetchWorker{std::move(t), std::move(done)});
+    } catch (const std::system_error& e) {
+        // An uncaught throw from the thread ctor is std::terminate (thread
+        // exhaustion on a long uptime is exactly when it fires). Land on
+        // the Error page, whose Retry calls fetch() again.
+        spdlog::warn("[DetailScreen] fetch worker spawn failed: {}", e.what());
+        mode_ = Mode::Error;
+        rebuild_buttons();
+    }
 }
 
 namespace {
@@ -304,12 +320,16 @@ void DetailScreen::run_fetch(uint64_t gen, int tmdb_id,
 
     // 2) Radarr library state — best-effort. If Radarr is unreachable
     // we still render the Detail screen with TMDB metadata; only the
-    // mutating actions degrade (Add fails with a toast, etc.). The
-    // last_error() check matches the original sync path's heuristic:
-    // empty library + clean error == legitimately empty, not a failure.
-    r.library = radarr_.get_library();
-    r.radarr_library_error = radarr_.last_error();
-    r.library_ok = r.library.empty() ? r.radarr_library_error.empty() : true;
+    // mutating actions degrade (Add fails with a toast, etc.). CHECKED
+    // read: the verdict used to come from reading the SHARED last_error()
+    // after an unchecked get_library() — a cross-thread split, since the
+    // library poll and other screens' workers write that same string, so
+    // an unrelated success could clear it (outage read as "empty library,
+    // not in it") or an unrelated failure could set it.
+    if (auto lib = radarr_.get_library_checked()) {
+        r.library = std::move(*lib);
+        r.library_ok = true;
+    }
     if (gen != tmdb_current_gen_.load()) {
         spdlog::info("[DetailScreen] gen={} stale after Radarr library; discarding",
                      gen);
@@ -457,10 +477,16 @@ void DetailScreen::maybe_repoll_library() {
     // bail return), so the thread is at/near exit. join() reaps it (near-
     // instant, no render stall) before we reassign.
     if (lib_poll_worker_.joinable()) lib_poll_worker_.join();
-    lib_poll_worker_ = std::thread([this, gen, radarr_id] {
-        run_guarded("detail library poll",
-                    [&] { run_library_poll(gen, radarr_id); });
-    });
+    try {
+        lib_poll_worker_ = std::thread([this, gen, radarr_id] {
+            run_guarded("detail library poll",
+                        [&] { run_library_poll(gen, radarr_id); });
+        });
+    } catch (const std::system_error& e) {
+        // terminate() otherwise; the 9 s cadence simply retries.
+        spdlog::warn("[DetailScreen] library poll spawn failed: {}", e.what());
+        lib_poll_inflight_.store(false, std::memory_order_release);
+    }
 }
 
 // Worker body (off the render thread). Re-reads the movie record for the
@@ -468,9 +494,22 @@ void DetailScreen::maybe_repoll_library() {
 // import so the banner can distinguish "importing" from "awaiting
 // release". Publishes under lib_poll_mtx_ only if still the current gen.
 void DetailScreen::run_library_poll(uint64_t gen, int radarr_id) {
+    // inflight means ONLY "a worker thread is running", so it is cleared on
+    // EVERY exit — the gen-mismatch bails, the publish, and a throw that
+    // run_guarded swallows (the hand-placed clears it replaces missed that
+    // one, and a latched flag silently killed all future polling: a movie
+    // that finished importing never flipped to Play). Never cleared by
+    // apply_library_poll(): a fetch()/navigate landing between the publish
+    // and the drain (which clears lib_poll_ready_) would leave it stuck.
+    // Re-poll-before-drain is prevented by the 9s cadence timer, not by
+    // inflight — a drain happens on the very next frame (~16ms << 9s).
+    struct InflightGuard {
+        std::atomic<bool>& flag;
+        ~InflightGuard() { flag.store(false, std::memory_order_release); }
+    } inflight_guard{lib_poll_inflight_};
     LibraryPollResult r;
     auto m = radarr_.get_movie(radarr_id);
-    if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+    if (gen != lib_poll_gen_.load()) return;
     if (m.has_value()) {
         r.movie = std::move(m);
         r.ok = true;
@@ -482,31 +521,25 @@ void DetailScreen::run_library_poll(uint64_t gen, int radarr_id) {
     // non-fatal — we just fall back to import_active=false (plain
     // MONITORED banner) rather than erroring the poll.
     if (r.ok && r.movie && !r.movie->has_file) {
-        for (const auto& qi : radarr_.get_queue()) {
-            if (qi.movie_id != radarr_id) continue;
-            if (qi.tracked_download_state == "importing" ||
-                qi.tracked_download_state == "importPending") {
-                r.import_active = true;
+        if (const auto queue = radarr_.get_queue_checked()) {
+            for (const auto& qi : *queue) {
+                if (qi.movie_id != radarr_id) continue;
+                if (qi.tracked_download_state == "importing" ||
+                    qi.tracked_download_state == "importPending") {
+                    r.import_active = true;
+                }
+                break;
             }
-            break;
         }
     }
-    if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+    if (gen != lib_poll_gen_.load()) return;
 
     {
         std::lock_guard<std::mutex> lk(lib_poll_mtx_);
-        if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+        if (gen != lib_poll_gen_.load()) return;
         lib_poll_pending_ = std::move(r);
     }
     lib_poll_ready_.store(true);
-    // inflight means ONLY "a worker thread is running" — clear it on the
-    // success path too, not just the bail paths. If apply_library_poll()
-    // owned this clear instead, a fetch()/navigate that lands between the
-    // publish and the drain (which clears lib_poll_ready_) would leave
-    // inflight stuck true forever and silently kill all future polling.
-    // Re-poll-before-drain is prevented by the 9s cadence timer, not by
-    // inflight — a drain happens on the very next frame (~16ms << 9s).
-    lib_poll_inflight_.store(false);
 }
 
 // Drain a completed poll on the render thread. NEVER sets Mode::Loading
@@ -803,7 +836,13 @@ Screen DetailScreen::do_add_to_library() {
     const int tmdb_id = tmdb_id_;
     try {
         add_worker_ = std::thread([this, tmdb_id, qp]() {
-            add_ok_ = radarr_.add_movie(tmdb_id, qp, /*monitor=*/true);
+            // run_guarded: an escaping throw is std::terminate, and the
+            // flags below must publish on that path too or the Add button
+            // stays inert ("Adding…") for the rest of the session.
+            bool ok = false;
+            run_guarded("detail add",
+                        [&] { ok = radarr_.add_movie(tmdb_id, qp, /*monitor=*/true); });
+            add_ok_ = ok;
             add_done_.store(true, std::memory_order_release);
             add_in_flight_.store(false, std::memory_order_release);
         });

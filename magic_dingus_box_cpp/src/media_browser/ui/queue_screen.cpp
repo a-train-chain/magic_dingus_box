@@ -251,12 +251,26 @@ void QueueScreen::refresh_async() {
     // accumulation at one.
     if (worker_.joinable()) worker_.join();
 
-    worker_ = std::thread([this] {
-        run_guarded("queue refresh", [this] { run_refresh(); });
-    });
+    try {
+        worker_ = std::thread([this] {
+            run_guarded("queue refresh", [this] { run_refresh(); });
+        });
+    } catch (const std::system_error& e) {
+        // An uncaught throw from the thread ctor is std::terminate. Release
+        // the CAS so the next update() tick simply tries again.
+        spdlog::warn("[QueueScreen] refresh spawn failed: {}", e.what());
+        refresh_in_flight_.store(false, std::memory_order_release);
+    }
 }
 
 void QueueScreen::run_refresh() {
+    // Clears refresh_in_flight_ on EVERY exit path: run_guarded swallows a
+    // throw, and a latched flag silently stopped every later refresh — the
+    // queue froze on its last snapshot for the rest of the session.
+    struct InflightGuard {
+        std::atomic<bool>& flag;
+        ~InflightGuard() { flag.store(false, std::memory_order_release); }
+    } inflight_guard{refresh_in_flight_};
     PendingResult r;
     auto queue_checked = radarr_.get_queue_checked();
     r.error = radarr_queue_error(queue_checked);
@@ -563,7 +577,7 @@ void QueueScreen::run_refresh() {
         pending_ = std::move(r);
     }
     result_ready_.store(true);
-    refresh_in_flight_.store(false);
+    // refresh_in_flight_ is cleared by inflight_guard as this returns.
 }
 
 void QueueScreen::apply_pending() {
