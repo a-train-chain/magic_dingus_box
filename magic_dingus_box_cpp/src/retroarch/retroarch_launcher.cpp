@@ -162,9 +162,13 @@ bool RetroArchLauncher::initialize() {
 }
 
 std::optional<std::string> RetroArchLauncher::find_retroarch() {
+    // /usr/bin/retroarch FIRST: it is what every box has run since the
+    // bash launcher (which always exec'd /usr/bin/retroarch) and what the
+    // config/core contract is validated against. A stray RetroPie install
+    // must not silently swap the emulator binary under a release.
     std::vector<std::string> paths = {
-        "/opt/retropie/emulators/retroarch/bin/retroarch",  // RetroPie
         "/usr/bin/retroarch",                              // Linux standard
+        "/opt/retropie/emulators/retroarch/bin/retroarch",  // RetroPie
         "/Applications/RetroArch.app/Contents/MacOS/RetroArch"  // macOS
     };
     
