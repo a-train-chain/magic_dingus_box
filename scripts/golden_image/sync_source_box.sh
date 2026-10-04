@@ -83,6 +83,10 @@ push scripts/golden_image/prepare_for_cloning.sh \
 push scripts/golden_image/restore_after_cloning.sh \
      /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh 755 \
      "restore_after_cloning  (starts containerd+docker before the stack)"
+# Sourced by BOTH scripts above — without it neither can run.
+push scripts/golden_image/clone_stash_lib.sh \
+     /opt/magic_dingus_box/scripts/golden_image/clone_stash_lib.sh 644 \
+     "clone_stash_lib.sh     (reboot-safe secret stash on the movie drive)"
 
 echo
 echo -e "${BOLD}[2/5] Pushing service scripts${NC}"

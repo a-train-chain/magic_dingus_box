@@ -33,6 +33,13 @@ a compressed image):
     --output "/Volumes/Alexander's SSD/golden_image_pi5_vX.Y.Z_$(date +%Y-%m-%d).img.gz"
 ```
 
+**The source box's movie drive must be attached and mounted at `/mnt/ssd`.**
+It holds the secret stash for the length of the dd (see "Reboot safety"
+below); `prepare_for_cloning.sh` refuses to start without it, before
+touching anything. A drive-less box can pass `--allow-ram-stash`, which
+stashes in RAM and prints a loud warning — with that flag a reboot
+mid-clone destroys the box's secrets permanently.
+
 After the dd and restore, the script automatically scans the finished
 `.img.gz` for the source box's live credentials
 (`scan_image_for_secrets.sh`) and **refuses to report success on a hit**
@@ -70,17 +77,22 @@ ControlMaster + ControlPersist). Seven steps:
 3. **Verify required local tools** (`ssh`, `gzip`, `bc`, `python3` for
    the leak scanner, optionally `pv` for a nice progress bar).
 4. **Run `prepare_for_cloning.sh` on the Pi**, which:
+   - Checks the movie drive is a mounted filesystem on a different disk
+     from the SD root (else refuses, changing nothing)
    - Writes the `cloning_backup/in_progress` marker FIRST (restore is
-     armed before the first destructive step)
+     armed before the first destructive step), then creates the secret
+     stash and records its location in `cloning_backup/secret_stash_path`
    - Stops kiosk + Content Manager + Docker/containerd daemons + the
      periodic timers and the gluetun cascade watcher
    - Snapshots `device_info.json` + `/etc/hostname` + `/etc/hosts` to
      `/var/lib/magic-dingus-box/cloning_backup/` (these need to differ
      on each clone, so we remove them from disk for the dd, then put
      them back during restore)
-   - Stashes every secret-bearing file to RAM (`/dev/shm`) and the
-     operator's non-shipping playlists/videos to the movie drive
-     (`/mnt/ssd/.mdb-content-stash`), zeroes free space on both
+   - Stashes every secret-bearing file to the movie drive
+     (`/mnt/ssd/.mdb-secret-stash`, root-owned 0700: copy all, flush,
+     verify byte-for-byte, and only then zero + unlink the originals) and
+     the operator's non-shipping playlists/videos alongside it
+     (`/mnt/ssd/.mdb-content-stash`), zeroes free space on both SD
      partitions, and ABORTS if its post-scrub leak check finds any
      credential class still present
    - Re-enables `magic-first-boot.service` (so the cloned image
@@ -89,8 +101,11 @@ ControlMaster + ControlPersist). Seven steps:
 5. **dd the SD card over SSH**, gzip-compressed in flight, written to
    the local `.img.gz` file. Progress shown via `pv` if installed.
 6. **Run `restore_after_cloning.sh` on the Pi**, which:
+   - Restores every stashed secret to its exact path with its owner and
+     mode, verifies each byte-for-byte, then shreds the stash — or exits
+     non-zero, keeping the stash and marker, if it cannot
    - Restores `device_info.json` + `/etc/hostname` + `/etc/hosts` from
-     backup, and every stashed secret/content file to its exact path
+     backup, and the curated content to its exact path
    - Disables `magic-first-boot.service` (don't re-fire on source)
    - Restarts the Docker stack, Content Manager, kiosk, timers, and
      watchers
@@ -163,8 +178,52 @@ ssh magic@<your-box>.local "sudo /opt/magic_dingus_box/scripts/golden_image/rest
 ```
 
 The restore script is idempotent — running it without an in-progress
-marker is a no-op. So it's always safe to run if you're not sure
-whether the Pi needs restoration.
+marker (and with no stash pending) is a no-op, and re-running it after a
+partial restore finishes the job without ever copying a stash back twice.
+So it's always safe to run if you're not sure whether the Pi needs
+restoration.
+
+### Reboot safety: the source Pi lost power or rebooted mid-clone
+
+Nothing is lost. Every secret `prepare_for_cloning.sh` removed from the SD
+— `services/.env` (VPN key, qBittorrent password), the Radarr/Sonarr/
+Prowlarr databases, `config.xml` files and their `Backups/` zips,
+`flask_secret.key` (phone pairings), the TMDB key, the Wi-Fi profile, the
+boot-partition cloud-init files — is in `/mnt/ssd/.mdb-secret-stash` on the
+movie drive, which survives the reboot and is never part of the dd'd SD
+card. (Before this, the stash lived in `/dev/shm`: a reboot erased it, and
+restore then reported "nothing to restore" and exited 0 while the box had
+permanently lost all of it.)
+
+To recover:
+
+1. Boot the Pi **with the movie drive attached**. On an SD root,
+   `first_boot.sh` recognises the source card by its CID and refuses to
+   run. The box comes up stripped: no `.env` (so the Docker stack stays
+   down) and **no Wi-Fi profile** — reach it over Ethernet or the USB
+   gadget (`magic@10.55.0.1`) if Wi-Fi does not come back.
+2. Run the same command as above:
+   ```bash
+   sudo /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh
+   ```
+   It mounts `/mnt/ssd` if the udev rule has not already, restores and
+   verifies every file, shreds the stash, and brings the services back.
+
+Restore **exits non-zero and says why** rather than restoring nothing
+quietly. Nothing is deleted on any of these paths, so re-running is safe:
+
+| Message | Meaning | Do |
+|---|---|---|
+| `... /mnt/ssd is NOT mounted` | The stash is on a drive that is not attached | Attach the drive, re-run |
+| `SECRET STASH IS MISSING` | A stash was started and is gone (the `--allow-ram-stash` RAM stash after a reboot, or a reformatted drive) | Those files are unrecoverable. `--accept-secret-loss` brings the box back without them; Media Browser then needs re-provisioning |
+| `... failed to restore` | A file would not go back (full disk, I/O error) | Fix the cause, re-run — the stash is kept |
+
+A box whose root is NOT on an SD card (USB/NVMe) has no card CID, so
+`first_boot.sh` cannot tell it from a clone: **do not reboot such a box
+mid-clone.** If it happens anyway, first-boot runs its per-unit wipes
+(saves, pairings, identity — those are not undone) and deletes
+`cloning_backup/`, marker included; the secret stash on the drive
+survives, and restore still finds and restores it.
 
 ## When to use this vs. `prepare_golden_image.sh`
 
