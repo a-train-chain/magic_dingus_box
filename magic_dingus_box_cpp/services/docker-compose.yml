@@ -164,7 +164,12 @@ services:
       start_interval: 3s
 
   gluetun:
-    image: qmcgaw/gluetun:v3
+    # Pinned to the exact build the production box runs (was the floating
+    # `v3` tag, which silently moved every box to whatever gluetun shipped
+    # next on its first fresh pull — and the whole stack shares this netns).
+    # Tag kept for readability; the digest is what Docker actually resolves.
+    # admin.py's WireGuard-parse tests were validated against this version.
+    image: qmcgaw/gluetun:v3.41.1@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab
     container_name: mdb_gluetun
     logging: *default-logging
     cap_add:

@@ -17,8 +17,13 @@ ConditionPathExists=/opt/magic_dingus_box/services/.env
 Type=oneshot
 RemainAfterExit=no
 ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/storage_attach.sh
-# Recreating two containers can take a moment on a cold page cache.
-TimeoutStartSec=180
+# Must exceed the script's own worst case: compose-lock wait (120) +
+# `timeout 120 compose rm` + `timeout 300 compose up` (which blocks on
+# gluetun's healthcheck) + the re-probe. The old 180 s killed the script
+# mid-`up`, leaving the containers removed and nothing re-created.
+# Field boxes get the same value via the drop-in setup_memory_tuning.sh
+# writes (OTA never replaces installed unit files).
+TimeoutStartSec=600
 # A failure here must never block the mount or wedge boot — the operator
 # can still restart the stack by hand, and the kiosk shows "drive not
 # connected" rather than lying about an empty library.

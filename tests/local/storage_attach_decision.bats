@@ -53,6 +53,25 @@ setup() {
     [ "$output" = "sourced-ok" ]
 }
 
+@test "relink starts all three normally" {
+    [ "$(relink_start_set 0)" = "radarr sonarr qbittorrent" ]
+}
+
+@test "relink during a playback pause starts qBittorrent only" {
+    [ "$(relink_start_set 1)" = "qbittorrent" ]
+}
+
+@test "a running qBittorrent alone is enough to probe (Radarr paused for playback)" {
+    grep -q 'container_state mdb_qbittorrent)" != running' "$CPP_DIR/scripts/storage_attach.sh"
+}
+
+@test "unit timeout covers the lock wait plus rm (120) and up (300)" {
+    unit="$CPP_DIR/systemd/magic-dingus-storage-attach.service"
+    t=$(sed -n 's/^TimeoutStartSec=//p' "$unit")
+    wait_s=$(sed -n 's/^LOCK_WAIT_S=//p' "$CPP_DIR/scripts/storage_attach.sh")
+    [ "$t" -gt $((wait_s + 120 + 300)) ]
+}
+
 @test "old count-based guard is gone" {
     run grep -q 'cont_count == 0' "$CPP_DIR/scripts/storage_attach.sh"
     [ "$status" -ne 0 ]
