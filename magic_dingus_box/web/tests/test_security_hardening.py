@@ -60,6 +60,45 @@ def test_host_allowlist_own_hostname_and_env_override():
     assert not _host_is_allowed("other.example", extra=("exact.example",))
 
 
+@pytest.mark.parametrize("host", [
+    "magicpi-ab12.fritz.box", "MagicPi-AB12.Fritz.Box:5000",
+    "magicpi-ab12.attlocal.net", "magicpi-ab12.router", "magicpi-ab12.fritz.box.",
+    # Already accepted for any first label (not publicly delegated).
+    "magicpi-ab12.lan", "magicpi-ab12.home", "magicpi-ab12.localdomain",
+])
+def test_host_allowlist_accepts_own_name_under_router_suffix(host):
+    assert _host_is_allowed(host, own_label="magicpi-ab12")
+
+
+@pytest.mark.parametrize("host", [
+    # The attacker controls the suffix: own hostname + arbitrary domain.
+    "magicpi-ab12.evil.com", "magicpi-ab12.box", "magicpi-ab12.net",
+    # Router suffixes sit under publicly registered domains: only THIS
+    # box's name is accepted under them.
+    "magicpi-ffff.fritz.box", "other.attlocal.net", "x.router",
+    # Suffix must match whole labels, exactly.
+    "magicpi-ab12.evil.fritz.box", "magicpi-ab12.notfritz.box",
+    "magicpi-ab12.fritz.box.evil.com", "magicpi-ab12x.fritz.box",
+    "fritz.box", "attlocal.net",
+])
+def test_host_allowlist_router_suffix_requires_own_name(host):
+    assert not _host_is_allowed(host, own_label="magicpi-ab12")
+
+
+def test_host_allowlist_router_suffix_off_without_own_label():
+    assert not _host_is_allowed("magicpi-ab12.fritz.box")
+    assert not _host_is_allowed(".fritz.box", own_label="")
+
+
+def test_router_suffixed_own_name_passes_end_to_end(temp_data_dir, monkeypatch):
+    monkeypatch.setattr(admin.socket, "gethostname", lambda: "magicpi-ab12")
+    c = create_app(temp_data_dir).test_client()
+    ok = c.get("/admin/csrf-token", headers={"Host": "magicpi-ab12.fritz.box:5000"})
+    assert ok.status_code == 200
+    bad = c.get("/admin/csrf-token", headers={"Host": "magicpi-ab12.evil.com"})
+    assert bad.status_code == 403
+
+
 def test_foreign_host_header_gets_403(client):
     rv = client.get("/admin/csrf-token", headers={"Host": "evil.com"})
     assert rv.status_code == 403
