@@ -216,6 +216,15 @@ private:
     // statvfs syscall + O(library) sum + string concats at 60fps.
     std::string stats_line_;
     std::chrono::steady_clock::time_point last_stats_refresh_{};
+    // The Sort+Filter overlay's three stat lines, built in the same
+    // refresh as stats_line_ (the overlay used to redo the sum, the
+    // statvfs and three snprintf+format_bytes every frame it was open).
+    std::string stats_titles_str_;
+    std::string stats_used_str_;
+    std::string stats_free_str_;
+    // Set when entries_ is rebuilt so the counts never lag a library
+    // change by the full 5 s.
+    bool stats_dirty_ = true;
 
     // Slide-in overlay state machine (v1.6.x). The overlay is a 480 px
     // panel that slides in from the right edge on BTN4 press, holding

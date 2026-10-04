@@ -393,6 +393,7 @@ void LibraryScreen::apply_pending() {
     entries_ = build_library_entries(library_, tv_library_, watched_movie_ids,
                                      tv_watched_counts, downloading_refs_,
                                      started_movie_ids);
+    stats_dirty_ = true;
     rebuild_view();
 }
 
@@ -665,9 +666,10 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // swaps in a fresh library — well within the 2s refresh cadence).
     {
         const auto now = std::chrono::steady_clock::now();
-        if (stats_line_.empty() ||
+        if (stats_line_.empty() || stats_dirty_ ||
             now - last_stats_refresh_ >= std::chrono::seconds(5)) {
             last_stats_refresh_ = now;
+            stats_dirty_ = false;
             // Mixed basis: entries_ is the grid's truth (movies + included
             // TV), so the count and the used-bytes sum both read it. Movie
             // bytes come from the file, TV bytes from Sonarr's
@@ -685,11 +687,23 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             std::error_code ec;
             auto info = std::filesystem::space("/mnt/ssd/library", ec);
             if (!ec) free_bytes = static_cast<int64_t>(info.available);
+            // Shared format_bytes() covers bytes > 0 only; an empty
+            // library is a real zero and reads "0 B".
+            const std::string used_str = used_bytes > 0
+                                             ? format_bytes(used_bytes)
+                                             : std::string("0 B");
+            const std::string free_str = free_bytes > 0
+                                             ? format_bytes(free_bytes)
+                                             : std::string();
             stats_line_ =
                 std::to_string(entries_.size()) + " titles  ·  "
-                + (used_bytes > 0 ? format_bytes(used_bytes)
-                                  : std::string("0 B")) + " used  ·  "
-                + (free_bytes > 0 ? format_bytes(free_bytes) + " free" : "");
+                + used_str + " used  ·  "
+                + (free_str.empty() ? std::string() : free_str + " free");
+            // The overlay's stat lines (same numbers, its own layout).
+            stats_titles_str_ = std::to_string(entries_.size()) + " titles";
+            stats_used_str_ = used_str + " used";
+            stats_free_str_ = (free_str.empty() ? std::string("\xE2\x80\x94")
+                                                : free_str) + " free";
         }
     }
     const std::string& stats = stats_line_;
@@ -1067,42 +1081,17 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // Three stat lines in cream body font, 14 px each.
         constexpr int kStatFontPx = 14;
         const int stat_y0 = title_baseline + 24;
-        char buf_titles[64], buf_used[64], buf_free[64];
-        std::snprintf(buf_titles, sizeof(buf_titles), "%zu titles",
-                      entries_.size());
-        int64_t used_bytes_ov = 0;
-        for (const LibraryEntry& en : entries_) {
-            if (en.movie) {
-                if (en.movie->has_file) used_bytes_ov += en.movie->file_size_bytes;
-            } else if (en.series) {
-                used_bytes_ov += en.series->size_on_disk_bytes;
-            }
-        }
-        // Shared format_bytes() covers bytes > 0 only; an empty library is a
-        // real zero and keeps the "0 B" the deleted local copy produced.
-        const std::string used_str = used_bytes_ov > 0
-                                         ? format_bytes(used_bytes_ov)
-                                         : std::string("0 B");
-        std::snprintf(buf_used, sizeof(buf_used), "%s used",
-                      used_str.c_str());
-        int64_t free_bytes_ov = 0;
-        {
-            std::error_code ec;
-            auto info = std::filesystem::space("/mnt/ssd/library", ec);
-            if (!ec) free_bytes_ov = static_cast<int64_t>(info.available);
-        }
-        std::snprintf(buf_free, sizeof(buf_free), "%s free",
-                      free_bytes_ov > 0 ? format_bytes(free_bytes_ov).c_str() : "—");
-
-        r.mb_draw_text(buf_titles,
+        // Cached with the header stats line above (refreshed on library
+        // change or every 5 s) — not recomputed per frame.
+        r.mb_draw_text(stats_titles_str_,
                        static_cast<float>(content_x),
                        static_cast<float>(stat_y0),
                        kStatFontPx, th.fg);
-        r.mb_draw_text(buf_used,
+        r.mb_draw_text(stats_used_str_,
                        static_cast<float>(content_x),
                        static_cast<float>(stat_y0 + 18),
                        kStatFontPx, th.fg);
-        r.mb_draw_text(buf_free,
+        r.mb_draw_text(stats_free_str_,
                        static_cast<float>(content_x),
                        static_cast<float>(stat_y0 + 36),
                        kStatFontPx, th.fg);
