@@ -3398,6 +3398,7 @@ int main(int /* argc */, char* /* argv */[]) {
         if (state.current_screen == app::AppScreen::MediaBrowser) {
             mb_host.render(mode.width, mode.height);
         }
+#endif
 
         // Render toast overlay (fades in/out over 3s). Drawn last-in-UI
         // so it sits above bezel and CRT effects. No-op when no toast
@@ -3413,6 +3414,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // in CRT mode: "Wi-Fi connected" panel appeared in the
         // lower-right with only a corner visible because (1280-480)/2
         // = 400 logical was being interpreted in 640×480 space.
+        //
+        // NOT under MEDIA_BROWSER_ENABLED: core kiosk paths (Wi-Fi,
+        // display mode, settings/playlist restore pokes) toast in every
+        // build. This block used to sit inside the MB #ifdef, so an OFF
+        // build never drew a toast — and never drained Toast::post()'s
+        // mailbox, which kept the redraw gate drawing every frame.
         glViewport(0, 0, mode.width, mode.height);
         {
             ui::Renderer::BatchScope toast_batch_scope(ui_renderer);
@@ -3420,7 +3427,6 @@ int main(int /* argc */, char* /* argv */[]) {
                               ui_renderer.get_width(),
                               ui_renderer.get_height());
         }
-#endif
         }  // if (draw_this_frame) — drawing, part 1
 
         // ── Phone-remote: derive screen mode + 5 Hz status write ─────────────
