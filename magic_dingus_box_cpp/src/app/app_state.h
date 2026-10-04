@@ -206,7 +206,7 @@ struct AppState {
     int sm_game_playlist_index = -1;        // which game playlist is open
     int sm_selected_game_index = -1;        // cursor within a playlist's games
 
-    double original_volume;  // Store original volume when video starts (for dimming when UI is visible)
+    double original_volume;  // Stream level when the current video started (intro fade-out ramps from it)
     std::string current_file;
     int current_playlist_index;  // Index of playlist currently playing (-1 if none)
     int current_item_index;  // Index of item currently playing (-1 if none)

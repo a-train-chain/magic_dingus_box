@@ -3390,11 +3390,11 @@ int main(int /* argc */, char* /* argv */[]) {
                     // Reset advance flags when switching playlists to prevent issues
                     state.last_advanced_item_index = -1;
                     state.last_advanced_duration = 0.0;
-                    state.original_volume = 100.0;  // Reset to default, will be captured when new video starts
-                    
-                    // Restore volume to 100% before stopping (in case UI was visible and volume was dimmed)
-                    controller.set_volume(100.0);
-                    
+                    // No volume reset here: nothing dims the stream any more,
+                    // and forcing 100% blasted the outgoing video at full
+                    // level until stop() landed. load_file re-applies the
+                    // user's volume to the new stream.
+
                     controller.stop();
                     // Wait longer to ensure stop completes and buffers are released
                     // Increased delay to prevent race conditions and buffer export errors

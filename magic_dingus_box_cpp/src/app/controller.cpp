@@ -402,15 +402,14 @@ void Controller::update_state(AppState& state) {
         }
     }
     
-           // Capture original volume when video becomes active (only once)
+           // Record the stream's level when video becomes active (the intro
+           // fade-out ramps down from it). Read only — load_file already
+           // applied the user's volume. This used to set_volume(100.0) first,
+           // a leftover from UI-dimming that no longer exists: original_volume
+           // never left 100, so every new video jumped the stream to 100%
+           // over the user's master volume.
            if (!was_active && state.video_active) {
-               // Only capture if it hasn't been set yet (default is 100.0)
-               // Also ensure volume is at 100% when capturing (in case it was dimmed from previous playlist)
-               if (state.original_volume == 100.0) {
-                   // Restore volume to 100% first to ensure we capture the correct original volume
-                   set_volume(100.0);
-                   state.original_volume = get_volume();
-               }
+               state.original_volume = get_volume();
                std::cout << "Video playback started: duration=" << cur_duration << "s, volume=" << state.original_volume << "%" << std::endl;
 
                // Mark intro as ready when video actually starts playing
