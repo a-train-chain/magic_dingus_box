@@ -591,6 +591,13 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     // controllers don't fight over the RA menu toggle.
     write_player_binds(cfg, map_p2, 2);
 
+    // 5b'. Pin each player to the physical pad its mapping was resolved
+    // from. input_playerN_joypad_index above is only RetroArch's STARTING
+    // assignment; its udev driver numbers pads in its own order (and counts
+    // the phone remote), so without this a two-model setup could hand pad
+    // A's mapping to pad B. See write_port_reservations().
+    write_port_reservations(cfg, pads);
+
     // 5c. Apply Hotkeys
     write_hotkey_binds(cfg, map);
 
@@ -618,9 +625,13 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             << "Mapping P1: " << map.name << "\n"
             << "Mapping P2: " << map_p2.name << "\n";
         for (const auto& pad : pads) {
-            char vidpid[16];
-            std::snprintf(vidpid, sizeof(vidpid), "%04x:%04x", pad.vid, pad.pid);
-            log << "Pad port " << pad.port << ": " << vidpid << " " << pad.name << "\n";
+            log << "Pad port " << pad.port << ": "
+                << reserved_device_token(pad.vid, pad.pid) << " " << pad.name
+                << (pad.port < 2 && (pad.vid != 0 || pad.pid != 0)
+                        ? " (reserved for player " +
+                                       std::to_string(pad.port + 1) + ")"
+                                 : std::string())
+                << "\n";
         }
         log << "Command:";
         for (const auto& arg : cmd) log << " '" << arg << "'";
