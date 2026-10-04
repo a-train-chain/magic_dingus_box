@@ -27,3 +27,15 @@ COMPOSE="$CPP_DIR/services/docker-compose.yml"
 @test "gluetun is pinned to the production build by digest" {
     grep -q 'image: qmcgaw/gluetun:v3.41.1@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab' "$COMPOSE"
 }
+
+@test "OOM ranking: Byparr dies first, then qBittorrent; no hard mem_limits" {
+    # Measured 2026-10-03: Byparr peaks at 762 MB in a challenge, qBit's
+    # 1 GB peak is page cache — caps would break them, ranking doesn't.
+    run python3 -c "
+import yaml,sys
+s=yaml.safe_load(open('$CPP_DIR/services/docker-compose.yml'))['services']
+assert s['byparr'].get('oom_score_adj',0) > s['qbittorrent'].get('oom_score_adj',0) > 0, 'ranking'
+assert not any('mem_limit' in v for v in s.values()), 'mem_limit present'
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}

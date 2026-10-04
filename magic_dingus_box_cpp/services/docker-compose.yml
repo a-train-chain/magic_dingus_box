@@ -360,6 +360,11 @@ services:
     image: lscr.io/linuxserver/qbittorrent:5.0.3
     container_name: mdb_qbittorrent
     logging: *default-logging
+    # Second in line after Byparr. Its 1 GB measured peak is almost all
+    # reclaimable page cache (anon ~6 MB), so it is rarely the real
+    # culprit — but a killed qBittorrent resumes its torrents on restart,
+    # where a killed kiosk drops whatever the viewer was watching.
+    oom_score_adj: 300
     network_mode: "service:gluetun"
     depends_on:
       gluetun:
@@ -391,6 +396,14 @@ services:
     image: ghcr.io/thephaseless/byparr@sha256:01a46a2865d9a6db5eb8ead04ec0dd33b8fbe233e8565ae70b50d4cc0af4cfb0
     container_name: mdb_byparr
     logging: *default-logging
+    # First to go under memory pressure. Idles at ~10 MB but its headless
+    # browser peaked at 762 MB solving a challenge (measured on a 2 GB
+    # Pi 5, 2026-10-03) — the only large ANONYMOUS allocation in the stack.
+    # A mem_limit would make challenges fail (and the Cloudflare-fronted
+    # indexers with them); ranking it for the OOM killer instead lets it
+    # spike, and costs one in-flight challenge if the box truly runs out
+    # (restart: always brings it straight back). Kiosk is -500.
+    oom_score_adj: 800
     network_mode: "service:gluetun"
     depends_on:
       gluetun:

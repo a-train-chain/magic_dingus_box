@@ -370,9 +370,12 @@ catch-up).
   for in-tree unit fixes on fielded boxes: it writes drop-ins for the
   storage-attach `TimeoutStartSec=600`, the smoke-test
   `TimeoutStartSec=300` and the missing-search timer's `OnBootSec=11min`
-  — change one, change both. No container `mem_limit`s yet: there is no
-  measured Byparr/*arr peak to size them from, and an over-tight cap
-  OOM-kills a container in a loop.
+  — change one, change both. No container `mem_limit`s, deliberately:
+  measured on a 2 GB Pi 5 (2026-10-03) Byparr idles at ~10 MB but peaks
+  at 762 MB inside a Cloudflare challenge (a cap breaks the indexers
+  behind it), and qBittorrent's ~1 GB peak is reclaimable page cache.
+  Instead compose ranks them for the OOM killer: Byparr
+  `oom_score_adj: 800`, qBittorrent `300`, kiosk `-500`.
 
 ### Quality configuration (3-layer enforcement)
 
