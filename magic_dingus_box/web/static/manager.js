@@ -5025,6 +5025,69 @@ async function loadVersionInfo() {
         console.error('Failed to load version:', e);
         versionEl.textContent = 'Unknown';
     }
+    loadUpdateChannel();
+}
+
+/**
+ * Show the box's OTA update channel (stable | beta) and sync the Advanced
+ * toggle. A box whose updater predates channels has no endpoint: keep the
+ * row and the toggle hidden rather than showing a control that cannot work.
+ */
+async function loadUpdateChannel() {
+    if (!currentDevice) return;
+    try {
+        const data = await apiGet(`${currentDevice.url}/admin/update/channel`);
+        renderUpdateChannel(data.channel);
+    } catch (e) {
+        console.warn('Update channel unavailable:', e.message || e);
+        renderUpdateChannel(null);
+    }
+}
+
+function renderUpdateChannel(channel) {
+    const row = document.getElementById('updateChannelRow');
+    const label = document.getElementById('updateChannel');
+    const advanced = document.getElementById('updateAdvanced');
+    const toggle = document.getElementById('betaChannelToggle');
+    const known = channel === 'stable' || channel === 'beta';
+    if (row) row.style.display = known ? '' : 'none';
+    if (advanced) advanced.style.display = known ? '' : 'none';
+    if (!known) return;
+    if (label) label.textContent = channel === 'beta' ? 'Beta (early updates)' : 'Stable';
+    if (toggle) toggle.checked = channel === 'beta';
+    // A box left on beta should be impossible to miss.
+    if (advanced && channel === 'beta') advanced.open = true;
+}
+
+/**
+ * Switch the update channel from the Advanced toggle.
+ */
+async function setUpdateChannel(channel) {
+    const toggle = document.getElementById('betaChannelToggle');
+    if (!currentDevice) return;
+    if (channel === 'beta' && !confirm(
+            'Get early (beta) updates on this box?\n\n' +
+            'Beta updates are unfinished test builds that may have bugs. ' +
+            'You can turn this off any time; the box then waits for the next regular update.')) {
+        if (toggle) toggle.checked = false;
+        return;
+    }
+    if (toggle) toggle.disabled = true;
+    try {
+        const data = await apiPost(`${currentDevice.url}/admin/update/channel`, { channel });
+        renderUpdateChannel(data.channel);
+        // The available update may differ on the new channel.
+        const availableEl = document.getElementById('updateAvailable');
+        const installBtn = document.getElementById('installUpdateBtn');
+        if (availableEl) availableEl.style.display = 'none';
+        if (installBtn) installBtn.style.display = 'none';
+        updateData = null;
+    } catch (e) {
+        alert(`Could not change the update channel: ${e.message}`);
+        loadUpdateChannel();
+    } finally {
+        if (toggle) toggle.disabled = false;
+    }
 }
 
 /**
@@ -5073,6 +5136,7 @@ async function checkForUpdates() {
         // Update current version display
         const versionEl = document.getElementById('currentVersion');
         if (versionEl) versionEl.textContent = `v${data.current_version}`;
+        if (data.channel) renderUpdateChannel(data.channel);
 
         if (data.update_available) {
             // Show update available
@@ -5083,7 +5147,8 @@ async function checkForUpdates() {
             const newVersionLabel = document.getElementById('newVersionLabel');
             const releaseNotes = document.getElementById('releaseNotes');
 
-            if (newVersionLabel) newVersionLabel.textContent = `v${data.latest_version}`;
+            if (newVersionLabel) newVersionLabel.textContent = `v${data.latest_version}` +
+                (String(data.latest_version).includes('-beta.') ? ' (beta)' : '');
             if (releaseNotes) releaseNotes.textContent = data.release_notes || 'No release notes available.';
 
             // Show rollback if backup exists
