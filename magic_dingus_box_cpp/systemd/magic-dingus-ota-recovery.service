@@ -1,0 +1,37 @@
+[Unit]
+Description=Magic Dingus Box - undo a software update that was interrupted
+# update.sh writes /home/magic/.magic_dingus_box_backup.ota_in_progress once
+# its backup is complete and removes it only after the new kiosk has started
+# and stayed up (or after a rollback). If the box lost power or the update
+# was killed in between, the marker is still here at the next boot and this
+# unit restores the backup BEFORE the kiosk or the web admin start — instead
+# of a kiosk crash-looping on a half-installed tree with nobody watching.
+#
+# The marker path is duplicated from update.sh (OTA_MARKER) — change both.
+# On every normal boot the condition fails and this unit costs nothing.
+ConditionPathExists=/home/magic/.magic_dingus_box_backup.ota_in_progress
+After=local-fs.target
+Before=magic-dingus-box-cpp.service magic-dingus-web.service
+
+[Service]
+Type=oneshot
+# As the same user the web admin runs updates as, so restored files keep
+# the install tree's ownership (root-run rsync would leave root-owned
+# files behind, which is its own OTA-blocking bug). update.sh uses
+# passwordless `sudo -n` for the few root steps.
+User=magic
+Group=magic
+Environment=HOME=/home/magic
+# The BACKUP's copy of update.sh: it is the version that wrote the marker
+# and is complete by construction (the marker is written only after the
+# backup finished). The copy in /opt may belong to the half-installed
+# release.
+ExecStart=/bin/bash /home/magic/.magic_dingus_box_backup/magic_dingus_box_cpp/scripts/update.sh recover
+# Restoring the tree from the SD card can take a few minutes on a Pi 4B;
+# the default 90 s start timeout would kill it half-way.
+TimeoutStartSec=20min
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -951,6 +951,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 6h: OTA power-loss recovery
+# ---------------------------------------------------------------------------
+# A clone must never inherit the source box's "update in progress" marker
+# (or the backup it points at): magic-dingus-ota-recovery.service would
+# otherwise "restore" the source's pre-update tree over this unit at its
+# next boot. prepare_for_cloning.sh's secret tripwire already refuses to
+# clone while /home/magic/.magic_dingus_box_backup* exists; this is the
+# belt to that suspenders. Then make sure the recovery unit itself is
+# installed + enabled (clones cut from donor images that predate it).
+# Best-effort like every converge step: never fails first boot.
+rm -f /home/magic/.magic_dingus_box_backup.ota_in_progress \
+      /home/magic/.magic_dingus_box_backup.ota_in_progress.tmp 2>/dev/null || true
+OTA_RECOVERY="/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh"
+if [[ -f "$OTA_RECOVERY" ]]; then
+    log "[6h/7] Installing OTA power-loss recovery unit..."
+    bash "$OTA_RECOVERY" 2>&1 | while IFS= read -r line; do log "[6h/7] $line"; done \
+        || log "[6h/7] WARNING: OTA recovery unit install failed (the next OTA installs it)"
+else
+    log "[6h/7] setup_ota_recovery.sh not on this image; skipping"
+fi
+
+# ---------------------------------------------------------------------------
 # Step 7: Disable this service (run once only)
 # ---------------------------------------------------------------------------
 log "[7/7] Disabling first-boot service..."

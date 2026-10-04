@@ -404,6 +404,15 @@ ssh "${PI_HOST}" "sudo ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_memory_tunin
 echo "  ✓ memory posture converged"
 echo ""
 
+# Step 1.69: OTA power-loss recovery unit. update.sh also installs it at
+# the start of every OTA; installing it here means a freshly provisioned
+# box (and every golden image cut from it) already has it.
+echo "Step 1.69: Installing OTA power-loss recovery unit..."
+ssh "${PI_HOST}" "sudo bash ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh" \
+    | sed 's/^/  /'
+echo "  ✓ OTA recovery unit installed"
+echo ""
+
 # Step 1.7: Install C++ App Service
 echo "Step 1.7: Installing C++ App Service..."
 rsync -avz --checksum \

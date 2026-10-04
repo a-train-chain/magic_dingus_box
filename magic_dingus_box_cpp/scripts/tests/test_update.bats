@@ -568,9 +568,9 @@ test_version_lt() {
 # =============================================================================
 
 @test "VERSION written after service start" {
-    # Find the line numbers for VERSION write and service start
+    # Find the line numbers for VERSION write and the verified service start
     version_line=$(grep -n 'echo.*target_version.*VERSION' "$UPDATE_SCRIPT" | grep -v '#' | grep -v 'NOTE' | head -1 | cut -d: -f1)
-    service_line=$(grep -n 'run_systemctl start magic-dingus-box-cpp' "$UPDATE_SCRIPT" | head -1 | cut -d: -f1)
+    service_line=$(grep -n 'if ! verify_kiosk_started; then' "$UPDATE_SCRIPT" | head -1 | cut -d: -f1)
     [ -n "$version_line" ]
     [ -n "$service_line" ]
     [ "$version_line" -gt "$service_line" ]
@@ -587,9 +587,575 @@ test_version_lt() {
 }
 
 @test "service failure triggers rollback" {
-    grep -q 'is-active.*cpp\.service' "$UPDATE_SCRIPT"
+    grep -A4 'if ! verify_kiosk_started; then' "$UPDATE_SCRIPT" | grep -q 'fail_install'
+    grep -A6 '^fail_install()' "$UPDATE_SCRIPT" | grep -q 'rollback_internal'
 }
 
 @test "service verification exists before VERSION write" {
     grep -q 'Service failed to start, rolling back' "$UPDATE_SCRIPT"
+}
+
+# =============================================================================
+# HARDENING (2026-10): helpers for the tests below
+# =============================================================================
+
+# Source update.sh to unit-test its functions. The dispatcher is skipped
+# when sourced; -u / pipefail are dropped again so they cannot leak into
+# BATS internals (bats keeps its own -e).
+load_update_functions() {
+    # shellcheck disable=SC1090
+    source "$UPDATE_SCRIPT"
+    set +u +o pipefail
+}
+
+# A minimal ELF header: 64-bit little-endian, e_machine low byte = $2.
+make_elf() {
+    local path="$1" machine="${2:-b7}"
+    printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00'"\\x${machine}"'\x00' > "$path"
+    printf 'padding-for-the-rest-of-the-binary' >> "$path"
+    chmod 0755 "$path"
+}
+
+# PATH shims for cmake/make so run_build can run for real off-Pi.
+#   FAKE_MAKE_MODE=ok       -> writes an aarch64 ELF kiosk binary
+#   FAKE_MAKE_MODE=fail     -> exits 2 (compile error)
+#   FAKE_MAKE_MODE=garbage  -> exits 0 but writes a text file
+install_build_shims() {
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_TEMP_DIR/bin/cmake"
+    cat > "$TEST_TEMP_DIR/bin/make" <<'SH'
+#!/bin/bash
+case "${FAKE_MAKE_MODE:-ok}" in
+    fail) echo "error: compile failed" >&2; exit 2 ;;
+    garbage) echo "not a binary" > magic_dingus_box_cpp; chmod +x magic_dingus_box_cpp; exit 0 ;;
+    *) printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00NEWBUILD' > magic_dingus_box_cpp
+       chmod +x magic_dingus_box_cpp; exit 0 ;;
+esac
+SH
+    chmod +x "$TEST_TEMP_DIR/bin/cmake" "$TEST_TEMP_DIR/bin/make"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+}
+
+# A fake release tarball + a curl shim that "downloads" it, so a full
+# install runs end-to-end in test mode with no network.
+#   FAKE_RSYNC_23_SRC=<prefix>  -> the rsync shim exits 23 (after doing the
+#   copy) whenever its source argument starts with <prefix>.
+make_fake_release() {
+    local version="$1"
+    local rel="$TEST_TEMP_DIR/release"
+    rm -rf "$rel"
+    mkdir -p "$rel/magic_dingus_box_cpp/src/config" "$rel/magic_dingus_box_cpp/scripts" \
+             "$rel/magic_dingus_box_cpp/third_party"
+    echo "$version" > "$rel/VERSION"
+    echo "// release build v$version" > "$rel/magic_dingus_box_cpp/src/main.cpp"
+    echo "// nested config dir must be delivered" > "$rel/magic_dingus_box_cpp/src/config/defaults.h"
+    echo "9.9.9" > "$rel/magic_dingus_box_cpp/third_party/VERSION"
+    echo "cmake_minimum_required(VERSION 3.13)" > "$rel/magic_dingus_box_cpp/CMakeLists.txt"
+    echo "new helper $version" > "$rel/magic_dingus_box_cpp/scripts/helper.sh"
+    # Incompressible padding: update.sh rejects downloads under 10 kB.
+    head -c 16384 /dev/urandom > "$rel/magic_dingus_box_cpp/padding.bin"
+    FAKE_TARBALL="$TEST_TEMP_DIR/release.tar.gz"
+    tar -czf "$FAKE_TARBALL" -C "$rel" .
+    export FAKE_TARBALL
+
+    mkdir -p "$TEST_TEMP_DIR/bin"
+    cat > "$TEST_TEMP_DIR/bin/curl" <<'SH'
+#!/bin/bash
+out=""; prev=""
+for a in "$@"; do
+    [ "$prev" = "-o" ] && out="$a"
+    prev="$a"
+done
+case "$*" in
+    *api.github.com*) exit 0 ;;   # no pre-compiled binary for this release
+esac
+[ -n "$out" ] && cp "$FAKE_TARBALL" "$out"
+exit 0
+SH
+    local real_rsync
+    real_rsync="$(command -v rsync)"
+    cat > "$TEST_TEMP_DIR/bin/rsync" <<SH
+#!/bin/bash
+"$real_rsync" "\$@"; rc=\$?
+if [ -n "\${FAKE_RSYNC_23_SRC:-}" ]; then
+    for a in "\$@"; do
+        case "\$a" in "\${FAKE_RSYNC_23_SRC}"*) exit 23 ;; esac
+    done
+fi
+exit \$rc
+SH
+    chmod +x "$TEST_TEMP_DIR/bin/curl" "$TEST_TEMP_DIR/bin/rsync"
+    export PATH="$TEST_TEMP_DIR/bin:$PATH"
+}
+
+seed_installed_tree() {
+    mkdir -p "$MAGIC_BASE_PATH/magic_dingus_box_cpp/src" "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts" \
+             "$MAGIC_BASE_PATH/magic_dingus_box_cpp/data/upload_temp" "$MAGIC_BASE_PATH/config"
+    echo "// v1.0.7" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/src/main.cpp"
+    echo "cmake_minimum_required(VERSION 3.13)" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/CMakeLists.txt"
+    echo "old helper" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/helper.sh"
+    echo "phone-abc" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/data/pending_revocations.txt"
+    echo "half an upload" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/data/upload_temp/part.bin"
+    echo '{"volume": 80}' > "$MAGIC_BASE_PATH/config/settings.json"
+}
+
+GOOD_URL="https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/magic-dingus-box-1.0.8.tar.gz"
+
+# =============================================================================
+# ITEM 1 — the live kiosk binary is never missing or truncated
+# =============================================================================
+
+@test "update.sh can be sourced without running the dispatcher" {
+    run bash -c "source '$UPDATE_SCRIPT'; echo sourced-ok"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sourced-ok"* ]]
+    [[ "$output" != *"Usage"* ]]
+}
+
+@test "verify_kiosk_binary accepts a 64-bit ELF for this CPU" {
+    load_update_functions
+    export MAGIC_EXPECT_ELF_MACHINE=b7
+    make_elf "$TEST_TEMP_DIR/k" b7
+    verify_kiosk_binary "$TEST_TEMP_DIR/k"
+}
+
+@test "verify_kiosk_binary rejects empty, non-ELF, wrong-CPU, 32-bit and non-executable files" {
+    load_update_functions
+    export MAGIC_EXPECT_ELF_MACHINE=b7
+
+    : > "$TEST_TEMP_DIR/empty"; chmod +x "$TEST_TEMP_DIR/empty"
+    run verify_kiosk_binary "$TEST_TEMP_DIR/empty";   [ "$status" -ne 0 ]
+
+    echo "#!/bin/sh" > "$TEST_TEMP_DIR/text"; chmod +x "$TEST_TEMP_DIR/text"
+    run verify_kiosk_binary "$TEST_TEMP_DIR/text";    [ "$status" -ne 0 ]
+
+    make_elf "$TEST_TEMP_DIR/x86" 3e
+    run verify_kiosk_binary "$TEST_TEMP_DIR/x86";     [ "$status" -ne 0 ]
+
+    printf '\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00rest' > "$TEST_TEMP_DIR/elf32"
+    chmod +x "$TEST_TEMP_DIR/elf32"
+    run verify_kiosk_binary "$TEST_TEMP_DIR/elf32";   [ "$status" -ne 0 ]
+
+    make_elf "$TEST_TEMP_DIR/noexec" b7; chmod -x "$TEST_TEMP_DIR/noexec"
+    run verify_kiosk_binary "$TEST_TEMP_DIR/noexec";  [ "$status" -ne 0 ]
+
+    run verify_kiosk_binary "$TEST_TEMP_DIR/does-not-exist"; [ "$status" -ne 0 ]
+}
+
+@test "install_kiosk_binary replaces the live binary atomically and leaves no .new" {
+    load_update_functions
+    export MAGIC_EXPECT_ELF_MACHINE=b7
+    local live="$MAGIC_BASE_PATH/magic_dingus_box_cpp/build/magic_dingus_box_cpp"
+    mkdir -p "$(dirname "$live")"
+    make_elf "$live" b7; echo OLD >> "$live"
+    make_elf "$TEST_TEMP_DIR/new" b7; echo NEW >> "$TEST_TEMP_DIR/new"
+
+    install_kiosk_binary "$TEST_TEMP_DIR/new"
+
+    grep -q NEW "$live"
+    [ -x "$live" ]
+    [ ! -e "${live}.new" ]
+}
+
+@test "install_kiosk_binary keeps the live binary when the new one fails verification" {
+    load_update_functions
+    export MAGIC_EXPECT_ELF_MACHINE=b7
+    local live="$MAGIC_BASE_PATH/magic_dingus_box_cpp/build/magic_dingus_box_cpp"
+    mkdir -p "$(dirname "$live")"
+    make_elf "$live" b7; echo OLD >> "$live"
+    echo "truncated" > "$TEST_TEMP_DIR/bad"
+
+    run install_kiosk_binary "$TEST_TEMP_DIR/bad"
+    [ "$status" -ne 0 ]
+    grep -q OLD "$live"
+    [ ! -e "${live}.new" ]
+}
+
+@test "run_build: a failed compile leaves the existing build/ and its binary untouched" {
+    install_build_shims
+    load_update_functions
+    SKIP_BUILD=false
+    export MAGIC_EXPECT_ELF_MACHINE=b7
+    local build="$MAGIC_BASE_PATH/magic_dingus_box_cpp/build"
+    mkdir -p "$build"
+    make_elf "$build/magic_dingus_box_cpp" b7; echo OLD >> "$build/magic_dingus_box_cpp"
+
+    export FAKE_MAKE_MODE=fail
+    run run_build
+    [ "$status" -ne 0 ]
+    grep -q OLD "$build/magic_dingus_box_cpp"
+    [ ! -e "${build}.new" ]
+
+    export FAKE_MAKE_MODE=garbage
+    run run_build
+    [ "$status" -ne 0 ]
+    grep -q OLD "$build/magic_dingus_box_cpp"
+    [ ! -e "${build}.new" ]
+}
+
+@test "run_build: a good compile swaps in the new build/ and cleans up" {
+    install_build_shims
+    load_update_functions
+    SKIP_BUILD=false
+    export MAGIC_EXPECT_ELF_MACHINE=b7
+    local build="$MAGIC_BASE_PATH/magic_dingus_box_cpp/build"
+    mkdir -p "$build"
+    make_elf "$build/magic_dingus_box_cpp" b7; echo OLD >> "$build/magic_dingus_box_cpp"
+    echo stale > "$build/stale_object.o"
+
+    export FAKE_MAKE_MODE=ok
+    run_build
+
+    grep -q NEWBUILD "$build/magic_dingus_box_cpp"
+    [ ! -e "$build/stale_object.o" ]          # really a clean tree
+    [ ! -e "${build}.new" ]
+    [ ! -e "${build}.old" ]
+}
+
+@test "run_build never rm -rf's the live build dir before compiling" {
+    # The original defect: `rm -rf "$build_dir"` ahead of an 8-10 minute
+    # compile. Only build.new / build.old may ever be removed wholesale.
+    ! grep -nE 'rm -rf "\$build_dir"( |$)' "$UPDATE_SCRIPT"
+}
+
+@test "prebuilt-binary path: extract and copy failures are guarded, never bare under set -e" {
+    grep -q 'if ! tar -xzf "\$TEMP_DIR/binary.tar.gz"' "$UPDATE_SCRIPT"
+    grep -q 'install_kiosk_binary "\$TEMP_DIR/binary_extracted/magic_dingus_box_cpp"' "$UPDATE_SCRIPT"
+    ! grep -q 'cp "\$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" "\$INSTALL_DIR' "$UPDATE_SCRIPT"
+}
+
+# =============================================================================
+# ITEM 2 — power loss mid-install is recovered at the next boot
+# =============================================================================
+
+@test "full install: succeeds, stamps VERSION, and leaves no in-progress marker" {
+    seed_installed_tree
+    make_fake_release 1.0.8
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.8" ]
+    [ ! -e "${MAGIC_BACKUP_DIR}.ota_in_progress" ]
+    [ "$(cat "$MAGIC_BACKUP_DIR/VERSION")" = "1.0.7" ]
+    [ "$(cat "$MAGIC_BASE_PATH/magic_dingus_box_cpp/src/main.cpp")" = "// release build v1.0.8" ]
+}
+
+@test "full install: preserves pending_revocations.txt, upload_temp/ and config/, delivers nested config/ + VERSION" {
+    seed_installed_tree
+    make_fake_release 1.0.8
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$MAGIC_BASE_PATH/magic_dingus_box_cpp/data/pending_revocations.txt")" = "phone-abc" ]
+    [ -f "$MAGIC_BASE_PATH/magic_dingus_box_cpp/data/upload_temp/part.bin" ]
+    [[ "$(cat "$MAGIC_BASE_PATH/config/settings.json")" == *volume* ]]
+    [ -f "$MAGIC_BASE_PATH/magic_dingus_box_cpp/src/config/defaults.h" ]
+    [ "$(cat "$MAGIC_BASE_PATH/magic_dingus_box_cpp/third_party/VERSION")" = "9.9.9" ]
+}
+
+@test "recover: no marker is a no-op" {
+    run "$UPDATE_SCRIPT" recover
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No interrupted update"* ]]
+}
+
+@test "recover: an interrupted install is rolled back to the backup and the marker cleared" {
+    seed_installed_tree
+    # Backup = the pre-update tree.
+    mkdir -p "$MAGIC_BACKUP_DIR/magic_dingus_box_cpp/scripts"
+    cp -R "$MAGIC_BASE_PATH/." "$MAGIC_BACKUP_DIR/"
+    echo "1.0.7" > "$MAGIC_BACKUP_DIR/VERSION"
+    # Half-installed tree: new files landed, VERSION not yet stamped.
+    echo "new helper 1.0.8" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/helper.sh"
+    echo "half" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/only_in_new.sh"
+    printf 'target=1.0.8\nfrom=1.0.7\n' > "${MAGIC_BACKUP_DIR}.ota_in_progress"
+
+    run "$UPDATE_SCRIPT" recover
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/helper.sh")" = "old helper" ]
+    [ ! -e "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/only_in_new.sh" ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.7" ]
+    [ ! -e "${MAGIC_BACKUP_DIR}.ota_in_progress" ]
+    # Operator content is untouched by the restore.
+    [ "$(cat "$MAGIC_BASE_PATH/magic_dingus_box_cpp/data/pending_revocations.txt")" = "phone-abc" ]
+    # Boot-time recovery runs BEFORE the kiosk unit: it must never try to
+    # start/stop the kiosk itself (that would deadlock the boot).
+    [[ "$output" != *"systemctl start magic-dingus-box-cpp"* ]]
+    [[ "$output" != *"systemctl stop magic-dingus-box-cpp"* ]]
+}
+
+@test "recover: an update that completed (VERSION == target) only clears the marker" {
+    seed_installed_tree
+    echo "1.0.8" > "$MAGIC_BASE_PATH/VERSION"
+    mkdir -p "$MAGIC_BACKUP_DIR"; echo "1.0.7" > "$MAGIC_BACKUP_DIR/VERSION"
+    printf 'target=1.0.8\nfrom=1.0.7\n' > "${MAGIC_BACKUP_DIR}.ota_in_progress"
+
+    run "$UPDATE_SCRIPT" recover
+    [ "$status" -eq 0 ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.8" ]
+    [ "$(cat "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/helper.sh")" = "old helper" ]
+    [ ! -e "${MAGIC_BACKUP_DIR}.ota_in_progress" ]
+}
+
+@test "recover: a marker with no complete backup is cleared, never acted on" {
+    seed_installed_tree
+    rm -rf "$MAGIC_BACKUP_DIR"
+    printf 'target=1.0.8\nfrom=1.0.7\n' > "${MAGIC_BACKUP_DIR}.ota_in_progress"
+    run "$UPDATE_SCRIPT" recover
+    [ "$status" -eq 0 ]
+    [ ! -e "${MAGIC_BACKUP_DIR}.ota_in_progress" ]
+    [ -f "$MAGIC_BASE_PATH/magic_dingus_box_cpp/src/main.cpp" ]
+}
+
+@test "install: an earlier interrupted install is restored BEFORE the new backup is taken" {
+    seed_installed_tree
+    mkdir -p "$MAGIC_BACKUP_DIR"
+    cp -R "$MAGIC_BASE_PATH/." "$MAGIC_BACKUP_DIR/"
+    echo "1.0.7" > "$MAGIC_BACKUP_DIR/VERSION"
+    echo "HALF-INSTALLED" > "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/helper.sh"
+    printf 'target=1.0.8\nfrom=1.0.7\n' > "${MAGIC_BACKUP_DIR}.ota_in_progress"
+    make_fake_release 1.0.8
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"did not finish"* ]]
+    # The new backup holds the RESTORED tree, not the half-installed one.
+    [ "$(cat "$MAGIC_BACKUP_DIR/magic_dingus_box_cpp/scripts/helper.sh")" = "old helper" ]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.8" ]
+    [ ! -e "${MAGIC_BACKUP_DIR}.ota_in_progress" ]
+}
+
+@test "recovery unit, update.sh and first_boot agree on the marker and backup paths" {
+    local unit="$SCRIPT_DIR/../../systemd/magic-dingus-ota-recovery.service"
+    [ -f "$unit" ]
+    local marker backup
+    marker=$(env -u MAGIC_BACKUP_DIR -u MAGIC_OTA_MARKER HOME=/home/magic \
+        bash -c "source '$UPDATE_SCRIPT'; echo \"\$OTA_MARKER\"")
+    backup=$(env -u MAGIC_BACKUP_DIR HOME=/home/magic \
+        bash -c "source '$UPDATE_SCRIPT'; echo \"\$BACKUP_DIR\"")
+    grep -qxF "ConditionPathExists=${marker}" "$unit"
+    grep -qF "ExecStart=/bin/bash ${backup}/magic_dingus_box_cpp/scripts/update.sh recover" "$unit"
+    grep -q "Before=magic-dingus-box-cpp.service" "$unit"
+    # first_boot deletes it; prepare_for_cloning's tripwire glob matches it.
+    grep -qF "$marker" "$SCRIPT_DIR/../../../scripts/golden_image/first_boot.sh"
+    [[ "$marker" == /home/magic/.magic_dingus_box_backup* ]]
+    grep -qF '/home/magic/.magic_dingus_box_backup*' "$SCRIPT_DIR/../../../scripts/golden_image/prepare_for_cloning.sh"
+}
+
+@test "every install path installs the recovery unit" {
+    grep -q 'setup_ota_recovery.sh' "$UPDATE_SCRIPT"
+    grep -q 'setup_ota_recovery.sh' "$SCRIPT_DIR/../deploy_cpp.sh"
+    grep -q 'setup_ota_recovery.sh' "$SCRIPT_DIR/../../../scripts/golden_image/first_boot.sh"
+    grep -q 'setup_ota_recovery.sh' "$SCRIPT_DIR/../../../scripts/golden_image/sync_source_box.sh"
+}
+
+@test "setup_ota_recovery.sh installs the unit idempotently (fake root)" {
+    local root="$TEST_TEMP_DIR/root"
+    run env MAGIC_TUNING_ROOT="$root" MAGIC_SKIP_SYSTEMCTL=true bash "$SCRIPT_DIR/../setup_ota_recovery.sh"
+    [ "$status" -eq 0 ]
+    cmp -s "$SCRIPT_DIR/../../systemd/magic-dingus-ota-recovery.service" \
+        "$root/etc/systemd/system/magic-dingus-ota-recovery.service"
+    run env MAGIC_TUNING_ROOT="$root" MAGIC_SKIP_SYSTEMCTL=true bash "$SCRIPT_DIR/../setup_ota_recovery.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already current"* ]]
+}
+
+# =============================================================================
+# ITEM 3 — a headless box keeps a good update; a crash after READY does not
+# =============================================================================
+
+@test "KIOSK_EXIT_NO_DISPLAY matches the kiosk's kExitNoDisplay" {
+    local cpp
+    cpp=$(grep -oE 'kExitNoDisplay = [0-9]+' "$SCRIPT_DIR/../../src/platform/kiosk_exit.h" | grep -oE '[0-9]+$')
+    grep -q "^KIOSK_EXIT_NO_DISPLAY=${cpp}\$" "$UPDATE_SCRIPT"
+}
+
+@test "kiosk_start_verdict classifies observations" {
+    load_update_functions
+    [ "$(kiosk_start_verdict active running 0 0 1)" = "running" ]
+    [ "$(kiosk_start_verdict activating auto-restart 1 69 1)" = "no_display" ]
+    [ "$(kiosk_start_verdict failed failed 1 69 1)" = "no_display" ]
+    # A 69 left over from BEFORE the update (old process) is not evidence.
+    [ "$(kiosk_start_verdict activating start 1 69 0)" = "pending" ]
+    [ "$(kiosk_start_verdict activating auto-restart 2 11 1)" = "failed" ]
+    [ "$(kiosk_start_verdict activating auto-restart 1 1 1)" = "failed" ]
+    [ "$(kiosk_start_verdict failed failed 1 1 0)" = "failed" ]
+    [ "$(kiosk_start_verdict inactive dead 1 0 1)" = "failed" ]
+    [ "$(kiosk_start_verdict activating start 0 0 0)" = "pending" ]
+}
+
+# Fake systemd for verify_kiosk_started. Property values live in
+# $FAKE_SD/<phase>/<Property>; `start` moves to phase 1 and every `sleep`
+# advances one phase (missing phases fall back to the latest one present).
+setup_fake_systemd() {
+    FAKE_SD="$TEST_TEMP_DIR/sd"
+    mkdir -p "$FAKE_SD"
+    echo 0 > "$FAKE_SD/phase"
+    load_update_functions
+    SKIP_SYSTEMCTL=false
+    KIOSK_START_TIMEOUT=5
+    KIOSK_STABLE_SECS=10
+    sudo() { "$@"; }
+    sleep() { echo $(( $(cat "$FAKE_SD/phase") + 1 )) > "$FAKE_SD/phase"; }
+    systemctl() {
+        case "$1" in
+            start) echo 1 > "$FAKE_SD/phase" ;;
+            show)
+                local p; p=$(cat "$FAKE_SD/phase")
+                while [ ! -d "$FAKE_SD/$p" ] && [ "$p" -gt 0 ]; do p=$((p - 1)); done
+                cat "$FAKE_SD/$p/$3" 2>/dev/null || echo ""
+                ;;
+        esac
+        return 0
+    }
+}
+
+# set_phase <phase> Active Sub Code Status StartTs PID NRestarts
+set_phase() {
+    local d="$FAKE_SD/$1"; mkdir -p "$d"
+    echo "$2" > "$d/ActiveState"; echo "$3" > "$d/SubState"
+    echo "$4" > "$d/ExecMainCode"; echo "$5" > "$d/ExecMainStatus"
+    echo "$6" > "$d/ExecMainStartTimestampMonotonic"
+    echo "$7" > "$d/MainPID"; echo "$8" > "$d/NRestarts"
+}
+
+@test "verify_kiosk_started: no display connected is accepted" {
+    setup_fake_systemd
+    set_phase 0 inactive dead 1 0 100 0 0
+    set_phase 1 activating auto-restart 1 69 200 0 0
+    run verify_kiosk_started
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no connected display"* ]]
+}
+
+@test "verify_kiosk_started: a crash right after READY is caught by the stability window" {
+    setup_fake_systemd
+    set_phase 0 inactive dead 1 0 100 0 0
+    set_phase 1 active running 0 0 200 4242 0
+    set_phase 2 active running 0 0 300 4300 1
+    run verify_kiosk_started
+    [ "$status" -ne 0 ]
+}
+
+@test "verify_kiosk_started: a kiosk that stays up passes" {
+    setup_fake_systemd
+    set_phase 0 inactive dead 1 0 100 0 0
+    set_phase 1 active running 0 0 200 4242 0
+    run verify_kiosk_started
+    [ "$status" -eq 0 ]
+}
+
+@test "verify_kiosk_started: a stale exit 69 from the OLD process is not mistaken for success" {
+    setup_fake_systemd
+    # Before the update the box had no TV: last exit was 69 (start ts 100).
+    set_phase 0 inactive dead 1 69 100 0 0
+    # The new binary has not started yet, then crashes with a segfault.
+    set_phase 1 activating start 1 69 100 0 0
+    set_phase 2 activating auto-restart 3 11 200 0 1
+    run verify_kiosk_started
+    [ "$status" -ne 0 ]
+}
+
+@test "verify_kiosk_started: never coming up times out as a failure" {
+    setup_fake_systemd
+    set_phase 0 inactive dead 1 0 100 0 0
+    set_phase 1 activating start 0 0 100 0 0
+    run verify_kiosk_started
+    [ "$status" -ne 0 ]
+}
+
+# =============================================================================
+# ITEM 4 — rsync exit 23 is a failure; root-owned files are normalized
+# =============================================================================
+
+@test "rsync exit 23 during install rolls back and reports failure" {
+    seed_installed_tree
+    make_fake_release 1.0.8
+    export FAKE_RSYNC_23_SRC="$MAGIC_TEMP_DIR/extracted"
+
+    run "$UPDATE_SCRIPT" install 1.0.8 "$GOOD_URL"
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"rsync exit code: 23"* ]]
+    [[ "$output" == *"previous version was restored"* ]]
+    [ "$(cat "$MAGIC_BASE_PATH/VERSION")" = "1.0.7" ]
+    [ "$(cat "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/helper.sh")" = "old helper" ]
+    [ ! -e "${MAGIC_BACKUP_DIR}.ota_in_progress" ]
+}
+
+@test "rsync_exit_ok: 0 and 24 pass, 23 and others fail" {
+    load_update_functions
+    rsync_exit_ok 0
+    rsync_exit_ok 24
+    ! rsync_exit_ok 23
+    ! rsync_exit_ok 11
+    ! rsync_exit_ok 12
+}
+
+@test "ownership normalization prunes services/config and services/.env" {
+    grep -q -- '-path "\$INSTALL_DIR/services/config" -o -path "\$INSTALL_DIR/services/.env"' "$UPDATE_SCRIPT"
+    # Runs before the backup AND before both restore rsyncs.
+    [ "$(grep -c '^    normalize_tree_ownership$' "$UPDATE_SCRIPT")" -ge 3 ]
+}
+
+@test "normalize_tree_ownership is a no-op on a tree already owned by the caller" {
+    seed_installed_tree
+    load_update_functions
+    sudo() { echo "SUDO CALLED: $*" >&2; return 1; }
+    run normalize_tree_ownership
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"SUDO CALLED"* ]]
+}
+
+# =============================================================================
+# ITEM 5 — rollback re-syncs the helpers outside the tree
+# =============================================================================
+
+@test "both rollback paths re-run refresh_out_of_tree_files" {
+    seed_installed_tree
+    mkdir -p "$MAGIC_BACKUP_DIR"
+    cp -R "$MAGIC_BASE_PATH/." "$MAGIC_BACKUP_DIR/"
+    echo "1.0.7" > "$MAGIC_BACKUP_DIR/VERSION"
+    load_update_functions
+    refresh_out_of_tree_files() { echo refreshed >> "$TEST_TEMP_DIR/refresh.log"; }
+
+    rollback_internal 2>/dev/null
+    [ "$(wc -l < "$TEST_TEMP_DIR/refresh.log")" -eq 1 ]
+
+    rollback >/dev/null 2>&1
+    [ "$(wc -l < "$TEST_TEMP_DIR/refresh.log")" -eq 2 ]
+}
+
+@test "install refreshes out-of-tree helpers only after the verified start" {
+    local verify_line refresh_line
+    verify_line=$(grep -n 'if ! verify_kiosk_started; then' "$UPDATE_SCRIPT" | head -1 | cut -d: -f1)
+    # Every call site of refresh_out_of_tree_files inside install_update must
+    # come after the verification.
+    while IFS=: read -r n _; do
+        if [ "$n" -gt "$(grep -n '^install_update()' "$UPDATE_SCRIPT" | cut -d: -f1)" ] \
+            && [ "$n" -lt "$(grep -n '^rollback_internal()' "$UPDATE_SCRIPT" | cut -d: -f1)" ]; then
+            [ "$n" -gt "$verify_line" ]
+        fi
+    done < <(grep -n '^    refresh_out_of_tree_files$' "$UPDATE_SCRIPT")
+}
+
+# =============================================================================
+# ITEM 6 — Phone Remote bootstrap never runs setup_services.sh
+# =============================================================================
+
+@test "OTA never runs setup_services.sh" {
+    ! grep -nE '^[^#]*bash[^#]*setup_services\.sh' "$UPDATE_SCRIPT"
+    grep -q 'setup_phone_remote_uinput.sh' "$UPDATE_SCRIPT"
+}
+
+@test "setup_services.sh delegates the uinput step to the shared helper" {
+    grep -q 'setup_phone_remote_uinput.sh' "$SCRIPT_DIR/../setup_services.sh"
+    [ -x "$SCRIPT_DIR/../setup_phone_remote_uinput.sh" ]
+    bash -n "$SCRIPT_DIR/../setup_phone_remote_uinput.sh"
+    # The helper does the actual root work.
+    grep -q '90-magicdingus-uinput.rules' "$SCRIPT_DIR/../setup_phone_remote_uinput.sh"
+    grep -q 'usermod -a -G input' "$SCRIPT_DIR/../setup_phone_remote_uinput.sh"
 }

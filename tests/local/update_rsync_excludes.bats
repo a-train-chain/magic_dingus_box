@@ -37,12 +37,19 @@
 #     restorable and offer a Rollback that --deletes the real install.
 #   - NOT excluded from either rollback block: a rollback must restore the
 #     old version number (both blocks also `cp` it explicitly).
+#
+# `/VERSION` and `/config/*` are ANCHORED (leading /) to the transfer root.
+# Unanchored, rsync matches them against the END of every path: 'config/*'
+# excluded any */config/<name> anywhere in the tree and 'VERSION' every
+# nested file called VERSION (build/_deps/*/VERSION), so those were never
+# delivered/backed up. Pinned by its own test below.
 
 load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 
 UPDATE_SH="$BATS_TEST_DIRNAME/../../magic_dingus_box_cpp/scripts/update.sh"
 BUILD_EXCLUDE='magic_dingus_box_cpp/build/*'
-VERSION_EXCLUDE='VERSION'
+VERSION_EXCLUDE='/VERSION'
+CONFIG_EXCLUDE='/config/*'
 
 # Extract the exclude list from each rsync block as a sorted, newline-separated
 # string. Returns 4 sections separated by `===BLOCK N===` markers.
@@ -220,4 +227,67 @@ assert len(exc) == 4, f"expected 4 thumbnails excludes, found {len(exc)}"
 for i, e in zip(inc, exc):
     assert i < e, f"include at line {i+1} does not precede exclude at line {e+1}"
 PY
+}
+
+@test "pending_revocations.txt and upload_temp/ are excluded from all four blocks" {
+    # Both are per-box runtime state that is never in a release tarball:
+    # the install rsync's --delete removed them on every OTA (an in-flight
+    # phone-unpair revocation list, and half-finished Content Manager
+    # uploads). deploy_cpp.sh has excluded both for a long time.
+    parse_blocks
+    local n
+    for path in 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+                'magic_dingus_box_cpp/data/upload_temp/'; do
+        n=1
+        for block in "$BLOCK1" "$BLOCK2" "$BLOCK3" "$BLOCK4"; do
+            grep -qxF "$path" <<<"$block" || {
+                echo "Block $n is missing the exclude for $path"
+                return 1
+            }
+            n=$((n + 1))
+        done
+    done
+}
+
+@test "config/* and VERSION excludes are anchored to the transfer root" {
+    parse_blocks
+    # Install + both rollbacks protect the top-level config/ (settings.json).
+    local n=2
+    for block in "$BLOCK2" "$BLOCK3" "$BLOCK4"; do
+        grep -qxF "$CONFIG_EXCLUDE" <<<"$block" || {
+            echo "Block $n must exclude '$CONFIG_EXCLUDE' (anchored)"
+            return 1
+        }
+        n=$((n + 1))
+    done
+    # No block may carry the unanchored forms any more.
+    for block in "$BLOCK1" "$BLOCK2" "$BLOCK3" "$BLOCK4"; do
+        if grep -qxF 'config/*' <<<"$block" || grep -qxF 'VERSION' <<<"$block"; then
+            echo "Found an unanchored 'config/*' or 'VERSION' exclude — it matches nested paths too"
+            return 1
+        fi
+    done
+}
+
+@test "anchored excludes behave as intended under a real rsync" {
+    # Behavioral check, not just text: top-level config/ and VERSION are
+    # protected, nested */config/* and */VERSION are delivered.
+    local t
+    t="$(mktemp -d)"
+    mkdir -p "$t/src/config" "$t/src/magic_dingus_box_cpp/src/config" "$t/src/magic_dingus_box_cpp/third_party" \
+             "$t/dst/config"
+    echo new > "$t/src/VERSION"
+    echo shipped > "$t/src/config/settings.json"
+    echo nested > "$t/src/magic_dingus_box_cpp/src/config/defaults.h"
+    echo 3.2.1 > "$t/src/magic_dingus_box_cpp/third_party/VERSION"
+    echo old > "$t/dst/VERSION"
+    echo operator > "$t/dst/config/settings.json"
+
+    rsync -a --delete --exclude '/VERSION' --exclude '/config/*' "$t/src/" "$t/dst/"
+
+    [ "$(cat "$t/dst/VERSION")" = "old" ]
+    [ "$(cat "$t/dst/config/settings.json")" = "operator" ]
+    [ "$(cat "$t/dst/magic_dingus_box_cpp/src/config/defaults.h")" = "nested" ]
+    [ "$(cat "$t/dst/magic_dingus_box_cpp/third_party/VERSION")" = "3.2.1" ]
+    rm -rf "$t"
 }
