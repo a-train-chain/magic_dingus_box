@@ -177,6 +177,7 @@ set(UTILS_SOURCES
 
 set(RETROARCH_SOURCES
     src/retroarch/launch_contract.cpp
+    src/retroarch/game_session.cpp
     src/retroarch/retroarch_launcher.cpp
     src/retroarch/controller_detector.cpp
     src/retroarch/controller_mapping.cpp
@@ -203,6 +204,7 @@ set(RETROARCH_SOURCES
 # bind_token(), so joydev_index.cpp must ship to both targets too now.)
 set(RETROARCH_TESTABLE_SOURCES
     src/retroarch/launch_contract.cpp
+    src/retroarch/game_session.cpp
     src/retroarch/controller_detector.cpp
     src/retroarch/controller_mapping.cpp
     src/retroarch/logical_controls.cpp
