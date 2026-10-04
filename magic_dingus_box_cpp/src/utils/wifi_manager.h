@@ -124,7 +124,8 @@ private:
     ~WifiManager();
 
     // Execute command with argument vector (no shell injection)
-    // timeout_seconds: if > 0, kill child after this many seconds
+    // timeout_seconds: kill the child after this many seconds (<= 0: 60 s;
+    // see utils/subprocess.h — every run is bounded)
     // Default timeout 15s: every caller here runs nmcli/which, none of
     // which legitimately takes longer. The old default of 0 (no timeout)
     // meant a wedged NetworkManager D-Bus call blocked the calling

@@ -1,13 +1,11 @@
 #include "wifi_manager.h"
+#include "subprocess.h"
 #include <iostream>
 #include <sstream>
 #include <algorithm>
 #include <set>
 #include <thread>
 #include <unistd.h>
-#include <sys/wait.h>
-#include <poll.h>
-#include <signal.h>
 #include <chrono>
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -520,99 +518,21 @@ std::string WifiManager::exec_command_argv(const std::vector<std::string>& args,
     }
     if (runner) return runner(args, timeout_seconds);
 
-    int pipefd[2];
-    if (pipe(pipefd) == -1) return "";
-
-    pid_t pid = fork();
-    if (pid == -1) {
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return "";
+    // stderr merged into the result on purpose: callers match nmcli's
+    // "Error: ..." lines (forget_network's success heuristic). A
+    // non-positive timeout used to mean "block forever"; nothing passes one
+    // today, and an unbounded nmcli is exactly how a worker thread wedges,
+    // so it now means a generous 60 s instead.
+    utils::subprocess::Options opts;
+    opts.timeout = std::chrono::seconds(timeout_seconds > 0 ? timeout_seconds : 60);
+    opts.capture_stdout = true;
+    opts.stderr_mode = utils::subprocess::Stderr::MergeIntoStdout;
+    auto r = utils::subprocess::run(args, opts);
+    if (r.timed_out) {
+        std::cerr << "WifiManager: Command timed out after " << timeout_seconds << "s" << std::endl;
+        return "";  // Empty string signals timeout
     }
-
-    if (pid == 0) {
-        // Child process
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
-        close(pipefd[1]);
-
-        std::vector<const char*> argv;
-        for (const auto& a : args) argv.push_back(a.c_str());
-        argv.push_back(nullptr);
-
-        execvp(argv[0], const_cast<char* const*>(argv.data()));
-        _exit(127);
-    }
-
-    // Parent process
-    close(pipefd[1]);
-
-    std::string result;
-    char buffer[128];
-
-    if (timeout_seconds > 0) {
-        // Timeout-aware read using poll()
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
-        struct pollfd pfd;
-        pfd.fd = pipefd[0];
-        pfd.events = POLLIN;
-
-        bool timed_out = false;
-        while (true) {
-            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now());
-            if (remaining.count() <= 0) {
-                timed_out = true;
-                break;
-            }
-
-            int ret = poll(&pfd, 1, static_cast<int>(remaining.count()));
-            if (ret > 0 && (pfd.revents & POLLIN)) {
-                ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
-                if (n <= 0) break; // EOF or error
-                buffer[n] = '\0';
-                result += buffer;
-            } else if (ret == 0) {
-                timed_out = true;
-                break;
-            } else {
-                break; // poll error
-            }
-        }
-        close(pipefd[0]);
-
-        if (timed_out) {
-            // Kill the child process
-            kill(pid, SIGTERM);
-            // Brief wait for graceful shutdown
-            usleep(200000); // 200ms
-            int status;
-            if (waitpid(pid, &status, WNOHANG) == 0) {
-                // Still alive, force kill
-                kill(pid, SIGKILL);
-                waitpid(pid, &status, 0);
-            }
-            std::cerr << "WifiManager: Command timed out after " << timeout_seconds << "s" << std::endl;
-            return ""; // Empty string signals timeout
-        }
-
-        int status;
-        waitpid(pid, &status, 0);
-    } else {
-        // No timeout - blocking read
-        ssize_t n;
-        while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
-            buffer[n] = '\0';
-            result += buffer;
-        }
-        close(pipefd[0]);
-
-        int status;
-        waitpid(pid, &status, 0);
-    }
-
-    return result;
+    return r.out;
 }
 
 namespace {

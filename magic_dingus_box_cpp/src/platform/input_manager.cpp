@@ -1,4 +1,6 @@
 #include "input_manager.h"
+#include "udev_wake.h"
+#include "input_mapping.h"
 
 #include <libevdev/libevdev.h>
 #include <linux/input-event-codes.h>
@@ -14,7 +16,28 @@
 #include <chrono>
 #include <thread>
 #include <cstdlib>
-#include <sys/wait.h>
+
+// input_mapping.h spells the evdev codes out numerically so the Mac suite
+// can compile it; pin every one to the real constant here.
+namespace {
+namespace mc = platform::mapping::codes;
+static_assert(mc::kKeyEsc == KEY_ESC && mc::kKeyQ == KEY_Q && mc::kKeyP == KEY_P &&
+              mc::kKeyEnter == KEY_ENTER && mc::kKeyN == KEY_N &&
+              mc::kKeySpace == KEY_SPACE && mc::kKeyPlayPause == KEY_PLAYPAUSE,
+              "input_mapping.h keyboard codes drifted from linux/input-event-codes.h");
+static_assert(mc::kBtnTrigger == BTN_TRIGGER && mc::kBtnThumb == BTN_THUMB &&
+              mc::kBtnThumb2 == BTN_THUMB2 && mc::kBtnTop2 == BTN_TOP2 &&
+              mc::kBtnPinkie == BTN_PINKIE && mc::kBtnBase4 == BTN_BASE4 &&
+              mc::kBtnSouth == BTN_SOUTH && mc::kBtnEast == BTN_EAST &&
+              mc::kBtnC == BTN_C && mc::kBtnWest == BTN_WEST && mc::kBtnZ == BTN_Z &&
+              mc::kBtnTl == BTN_TL && mc::kBtnStart == BTN_START &&
+              mc::kBtnMode == BTN_MODE,
+              "input_mapping.h button codes drifted from linux/input-event-codes.h");
+// poll()'s hat branches test ABS_HAT0X/ABS_HAT0Y; the phone-remote parity
+// test checks the python side against these two.
+static_assert(mc::kAbsHat0X == ABS_HAT0X && mc::kAbsHat0Y == ABS_HAT0Y,
+              "input_mapping.h hat codes drifted from linux/input-event-codes.h");
+}  // namespace
 
 namespace platform {
 
@@ -151,19 +174,7 @@ bool InputManager::initialize() {
     
     // CRITICAL: Wake up controller before opening devices
     // Controller may be in sleep mode and needs to be triggered
-    auto run_udevadm = [](const char* match) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-            execlp("sudo", "sudo", "udevadm", "trigger", "--action=change",
-                   match, nullptr);
-            _exit(127);
-        }
-        if (pid > 0) { int s; waitpid(pid, &s, 0); }
-    };
-    run_udevadm("--sysname-match=js*");
-    run_udevadm("--sysname-match=event*");
+    platform::udev::wake_input_devices();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
     if (!open_joystick_devices()) {
@@ -1015,53 +1026,11 @@ void InputManager::generate_dpad_repeats(std::vector<InputEvent>& events) {
     }
 }
 
-InputAction InputManager::map_button_to_action(uint16_t code, bool pressed) {
-    // Note: We now return the action even if pressed is false (release event)
-    // The caller (main loop) must check ev.pressed if it only cares about presses
-    
-    // N64 Controller mappings (matching Python evdev_joystick.py)
-    // Button 304 = BTN_SOUTH (standard A) -> SELECT
-    // Button 306 = A button (N64) -> SELECT
-    // Button 305 = BTN_EAST (B button) -> SETTINGS_MENU
-    // Button 316 = START -> SELECT
-    // Button 310 = Z -> PLAY_PAUSE
-    // Button 309 = R -> NEXT
-    // Button 308 = L -> PREV
-    //
-    // PS-style USB pad (DragonRise/Microntek 0079:0006) uses the "joystick"
-    // button range (BTN_TRIGGER..BTN_BASE6 = 288..299):
-    //   288 Triangle / 289 Circle / 290 Cross / 291 Square
-    //   292 L1 / 293 R1 / 294 L2 / 295 R2 / 296 Select / 297 Start
-    //
-    // Operator preference for the Magic Dingus Box kiosk:
-    //   Cross   → SELECT         (confirm — Americas PlayStation convention)
-    //   Circle  → SETTINGS_MENU  (open kiosk settings)
-    //   Square  → unassigned (free to remap later)
-    //   Triangle → PLAY_PAUSE
-    //   L1 / R1  → PREV / NEXT
-
-    switch (code) {
-        case 304:  // BTN_SOUTH (standard A button)
-        case 306:  // A button (N64)
-        case 316:  // START
-        case 290:  // Cross (PS pad, joystick button 2 — ENTER)
-        case 297:  // Start (PS pad)
-            return InputAction::SELECT;
-        case 305:  // BTN_EAST (B button)
-        case 289:  // Circle (PS pad, joystick button 1 — MENU)
-            return InputAction::SETTINGS_MENU;
-        case 310:  // Z
-        case 288:  // Triangle (PS pad)
-            return InputAction::PLAY_PAUSE;
-        case 309:  // R
-        case 293:  // R1 (PS pad)
-            return InputAction::NEXT;
-        case 308:  // L
-        case 292:  // L1 (PS pad)
-            return InputAction::PREV;
-        default:
-            return InputAction::NONE;
-    }
+InputAction InputManager::map_button_to_action(uint16_t code, bool /*pressed*/) {
+    // Release events map to the same action as presses; the caller (main
+    // loop) checks ev.pressed. The table itself lives in input_mapping.cpp,
+    // where the Mac suite tests it against the phone remote's codes.
+    return mapping::joystick_button_action(code);
 }
 
 // Extracted verbatim from map_axis_to_action's `axis == 0` branch so the
@@ -1129,24 +1098,9 @@ InputAction InputManager::map_axis_to_action(uint8_t axis, int16_t value) {
 }
 
 InputAction InputManager::map_key_to_action(uint16_t code) {
-    // Keyboard mappings (matching Python keyboard.py)
-    // Note: Arrow keys (Left/Right/Up/Down) are handled in poll() as ROTATE/ROTATE_VERTICAL
-    switch (code) {
-        case KEY_ENTER:
-        case KEY_SPACE:
-            return InputAction::SELECT;
-        case KEY_N:
-            return InputAction::NEXT;
-        case KEY_P:
-            return InputAction::PREV;
-        case KEY_PLAYPAUSE:
-            return InputAction::PLAY_PAUSE;
-        case KEY_ESC:
-        case KEY_Q:
-            return InputAction::QUIT;
-        default:
-            return InputAction::NONE;
-    }
+    // Arrow keys are handled in poll() as ROTATE/ROTATE_VERTICAL and never
+    // reach here. Table: input_mapping.cpp.
+    return mapping::keyboard_key_action(code);
 }
 
 const MenuNavOverlay* InputManager::lookup_overlay(uint16_t vid, uint16_t pid) const {

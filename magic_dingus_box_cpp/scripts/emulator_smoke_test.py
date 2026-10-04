@@ -435,10 +435,12 @@ def test_one_game(k: Kiosk, playlist_idx: int, game_idx: int) -> dict:
         result["returned"] = True
         result["return_ms"] = int((time.time() - t1) * 1000)
         log(f"  returned to menu in {result['return_ms']}ms", Colors.G)
-        # The session-exit hook publishes "menu" before the main loop has
-        # finished its post-game display/GL/audio reset; a press inside
+        # The session-exit hook used to publish "menu" before the main loop
+        # had finished its post-game display/GL/audio reset; a press inside
         # that window opened Settings and then landed a SELECT on the main
-        # menu (Master Shuffle) on a Pi 5, 2026-10-03. Let it settle.
+        # menu (Master Shuffle) on a Pi 5, 2026-10-03. The kiosk now holds
+        # "retroarch" until it can take input (app/post_game_gate.h); the
+        # settle stays as margin for the quiet-mode container resume.
         time.sleep(POST_RETURN_SETTLE_S)
     except TimeoutError as e:
         result["errors"].append(f"return timeout: {e}")

@@ -64,6 +64,7 @@
 #include "app/playback_reset.h"
 #include "app/auto_advance.h"
 #include "app/redraw_gate.h"
+#include "app/post_game_gate.h"
 #include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
@@ -731,14 +732,9 @@ int main(int /* argc */, char* /* argv */[]) {
                       << " failed (" << why << ") — skipping to next item"
                       << std::endl;
             if (state.master_shuffle_active) {
-                // > 0: index 0 is the virtual Master Shuffle row — see the
-                // NEXT handler.
-                if (state.current_playlist_index > 0 &&
-                    state.current_item_index >= 0) {
-                    state.push_shuffle_history(state.current_playlist_index,
-                                               state.current_item_index);
-                }
-                controller.play_random_global_video(state, playlist_directory);
+                // Records the failed item in the PREV history (the virtual
+                // row is filtered there), then picks the next random video.
+                controller.master_shuffle_advance(state, playlist_directory);
             } else {
                 controller.load_next_item(state, playlist_directory);
             }
@@ -1295,6 +1291,9 @@ int main(int /* argc */, char* /* argv */[]) {
     // systemd SIGABRT'd the kiosk (KillMode=mixed took RetroArch with it).
     std::atomic<bool> game_session_running{false};
     std::thread game_session_gpio_thread;
+    // Return-from-game window: armed by the end hook below, released by the
+    // main loop once the post-game reset has run (app/post_game_gate.h).
+    app::PostGameGate post_game_gate;
     controller.set_session_watchdog([](retroarch::SessionWatchdog ev) {
 #ifdef HAVE_SYSTEMD
         switch (ev) {
@@ -1377,12 +1376,17 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             game_quiet_mode.request_resume();
 #endif
-            // Clear the retroarch fields so kiosk_status.json never has
-            // stale ROM/core values.
-            state.retroarch_rom_name.clear();
-            state.retroarch_core.clear();
-            state.screen_mode.store(app::ScreenMode::Playlist);
-            try { status_writer.write_now(state); } catch (...) {}
+            // Do NOT publish the menu from here. This hook runs while the
+            // main loop is still inside the dispatch of the launching press:
+            // the Settings fields in AppState are the pre-launch snapshot
+            // (menu open, game list showing) that main.cpp is about to
+            // force-close, and the post-game reset has not run. Publishing
+            // "playlist" now let a client aim a SELECT at that stale game
+            // list and land it on Master Shuffle (Pi 5, 2026-10-03). The
+            // gate keeps "retroarch" published until the main loop's ready
+            // edge, which clears the ROM/core fields and lets the live
+            // screen through — see app/post_game_gate.h.
+            post_game_gate.session_ended();
         });
 
     // Try to load intro video at startup
@@ -1783,13 +1787,14 @@ int main(int /* argc */, char* /* argv */[]) {
             // Restore audio output after RetroArch
             // 1. Set PulseAudio default sink (for any non-GStreamer streams)
             std::cout << "Restoring audio output after display reset..." << std::endl;
-            state.audio_settings.apply_output();
+            // apply_output() returns the sink it resolved — reused below
+            // instead of listing the sinks a second time on this thread.
+            const std::string pulse_device = state.audio_settings.apply_output();
 
             // 2. Set pulsesink device directly on GStreamer pipeline
             // This bypasses PulseAudio default sink which can be overridden by
             // module-switch-on-port-available or module-default-device-restore
             {
-                std::string pulse_device = state.audio_settings.resolve_output_sink();
                 if (!pulse_device.empty()) {
                     player.set_audio_device(pulse_device);
                 }
@@ -1809,7 +1814,21 @@ int main(int /* argc */, char* /* argv */[]) {
                  std::cout << "Initial swap buffers after reset success." << std::endl;
             }
         }
-        
+
+        // Return-from-game ready edge: the reset above has run (or none was
+        // needed — a launch that failed before the handover), so the kiosk
+        // can take input again. Anything queued since the input devices
+        // reopened was pressed at a dissolving plate or a black screen, not
+        // at the menu that is about to fade in — drain it unseen. Only
+        // after that does the status stop saying "retroarch".
+        if (post_game_gate.take_ready(state.reset_display.load())) {
+            (void)input.poll();
+            if (gpio.is_available()) (void)gpio.poll();
+            state.retroarch_rom_name.clear();
+            state.retroarch_core.clear();
+            std::cout << "Post-game reset complete; accepting input" << std::endl;
+        }
+
         // Check for display mode changes from Settings Menu
         if (state.display_settings.mode != current_display_mode) {
             std::cout << "Display Mode changed! Switching resolution..." << std::endl;
@@ -2552,6 +2571,10 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
 
         for (const auto& ev : input_events) {
+            // A game session ended inside an earlier event of THIS batch:
+            // the remaining events were pressed before the game ran, and
+            // the screen they were aimed at is gone (app/post_game_gate.h).
+            if (!post_game_gate.accepts_input()) break;
             // Handle Menu button hold logic
             if (ev.action == InputAction::SETTINGS_MENU) {
                 if (ev.pressed) {
@@ -3272,19 +3295,16 @@ int main(int /* argc */, char* /* argv */[]) {
                     // Don't allow if we're switching playlists
                     if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
                         if (state.master_shuffle_active) {
-                            // In Master Shuffle, NEXT triggers another random video
-                            // Save current position to shuffle history for "Previous" support.
-                            // Index 0 is the VIRTUAL Master Shuffle row (one dummy
-                            // item, no file), never a real source playlist — the
-                            // reload path parks current_playlist_index there when a
-                            // source playlist is deleted mid-playback. Recording it
-                            // would make a later PREV try to load the dummy item,
-                            // which fails after the caller has already cleared
-                            // playback_started_ and stalls auto-advance.
-                            if (state.current_playlist_index > 0 && state.current_item_index >= 0) {
-                                state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
-                            }
-                            controller.play_random_global_video(state, playlist_directory);
+                            // In Master Shuffle, NEXT triggers another random video,
+                            // saving the current one to the shuffle history for
+                            // "Previous". Index 0 is the VIRTUAL Master Shuffle row
+                            // (one dummy item, no file), never a real source
+                            // playlist — the reload path parks
+                            // current_playlist_index there when a source playlist is
+                            // deleted mid-playback; record_history refuses it (see
+                            // app/shuffle_queue.h for why recording it stalled
+                            // auto-advance).
+                            controller.master_shuffle_advance(state, playlist_directory);
                         } else {
                             controller.load_next_item(state, playlist_directory);
                         }
@@ -3302,24 +3322,9 @@ int main(int /* argc */, char* /* argv */[]) {
                     // Don't allow if we're switching playlists
                     if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
                         if (state.master_shuffle_active) {
-                            // In Master Shuffle, PREV goes back through shuffle history
-                            int prev_playlist, prev_item;
-                            if (state.pop_shuffle_history(prev_playlist, prev_item)) {
-                                if (prev_playlist >= 0 && prev_playlist < static_cast<int>(state.playlists.size())) {
-                                    const auto& pl = state.playlists[prev_playlist];
-                                    if (prev_item >= 0 && prev_item < static_cast<int>(pl.items.size())) {
-                                        state.current_playlist_index = prev_playlist;
-                                        state.current_item_index = prev_item;
-                                        state.last_advanced_item_index = -1;
-                                        state.last_advanced_duration = 0.0;
-                                        state.playback_started_ = false;
-                                        controller.load_playlist_item(state, pl, prev_item, playlist_directory);
-                                    }
-                                }
-                            } else {
-                                // No history - pick another random video
-                                controller.play_random_global_video(state, playlist_directory);
-                            }
+                            // In Master Shuffle, PREV goes back through shuffle
+                            // history (random pick when it is empty).
+                            controller.master_shuffle_back(state, playlist_directory);
                         } else {
                             controller.load_previous_item(state, playlist_directory);
                         }
@@ -3550,13 +3555,9 @@ int main(int /* argc */, char* /* argv */[]) {
                     state.last_advanced_duration = adv.duration;
                     // Note: load_next_item handles errors internally (skips broken files)
                     if (state.master_shuffle_active) {
-                        // Save current position to shuffle history before auto-advancing.
-                        // > 0, not >= 0: index 0 is the virtual Master Shuffle row —
-                        // see the matching note on the NEXT handler above.
-                        if (state.current_playlist_index > 0 && state.current_item_index >= 0) {
-                            state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
-                        }
-                        controller.play_random_global_video(state, playlist_directory);
+                        // Saves the current item to the shuffle history first
+                        // (virtual row excluded — see the NEXT handler above).
+                        controller.master_shuffle_advance(state, playlist_directory);
                     } else {
                         controller.load_next_item(state, playlist_directory);
                     }
@@ -4139,7 +4140,9 @@ int main(int /* argc */, char* /* argv */[]) {
         // NOTE: RetroArch mode is NOT derived here — it is set explicitly at
         // the fork/waitpid transition point above so the companion app sees
         // "retroarch" immediately even though the main loop blocks on waitpid.
-        state.screen_mode = [&]() -> app::ScreenMode {
+        // It also STAYS "retroarch" after the game, until the post-game
+        // reset is done (post_game_gate) — see the session end hook.
+        state.screen_mode = post_game_gate.published_screen([&]() -> app::ScreenMode {
             // Settings overlay first — covers the entire screen when active
             // and is conceptually a modal layer on top of any underlying
             // mode, so the phone remote should reflect Settings even if a
@@ -4161,7 +4164,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 return app::ScreenMode::MediaBrowser;
 #endif
             return app::ScreenMode::Playlist;
-        }();
+        }());
 
         {
             auto sw_now = std::chrono::steady_clock::now();

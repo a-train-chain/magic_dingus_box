@@ -118,6 +118,8 @@ set(PLATFORM_SOURCES
     src/platform/input_manager.cpp
     src/platform/gpio_manager.cpp
     src/platform/platform_profile.cpp
+    src/platform/udev_wake.cpp
+    src/platform/input_mapping.cpp
 )
 
 # Media Browser unlock sequence detector — compiled into the kiosk binary
@@ -167,6 +169,10 @@ set(APP_SOURCES
     src/app/playback_reset.cpp
     src/app/auto_advance.cpp
     src/app/redraw_gate.cpp
+    src/app/post_game_gate.cpp
+    src/app/audio_router.cpp
+    src/app/shuffle_queue.cpp
+    src/app/playlist_cursor.cpp
 )
 
 set(UTILS_SOURCES
@@ -176,6 +182,7 @@ set(UTILS_SOURCES
     src/utils/stb_image_impl.cpp
     src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
+    src/utils/subprocess.cpp
 )
 
 set(RETROARCH_SOURCES
@@ -699,6 +706,10 @@ if(UI_TEST_SOURCES)
         src/utils/time_format.cpp
         # settings_menu.cpp's open() re-probes WIREGUARD_PRIVATE_KEY.
         src/utils/services_env.cpp
+        # wifi_manager.cpp runs nmcli through it.
+        src/utils/subprocess.cpp
+        # settings_menu.cpp's Audio Output row calls cycle_output().
+        src/app/audio_router.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -726,6 +737,21 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/auto_advance.cpp
         # The main loop's redraw gate (draw vs skip per iteration).
         src/app/redraw_gate.cpp
+        # The return-from-game input/status window.
+        src/app/post_game_gate.cpp
+        # PulseAudio routing (fake pactl runner in the tests) + its runner.
+        src/app/audio_router.cpp
+        src/utils/subprocess.cpp
+        # Shuffle / Master Shuffle / sequential next-previous decisions
+        # (controller.cpp is in no test target).
+        src/app/shuffle_queue.cpp
+        src/app/playlist_cursor.cpp
+        # settings.json load/save against real temp files (round-trip,
+        # wrong-typed quarantine). Pulls jsoncpp + spdlog, linked below.
+        src/app/settings_persistence.cpp
+        src/app/mb_filter_persistence.cpp
+        src/utils/config.cpp
+        src/utils/services_env.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp
@@ -733,9 +759,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # gate) — pure logic, no Linux-only deps.
         src/platform/platform_profile.cpp
     )
-    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS})
-    target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS})
-    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES})
+    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES}
+        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only)
     target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
@@ -747,6 +774,12 @@ if(PLATFORM_TEST_SOURCES)
     add_executable(test_platform_unit
         ${PLATFORM_TEST_SOURCES}
         src/platform/platform_profile.cpp
+        # Controller-wake node selection (skips virtual/uinput devices).
+        src/platform/udev_wake.cpp
+        # Built-in button/key tables + phone-remote parity (parses the
+        # web remote's uinput_writer.py).
+        src/platform/input_mapping.cpp
+        src/utils/subprocess.cpp
     )
     target_include_directories(test_platform_unit PRIVATE src)
     target_link_libraries(test_platform_unit PRIVATE Catch2::Catch2WithMain)
@@ -772,7 +805,9 @@ file(GLOB UTILS_TEST_SOURCES "tests/utils/*.cpp")
 if(UTILS_TEST_SOURCES)
     add_executable(test_utils_unit ${UTILS_TEST_SOURCES}
         src/utils/time_format.cpp
-        src/utils/services_env.cpp)
+        src/utils/services_env.cpp
+        # The one fork/exec/wait helper, tested against real processes.
+        src/utils/subprocess.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
@@ -812,6 +847,9 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/app/controller_text_input.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/retroarch/retroarch_launcher.cpp
+        # retroarch_launcher.cpp's helpers (udevadm, pkill) run through these.
+        src/utils/subprocess.cpp
+        src/platform/udev_wake.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})

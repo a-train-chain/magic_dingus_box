@@ -88,6 +88,12 @@ public:
     
     // Play a random video from any playlist (Master Shuffle)
     void play_random_global_video(AppState& state, const std::string& playlist_directory, int depth = 0);
+    // Master Shuffle NEXT / auto-advance / failed-item skip: record the item
+    // being left in the PREV history, then play_random_global_video.
+    void master_shuffle_advance(AppState& state, const std::string& playlist_directory);
+    // Master Shuffle PREV: back to the most recent still-valid history
+    // entry, or a random pick when there is none (app/shuffle_queue.h).
+    void master_shuffle_back(AppState& state, const std::string& playlist_directory);
     
     // Audio recovery
     // Polled each main-loop tick. Reads data/seek_request.json if present,
@@ -181,11 +187,7 @@ private:
     // to be skipped. See controller.cpp::update_state.
     int video_active_negative_count_ = 0;
 
-    // Shuffle queue helpers
-    void generate_shuffle_queue(AppState& state, int playlist_size);
-    void generate_master_shuffle_queue(AppState& state);
-    int get_next_shuffled_index(AppState& state, int playlist_size);
-    std::pair<int, int> get_next_master_shuffled_item(AppState& state);
+    // Shuffle ordering lives in app/shuffle_queue.h (pure, tested).
 };
 
 } // namespace app

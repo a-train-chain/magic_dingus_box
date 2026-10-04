@@ -1,0 +1,62 @@
+{
+  "audio" : 
+  {
+    "output" : "hdmi",
+    "retroarch_volume_offset_db" : 0.0
+  },
+  "display" : 
+  {
+    "bezel_index" : 1,
+    "bloom_intensity" : 0.0,
+    "enhanced_crt_enabled" : false,
+    "flicker_intensity" : 0.0,
+    "glow_intensity" : 0.0,
+    "interlacing_intensity" : 0.0,
+    "mb_bloom_intensity" : 0.0,
+    "mb_flicker_intensity" : 0.0,
+    "mb_glow_intensity" : 0.0,
+    "mb_interlacing_intensity" : 0.0,
+    "mb_library_filter" : "all",
+    "mb_library_sort" : "recent",
+    "mb_mode" : "movies",
+    "mb_playback_show_frame" : true,
+    "mb_popular_decade" : "any",
+    "mb_popular_genre_mask" : 0,
+    "mb_popular_language" : "any",
+    "mb_popular_min_rating" : "any",
+    "mb_popular_runtime" : "any",
+    "mb_popular_sort" : "popularity",
+    "mb_rgb_mask_intensity" : 0.0,
+    "mb_scanline_intensity" : 0.0,
+    "mb_toprated_decade" : "any",
+    "mb_toprated_genre_mask" : 0,
+    "mb_toprated_language" : "any",
+    "mb_toprated_min_rating" : "any",
+    "mb_toprated_runtime" : "any",
+    "mb_toprated_sort" : "top_rated",
+    "mb_tv_popular_decade" : "any",
+    "mb_tv_popular_genre_mask" : 0,
+    "mb_tv_popular_language" : "any",
+    "mb_tv_popular_min_rating" : "any",
+    "mb_tv_popular_runtime" : "any",
+    "mb_tv_popular_sort" : "popularity",
+    "mb_tv_toprated_decade" : "any",
+    "mb_tv_toprated_genre_mask" : 0,
+    "mb_tv_toprated_language" : "any",
+    "mb_tv_toprated_min_rating" : "any",
+    "mb_tv_toprated_runtime" : "any",
+    "mb_tv_toprated_sort" : "top_rated",
+    "mb_warmth_intensity" : 0.0,
+    "mode" : "modern_tv",
+    "rgb_mask_intensity" : 0.0,
+    "scanline_intensity" : 0.25,
+    "warmth_intensity" : 0.0
+  },
+  "playback" : 
+  {
+    "master_volume" : 80,
+    "media_browser_unlocked" : false,
+    "playlist_loop" : true,
+    "shuffle" : false
+  }
+}
