@@ -27,9 +27,7 @@
 #include "media_browser/prowlarr/prowlarr_client.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
-#include "media_browser/radarr/radarr_mock.h"
 #include "media_browser/sonarr/sonarr_client.h"
-#include "media_browser/sonarr/sonarr_mock.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/playback_screen.h"
 #include "media_browser/health/vpn_health_monitor.h"
@@ -37,11 +35,15 @@
 #include "media_browser/library/watch_store.h"
 #include "media_browser/mb_entry_gate.h"
 #include "media_browser/mb_host.h"
+#include "media_browser/mb_services.h"
 #endif
 #include "app/app_state.h"
 #include "app/game_quiet_mode.h"
 #include "app/game_handoff.h"
 #include "app/game_handoff_kiosk.h"
+#include "app/intro_sequence.h"
+#include "app/intro_sequence_kiosk.h"
+#include "app/settings_input.h"
 #include "app/movie_quiet_mode.h"
 #include "app/playlist_loader.h"
 #include "app/controller.h"
@@ -531,30 +533,13 @@ int main(int /* argc */, char* /* argv */[]) {
     }
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // Layer 3 monitor — only meaningful when Layers 1+2 already pass.
-    // Otherwise the Settings menu won't expose MB anyway, so save the
-    // background polling work. Lifetime: declared here at function scope
-    // so its destructor stops the worker thread cleanly on main() exit.
-    std::unique_ptr<media_browser::VpnHealthMonitor> vpn_health_monitor;
-    if (state.media_browser_unlocked && state.media_browser_vpn_configured) {
-        vpn_health_monitor = std::make_unique<media_browser::VpnHealthMonitor>(state);
-        vpn_health_monitor->start();
-
-        // Startup safety: call playback_services_pause.sh unpause to bring
-        // any stopped MB containers back up. This is the recovery path for
-        // "PlaybackScreen::leave() didn't run cleanly" cases — e.g. kiosk
-        // crashed mid-playback or was SIGABRT'd by systemd watchdog. With
-        // the docker-stop pause behavior, missed leave() = stranded
-        // containers (Docker's restart=unless-stopped doesn't auto-start
-        // manually-stopped containers). Without this safety: Movies entry
-        // silently vanishes on next boot. unpause is idempotent — no-op
-        // for already-running containers, starts stopped ones. Backgrounded
-        // (& at end) so the ~1-2 s docker start doesn't block the kiosk
-        // entering its main loop.
-        std::system(
-            "/usr/local/bin/playback_services_pause.sh unpause "
-            ">/dev/null 2>&1 &");
-    }
+    // Layer 3 monitor (started only when Layers 1+2 already pass) plus the
+    // backgrounded container-unpause startup safety net — see
+    // media_browser::start_vpn_health_monitor. Lifetime: declared here at
+    // function scope so its destructor stops the worker thread cleanly on
+    // main() exit.
+    std::unique_ptr<media_browser::VpnHealthMonitor> vpn_health_monitor =
+        media_browser::start_vpn_health_monitor(state);
 #endif
 
     // Load available bezels from bezels.json using JsonCpp
@@ -655,256 +640,16 @@ int main(int /* argc */, char* /* argv */[]) {
 #ifdef MEDIA_BROWSER_ENABLED
     // Task 17: service clients for the Media Browser (the screens and
     // their dispatcher live in MediaBrowserHost, constructed below).
-    //
-    // Radarr client is the real HTTP client when we can find an API key:
-    //   1. MDB_RADARR_API_KEY env var (preferred — explicit kiosk config)
-    //   2. RADARR_API_KEY env var (systemd EnvironmentFile of services/.env)
-    //   3. Parse /opt/magic_dingus_box/services/.env directly (fallback
-    //      for when systemd env propagation isn't set up)
-    // Otherwise we fall back to RadarrMockClient for dev machines.
-    // (Step 3 for every client below goes through utils::read_env_value —
-    // see utils/services_env.h for the quoting rules.)
+    // Radarr / Sonarr / TMDB / Prowlarr / qBittorrent, in that order, with
+    // the mock fallbacks for a box without keys — see
+    // media_browser/mb_services.h for the key chains and path prefixes.
+    media_browser::MbServiceClients mb_clients =
+        media_browser::make_service_clients();
 
-    std::unique_ptr<media_browser::RadarrClient> radarr_owned;
-    std::string radarr_key;
-    if (const char* rk = std::getenv("MDB_RADARR_API_KEY"); rk && *rk) radarr_key = rk;
-    else if (const char* rk2 = std::getenv("RADARR_API_KEY"); rk2 && *rk2) radarr_key = rk2;
-    else radarr_key = utils::read_env_value(utils::kServicesEnvPath, "RADARR_API_KEY");
-
-    if (!radarr_key.empty()) {
-        media_browser::RadarrClient::Config radarr_cfg;
-        if (const char* base = std::getenv("MDB_RADARR_BASE_URL"); base && *base) {
-            radarr_cfg.base_url = base;
-        }
-        radarr_cfg.api_key = radarr_key;
-        // Path-translation overrides: redirect /library/* between the Radarr
-        // container's view and the host's actual mount point. Default in
-        // radarr_cfg works for the standard /mnt/ssd setup; the env vars
-        // exist so STORAGE_ROOT can change without a kiosk recompile. The
-        // download/incomplete tree is not exposed via Radarr's API to the
-        // kiosk, so it doesn't need translation here. normalize_prefix
-        // ensures both prefixes end with '/' to avoid /library2/foo
-        // falsely matching /library.
-        if (const char* p = std::getenv("MDB_CONTAINER_LIBRARY_PREFIX"); p && *p) {
-            radarr_cfg.container_library_prefix =
-                media_browser::RadarrClient::normalize_prefix(p);
-            std::cout << "[media_browser] container_library_prefix override: "
-                      << radarr_cfg.container_library_prefix << std::endl;
-        }
-        if (const char* p = std::getenv("MDB_HOST_LIBRARY_PREFIX"); p && *p) {
-            radarr_cfg.host_library_prefix =
-                media_browser::RadarrClient::normalize_prefix(p);
-            std::cout << "[media_browser] host_library_prefix override: "
-                      << radarr_cfg.host_library_prefix << std::endl;
-        }
-        std::string base_url_for_log = radarr_cfg.base_url;
-        radarr_owned = std::make_unique<media_browser::RadarrClient>(std::move(radarr_cfg));
-        std::cout << "[media_browser] Using real RadarrClient (base_url="
-                  << base_url_for_log << ")" << std::endl;
-    } else {
-        radarr_owned = std::make_unique<media_browser::RadarrMockClient>();
-        std::cout << "[media_browser] No Radarr API key found — using RadarrMockClient" << std::endl;
-    }
-    media_browser::RadarrClient& radarr = *radarr_owned;
-
-    // Sonarr client (Phase 2b). Same three-stage key chain as Radarr above:
-    //   1. MDB_SONARR_API_KEY env var (explicit kiosk config)
-    //   2. SONARR_API_KEY env var (systemd EnvironmentFile of services/.env)
-    //   3. Parse /opt/magic_dingus_box/services/.env directly
-    // setup_services.sh writes SONARR_API_KEY into that .env after Sonarr's
-    // first container start; a box provisioned before the Sonarr stack landed
-    // simply has no line and falls through to the mock.
-    std::unique_ptr<media_browser::SonarrClient> sonarr_owned;
-    std::string sonarr_key;
-    if (const char* sk = std::getenv("MDB_SONARR_API_KEY"); sk && *sk) sonarr_key = sk;
-    else if (const char* sk2 = std::getenv("SONARR_API_KEY"); sk2 && *sk2) sonarr_key = sk2;
-    else sonarr_key = utils::read_env_value(utils::kServicesEnvPath, "SONARR_API_KEY");
-
-    if (!sonarr_key.empty()) {
-        media_browser::SonarrClient::Config sonarr_cfg;
-        if (const char* base = std::getenv("MDB_SONARR_BASE_URL"); base && *base) {
-            sonarr_cfg.base_url = base;
-        }
-        sonarr_cfg.api_key = sonarr_key;
-        // TV path prefixes, resolved in three tiers.
-        //
-        // The TV subtree is /data/library/tv ↔ /mnt/ssd/library/tv — one level
-        // below the movie library root — so it cannot simply reuse the Radarr
-        // vars (every TV path would translate one directory too high). But it
-        // must not ignore them either: MDB_HOST_LIBRARY_PREFIX exists so
-        // STORAGE_ROOT can move without a recompile, and a box where the
-        // operator points movies at /mnt/nvme/library/ while Sonarr keeps a
-        // compiled-in /mnt/ssd/library/tv/ would hand GStreamer an
-        // unresolvable container path — with nothing but a spdlog::warn to say
-        // so, and none of the legacy-alternate fallbacks the Radarr resolver
-        // has. Nothing in provisioning writes MDB_*_TV_PREFIX, so deriving
-        // from the parent is what actually fires in the field.
-        //
-        // Order: explicit TV var → parent movie var + "tv" → compiled default.
-        auto tv_prefix = [](const char* tv_var, const char* parent_var,
-                            const std::string& compiled_default) -> std::string {
-            if (const char* p = std::getenv(tv_var); p && *p) {
-                return media_browser::SonarrClient::normalize_prefix(p);
-            }
-            if (const char* p = std::getenv(parent_var); p && *p) {
-                return media_browser::SonarrClient::normalize_prefix(
-                    media_browser::SonarrClient::normalize_prefix(p) + "tv");
-            }
-            return compiled_default;
-        };
-        sonarr_cfg.container_library_prefix =
-            tv_prefix("MDB_CONTAINER_TV_PREFIX", "MDB_CONTAINER_LIBRARY_PREFIX",
-                      sonarr_cfg.container_library_prefix);
-        sonarr_cfg.host_library_prefix =
-            tv_prefix("MDB_HOST_TV_PREFIX", "MDB_HOST_LIBRARY_PREFIX",
-                      sonarr_cfg.host_library_prefix);
-        std::cout << "[media_browser] sonarr tv prefixes: "
-                  << sonarr_cfg.container_library_prefix << " -> "
-                  << sonarr_cfg.host_library_prefix << std::endl;
-        std::string sonarr_url_for_log = sonarr_cfg.base_url;
-        sonarr_owned = std::make_unique<media_browser::SonarrClient>(std::move(sonarr_cfg));
-        std::cout << "[media_browser] Using real SonarrClient (base_url="
-                  << sonarr_url_for_log << ")" << std::endl;
-    } else {
-        sonarr_owned = std::make_unique<media_browser::SonarrMockClient>();
-        std::cout << "[media_browser] No Sonarr API key found — using SonarrMockClient"
-                  << std::endl;
-    }
-    media_browser::SonarrClient& sonarr = *sonarr_owned;
-    // Consumed by BrowseScreen (Phase 2c-1): the TV library feeds the
-    // in-library hide and the For You seed sample in TV mode.
-
-    // TMDB client — Phase A: Discover endpoints for Browse categories.
-    // Radarr still handles library/add/queue; TMDB only drives discovery.
-    std::string tmdb_key;
-    if (const char* k = std::getenv("MDB_TMDB_API_KEY"); k && *k) {
-        tmdb_key = k;
-    } else if (const char* home = std::getenv("HOME"); home) {
-        std::ifstream kf(std::string(home) + "/.config/magic_dingus_box/tmdb_api_key");
-        if (kf) std::getline(kf, tmdb_key);
-        while (!tmdb_key.empty() &&
-               (tmdb_key.back() == '\n' || tmdb_key.back() == '\r' ||
-                tmdb_key.back() == ' ')) {
-            tmdb_key.pop_back();
-        }
-    }
-    if (tmdb_key.empty()) {
-        std::cout << "[media_browser] WARN: No TMDB API key (MDB_TMDB_API_KEY or "
-                     "~/.config/magic_dingus_box/tmdb_api_key). Browse categories "
-                     "will be empty until a key is configured." << std::endl;
-    } else {
-        std::cout << "[media_browser] TMDB API key loaded (len=" << tmdb_key.size() << ")"
-                  << std::endl;
-    }
-    auto tmdb = std::make_unique<media_browser::TmdbClient>(tmdb_key);
-
-    // Optional Prowlarr client for the AVAILABILITY readout on Detail.
-    // Same key lookup chain as Radarr above:
-    //   1. MDB_PROWLARR_API_KEY env var
-    //   2. PROWLARR_API_KEY env var (systemd EnvironmentFile)
-    //   3. Parse /opt/magic_dingus_box/services/.env directly
-    // Falls back to nullptr (readout suppressed) if no key is found.
-    std::unique_ptr<media_browser::ProwlarrClient> prowlarr_owned;
-    {
-        std::string prowlarr_key;
-        if (const char* k = std::getenv("MDB_PROWLARR_API_KEY"); k && *k) {
-            prowlarr_key = k;
-        } else if (const char* k2 = std::getenv("PROWLARR_API_KEY"); k2 && *k2) {
-            prowlarr_key = k2;
-        } else {
-            prowlarr_key = utils::read_env_value(
-                utils::kServicesEnvPath, "PROWLARR_API_KEY");
-        }
-
-        if (!prowlarr_key.empty()) {
-            media_browser::ProwlarrClient::Config pcfg;
-            pcfg.api_key = prowlarr_key;
-            if (const char* base = std::getenv("MDB_PROWLARR_BASE_URL");
-                base && *base) {
-                pcfg.base_url = base;
-            }
-            prowlarr_owned = std::make_unique<media_browser::ProwlarrClient>(
-                std::move(pcfg));
-            std::cout << "[media_browser] Prowlarr client enabled "
-                      << "(base_url=" << "http://localhost:9696" << ", "
-                      << "key_len=" << prowlarr_key.size() << ")"
-                      << std::endl;
-        } else {
-            std::cout << "[media_browser] Prowlarr client disabled "
-                      << "(no PROWLARR_API_KEY found; AVAILABILITY readout "
-                      << "on Detail will be suppressed)" << std::endl;
-        }
-    }
-
-    // qBittorrent client — used by QueueScreen to overlay live
-    // download progress over Radarr's stale-cached queue snapshot.
-    // qBit always runs on localhost:8080 in our docker-compose setup;
-    // credentials come from MDB_QBIT_USER / MDB_QBIT_PASS env vars,
-    // or fall back to the docker-compose default (admin/adminadmin).
-    auto qbit_owned = std::make_unique<media_browser::QbittorrentClient>(
-        []() {
-            media_browser::QbittorrentClient::Config cfg;
-            if (const char* u = std::getenv("MDB_QBIT_USER"); u && *u) {
-                cfg.username = u;
-            }
-            if (const char* p = std::getenv("MDB_QBIT_PASS"); p && *p) {
-                cfg.password = p;
-            }
-            if (const char* url = std::getenv("MDB_QBIT_BASE_URL");
-                url && *url) {
-                cfg.base_url = url;
-            }
-            return cfg;
-        }());
-    std::cout << "[media_browser] qBittorrent client enabled "
-              << "(base_url=http://localhost:8080)" << std::endl;
-
-    // Trickle-limit bootstrap (movie playback contention guard, Pi 5).
-    // Two one-shot, best-effort calls — qBit may well be down this early
-    // in boot (the Docker stack races kiosk startup), so a failure is
-    // informational only and must never block the kiosk coming up.
-    //
-    // (a) Converge the alternative-limit rates: 2 MiB/s down (leaves the
-    //     swarm progressing through a 2h movie without contending with
-    //     GStreamer's reads), 8 KiB/s up — effectively OFF. Seeding is
-    //     the expensive direction during playback: serving strangers'
-    //     piece requests is random reads over the whole library, and
-    //     with no free RAM for page cache it measured 8x amplified
-    //     (122 GB read to upload 18 GB, 2026-08-11) on the same SSD the
-    //     movie streams from. Downloads the user is waiting on are
-    //     cheap sequential writes; those stay at 2 MiB/s.
-    //     Written every boot so shipped boxes converge on retuned rates
-    //     via OTA without anyone touching the qBit WebUI.
-    // (b) CRASH RECOVERY: unconditionally clear the alt-limits cap. Only
-    //     PlaybackScreen sets it (Pi 5 movie playback), and its leave()
-    //     clears it — but a kiosk crash/power-cut mid-movie would leave
-    //     every future download silently capped at trickle speed with
-    //     nothing in any UI to explain why. The wrapper is idempotent
-    //     (read-then-toggle), so the ordinary clean boot is a no-op read.
-    // Gated on the provisioning marker like GameQuietMode below, so
-    // unprovisioned Pis and dev machines do exactly nothing (no qBit
-    // failure lines on every boot). Provisioned boxes still clear
-    // unconditionally — board-agnostic, since a leftover cap is
-    // qBit-side state that can travel with a cloned image or SSD.
-    if (std::filesystem::exists("/opt/magic_dingus_box/services/.env")) {
-        // 2 MiB/s down / 8 KiB/s up, IN BYTES (see the client header:
-        // qBit 5's preference field is bytes/s despite docs claiming
-        // KiB — the KiB assumption strangled downloads to 1.5 KB/s).
-        // Upload deliberately near-zero, not zero: 0 means UNLIMITED to
-        // qBit, and a token allowance keeps peer connections from
-        // erroring out mid-handshake.
-        if (!qbit_owned->configure_alt_speed_limits(
-                /*dl_bytes_s=*/2 * 1024 * 1024,
-                /*up_bytes_s=*/8 * 1024)) {
-            std::cout << "[media_browser] qbit alt-limit rate config failed "
-                         "(best-effort; qBit may not be up yet)" << std::endl;
-        }
-        if (!qbit_owned->set_alt_speed_limits_enabled(false)) {
-            std::cout << "[media_browser] qbit alt-limit crash-recovery "
-                         "clear failed (best-effort; qBit may not be up yet)"
-                      << std::endl;
-        }
-    }
+    // Trickle-limit bootstrap: converge qBit's alt-limit rates and clear a
+    // crash-stranded cap. Best-effort, gated on the provisioning marker.
+    media_browser::bootstrap_qbit_alt_limits(*mb_clients.qbit,
+                                             utils::kServicesEnvPath);
 
     // Torrents the kiosk paused (movie FullPause / game quiet mode) and
     // never resumed — kiosk crashed, was stopped mid-movie, or an OTA
@@ -915,7 +660,7 @@ int main(int /* argc */, char* /* argv */[]) {
         config::get_data_path() + "/qbit_paused_by_kiosk";
     std::function<bool()> qbit_pause_all;
     std::function<bool()> qbit_resume_all;
-    if (auto* qbit = qbit_owned.get(); qbit != nullptr) {
+    if (auto* qbit = mb_clients.qbit.get(); qbit != nullptr) {
         qbit_pause_all = [qbit]() { return qbit->pause_all(); };
         qbit_resume_all = [qbit]() { return qbit->resume_all(); };
     }
@@ -954,7 +699,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // thread (WatchdogSec=10). See app/movie_quiet_mode.h.
     app::MovieQuietMode movie_quiet_mode(
         media_browser::ui::PlaybackScreen::make_quiet_actions(
-            qbit_owned.get(),
+            mb_clients.qbit.get(),
             /*barrier=*/[&game_quiet_mode]() {
                 (void)game_quiet_mode.wait_until_idle_for(
                     std::chrono::seconds(20));
@@ -988,17 +733,17 @@ int main(int /* argc */, char* /* argv */[]) {
     // owned here and is borrowed by reference; declared after all of it,
     // so the host never outlives what it points at.
     //
-    // sonarr_configured = !sonarr_key.empty() is exactly the
-    // fallback-to-SonarrMockClient condition above — the screens must not
+    // sonarr_configured is exactly the fallback-to-SonarrMockClient
+    // condition (media_browser/mb_services.h) — the screens must not
     // present the mock's fixtures as real TV on a box that never had
     // Sonarr set up.
     media_browser::MediaBrowserHost mb_host(media_browser::MediaBrowserHost::Deps{
-        radarr,
-        sonarr,
-        /*sonarr_configured=*/!sonarr_key.empty(),
-        *tmdb,
-        prowlarr_owned.get(),
-        *qbit_owned,
+        *mb_clients.radarr,
+        *mb_clients.sonarr,
+        /*sonarr_configured=*/mb_clients.sonarr_configured,
+        *mb_clients.tmdb,
+        mb_clients.prowlarr.get(),
+        *mb_clients.qbit,
         watch_store,
         movie_quiet_mode,
         controller,
@@ -1058,95 +803,12 @@ int main(int /* argc */, char* /* argv */[]) {
         },
         [&game_session_bracket]() { game_session_bracket.end(); });
 
-    // Try to load intro video at startup
-    // Look for intro video in common locations (prefer .30fps version)
-    std::vector<std::string> intro_paths = config::get_intro_search_paths();
-    
-    std::string intro_video_path;
-    std::cout << "Checking for intro video in " << intro_paths.size() << " locations..." << std::endl;
-    for (const auto& path : intro_paths) {
-        std::cout << "  Checking: " << path << std::endl;
-        // Try direct path check first (avoids path resolver warnings)
-        if (fs::exists(path)) {
-            try {
-                fs::path canonical_path = fs::canonical(path);
-                intro_video_path = canonical_path.string();
-                std::cout << "Found intro video: " << intro_video_path << std::endl;
-                break;
-            } catch (const std::exception& e) {
-                // Canonical failed, try absolute path
-                fs::path abs_path = fs::absolute(path);
-                if (fs::exists(abs_path)) {
-                    intro_video_path = abs_path.string();
-                    std::cout << "Found intro video: " << intro_video_path << std::endl;
-                    break;
-                }
-            }
-        }
-    }
-    
-    // Load and play intro video if found
-    // IMPORTANT: Set showing_intro_video BEFORE loading to prevent UI from appearing
-    if (!intro_video_path.empty()) {
-        // Set intro state immediately to prevent UI from rendering
-        state.showing_intro_video = true;
-        state.intro_ready = false;  // Not ready until video actually starts
-        state.ui_visible_when_playing = false;  // UI transparent during intro
-        state.video_active = false;  // Will be set to true when video actually starts
-        
-        auto intro_result = controller.load_file_with_resolution(intro_video_path, playlist_directory, 0.0, 0.0, false);
-        if (intro_result) {
-            controller.play();
-            std::cout << "Intro video loaded, waiting for playback to start..." << std::endl;
-            
-            // Wait for intro video to actually start playing AND render at least one frame
-            // This ensures the first thing user sees is the video, not UI or blank screen
-            // Increased timeout to 10s (200 * 50ms) to allow for slower startup on Pi
-            int wait_count = 0;
-            const int max_wait = 200;  // Wait up to 10 seconds
-            bool first_frame_rendered = false;
-            
-            while ((!state.intro_ready || !first_frame_rendered) && wait_count < max_wait) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                controller.update_state(state);
-                
-                // Check if mpv has rendered a frame
-                if (state.intro_ready && !first_frame_rendered) {
-                // Check if frame is ready - let main loop handle actual rendering
-                // This prevents race condition with main loop's buffer management
-                uint64_t flags = gst_renderer.get_update_flags();
-                if (flags & GstRenderer::UPDATE_FRAME) {
-                    // Frame is ready - mark as rendered and let main loop handle it
-                    // DON'T call gst_renderer.render() or egl.swap_buffers() here!
-                    // The main loop will handle all rendering and buffer swapping
-                    first_frame_rendered = true;
-                    std::cout << "Intro video first frame ready, entering main loop" << std::endl;
-                }
-                }
-                
-                wait_count++;
-            }
-            
-            if (state.intro_ready && first_frame_rendered) {
-                std::cout << "Intro video ready with first frame, entering main loop" << std::endl;
-            } else {
-                std::cerr << "Warning: Intro video did not start within timeout, proceeding anyway" << std::endl;
-                // Force skip intro if it timed out to prevent black screen
-                state.showing_intro_video = false;
-                state.intro_complete = true;
-                state.video_active = false;
-                player.stop();
-            }
-        } else {
-            std::cerr << "Warning: Failed to load intro video, skipping intro" << std::endl;
-            state.showing_intro_video = false;  // Reset if load failed
-            state.intro_complete = true;  // Skip intro if file can't be loaded
-        }
-    } else {
-        std::cout << "No intro video found, starting with UI" << std::endl;
-        state.intro_complete = true;  // No intro video, show UI immediately
-    }
-    
+    // Boot intro video: find it, load it and wait (bounded) for its first
+    // frame, so the first thing on screen is the video — or skip straight
+    // to the menu when there is none. See app/intro_sequence_kiosk.h.
+    app::start_intro(app::find_intro_video(), state, controller, player,
+                     gst_renderer, playlist_directory);
+
 #ifdef HAVE_SYSTEMD
     sd_notify(0, "READY=1");
 #endif
@@ -1288,6 +950,25 @@ int main(int /* argc */, char* /* argv */[]) {
     } ui_draw_window;
     LOG_INFO("UI batching: {} (MDB_BATCH_UI=0 restores one draw per primitive)",
              ui_renderer.ui_batching_enabled() ? "ON" : "OFF");
+
+    // Settings-menu input dispatch (app/settings_input.h): BTN4 toggle /
+    // hold-for-volume, the on-screen keyboard, and the Settings menu with
+    // its game browser, Controller Setup wizard and pairing screen. `mode`
+    // and `playlist_directory` are borrowed live.
+    app::MenuButtonHold menu_hold;
+    app::SettingsInputContext settings_input{
+        state,
+        settings_menu,
+        keyboard,
+        controller,
+        input,
+        kiosk_graphics,
+        mode,
+        playlist_directory,
+#ifdef MEDIA_BROWSER_ENABLED
+        /*enter_media_browser=*/[&mb_host]() { mb_host.enter_from_settings(); },
+#endif
+    };
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -1622,23 +1303,13 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
 
 
-        // Track Menu button state for volume control
-        struct MenuHoldState {
-            bool button_held = false;
-            bool volume_changed_while_held = false;
-            std::chrono::steady_clock::time_point press_time;
-        };
-        static MenuHoldState menu_hold;
-
-        // Time-based check for showing slider (if held long enough)
-        if (menu_hold.button_held && !state.show_volume_slider) {
-            auto now = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - menu_hold.press_time).count();
-            if (duration > 300) {
-                state.show_volume_slider = true;
-            }
+        // Time-based check for showing the volume slider (BTN4 held
+        // long enough — app::MenuButtonHold::slider_due).
+        if (!state.show_volume_slider &&
+            menu_hold.slider_due(std::chrono::steady_clock::now())) {
+            state.show_volume_slider = true;
         }
-        
+
 #ifdef MEDIA_BROWSER_ENABLED
         // Media Browser screen dispatcher (Task 17). While the Media
         // Browser owns the screen, the active MbScreen owns ALL input:
@@ -1655,406 +1326,13 @@ int main(int /* argc */, char* /* argv */[]) {
             // the remaining events were pressed before the game ran, and
             // the screen they were aimed at is gone (app/post_game_gate.h).
             if (!post_game_gate.accepts_input()) break;
-            // Handle Menu button hold logic
-            if (ev.action == InputAction::SETTINGS_MENU) {
-                if (ev.pressed) {
-                    menu_hold.button_held = true;
-                    menu_hold.volume_changed_while_held = false;
-                    menu_hold.press_time = std::chrono::steady_clock::now();
-                    state.show_volume_slider = false; // Don't show immediately
-                } else {
-                    menu_hold.button_held = false;
-                    state.show_volume_slider = false; // Hide immediately
-                    
-                    auto release_time = std::chrono::steady_clock::now();
-                    auto hold_duration = std::chrono::duration_cast<std::chrono::milliseconds>(release_time - menu_hold.press_time).count();
-                    
-                    // Only toggle menu if we didn't change volume AND it was a short press
-                    if (!menu_hold.volume_changed_while_held && hold_duration < 300) {
-                        // BTN4 toggle gating:
-                        //  - Inside Media Browser: never toggle the kiosk
-                        //    Settings overlay. MB owns the screen and has
-                        //    its own internal dispatcher (back/exit modal).
-                        //  - Outside MB (main kiosk playlist):
-                        //    * always allow CLOSE (never trap user in an
-                        //      open Settings overlay)
-                        //    * allow OPEN when UI is available, i.e. no
-                        //      playback active OR the user's
-                        //      `ui_visible_when_playing` preference is on.
-                        //      That preserves the original kiosk behavior:
-                        //      operators who ticked "show UI during
-                        //      playback" can still pop into Settings while
-                        //      a playlist video is rolling.
-                        bool in_mb = false;
-#ifdef MEDIA_BROWSER_ENABLED
-                        in_mb = (state.current_screen == app::AppScreen::MediaBrowser);
-#endif
-                        if (!in_mb) {
-                            const bool already_open =
-                                settings_menu.is_active() || settings_menu.is_opening();
-                            const bool ui_available =
-                                !state.video_active || state.ui_visible_when_playing;
-                            if (already_open || ui_available) {
-                                settings_menu.toggle();
-                            }
-                        }
-                    } else if (menu_hold.volume_changed_while_held) {
-                        // Volume was changed, save settings now
-                        app::SettingsPersistence::save_settings(state);
-                    }
-                }
-                continue;
-            }
-            
-            // If Menu button is held, hijack Rotate/Up/Down for volume
-            if (menu_hold.button_held) {
-                if (ev.action == InputAction::ROTATE) {
-                    int vol_change = ev.delta * 5; // 5% increments
-                    state.master_volume += vol_change;
-                    
-                    // Clamp volume
-                    if (state.master_volume < 0) state.master_volume = 0;
-                    if (state.master_volume > 100) state.master_volume = 100;
-                    
-                    // Apply volume
-                    controller.set_system_volume(state.master_volume);
-                    
-                    // Show slider immediately on interaction and mark as changed
-                    state.show_volume_slider = true;
-                    menu_hold.volume_changed_while_held = true;
-                } else if (ev.action == InputAction::ROTATE_VERTICAL) {
-                    // Invert delta for vertical axis (Up = -1 -> Volume Up)
-                    int vol_change = -ev.delta * 5; // 5% increments
-                    state.master_volume += vol_change;
-                    
-                    // Clamp volume
-                    if (state.master_volume < 0) state.master_volume = 0;
-                    if (state.master_volume > 100) state.master_volume = 100;
-                    
-                    // Apply volume
-                    controller.set_system_volume(state.master_volume);
-                    
-                    // Show slider immediately on interaction and mark as changed
-                    state.show_volume_slider = true;
-                    menu_hold.volume_changed_while_held = true;
-                }
-                continue; // Consume event
-            }
-            
-            // Route input
-            if (keyboard.is_active()) {
-            // Handle navigation (axis/dpad) or button presses
-            bool is_navigation = (ev.action == InputAction::ROTATE || ev.action == InputAction::ROTATE_VERTICAL);
-            
-            if (ev.pressed || is_navigation) { 
-                switch (ev.action) {
-                    case InputAction::ROTATE_VERTICAL:
-                            if (ev.delta < 0) keyboard.navigate_up();
-                            else if (ev.delta > 0) keyboard.navigate_down();
-                            break;
-                        case InputAction::ROTATE:
-                            if (ev.delta < 0) keyboard.navigate_left();
-                            else if (ev.delta > 0) keyboard.navigate_right();
-                            break;
-                        case InputAction::SELECT: keyboard.select(); break;
-                        case InputAction::PREV: // Backspace shortcut
-                        case InputAction::SEEK_LEFT:
-                            keyboard.backspace(); 
-                            break;
-                        case InputAction::NEXT: // Space shortcut
-                        case InputAction::SEEK_RIGHT:
-                            keyboard.space(); 
-                            break;
-                        case InputAction::QUIT: keyboard.close(); break;
-                        default: break;
-                    }
-                }
-                continue; // Consume event if keyboard is active
-            } else if (settings_menu.is_active() || settings_menu.is_opening() || settings_menu.is_closing()) {
-                // Settings Menu Input
-                // Handle game browser navigation and selection
-                if (settings_menu.is_game_browser_active()) {
-                    switch (ev.action) {
-                        case InputAction::ROTATE:
-                        case InputAction::ROTATE_VERTICAL: {
-                            // Navigate game browser
-                            int game_playlist_count = static_cast<int>(game_playlists.size());
-                            int games_in_current_playlist = 0;
-                            if (settings_menu.is_viewing_games_in_playlist()) {
-                                int playlist_idx = settings_menu.get_current_game_playlist_index();
-                               if (playlist_idx >= 0 && playlist_idx < game_playlist_count) {
-                                    games_in_current_playlist = static_cast<int>(game_playlists[playlist_idx].items.size());
-                                }
-                            }
-                            
-                            settings_menu.navigate(ev.delta, game_playlist_count, games_in_current_playlist);
-                            
-                            break;
-                        }
-                        
-                        case InputAction::SELECT: {
-                            if (!ev.pressed) break; // Only trigger on press
-                            
-                            std::cout << "SELECT pressed - checking menu state..." << std::endl;
-                            std::cout << "  is_viewing_games_in_playlist: " << (settings_menu.is_viewing_games_in_playlist() ? "YES" : "NO") << std::endl;
-                            std::cout << "  is_game_browser_active: " << (settings_menu.is_game_browser_active() ? "YES" : "NO") << std::endl;
-                            std::cout << "  is_active: " << (settings_menu.is_active() ? "YES" : "NO") << std::endl;
+            // BTN4: short press toggles Settings, hold turns the rotary
+            // into master volume. See app/settings_input.h.
+            if (app::handle_menu_button(settings_input, menu_hold, ev)) continue;
 
-                            if (settings_menu.is_viewing_games_in_playlist()) {
-                                // Launch selected game or go back
-                                int playlist_idx = settings_menu.get_current_game_playlist_index();
-                                int game_idx = settings_menu.get_selected_game_in_playlist();
-
-                                std::cout << "Game browser SELECT: playlist_idx=" << playlist_idx << ", game_idx=" << game_idx << std::endl;
-
-                                if (playlist_idx >= 0 && playlist_idx < static_cast<int>(game_playlists.size())) {
-                                    const auto& playlist = game_playlists[playlist_idx];
-                                    
-                                    // Check if "Back" button is selected (last item)
-                                    if (game_idx == static_cast<int>(playlist.items.size())) {
-                                        std::cout << "Back button selected - returning to playlist list" << std::endl;
-                                        settings_menu.exit_game_list();
-                                    } else if (game_idx >= 0 && game_idx < static_cast<int>(playlist.items.size())) {
-                                        // Loading plate, launch, outcome, then
-                                        // force-close Settings. Blocks for the
-                                        // whole game session; the bracketing
-                                        // runs in the controller's session
-                                        // hooks. See app/game_handoff_kiosk.h.
-                                        app::launch_game_from_browser(
-                                            controller, state, settings_menu,
-                                            kiosk_graphics, mode, playlist,
-                                            game_idx, playlist_directory);
-                                    } else {
-                                        std::cout << "Invalid game index: " << game_idx << " (max: " << playlist.items.size() << ")" << std::endl;
-                                    }
-                                } else {
-                                    std::cout << "Invalid playlist index: " << playlist_idx << " (max: " << game_playlists.size() << ")" << std::endl;
-                                }
-                            } else {
-                                // Enter selected playlist or go back
-                                int selected_playlist = settings_menu.get_game_browser_selected();
-                                
-                                // Check if "Back" button is selected (last item)
-                                if (selected_playlist == static_cast<int>(game_playlists.size())) {
-                                    settings_menu.exit_game_browser();
-                                } else if (selected_playlist >= 0 && selected_playlist < static_cast<int>(game_playlists.size())) {
-                                    settings_menu.enter_game_list(selected_playlist);
-                                }
-                            }
-                            break;
-                        }
-                        default:
-                            break;
-                    }
-                    continue; // Skip normal menu handling when in game browser
-                }
-                
-                // ── Controller Setup wizard: intercept everything ─────────────
-                //
-                // Every input surface EXCEPT the pad being configured lands
-                // here (that pad is diverted to raw events by
-                // set_raw_capture). on_action() owns cancel from every phase,
-                // so the wizard is always escapable from the box buttons, the
-                // rotary, the phone remote, or a keyboard.
-                //
-                // NOT from a gamepad — not even a working one. set_raw_capture
-                // diverts EVERY real joystick (the phone-remote uinput device
-                // is the sole exception), so no pad can produce an InputAction
-                // while the wizard is up. See the header comment on
-                // ui::ControllerWizard, which states the same guarantee
-                // correctly.
-                if (settings_menu.is_controller_wizard_active()) {
-                    auto* wiz = settings_menu.controller_wizard();
-                    if (wiz) {
-                        // Return value ignored on purpose: consumed or not,
-                        // nothing else may act on this event while the wizard
-                        // owns the screen.
-                        wiz->on_action(ev);
-                        // Close immediately rather than waiting for next
-                        // frame's pump, so the overlay can't paint one extra
-                        // frame after the user cancelled. The pump's
-                        // active→inactive edge still fires the overlay reload.
-                        if (!wiz->is_active()) settings_menu.close_controller_wizard();
-                    } else {
-                        settings_menu.close_controller_wizard();
-                    }
-                    continue;  // eat all other inputs while the wizard is up
-                }
-                // ─────────────────────────────────────────────────────────────
-
-                // ── Phone Remote pairing screen: intercept navigation/forget ──
-                if (settings_menu.is_pairing_screen_active()) {
-                    auto* ps = settings_menu.pairing_screen();
-                    if (ps) {
-                        // Shared mtime-based cache — same data the renderer
-                        // sees, so no post-forget divergence.
-                        const auto& ps_cached_devices = ui::paired_devices_cached(
-                            config::get_data_path() + "/paired_remotes.json");
-                        if ((ev.action == InputAction::ROTATE || ev.action == InputAction::ROTATE_VERTICAL) && ev.delta != 0) {
-                            if (ev.delta < 0)
-                                ps->select_prev_device(static_cast<int>(ps_cached_devices.size()));
-                            else
-                                ps->select_next_device(static_cast<int>(ps_cached_devices.size()));
-                            continue; // consumed
-                        } else if (ev.action == InputAction::PLAY_PAUSE && ev.pressed) {
-                            std::vector<std::string> ids;
-                            for (const auto& d : ps_cached_devices) ids.push_back(d.id);
-                            ps->forget_selected_device(ids);
-                            // No manual cache invalidation needed — Flask
-                            // rewrites paired_remotes.json on its next
-                            // broadcaster tick (~200 ms), and the cache
-                            // mtime-checks every call.
-                            continue; // consumed
-                        } else if (ev.action == InputAction::QUIT && ev.pressed) {
-                            ps->close();
-                            settings_menu.close_pairing_screen();
-                            continue; // consumed
-                        } else if (ev.action == InputAction::SETTINGS_MENU && ev.pressed) {
-                            // BTN4 (black) — close the pairing screen and return to settings.
-                            ps->close();
-                            settings_menu.close_pairing_screen();
-                            continue; // consumed
-                        }
-                    }
-                    continue; // eat all other inputs while pairing screen is up
-                }
-                // ─────────────────────────────────────────────────────────────
-
-                // Normal settings menu handling
-                switch (ev.action) {
-                    case InputAction::ROTATE:
-                    case InputAction::ROTATE_VERTICAL:
-                        settings_menu.navigate(ev.delta);
-                        break;
-                        
-                    case InputAction::SELECT: {
-                        if (!ev.pressed) break; // Only trigger on press
-                        
-                        ui::MenuSection section = settings_menu.select_current();
-                        if (section == ui::MenuSection::VIDEO_GAMES) {
-                            // Go directly to game browser (skip submenu)
-                            settings_menu.enter_game_browser();
-                        } else if (section == ui::MenuSection::DISPLAY) {
-                            settings_menu.enter_submenu(ui::MenuSection::DISPLAY);
-                        } else if (section == ui::MenuSection::AUDIO) {
-                            settings_menu.enter_submenu(ui::MenuSection::AUDIO);
-                        } else if (section == ui::MenuSection::SYSTEM) {
-                            settings_menu.enter_submenu(ui::MenuSection::SYSTEM);
-                        } else if (section == ui::MenuSection::WIFI) {
-                            settings_menu.enter_submenu(ui::MenuSection::WIFI);
-                        } else if (section == ui::MenuSection::WIFI_NETWORKS) {
-                            settings_menu.enter_submenu(ui::MenuSection::WIFI_NETWORKS);
-                        // MenuSection::INFO is deliberately NOT dispatched:
-                        // info-only rows ("Movies (configure VPN)" etc.) fall
-                        // through to the silent no-op below. The Content
-                        // Manager Info screen it used to open was merged into
-                        // the "Connect a Device" pairing screen.
-                        } else if (section == ui::MenuSection::PHONE_REMOTE) {
-                            settings_menu.open_pairing_screen();
-                        } else if (section == ui::MenuSection::CONTROLLER_SETUP) {
-                            settings_menu.open_controller_wizard(&input);
-                        } else if (section == ui::MenuSection::BROWSE_GAMES) {
-                            // Enter game browser
-                            settings_menu.enter_game_browser();
-#ifdef MEDIA_BROWSER_ENABLED
-                        } else if (section == ui::MenuSection::MEDIA_BROWSER_NEEDS_DISPLAY) {
-                            // The "Movies (needs Modern TV display)" row.
-                            // Non-actionable by design, but unlike the INFO
-                            // rows SELECT explains itself instead of
-                            // silently doing nothing.
-                            ui::Toast::show(media_browser::kMoviesNeedsModernTvToast);
-                        } else if (section == ui::MenuSection::MEDIA_BROWSER &&
-                                   !media_browser::display_supports_media_browser(
-                                       state.display_settings.mode ==
-                                       app::DisplayMode::CRT_NATIVE)) {
-                            // Stale-row race, checked at the moment of entry:
-                            // the actionable "Movies" row is built by open()
-                            // when the mode was MB-capable, but the mode can
-                            // change while the menu is still open — the
-                            // Display submenu's mode toggle followed by
-                            // exit_submenu() (which does NOT rebuild the
-                            // top-level rows), or the web-admin settings
-                            // restore poke. The logical canvas is already
-                            // 640x480 by the time SELECT lands (the
-                            // mode-change block applies it immediately), so
-                            // entering would open the MB screens with their
-                            // panels off the canvas. Same toast as the
-                            // blocked row.
-                            ui::Toast::show(media_browser::kMoviesNeedsModernTvToast);
-                        } else if (section == ui::MenuSection::MEDIA_BROWSER) {
-                            // Close settings menu and transition to the
-                            // Media Browser screen.
-                            //
-                            // Cleanly tear down whatever the main UI was
-                            // playing first. Without this stop(), the
-                            // playlist video keeps running, the GStreamer
-                            // pipeline stays in PLAYING state, and frames
-                            // continue to render underneath the Media
-                            // Browser overlay (mb_fill_background isn't
-                            // fully opaque). The user perceives this as
-                            // the previous video "showing through" their
-                            // movie browse session. Forcing video_active
-                            // to false in the same frame avoids a one-
-                            // frame race where the next render still
-                            // thinks video is active before
-                            // controller.update_state() catches up.
-                            controller.stop();
-                            // CRITICAL: also clear the playing-item indexes
-                            // and any in-flight UI fade. The Renderer's
-                            // is_transitioning logic (current_item_index >= 0
-                            // && !video_active) skips the ENTIRE main-UI
-                            // render, and a stale is_fading with a hidden
-                            // target zeroes the UI alpha — either one leaves
-                            // the main menu permanently BLANK after exiting
-                            // the Media Browser. Not stop_to_menu(): the MB
-                            // takes the screen, so the playlist UI is parked
-                            // hidden — see reset_main_ui_for_media_browser.
-                            app::reset_main_ui_for_media_browser(state);
-                            // Clear the published now-playing/playlist info
-                            // for the phone remote. Controller::update_state's
-                            // stop-clear deliberately skips MB sessions (the
-                            // MB PlaybackScreen owns these fields there), so
-                            // without this the stopped playlist item's title
-                            // would ride along in kiosk_status.json for the
-                            // whole browse session.
-                            app::clear_now_playing(state);
-                            settings_menu.close();
-                            // AppScreen -> MediaBrowser, entered on the
-                            // Browse landing screen.
-                            mb_host.enter_from_settings();
-                        } else if (section == ui::MenuSection::HIDE_MEDIA_BROWSER) {
-                            // Re-lock the Media Browser. Both the "Movies" and
-                            // "Hide Movies feature" rows will disappear next
-                            // time settings opens (open() rebuilds menu_items_
-                            // based on media_browser_unlocked). User must
-                            // re-enter the secret sequence to unlock again.
-                            // This is an intermediate control — final home is
-                            // the Movies Settings screen (Task 23).
-                            state.media_browser_unlocked = false;
-                            app::SettingsPersistence::save_settings(state);
-                            settings_menu.close();
-                            ui::Toast::show("Movie section hidden");
-                            LOG_INFO("Media Browser: feature re-locked via settings menu");
-#endif
-                        } else if (section == ui::MenuSection::BACK) {
-                            if (settings_menu.get_current_submenu() != ui::MenuSection::BACK) {
-                                settings_menu.exit_submenu();
-                            } else {
-                                settings_menu.close();
-                            }
-                        }
-                        break;
-                    }
-                    
-                    case InputAction::QUIT:
-                        settings_menu.close();
-                        break;
-                        
-                    default:
-                        break;
-                }
-                continue;  // Skip normal input handling when menu is active
-            }
+            // On-screen keyboard / Settings menu (and every sub-screen it
+            // drives) own the event while shown. See app/settings_input.h.
+            if (app::dispatch_overlay_input(settings_input, ev)) continue;
             
             // Normal input handling (when menu is not active)
             // Disable UI navigation when video is playing and UI is completely hidden
@@ -2191,118 +1469,10 @@ int main(int /* argc */, char* /* argv */[]) {
         // (2 s timeout safety). See PlaylistPlayback::tick_switch_timeout.
         playlist_playback.tick_switch_timeout();
         
-        // Handle intro video completion
-        // When intro video ends, fade it out first, then fade in the UI
-        if (state.showing_intro_video && state.video_active && state.get_duration() > 0.0) {
-            const double intro_position = state.get_position();
-            const double intro_duration = state.get_duration();
-            // Update LED dance animation during intro video
-            // Use video position as elapsed time (in milliseconds)
-            gpio.update_intro_animation(static_cast<uint64_t>(intro_position * 1000));
-            // Check if intro video has ended
-            // Use multiple conditions to ensure reliable detection
-            bool video_ended = false;
-
-            // Primary check: position near end (tight margin so video plays fully)
-            if (intro_position >= intro_duration - 0.05) {
-                video_ended = true;
-            }
-
-            // Fallback check: if video stopped playing but we're still showing intro
-            if (!controller.is_playing() && intro_duration > 0.0 && intro_position > 0.0) {
-                video_ended = true;
-            }
-
-            if (video_ended && !state.intro_fading_out) {
-                state.intro_fading_out = true;
-                state.intro_fade_out_start_time = std::chrono::steady_clock::now();
-                std::cout << "Intro video completed, starting fade-out..." << std::endl;
-            }
-        }
-        
-        // Handle intro video fade-out
-        if (state.intro_fading_out) {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.intro_fade_out_start_time);
-            std::chrono::milliseconds fade_out_duration(300);  // 300ms fade-out duration
-
-
-            if (elapsed >= fade_out_duration) {
-                // Fade-out complete - stop video and start UI fade-in
-                state.intro_fading_out = false;
-                state.showing_intro_video = false;
-                state.intro_complete = true;
-
-                // Stop the intro video completely
-                controller.stop();
-
-                std::cout << "Intro video stopped, transition to UI complete" << std::endl;
-
-                // Force immediate UI rendering by clearing and ensuring clean transition
-                glViewport(0, 0, mode.width, mode.height);
-                glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-                // Force multiple buffer swaps to ensure the clear takes effect
-                for (int i = 0; i < 3; i++) {
-                    if (!egl.swap_buffers()) {
-                        std::cerr << "Failed to swap buffers during intro transition!" << std::endl;
-                    }
-                }
-
-                std::cout << "Intro transition complete - video stopped, renderer cleaned, screen cleared, UI ready" << std::endl;
-                
-                // Stop LED intro animation
-                gpio.stop_animation();
-
-                // Verify that video actually stopped before proceeding
-                int retry_count = 0;
-                const int max_retries = 20;  // Increased retries
-                while (controller.is_playing() && retry_count < max_retries) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));  // Longer delay
-                    controller.update_state(state);  // Update state to get current playing status
-                    retry_count++;
-                    if (retry_count % 5 == 0) {
-                        std::cout << "DEBUG: Waiting for video to stop... attempt " << retry_count << ", is_playing=" << controller.is_playing() << std::endl;
-                    }
-                }
-
-                if (controller.is_playing()) {
-                    std::cerr << "Warning: Intro video did not stop cleanly after " << (max_retries * 100) << "ms, proceeding anyway" << std::endl;
-                } else {
-                    std::cout << "DEBUG: Intro video stopped successfully after " << retry_count << " attempts" << std::endl;
-                }
-                
-                // Force video_active to false immediately (don't wait for update_state)
-                //
-                // Deliberately NOT app::stop_to_menu(): this hand-off FADES
-                // the menu in (is_fading=true below), where stop_to_menu
-                // cancels fades and shows the menu at full alpha at once.
-                // The intro never publishes now-playing fields and never
-                // sets is_switching_playlist, so the subset below is the
-                // complete reset for this path.
-                state.video_active = false;
-                state.update_playback_state(0.0, 0.0);
-                state.current_playlist_index = -1;
-                state.current_item_index = -1;
-                
-                // Start fade-in animation for UI (from transparent to visible)
-                // Since there's no video active after intro, we fade in the UI
-                state.fade_start_time = std::chrono::steady_clock::now();
-                state.fade_target_ui_visible = true;  // Fade to visible
-                state.is_fading = true;
-                
-                std::cout << "Intro video fade-out complete, fading in UI..." << std::endl;
-            } else {
-                // Fade-out in progress - interpolate volume from 100% to 0%
-                float fade_progress = static_cast<float>(elapsed.count()) / static_cast<float>(fade_out_duration.count());
-                fade_progress = std::min(1.0f, std::max(0.0f, fade_progress));  // Clamp to [0, 1]
-                
-                // Fade volume from original_volume to 0
-                double current_volume = state.original_volume * (1.0 - fade_progress);
-                controller.set_volume(current_volume);
-            }
-        }
+        // Intro video: LED dance + end detection, the 300 ms audio
+        // fade-out, then the hand-off to the menu fade-in. No-op once the
+        // intro is over. See app/intro_sequence_kiosk.h.
+        app::tick_intro(state, controller, gpio, egl, mode);
         
         // Clear fade flag when fade animation completes
         if (state.is_fading) {
@@ -2340,16 +1510,10 @@ int main(int /* argc */, char* /* argv */[]) {
         // During intro fade-out, don't render video - let UI fade in
         // After intro completes, never render video until explicitly started again
 
-        // Render video appropriately for current state
-        bool should_render_video = false;
-        if (!state.intro_complete) {
-            // During intro phase: render intro video
-            should_render_video = (state.video_active || state.showing_intro_video || controller.is_playing()) &&
-                                 !state.intro_fading_out;
-        } else {
-            // After intro: render regular videos when active or switching playlists
-            should_render_video = state.video_active || (state.is_switching_playlist && controller.is_playing());
-        }
+        // Render video appropriately for current state (intro phase vs
+        // after it) — see app::should_render_video.
+        const bool should_render_video =
+            app::should_render_video(state, controller.is_playing());
 
         // Debug video rendering decision
         static std::optional<bool> last_render_decision;

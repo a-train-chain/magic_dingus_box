@@ -188,6 +188,14 @@ set(APP_SOURCES
     src/app/game_handoff.cpp
     # GL/DRM half of the game hand-off: kiosk-only, in no test target.
     src/app/game_handoff_kiosk.cpp
+    # Boot intro video: pure decisions (unit-tested) + the GL/GStreamer/LED
+    # half (kiosk-only, in no test target).
+    src/app/intro_sequence.cpp
+    src/app/intro_sequence_kiosk.cpp
+    # Settings-menu input dispatch: pure decisions (unit-tested) + the
+    # dispatcher over the menu, keyboard and game hand-off (kiosk-only).
+    src/app/settings_input_logic.cpp
+    src/app/settings_input.cpp
 )
 
 set(UTILS_SOURCES
@@ -330,6 +338,10 @@ if(BUILD_KIOSK)
             # hand-off table (ui/mb_transition.h) is header-only and
             # unit-tested in test_media_browser_unit.
             src/media_browser/mb_host.cpp
+            # Service-client setup (Radarr/Sonarr/TMDB/Prowlarr/qBit, the VPN
+            # monitor start, the qBit alt-limit bootstrap). Renderer-free, so
+            # it is ALSO in MEDIA_BROWSER_TEST_SOURCES and unit-tested.
+            src/media_browser/mb_services.cpp
         )
         # libcurl is required by radarr_client.cpp.
         pkg_check_modules(CURL REQUIRED libcurl)
@@ -575,9 +587,17 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_browse_view.cpp
         tests/media_browser/test_queue_view.cpp
         tests/media_browser/test_playback_view.cpp
+        tests/media_browser/test_mb_services.cpp
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
+        # main()'s service-client setup (also in KIOSK_MEDIA_BROWSER_SOURCES).
+        # Test-list only, like vpn_health_monitor.cpp which it starts: the
+        # test_media_browser CLI links MEDIA_BROWSER_SOURCES without the
+        # monitor. Needs the services/.env reader, which the kiosk gets from
+        # UTILS_SOURCES.
+        src/media_browser/mb_services.cpp
+        src/utils/services_env.cpp
         # Renderer-free, jsoncpp-only mapping of the four per-mode filter sets
         # to/from settings.json. Lives in APP_SOURCES for the kiosk; listed
         # here so the legacy-key migration is unit-tested (BUILD_KIOSK=OFF
@@ -795,6 +815,12 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # transport, and the web-admin playlist reload's re-anchoring.
         src/app/playlist_playback.cpp
         src/app/playlist_reload.cpp
+        # main.cpp's boot intro decisions (end detection, fade volume, the
+        # hand-off to the menu, the render-video decision).
+        src/app/intro_sequence.cpp
+        # main.cpp's Settings-menu input decisions (BTN4 hold/volume, the
+        # game browser's SELECT rows).
+        src/app/settings_input_logic.cpp
         # settings.json load/save against real temp files (round-trip,
         # wrong-typed quarantine). Pulls jsoncpp + spdlog, linked below.
         src/app/settings_persistence.cpp

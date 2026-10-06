@@ -131,6 +131,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hand-off to `app/game_handoff` (session bracketing, quiet mode, torrent
   resume recovery) + `app/game_handoff_kiosk` (loading-plate launch,
   post-game display restore). New Mac unit tests cover all three.
+- `main.cpp` slimmed again (~3,300 → ~2,480 lines), with no behavior
+  change: the Media Browser service-client setup (Radarr/Sonarr/TMDB/
+  Prowlarr/qBittorrent, VPN monitor start, qBit alt-limit bootstrap) moved
+  to `media_browser/mb_services`; the boot intro video to
+  `app/intro_sequence` (pure) + `app/intro_sequence_kiosk`; the Settings-
+  menu input dispatch (BTN4 toggle/volume hold, on-screen keyboard, game
+  browser, Controller Setup wizard, pairing screen, menu rows) to
+  `app/settings_input` + `app/settings_input_logic` (pure). New Mac unit
+  tests cover the API-key chains and mock fallbacks, the intro's end/fade
+  decisions, and the BTN4 hold and game-browser row decisions.
 - Media Browser screens split into "decide" and "paint": the decision logic
   of the TV series page, movie detail, Browse, Queue and Playback screens
   (button rows, input mapping, paging, worker-result handling, every
