@@ -38,8 +38,9 @@ struct PlaybackOverlayMovieMeta {
 // Closing:  BTN4 while overlay is open → overlay_.close() (BTN4 when
 //           overlay is closed returns to Detail as before — not handled here).
 // Scrolling: rotary twist while open scrolls the similar-films carousel.
-// Quick-add: Task 9 will wire SELECT (rotary press while open) to add the
-//            focused film to the Radarr queue. Leave a TODO marker here.
+// Quick-add: SELECT (rotary press while open) adds the focused film to
+//            Radarr — handled by PlaybackScreen via focused_film(), which
+//            defers it until after a FullPause session ends.
 //
 // Threading: start_prefetch() spawns a single background thread that calls
 // TmdbClient::get_similar(). The result vector is protected by similar_mu_.
@@ -68,7 +69,7 @@ public:
     // Snapshot the currently-focused similar film.
     // Returns nullopt when the overlay is closed, the list is empty, or
     // the cursor is out of range.
-    // Task 9 uses this for quick-add.
+    // PlaybackScreen's quick-add reads this.
     std::optional<::media_browser::TmdbSearchHit> focused_film() const;
 
     void render(::ui::Renderer& r, int screen_w, int screen_h);
