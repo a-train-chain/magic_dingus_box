@@ -4,7 +4,9 @@ What goes in (each file capped, the whole bundle kept well under ~20 MB):
 VERSION, board model, uptime / memory / disk, `systemctl status` of the
 kiosk, web, audio and Media Browser units, the last journal lines of each,
 the kernel log tail, the last Box health result, kiosk_status.json, the
-RetroArch launcher log (+ .1), the pairing audit log and `docker ps`.
+RetroArch launcher log (+ .1), the pairing audit log, the VPN tunnel event
+log (a timestamp per drop/recovery — see gluetun_cascade_restart.sh) and
+`docker ps`.
 
 What NEVER goes in: services/.env, flask_secret.key, paired_remotes.json,
 the TMDB key file, NetworkManager connection files (Wi-Fi PSKs). None of
@@ -41,6 +43,11 @@ KERNEL_LINES = 500
 FILE_CAP_BYTES = 2 * 1024 * 1024
 TOTAL_CAP_BYTES = 18 * 1024 * 1024
 CMD_TIMEOUT_S = 25
+
+# Written by gluetun_cascade_restart.sh: `<epoch> <kind> [detail]` per tunnel
+# transition, 7 days / 2000 lines at most. Timestamps and fixed words only —
+# it still goes through the redactor like every other file.
+VPN_EVENTS_FILE = Path("/var/lib/magic-dingus/vpn_events.log")
 
 STATUS_UNITS = (
     "magic-dingus-box-cpp.service",
@@ -117,7 +124,8 @@ class BundleBuilder:
                  which: Optional[Callable[[str], Optional[str]]] = None,
                  home: Optional[Path] = None,
                  extra_files: Optional[dict] = None,
-                 proc_root: Path = Path("/proc")):
+                 proc_root: Path = Path("/proc"),
+                 vpn_events_path: Optional[Path] = None):
         self.data_dir = Path(data_dir)
         self.install_dir = Path(install_dir)
         self.redactor = Redactor(known_secrets)
@@ -126,6 +134,7 @@ class BundleBuilder:
         self.home = Path(home) if home else Path.home()
         self.extra_files = extra_files or {}
         self.proc_root = Path(proc_root)
+        self.vpn_events_path = Path(vpn_events_path or VPN_EVENTS_FILE)
         self.total = 0
         self.manifest = []
 
@@ -229,6 +238,9 @@ class BundleBuilder:
         audit = self._read_file(self.data_dir / "pairing_audit.log")
         if audit is not None:
             self._add(zf, "logs/pairing_audit.log", audit)
+        vpn = self._read_file(self.vpn_events_path)
+        if vpn is not None:
+            self._add(zf, "logs/vpn_events.log", vpn)
         for arcname, path in self.extra_files.items():
             text = self._read_file(Path(path))
             if text is not None:

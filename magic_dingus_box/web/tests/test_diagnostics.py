@@ -123,6 +123,32 @@ def test_bundle_never_contains_secrets(box):
                    for n in zf.namelist())
 
 
+def test_vpn_event_log_is_bundled_and_redacted(box, tmp_path):
+    # gluetun_cascade_restart.sh's tunnel event log: support's first
+    # question about stalled downloads is "how often does the VPN drop?".
+    # It holds only timestamps + fixed words, but every bundled file gets a
+    # redaction test — so plant secrets in it and prove they don't survive.
+    vpn = tmp_path / "vpn_events.log"
+    vpn.write_text("\n".join([
+        "1800000000 watch",
+        "1800000600 unhealthy portfwd",
+        "1800000900 healthy",
+        f"1800001000 restart WIREGUARD_PRIVATE_KEY={WG_KEY}",
+        f"1800001100 unhealthy tunnel {QBIT_PW}",
+    ]) + "\n")
+    zf, _ = _build(box, vpn_events_path=vpn)
+    body = zf.read("logs/vpn_events.log").decode()
+    assert "1800000600 unhealthy portfwd" in body
+    assert "1800000900 healthy" in body
+    for secret in ALL_SECRETS:
+        assert secret not in body, secret
+
+
+def test_missing_vpn_event_log_is_skipped(box, tmp_path):
+    zf, _ = _build(box, vpn_events_path=tmp_path / "absent.log")
+    assert "logs/vpn_events.log" not in zf.namelist()
+
+
 def test_kiosk_status_buffer_is_scrubbed():
     out = json.loads(scrub_kiosk_status(json.dumps(
         {"text_input": {"active": True, "buffer": TYPED}, "screen": "x"})))
