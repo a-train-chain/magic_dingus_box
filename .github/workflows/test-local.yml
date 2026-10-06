@@ -53,24 +53,7 @@ jobs:
           shellcheck --version
 
       - name: ShellCheck gate
-        # TEMPORARY exclusions (2026-10-05): these files were being edited
-        # in parallel branches when the gate landed, so they were left
-        # untouched to avoid merge conflicts. Remove each line once its
-        # branch is merged and the file is clean under
-        # `tests/shellcheck_gate.sh`. At the time of writing only
-        # setup_services.sh had findings at warning level (SC2046 :692,
-        # SC2034 SMOKE_TEST_OK :2821); at info, verify_box.sh /
-        # first_boot.sh / scan_image_for_secrets.sh had a few more.
-        run: |
-          tests/shellcheck_gate.sh \
-            --exclude magic_dingus_box_cpp/scripts/verify_box.sh \
-            --exclude magic_dingus_box_cpp/scripts/gluetun_cascade_restart.sh \
-            --exclude magic_dingus_box_cpp/scripts/setup_services.sh \
-            --exclude scripts/golden_image/first_boot.sh \
-            --exclude scripts/golden_image/prepare_for_cloning.sh \
-            --exclude scripts/golden_image/restore_after_cloning.sh \
-            --exclude scripts/golden_image/scan_image_for_secrets.sh \
-            --exclude scripts/golden_image/clone_live_sd.sh
+        run: tests/shellcheck_gate.sh
 
   # The C++ unit suites (Catch2/CTest — the same ones a dev runs from
   # build-test/ on a Mac). Until this job existed they ran in NO

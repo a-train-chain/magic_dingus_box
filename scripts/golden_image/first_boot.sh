@@ -667,7 +667,7 @@ for d in "$DATA_DIR" "${CPP_DIR}/build/data"; do
     [[ -d "$d" ]] || continue
     while IFS= read -r -d '' f; do
         rm -f "$f"
-        log "    wiped: ${f#${INSTALL_DIR}/}"
+        log "    wiped: ${f#"${INSTALL_DIR}"/}"
     done < <(find "$d" -maxdepth 1 -name '*.jsonl' -print0 2>/dev/null)
 done
 
@@ -700,7 +700,7 @@ for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
     [[ -d "$d" ]] || continue
     if [[ -d "${d}/screenshots" ]]; then
         rm -rf "${d}/screenshots"
-        log "    wiped: ${d#${INSTALL_DIR}/}/screenshots/"
+        log "    wiped: ${d#"${INSTALL_DIR}"/}/screenshots/"
     fi
     rm -f "${d}/screenshot_request"
 done
@@ -722,7 +722,7 @@ for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
     shopt -u nullglob
     for f in "${WATCH_DB_FILES[@]}"; do
         rm -f "$f"
-        log "    wiped: ${f#${INSTALL_DIR}/} (watch history)"
+        log "    wiped: ${f#"${INSTALL_DIR}"/} (watch history)"
     done
 done
 
@@ -955,7 +955,7 @@ for d in "${DATA_DIR}/saves" "${DATA_DIR}/states" \
         entry_count=$(find "$d" -mindepth 1 2>/dev/null | wc -l)
         if [[ "$entry_count" -gt 0 ]]; then
             find "$d" -mindepth 1 -delete 2>/dev/null || true
-            log "    wiped: ${d#${INSTALL_DIR}/} (${entry_count} entries)"
+            log "    wiped: ${d#"${INSTALL_DIR}"/} (${entry_count} entries)"
         fi
     fi
 done

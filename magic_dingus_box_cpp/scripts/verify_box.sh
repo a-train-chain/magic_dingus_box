@@ -78,6 +78,7 @@ if [[ -n "$PLAT" ]]; then pass "detection: $PLAT"; else warn "no platform log li
 # output (space-separated, optionally quoted KEY=VAL) or env-file / environ
 # text (one per line, optional `export`). Prints nothing when unset/empty.
 policy_override_in_env() {
+  # shellcheck disable=SC2020  # deliberate: space AND tab each become a newline
   tr ' \t' '\n\n' <<<"${1:-}" \
     | sed -nE "s/^[\"']?MDB_PLATFORM_POLICY_OVERRIDE=[\"']?([^\"']*)[\"']?\$/\\1/p" \
     | tail -1

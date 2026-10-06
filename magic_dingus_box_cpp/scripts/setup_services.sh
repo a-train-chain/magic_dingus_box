@@ -689,7 +689,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     MOVIES_FSTAB_LINE="LABEL=MOVIES /mnt/ssd ext4 noauto,nofail 0 0"
     if ! grep -qxF "$MOVIES_FSTAB_LINE" /etc/fstab; then
         if grep -q "LABEL=MOVIES" /etc/fstab; then
-            sudo cp /etc/fstab /etc/fstab.mdb-bak-$(date +%Y%m%d-%H%M%S)
+            sudo cp /etc/fstab "/etc/fstab.mdb-bak-$(date +%Y%m%d-%H%M%S)"
             sudo sed -i '/LABEL=MOVIES/d' /etc/fstab
             echo "fstab: replaced a stale MOVIES entry (missing nofail/automount)."
         fi
@@ -2806,6 +2806,7 @@ fi
 # is captured but only printed; the credentials block always runs so
 # the operator at least gets API keys + login info if they need to
 # debug interactively.
+# shellcheck disable=SC2034  # SMOKE_TEST_OK records the outcome for anyone reading/tracing; nothing consumes it
 if [[ -x "${SCRIPT_DIR}/verify_services.sh" ]]; then
     echo ""
     echo "Running smoke test..."

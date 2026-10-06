@@ -72,6 +72,7 @@ fi
 
 TMP_NEEDLES=""
 PY_SCANNER=""
+# shellcheck disable=SC2329  # invoked by the trap below
 cleanup() {
     [[ -n "$TMP_NEEDLES" ]] && rm -f "$TMP_NEEDLES"
     [[ -n "$PY_SCANNER"  ]] && rm -f "$PY_SCANNER"
