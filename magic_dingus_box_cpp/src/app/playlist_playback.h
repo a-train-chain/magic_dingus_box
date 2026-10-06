@@ -169,6 +169,10 @@ private:
         int repolls = 0;  // 50 ms re-polls used so far
     };
     PendingSwitch pending_;
+    // The player's stream generation when the switching flag was raised.
+    // A different generation that is playing = the switch's new item is
+    // up (see tick_switch_timeout).
+    uint64_t switch_start_generation_ = 0;
     // Ends the 200 ms settle after the stuck-switch timeout's stop();
     // SELECT is ignored until then. Default (epoch) = no settle.
     std::chrono::steady_clock::time_point timeout_settle_until_{};

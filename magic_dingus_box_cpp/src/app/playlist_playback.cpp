@@ -109,6 +109,7 @@ void PlaylistPlayback::on_select() {
             }
 
             state_.is_switching_playlist = true;  // Set flag to prevent overlapping operations
+            switch_start_generation_ = transport_.stream_generation();
             state_.playlist_switch_start_time = transport_.now();  // Track when switch started
 
             // First, update the playlist index BEFORE stopping to prevent reset
@@ -148,6 +149,7 @@ void PlaylistPlayback::on_select() {
         if (state_.selected_index == 0) {
             std::cout << "Master Shuffle selected (from stopped)!" << std::endl;
             state_.is_switching_playlist = true;
+            switch_start_generation_ = transport_.stream_generation();
             state_.playlist_switch_start_time = transport_.now();
             state_.master_shuffle_active = true;
 
@@ -163,6 +165,7 @@ void PlaylistPlayback::on_select() {
             const auto& pl = state_.playlists[state_.selected_index];
             if (!pl.items.empty() && pl.is_video_playlist()) {
                 state_.is_switching_playlist = true;  // Set flag
+                switch_start_generation_ = transport_.stream_generation();
                 state_.playlist_switch_start_time = transport_.now();
 
                 // Load first item of playlist
@@ -367,6 +370,21 @@ void PlaylistPlayback::tick_switch_timeout() {
     // must not cut a switch short that the old code would have completed.
     advance_pending_switch();
     if (switch_pending()) return;
+
+    // Completion. Controller::update_state clears the flag only when
+    // video_active goes false -> true, and during a switch it holds
+    // video_active true — so a switch made WHILE a video plays never saw
+    // that edge: every one ended in the 2 s "CRITICAL" timeout below, with
+    // NEXT/PREV ignored until then (seen on hardware 2026-10-05). A NEW
+    // stream (generation bumped by load_file) that is playing with a known
+    // duration is the switch's item up and running.
+    if (state_.is_switching_playlist &&
+        transport_.stream_generation() != switch_start_generation_ &&
+        state_.get_duration() > 0.0 && transport_.is_playing()) {
+        std::cout << "Playlist switch completed - new stream playing, clearing flag" << std::endl;
+        state_.is_switching_playlist = false;
+        return;
+    }
 
     // Clear playlist switching flag if it's been stuck for too long (timeout safety)
     // This prevents the flag from getting stuck if video fails to load or gets into bad state

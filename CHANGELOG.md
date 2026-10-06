@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
+- **Switching playlists while a video plays no longer locks the remote's
+  next/previous for two seconds.** Every switch made mid-video used to be
+  "stuck" until a 2-second safety timer released it (logging a CRITICAL
+  error each time), and NEXT/PREV were ignored until then. The switch now
+  completes the moment the new video is playing.
 - **The VPN no longer restarts every few minutes when ProtonVPN takes
   back its forwarded port.** Watched live on 2026-10-05: all 9 restarts
   of the whole Movies service stack in two hours were caused by port

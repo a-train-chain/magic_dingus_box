@@ -286,6 +286,53 @@ TEST_CASE("a mid-playback switch stops at once and loads after the 200 ms settle
     CHECK(t.calls.size() == 2);
 }
 
+TEST_CASE("a mid-playback switch completes when the NEW stream plays — no 2 s timeout",
+          "[playlist_playback][switch]") {
+    using std::chrono::milliseconds;
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;
+    t.playing_answers = {false, false};  // stopped at the first poll
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    pb.on_select();
+    run_frames(pb, t, milliseconds(250));
+    REQUIRE(t.calls == std::vector<std::string>{"stop", "load Movies 0 " + kDir});
+    CHECK(s.is_switching_playlist);
+
+    SECTION("same stream still (old video's generation): flag held") {
+        t.playing_default = true;
+        s.set_duration(42.0);
+        run_frames(pb, t, milliseconds(100));
+        CHECK(s.is_switching_playlist);
+    }
+    SECTION("new stream loaded but not playing / no duration yet: flag held") {
+        t.generation += 1;
+        run_frames(pb, t, milliseconds(100));
+        CHECK(s.is_switching_playlist);
+        t.playing_default = true;
+        run_frames(pb, t, milliseconds(100));
+        CHECK(s.is_switching_playlist);  // duration still 0
+    }
+    SECTION("new stream playing with a duration: released at once, no CRITICAL") {
+        StreamCapture err(std::cerr);
+        t.generation += 1;
+        t.playing_default = true;
+        s.set_duration(42.0);
+        pb.tick_switch_timeout();
+        CHECK_FALSE(s.is_switching_playlist);
+        run_frames(pb, t, milliseconds(3000));
+        CHECK(err.count("CRITICAL: Playlist switch timeout") == 0);
+        CHECK(t.calls.size() == 2);  // no recovery stop either
+        // NEXT works again immediately (it is ignored while switching).
+        pb.on_next();
+        CHECK(t.calls.back() == "next_item");
+    }
+}
+
 TEST_CASE("a pipeline that never stops is re-polled 10 x 50 ms, then loaded anyway",
           "[playlist_playback][switch]") {
     using std::chrono::milliseconds;
