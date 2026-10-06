@@ -34,8 +34,8 @@ EOF
     run bash "$SCRIPT"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     grep -q "^compose -f $COMPOSE_DIR/docker-compose.yml up -d --no-deps gluetun$" "$DOCKER_LOG"
-    ! grep -q -- "--force-recreate" "$DOCKER_LOG"
-    ! grep -qE "compose .*(radarr|sonarr|prowlarr|qbittorrent|byparr)" "$DOCKER_LOG"
+    ! grep -q -- "--force-recreate" "$DOCKER_LOG" || false
+    ! grep -qE "compose .*(radarr|sonarr|prowlarr|qbittorrent|byparr)" "$DOCKER_LOG" || false
     [[ "$output" == *"to a server in United States"* ]]
     [[ "$output" == *"exit country: United States"* ]]
 }
