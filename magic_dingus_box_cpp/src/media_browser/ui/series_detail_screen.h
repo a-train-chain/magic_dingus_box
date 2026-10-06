@@ -36,9 +36,13 @@ namespace media_browser::ui {
 //
 // Deliberately Radarr-free: everything mutating is SonarrClient-shaped,
 // the mirror image of DetailScreen being Radarr-shaped — the two screens
-// share chrome helpers and idioms, never clients. All decisions live in
-// series_detail_logic.h (pure, Mac-tested); this class is transport +
-// paint.
+// share chrome helpers and idioms, never clients. The decisions live in
+// three Mac-tested units: series_detail_logic.h (page state, season merge,
+// action row, disk verdict, deferred start), series_detail_view.h (row and
+// footer text, paging, the rotary/paging/SELECT input mapping) and
+// ../series_mutations.h (the mutation workers' Sonarr sequences and their
+// toasts; the per-season delete is ../season_delete.h). This class is
+// thread plumbing + paint: it spawns, drains and draws.
 class SeriesDetailScreen : public MbScreen {
 public:
     // watch is nullable (null-safe: no resume points, no ✓/▶ glyphs, no
