@@ -125,6 +125,7 @@ else
 fi
 
 if [ "$changed" = "1" ]; then
+    # shellcheck disable=SC2153  # CONNECTION_ID comes from NetworkManager's dispatcher environment
     logger -t magic-net-hardening \
         "hardened connection $CONNECTION_ID on $IFACE (ipv6 off, public DNS first)" \
         2>/dev/null || true

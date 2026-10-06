@@ -43,7 +43,7 @@ ver() { tr -d '[:space:]' < "$INSTALL/VERSION"; }
 # PYTHONPATH, MAGIC_DATA_DIR) with TMPDIR re-pointed at data/upload_temp by
 # create_app(). MAGIC_CF_PROBE_ATTEMPTS is the one rehearsal-only addition.
 UPDATER_ENV=(HOME=/home/magic USER=magic LOGNAME=magic PATH=/usr/local/bin:/usr/bin:/bin
-             PYTHONPATH=$INSTALL MAGIC_DATA_DIR=$DATA TMPDIR=$DATA/upload_temp
+             "PYTHONPATH=$INSTALL" "MAGIC_DATA_DIR=$DATA" "TMPDIR=$DATA/upload_temp"
              MAGIC_CF_PROBE_ATTEMPTS=2)
 # run_updater <logname> <script> <args...> — exec'd directly (the web admin
 # runs [UPDATE_SCRIPT, ...], so the +x bit and shebang are part of the test).
@@ -67,7 +67,7 @@ print(json.dumps(objs[-1] if objs else {}))'; }
 jget() { python3 -c "import json,sys; d=json.loads(sys.argv[1]); v=eval('d'+sys.argv[2]); print(json.dumps(v) if isinstance(v,(dict,list)) else v)" "$1" "$2" 2>/dev/null; }
 
 snap() { python3 "$H/manifest.py" snap "$INSTALL" "$OUT/snap_$1.json"; }
-snap_sys() { mkdir -p /tmp/sys_$1; for d in /etc /boot/firmware /usr/local/bin; do
+snap_sys() { mkdir -p "/tmp/sys_$1"; for d in /etc /boot/firmware /usr/local/bin; do
     python3 "$H/manifest.py" snap "$d" "$OUT/sys_$1$(echo $d | tr / _).json"; done; }
 sys_diff() {  # informational: what the hooks changed outside the tree
     for d in /etc /boot/firmware /usr/local/bin; do
@@ -234,6 +234,7 @@ check_old_check_output() {  # <json-file> <current> <latest>
 # Deep post-install assertions shared by every path that installs ${NEW_VER}
 # (or a fake follow-up). <ver> <stdout> <stderr> <expected-binary-sha|"source">
 assert_installed() {
+    # shellcheck disable=SC2034  # se: positional slot every caller passes; not asserted on yet
     local v="$1" so="$2" se="$3" want_bin="$4"
     step "post-install assertions for $v"
     eq "VERSION stamped" "$(ver)" "$v"
@@ -338,7 +339,7 @@ check_kiosk_smoke() {
 web_checks() {  # import/create the web app with and without gunicorn
     step "web admin ${1}: import + create_app, without and with gunicorn"
     local py='import os; from magic_dingus_box.web import serve; s=serve.choose_server(); app=serve.build_app(); print("server", s, "routes", len(list(app.url_map.iter_rules())))'
-    local envs=(HOME=/home/magic PATH=/usr/bin:/bin PYTHONPATH=$INSTALL MAGIC_DATA_DIR=$DATA TMPDIR=$INSTALL/tmp)
+    local envs=(HOME=/home/magic PATH=/usr/bin:/bin "PYTHONPATH=$INSTALL" "MAGIC_DATA_DIR=$DATA" "TMPDIR=$INSTALL/tmp")
     local out
     out=$(cd "$INSTALL" && runuser -u magic -- env -i "${envs[@]}" python3 -c "$py" 2>&1 | grep -v Warning | tail -1)
     if [[ "$out" == "server werkzeug routes "* ]]; then pass "no gunicorn: create_app ok, serve picks werkzeug ($out)"; else fail "no gunicorn: $out"; fi

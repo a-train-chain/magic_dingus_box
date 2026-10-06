@@ -22,6 +22,30 @@ Version order is SemVer precedence, everywhere (`update.sh` `version_cmp`):
 
 Neither channel ever offers a downgrade.
 
+## Before any tag: check the fleet you can reach
+
+Run every reachable box's own acceptance test from the Mac — strictly
+read-only, one table, non-zero exit if anything is not shippable:
+
+```bash
+scripts/fleet_check.sh --hosts ~/fleet.txt                   # one host per line, # comments
+scripts/fleet_check.sh --hosts ~/fleet.txt --with-services   # + verify_services.sh (Media Browser boxes)
+```
+
+Do it **before** tagging (so a box that is already failing is not mistaken
+for a regression of the new release) and again after your own boxes take
+the beta or stable. Each row is host / board / version / channel / uptime /
+pass-warn-fail / result / first failing check; `--log-dir DIR` keeps the
+full `verify_box.sh` output per box. A box still on `beta` shows it in the
+channel column — expected on your own boxes, never on a customer's.
+
+Also make sure CI is green, including the blocking ShellCheck gate
+(`tests/shellcheck_gate.sh`, test-local.yml `shellcheck` job) — release.yml
+runs test-local.yml and will not publish past a finding. Changing
+`update.sh`? Read
+[`docs/superpowers/specs/2026-10-05-update-sh-split-design.md`](../../docs/superpowers/specs/2026-10-05-update-sh-split-design.md)
+"Which update.sh actually runs" first.
+
 ## Cut a beta
 
 From the commit you want to test (normally `main`, tests green):

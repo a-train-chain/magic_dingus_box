@@ -67,6 +67,8 @@ setup() { require_pi; }
 
 `.github/workflows/test-local.yml` runs the local tier on every push and PR. Pi tier is manual-invoke only (no real Pi hardware in GitHub runners).
 
+Its `shellcheck` job is a blocking lint gate over **every** tracked shell script: `tests/shellcheck_gate.sh` (all `*.sh`/`*.bash` plus extensionless sh/bash-shebang files) at `-S info`, with the pinned ShellCheck 0.11.0. Run it locally before pushing — `brew install shellcheck` is 0.11.0 today; a newer local version may report extra findings CI does not see yet. Repo-wide exclusions (each justified) live in `/.shellcheckrc`; a deliberate one-off pattern gets an inline `# shellcheck disable=SCxxxx  # reason`. The CI step also carries a short, temporary `--exclude` list — shrink it, never grow it.
+
 ## Pre-image gate
 
 `scripts/golden_image/prepare_golden_image.sh` runs `./tests/run_all.sh` first and aborts if anything fails. To bypass (audit-logged): `--skip-tests`.

@@ -27,6 +27,51 @@ jobs:
       - name: Run local test tier
         run: ./tests/run_local_tests.sh --tap
 
+  # BLOCKING ShellCheck gate over every tracked shell script (*.sh, *.bash,
+  # and extensionless sh/bash-shebang files) at -S info. Config and the
+  # three repo-wide exclusions live in .shellcheckrc; deliberate one-off
+  # patterns carry an inline reasoned disable. ShellCheck is PINNED (via
+  # the shellcheck-py wheel, which ships the upstream static binary):
+  # every release adds checks, so apt's version drifting under us would
+  # turn the gate red with no code change. Bump it deliberately, together
+  # with any new findings, and keep the Mac's version in step.
+  # release.yml calls this whole workflow, so a finding blocks a release.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ShellCheck 0.11.0 (pinned)
+        run: |
+          pip install shellcheck-py==0.11.0.1
+          shellcheck --version
+
+      - name: ShellCheck gate
+        # TEMPORARY exclusions (2026-10-05): these files were being edited
+        # in parallel branches when the gate landed, so they were left
+        # untouched to avoid merge conflicts. Remove each line once its
+        # branch is merged and the file is clean under
+        # `tests/shellcheck_gate.sh`. At the time of writing only
+        # setup_services.sh had findings at warning level (SC2046 :692,
+        # SC2034 SMOKE_TEST_OK :2821); at info, verify_box.sh /
+        # first_boot.sh / scan_image_for_secrets.sh had a few more.
+        run: |
+          tests/shellcheck_gate.sh \
+            --exclude magic_dingus_box_cpp/scripts/verify_box.sh \
+            --exclude magic_dingus_box_cpp/scripts/gluetun_cascade_restart.sh \
+            --exclude magic_dingus_box_cpp/scripts/setup_services.sh \
+            --exclude scripts/golden_image/first_boot.sh \
+            --exclude scripts/golden_image/prepare_for_cloning.sh \
+            --exclude scripts/golden_image/restore_after_cloning.sh \
+            --exclude scripts/golden_image/scan_image_for_secrets.sh \
+            --exclude scripts/golden_image/clone_live_sd.sh
+
   # The C++ unit suites (Catch2/CTest — the same ones a dev runs from
   # build-test/ on a Mac). Until this job existed they ran in NO
   # workflow, so the drift they exist to catch was invisible unless

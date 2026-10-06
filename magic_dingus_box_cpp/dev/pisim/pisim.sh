@@ -43,6 +43,7 @@ cmd_image() {
 
 cmd_build() {
     need_docker; ensure_image
+    # shellcheck disable=SC2016  # the awk program's \$2 is awk's field, not a shell expansion
     in_container "
         set -euo pipefail
         cmake -S magic_dingus_box_cpp -B ${BUILD_DIR} -G Ninja \

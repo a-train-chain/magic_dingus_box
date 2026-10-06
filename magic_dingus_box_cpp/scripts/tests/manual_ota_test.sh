@@ -59,7 +59,7 @@ show_state() {
     echo ""
     echo "Backup VERSION:"
     if [ -f "$BACKUP_DIR/VERSION" ]; then
-        echo "  $BACKUP_DIR/VERSION: $(cat $BACKUP_DIR/VERSION)"
+        echo "  $BACKUP_DIR/VERSION: $(cat "$BACKUP_DIR/VERSION")"
     else
         echo "  $BACKUP_DIR/VERSION: (no backup exists)"
     fi
@@ -90,7 +90,7 @@ test_retry_download() {
     echo "  - 'Download attempt 2/3...'"
     echo ""
 
-    read -p "Press ENTER to start watching logs (Ctrl+C to stop)..."
+    read -r -p "Press ENTER to start watching logs (Ctrl+C to stop)..."
     echo ""
     check "Watching for retry patterns..."
 
@@ -116,7 +116,7 @@ test_version_atomicity() {
     echo "  - 'VERSION restored from backup'"
     echo ""
 
-    read -p "Press ENTER to start watching logs (Ctrl+C to stop)..."
+    read -r -p "Press ENTER to start watching logs (Ctrl+C to stop)..."
     echo ""
     check "Watching for VERSION patterns..."
 
@@ -136,7 +136,7 @@ test_rollback_version() {
     step "3. Verify VERSION file matches backup after rollback"
     echo ""
 
-    read -p "Press ENTER to start watching logs (Ctrl+C to stop)..."
+    read -r -p "Press ENTER to start watching logs (Ctrl+C to stop)..."
     echo ""
     check "Watching for rollback patterns..."
 
@@ -162,7 +162,7 @@ test_full_update() {
     echo "  - VERSION update (should be last before 'complete')"
     echo ""
 
-    read -p "Press ENTER to start watching logs (Ctrl+C to stop)..."
+    read -r -p "Press ENTER to start watching logs (Ctrl+C to stop)..."
     echo ""
     check "Watching full update process..."
 
@@ -230,7 +230,7 @@ main_menu() {
     echo "  q) quit"
     echo ""
 
-    read -p "Select test [1-6, q]: " choice
+    read -r -p "Select test [1-6, q]: " choice
 
     case "$choice" in
         1|retry)    test_retry_download ;;
@@ -244,7 +244,7 @@ main_menu() {
     esac
 
     echo ""
-    read -p "Press ENTER to return to menu..."
+    read -r -p "Press ENTER to return to menu..."
     main_menu
 }
 

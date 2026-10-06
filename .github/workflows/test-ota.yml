@@ -136,15 +136,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install ShellCheck
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
-
-      - name: Run ShellCheck on update.sh
-        run: |
-          shellcheck magic_dingus_box_cpp/scripts/update.sh || true
-        continue-on-error: true  # Warn but don't fail on style issues
+      # ShellCheck for update.sh (and every other tracked script) is the
+      # BLOCKING gate in test-local.yml's `shellcheck` job, which runs on
+      # every push and gates releases. The non-blocking `|| true` copy that
+      # lived here could never fail and has been removed.
 
       - name: Verify script is executable
         run: |

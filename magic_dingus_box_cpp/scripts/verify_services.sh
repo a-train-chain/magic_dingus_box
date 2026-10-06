@@ -34,6 +34,9 @@ ENV_FILE="${SERVICES_DIR}/.env"
 # scripts/data/prowlarr_indexers.json — keep in sync if that fixture
 # changes). Listed here explicitly so this script catches drift in
 # either direction (missing fixture entries OR sync-skipped indexers).
+# Reference copy only: check_radarr_indexers() passes the same five names
+# to its Python block inline — change both together.
+# shellcheck disable=SC2034  # reference list, see above
 EXPECTED_ENABLED_INDEXERS=(
     "LimeTorrents"
     "The Pirate Bay"
@@ -123,8 +126,10 @@ require_env() {
         echo "ERROR: ${ENV_FILE} not found. Has setup_services.sh been run?"
         exit 2
     fi
-    # shellcheck disable=SC1090
-    set -a; . "${ENV_FILE}"; set +a
+    set -a
+    # shellcheck disable=SC1090  # per-box .env; its path is only known at runtime
+    . "${ENV_FILE}"
+    set +a
     : "${RADARR_API_KEY:?RADARR_API_KEY missing from .env}"
     : "${PROWLARR_API_KEY:?PROWLARR_API_KEY missing from .env}"
     : "${QBITTORRENT_ADMIN_PASSWORD:?QBITTORRENT_ADMIN_PASSWORD missing from .env}"
