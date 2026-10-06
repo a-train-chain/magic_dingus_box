@@ -192,6 +192,10 @@ set(APP_SOURCES
     # half (kiosk-only, in no test target).
     src/app/intro_sequence.cpp
     src/app/intro_sequence_kiosk.cpp
+    # Settings-menu input dispatch: pure decisions (unit-tested) + the
+    # dispatcher over the menu, keyboard and game hand-off (kiosk-only).
+    src/app/settings_input_logic.cpp
+    src/app/settings_input.cpp
 )
 
 set(UTILS_SOURCES
@@ -814,6 +818,9 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # main.cpp's boot intro decisions (end detection, fade volume, the
         # hand-off to the menu, the render-video decision).
         src/app/intro_sequence.cpp
+        # main.cpp's Settings-menu input decisions (BTN4 hold/volume, the
+        # game browser's SELECT rows).
+        src/app/settings_input_logic.cpp
         # settings.json load/save against real temp files (round-trip,
         # wrong-typed quarantine). Pulls jsoncpp + spdlog, linked below.
         src/app/settings_persistence.cpp
