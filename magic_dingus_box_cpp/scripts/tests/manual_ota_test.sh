@@ -200,15 +200,15 @@ verify_after_update() {
         echo -e "  ${RED}✗ VERSION restore missing (found $count)${NC}"
     fi
 
-    check "Checking manager.js has polling timeout:"
-    if grep -q 'MAX_POLL_TIME_MS' "$INSTALL_DIR/magic_dingus_box/web/static/manager.js"; then
+    check "Checking the Content Manager JS (manager*.js) has polling timeout:"
+    if grep -qs 'MAX_POLL_TIME_MS' "$INSTALL_DIR/magic_dingus_box/web/static/"manager*.js; then
         echo -e "  ${GREEN}✓ MAX_POLL_TIME_MS found${NC}"
     else
         echo -e "  ${RED}✗ MAX_POLL_TIME_MS NOT found${NC}"
     fi
 
-    check "Checking manager.js has improved verification:"
-    if grep -q 'backoffDelays' "$INSTALL_DIR/magic_dingus_box/web/static/manager.js"; then
+    check "Checking the Content Manager JS (manager*.js) has improved verification:"
+    if grep -qs 'backoffDelays' "$INSTALL_DIR/magic_dingus_box/web/static/"manager*.js; then
         echo -e "  ${GREEN}✓ Exponential backoff verification found${NC}"
     else
         echo -e "  ${RED}✗ Exponential backoff verification NOT found${NC}"
