@@ -160,7 +160,7 @@ sudo usermod -a -G video,input $USER
 
 ### C++ Source Structure (`magic_dingus_box_cpp/src/`)
 
-- **`main.cpp`** - Entry point, main loop: poll input → update state → render video → render UI → swap buffers
+- **`main.cpp`** - Entry point: wiring (display/GL/input/player/service clients, the hooks below) + the main loop: poll input → update state → render video → render UI → swap buffers. Playlist playback and the game hand-off live in `app/` (`playlist_playback`, `playlist_reload`, `game_handoff`) — main.cpp calls them at fixed points in the loop.
 - **`media_browser/mb_host`** - `MediaBrowserHost`: the kiosk side of the Media Browser — owns the MB screens, modals and dispatcher; main.cpp's loop calls it at fixed points (unlock sequence → `handle_input` → redraw-gate inputs → `render` → `tick_watch_state`). main() keeps the service clients/stores and passes references in. Screen-to-screen hand-offs are the pure table in `media_browser/ui/mb_transition.h` (unit-tested).
 - **`platform/`** - Hardware abstraction
   - `drm_display` - DRM/KMS display init, mode setting, CRTC management
@@ -185,6 +185,9 @@ sudo usermod -a -G video,input $USER
   - `playlist_loader` - YAML playlist parsing
   - `settings_persistence` - YAML settings storage
   - `sample_mode` - Sample/demo mode for kiosk auto-play
+  - `playlist_playback` - `PlaylistPlayback`: main-menu playlist control — SELECT start/switch (row 0 = Master Shuffle), NEXT/PREV and Master Shuffle stepping, play/pause, natural-end auto-advance, the 2 s stuck-switch timeout, failed-item skip/give-up (`video::PlaybackErrorPolicy`) and the playback stall watchdog. Every Controller/GstPlayer call goes through `PlaylistTransport`; `controller_transport.h` is the kiosk's 1:1 adapter, the Mac tests use a recording fake (`tests/app/test_playlist_playback.cpp`).
+  - `playlist_reload` - `split_for_ui_with_master_shuffle` (boot AND the web-admin `playlists_reload_request` reload — one sequence) plus the reload's identity re-anchoring: playing item, shuffle queues, auto-advance guard, menu cursor, open Settings game list. main.cpp keeps only the marker poll and the Settings-menu calls.
+  - `game_handoff` - non-drawing half of a game session, unit-tested in the RetroArch suite: `GameSessionBracket` (the controller's begin/end session hooks — loading state, media-stack quiet, GPIO restart-button thread, watchdog off/on, "retroarch" status, `PostGameGate` arm), `notify_session_watchdog`, `make_game_quiet_actions` (qBit pause/resume + `playback_services_pause.sh`, gated on `services/.env`), `TorrentResumeRecovery`. `game_handoff_kiosk` is the GL/DRM half (kiosk-only): Settings game-browser launch behind the loading plate, the post-game display restore (`state.reset_display`), and the post-game ready edge.
 - **`retroarch/`** - Game emulation
   - `retroarch_launcher` - DRM/KMS handoff, config generation (incl. video config via `write_video_config()`), process lifecycle. It no longer owns button mappings: it resolves one mapping per controller port and emits the `input_playerN_*` lines through `write_player_binds()`.
   - `controller_mapping` - the mapping layer, in two halves. **Semantic tables** (`semantic_n64_style()` / `semantic_ps_style()`) say which *logical* control drives each RetroPad slot for a given core — "RetroPad B ← the Cross button" — using `LogicalControl` values, never physical button numbers. **`build_mapping(SemanticMapping, PhysicalProfile)`** marries a semantic table to a concrete pad's physical layout to produce the `ControllerMapping` the launcher emits. `get_mapping(ControllerType, core_name)` remains the public dispatch entrypoint (signature unchanged); `resolve_mapping_for_pad()` is the per-pad form used at launch. Also owns `write_player_binds()`.

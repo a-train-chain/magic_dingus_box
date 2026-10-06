@@ -39,23 +39,23 @@
 #include "media_browser/mb_host.h"
 #endif
 #include "app/app_state.h"
-#include "app/game_launch_recovery.h"
 #include "app/game_quiet_mode.h"
-#include "app/torrent_pause_marker.h"
+#include "app/game_handoff.h"
+#include "app/game_handoff_kiosk.h"
 #include "app/movie_quiet_mode.h"
 #include "app/playlist_loader.h"
 #include "app/controller.h"
+#include "app/controller_transport.h"
+#include "app/playlist_playback.h"
+#include "app/playlist_reload.h"
 #include "app/sample_mode.h"
 #include "app/settings_persistence.h"
 #include "app/status_writer.h"
-#include "app/playback_stall_watchdog.h"
 #include "app/playback_reset.h"
-#include "app/auto_advance.h"
 #include "app/redraw_gate.h"
 #include "app/post_game_gate.h"
 #include "debug/screenshot_capture.h"
 #include "ui/crt_time.h"
-#include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
 #include "utils/path_resolver.h"
@@ -423,33 +423,16 @@ int main(int /* argc */, char* /* argv */[]) {
         LOG_INFO("Loaded {} playlists from: {}", all_playlists.size(), playlist_dir);
     }
     
-    // Partition playlists between the two UI surfaces: the main menu
-    // gets only non-game items (it plays unattended — auto-advance,
-    // next/prev, Master Shuffle must never launch RetroArch), the
-    // Settings game browser gets only game items. A mixed playlist
-    // appears on both sides, each holding its kind. Replaces the old
-    // whole-playlist classification, under which a mixed playlist rode
-    // the main menu INTACT (any video item made it a "video playlist")
-    // and its games were meanwhile invisible to the Settings browser
-    // (which required ALL items to be games).
-    // Split for the two UI surfaces, then prepend the virtual Master
-    // Shuffle row. Factored into a lambda because the runtime reload
-    // (playlists_reload_request, in the main loop below) has to reproduce
-    // this sequence EXACTLY — a second hand-written copy is precisely how
-    // the boot menu and the reloaded menu would drift apart.
-    auto split_for_ui_with_master_shuffle =
-        [](const std::vector<Playlist>& loaded) {
-            auto split = PlaylistLoader::split_for_ui(loaded);
-            // Insert "Master Shuffle" playlist at the beginning
-            Playlist master_shuffle;
-            master_shuffle.title = "Master Shuffle";
-            master_shuffle.path = ""; // Virtual path
-            master_shuffle.items.push_back({}); // Dummy item to make it selectable
-            split.video.insert(split.video.begin(), master_shuffle);
-            return split;
-        };
-
-    auto ui_split = split_for_ui_with_master_shuffle(all_playlists);
+    // Partition playlists between the two UI surfaces and prepend the
+    // virtual Master Shuffle row: app::split_for_ui_with_master_shuffle,
+    // the ONE sequence the runtime reload (playlists_reload_request, in the
+    // main loop below) also runs, so the boot menu and the reloaded menu
+    // cannot drift apart. Replaces the old whole-playlist classification,
+    // under which a mixed playlist rode the main menu INTACT (any video
+    // item made it a "video playlist") and its games were meanwhile
+    // invisible to the Settings browser (which required ALL items to be
+    // games).
+    auto ui_split = app::split_for_ui_with_master_shuffle(all_playlists);
 
     // NOTE: downloaded movies do NOT surface here. An earlier Media Browser
     // pass synthesized a "Movies" playlist from the Radarr library into this
@@ -527,8 +510,6 @@ int main(int /* argc */, char* /* argv */[]) {
     // companion app always has a fresh snapshot of screen / playback state.
     app::StatusWriter status_writer(config::get_data_path() + "/kiosk_status.json");
     auto last_status_write = std::chrono::steady_clock::now();
-    // Watches for the pipeline stalling while the kiosk thinks it is playing.
-    app::PlaybackStallWatchdog playback_watchdog;
     constexpr auto STATUS_PERIOD = std::chrono::milliseconds(200); // 5 Hz
 
     // Phone Remote: clear any stale pairing session left from a crashed
@@ -659,60 +640,13 @@ int main(int /* argc */, char* /* argv */[]) {
     // Store playlist directory for path resolution
     std::string playlist_directory = playlist_dir;
 
-    // ── Failed-item handling (main playlist / Master Shuffle) ────────────
-    // A GStreamer error (corrupt/truncated file, unsupported codec) or a
-    // stall the watchdog could not revive used to strand an unattended
-    // kiosk on the dead item forever: an errored stream never reaches
-    // position >= duration, so the natural-end auto-advance never fired.
-    // video::PlaybackErrorPolicy decides skip vs. give up (bounded, so a
-    // playlist where EVERY item is broken shows the UI instead of
-    // spinning); this lambda executes the decision.
-    video::PlaybackErrorPolicy playback_error_policy;
-    auto playlist_owns_pipeline = [&]() {
-        bool owns = state.current_playlist_index >= 0 &&
-                    state.current_item_index >= 0 &&
-                    state.intro_complete && !state.showing_intro_video &&
-                    !state.is_switching_playlist && !state.is_loading_game;
-#ifdef MEDIA_BROWSER_ENABLED
-        // MB PlaybackScreen owns its own error path (toast + exit).
-        owns = owns && state.current_screen != app::AppScreen::MediaBrowser;
-#endif
-        return owns;
-    };
-    auto failure_budget = [&]() {
-        int size = 1;
-        if (state.current_playlist_index >= 0 &&
-            state.current_playlist_index <
-                static_cast<int>(state.playlists.size())) {
-            size = static_cast<int>(
-                state.playlists[state.current_playlist_index].items.size());
-        }
-        return video::PlaybackErrorPolicy::failure_budget(
-            size, state.master_shuffle_active);
-    };
-    auto act_on_failed_item = [&](video::PlaybackErrorPolicy::Decision d,
-                                  const char* why) {
-        using Decision = video::PlaybackErrorPolicy::Decision;
-        if (d == Decision::Advance) {
-            std::cerr << "Playlist item " << state.current_item_index
-                      << " failed (" << why << ") — skipping to next item"
-                      << std::endl;
-            if (state.master_shuffle_active) {
-                // Records the failed item in the PREV history (the virtual
-                // row is filtered there), then picks the next random video.
-                controller.master_shuffle_advance(state, playlist_directory);
-            } else {
-                controller.load_next_item(state, playlist_directory);
-            }
-        } else if (d == Decision::GiveUp) {
-            std::cerr << "Playlist item failed (" << why << ") and too many "
-                      << "consecutive items failed — stopping playback"
-                      << std::endl;
-            // Same end state as load_next_item's all-items-failed branch.
-            controller.stop();
-            app::stop_to_menu(state, "Couldn't play these videos");
-        }
-    };
+    // Main-menu playlist playback: start/switch from SELECT, NEXT/PREV,
+    // auto-advance, the stuck-switch timeout, failed-item skip/give-up and
+    // the playback stall watchdog. Every Controller/GstPlayer call goes
+    // through the transport. See app/playlist_playback.h.
+    app::ControllerTransport playlist_transport(controller, player);
+    app::PlaylistPlayback playlist_playback(state, playlist_transport,
+                                            playlist_directory);
     
     // Initialize settings menu
     ui::SettingsMenuManager settings_menu(&state);
@@ -974,37 +908,19 @@ int main(int /* argc */, char* /* argv */[]) {
 
     // Torrents the kiosk paused (movie FullPause / game quiet mode) and
     // never resumed — kiosk crashed, was stopped mid-movie, or an OTA
-    // restarted it. Resume them in the background: qBit is often still
-    // starting at kiosk start, so retry for ~2 minutes without ever
-    // touching the render thread. The marker is only written by the
-    // kiosk's own pause, so an operator's manual pause is never undone.
+    // restarted it. Resumed in the background with retries, never on the
+    // render thread; an operator's manual pause is never undone. See
+    // app::TorrentResumeRecovery.
     const std::string kTorrentPauseMarker =
         config::get_data_path() + "/qbit_paused_by_kiosk";
-    struct TorrentResumeRecovery {
-        std::atomic<bool> stop{false};
-        std::thread worker;
-        ~TorrentResumeRecovery() {
-            stop = true;
-            if (worker.joinable()) worker.join();
-        }
-    } torrent_resume_recovery;
-    if (app::torrents_paused_by_kiosk(kTorrentPauseMarker)) {
-        torrent_resume_recovery.worker = std::thread(
-            [qbit = qbit_owned.get(), &stop = torrent_resume_recovery.stop,
-             marker = kTorrentPauseMarker]() {
-                for (int attempt = 0; attempt < 12 && !stop; ++attempt) {
-                    if (qbit != nullptr && qbit->resume_all()) {
-                        app::mark_torrents_paused_by_kiosk(marker, false);
-                        std::cout << "[quiet-mode] resumed torrents left "
-                                     "paused by a previous session" << std::endl;
-                        return;
-                    }
-                    for (int i = 0; i < 10 && !stop; ++i) {
-                        std::this_thread::sleep_for(std::chrono::seconds(1));
-                    }
-                }
-            });
+    std::function<bool()> qbit_pause_all;
+    std::function<bool()> qbit_resume_all;
+    if (auto* qbit = qbit_owned.get(); qbit != nullptr) {
+        qbit_pause_all = [qbit]() { return qbit->pause_all(); };
+        qbit_resume_all = [qbit]() { return qbit->resume_all(); };
     }
+    app::TorrentResumeRecovery torrent_resume_recovery;
+    torrent_resume_recovery.start_if_needed(kTorrentPauseMarker, qbit_resume_all);
 
     // Track-1 quiet mode: silence the torrent/media stack for the whole
     // game session, mirroring PlaybackScreen's movie behavior. Gated on
@@ -1023,45 +939,14 @@ int main(int /* argc */, char* /* argv */[]) {
             (void)mq->wait_until_idle_for(std::chrono::seconds(20));
         }
     };
-    app::GameQuietMode game_quiet_mode({
-        /*pause=*/[qbit = qbit_owned.get(), wait_movie_quiet,
-                    kTorrentPauseMarker]() {
-            wait_movie_quiet();
-            if (!std::filesystem::exists(
-                    "/opt/magic_dingus_box/services/.env")) {
-                return;
-            }
-            if (qbit != nullptr) {
-                if (qbit->pause_all()) {
-                    app::mark_torrents_paused_by_kiosk(kTorrentPauseMarker, true);
-                } else {
-                    std::cout << "[quiet-mode] qbit pause_all failed "
-                                 "(best-effort)" << std::endl;
-                }
-            }
-            (void)std::system(
-                "/usr/local/bin/playback_services_pause.sh pause "
-                ">/dev/null 2>&1");
-        },
-        /*resume=*/[qbit = qbit_owned.get(), wait_movie_quiet,
-                    kTorrentPauseMarker]() {
-            wait_movie_quiet();
-            if (!std::filesystem::exists(
-                    "/opt/magic_dingus_box/services/.env")) {
-                return;
-            }
-            (void)std::system(
-                "/usr/local/bin/playback_services_pause.sh unpause "
-                ">/dev/null 2>&1");
-            if (qbit != nullptr) {
-                if (qbit->resume_all()) {
-                    app::mark_torrents_paused_by_kiosk(kTorrentPauseMarker, false);
-                } else {
-                    std::cout << "[quiet-mode] qbit resume_all failed; "
-                                 "retried at next kiosk start" << std::endl;
-                }
-            }
-        }});
+    app::GameQuietMode game_quiet_mode(app::make_game_quiet_actions({
+        /*services_env_path=*/"/opt/magic_dingus_box/services/.env",
+        /*torrent_pause_marker=*/kTorrentPauseMarker,
+        /*wait_for_movie_quiet=*/wait_movie_quiet,
+        /*pause_torrents=*/qbit_pause_all,
+        /*resume_torrents=*/qbit_resume_all,
+        /*run_command=*/[](const char* cmd) { return std::system(cmd); },
+    }));
 
     // Movie playback contention guard executor. PlaybackScreen::enter()/
     // leave() only QUEUE pause/resume here; the qBit round-trips and the
@@ -1128,109 +1013,50 @@ int main(int /* argc */, char* /* argv */[]) {
     // Installed on the controller so EVERY route into an emulated_game
     // item gets it — main-UI SELECT on a mixed playlist, NEXT/PREV,
     // auto-advance at video end, Master Shuffle, and the Settings game
-    // browser. The Settings branch used to inline this and the other four
-    // routes had none: the watchdog stayed armed while load_playlist_item
-    // blocked in waitpid, so ~10s into any game launched outside Settings,
-    // systemd SIGABRT'd the kiosk (KillMode=mixed took RetroArch with it).
-    std::atomic<bool> game_session_running{false};
-    std::thread game_session_gpio_thread;
+    // browser. See app/game_handoff.h for what begin/end do and why.
+    //
+    // sd_notify(0, msg) on a libsystemd build; empty (nothing sent) otherwise.
+    app::SystemdNotify systemd_notify;
+#ifdef HAVE_SYSTEMD
+    systemd_notify = [](const char* msg) { sd_notify(0, msg); };
+#endif
     // Return-from-game window: armed by the end hook below, released by the
     // main loop once the post-game reset has run (app/post_game_gate.h).
     app::PostGameGate post_game_gate;
-    controller.set_session_watchdog([](retroarch::SessionWatchdog ev) {
-#ifdef HAVE_SYSTEMD
-        switch (ev) {
-            case retroarch::SessionWatchdog::Arm:
-                sd_notify(0, "WATCHDOG_USEC=10000000");  // = WatchdogSec=10
-                sd_notify(0, "WATCHDOG=1");
-                break;
-            case retroarch::SessionWatchdog::Ping:
-                sd_notify(0, "WATCHDOG=1");
-                break;
-            case retroarch::SessionWatchdog::Disarm:
-                sd_notify(0, "WATCHDOG_USEC=0");
-                break;
-        }
-#else
-        (void)ev;
-#endif
+    controller.set_session_watchdog([systemd_notify](retroarch::SessionWatchdog ev) {
+        app::notify_session_watchdog(ev, systemd_notify);
     });
+    app::GameSessionBracket::Ops game_session_ops;
+    game_session_ops.systemd_notify = systemd_notify;
+#ifdef MEDIA_BROWSER_ENABLED
+    // Quiet the media stack for the whole session (async — never delays
+    // launch) and drop poster textures while the GL context is still
+    // current; the reverse on the way out.
+    game_session_ops.quiet_media_stack = [&game_quiet_mode, &ui_renderer]() {
+        game_quiet_mode.request_pause();
+        if (ui_renderer.artwork_cache_initialized()) {
+            ui_renderer.artwork_cache().pause();
+            ui_renderer.artwork_cache().clear_textures();
+        }
+    };
+    game_session_ops.restore_media_stack = [&game_quiet_mode, &ui_renderer]() {
+        if (ui_renderer.artwork_cache_initialized()) {
+            ui_renderer.artwork_cache().resume();
+        }
+        game_quiet_mode.request_resume();
+    };
+#endif
+    game_session_ops.poll_gpio = [&gpio]() { (void)gpio.poll(); };
+    game_session_ops.write_status_now = [&status_writer, &state]() {
+        status_writer.write_now(state);
+    };
+    app::GameSessionBracket game_session_bracket(state, post_game_gate,
+                                                 std::move(game_session_ops));
     controller.set_game_session_hooks(
-        [&](const app::PlaylistItem& item) {
-            // Raises is_loading_game, resets loading_alpha to opaque, and
-            // cancels any in-flight post-game fade — a stale alpha of 0 from
-            // the previous exit would make this launch's plate invisible.
-            app::prepare_loading_state_for_launch(state);
-#ifdef MEDIA_BROWSER_ENABLED
-            // Quiet the media stack for the whole session (async — never
-            // delays launch) and drop poster textures while the GL
-            // context is still current.
-            game_quiet_mode.request_pause();
-            if (ui_renderer.artwork_cache_initialized()) {
-                ui_renderer.artwork_cache().pause();
-                ui_renderer.artwork_cache().clear_textures();
-            }
-#endif
-            // GPIO polling thread so the restart button works during
-            // gameplay while the main thread is inside the game session
-            // (teardown, supervision, restore). The button restarts the
-            // service; the resulting SIGTERM stops the game gracefully.
-            game_session_running.store(true);
-            game_session_gpio_thread = std::thread([&gpio, &game_session_running]() {
-                while (game_session_running.load()) {
-                    gpio.poll();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
-            });
-#ifdef HAVE_SYSTEMD
-            // Off for the launch teardown and the post-game DRM/input
-            // restore (each several seconds of blocking work). The launcher
-            // re-arms it for the supervised play phase (set_session_watchdog
-            // above) and disarms it again before the restore.
-            sd_notify(0, "WATCHDOG_USEC=0");
-#endif
-            // Phone-remote: the per-frame deriver never executes while the
-            // main loop blocks, so set the mode explicitly and flush
-            // status so the companion app sees "retroarch" immediately.
-            state.retroarch_rom_name = item.title;
-            state.retroarch_core     = item.emulator_core;
-            state.screen_mode.store(app::ScreenMode::RetroArch);
-            status_writer.write_now(state);
+        [&game_session_bracket](const app::PlaylistItem& item) {
+            game_session_bracket.begin(item);
         },
-        [&]() {
-#ifdef HAVE_SYSTEMD
-            // Re-enable watchdog after RetroArch exits (10s = 10000000 usec)
-            sd_notify(0, "WATCHDOG_USEC=10000000");
-#endif
-            game_session_running.store(false);
-            if (game_session_gpio_thread.joinable()) {
-                game_session_gpio_thread.join();
-            }
-            // Reset loading state. loading_alpha is deliberately NOT reset
-            // here — it is 0.0 (dissolved) and stays 0.0 until the next
-            // launch's prepare_loading_state_for_launch, so nothing can
-            // flash the plate between now and the menu fade-in.
-            state.is_loading_game = false;
-            state.loading_progress.store(0.0f);
-            state.loading_phase.clear();
-#ifdef MEDIA_BROWSER_ENABLED
-            if (ui_renderer.artwork_cache_initialized()) {
-                ui_renderer.artwork_cache().resume();
-            }
-            game_quiet_mode.request_resume();
-#endif
-            // Do NOT publish the menu from here. This hook runs while the
-            // main loop is still inside the dispatch of the launching press:
-            // the Settings fields in AppState are the pre-launch snapshot
-            // (menu open, game list showing) that main.cpp is about to
-            // force-close, and the post-game reset has not run. Publishing
-            // "playlist" now let a client aim a SELECT at that stale game
-            // list and land it on Master Shuffle (Pi 5, 2026-10-03). The
-            // gate keeps "retroarch" published until the main loop's ready
-            // edge, which clears the ROM/core fields and lets the live
-            // screen through — see app/post_game_gate.h.
-            post_game_gate.session_ended();
-        });
+        [&game_session_bracket]() { game_session_bracket.end(); });
 
     // Try to load intro video at startup
     // Look for intro video in common locations (prefer .30fps version)
@@ -1350,6 +1176,10 @@ int main(int /* argc */, char* /* argv */[]) {
     auto present_frame = [&]() {
         frame_presenter.present(mode.width, mode.height);
     };
+    // The display stack the game hand-off tears down and restores
+    // (app/game_handoff_kiosk.h).
+    app::KioskGraphics kiosk_graphics{display, egl, frame_presenter,
+                                      player, gst_renderer, ui_renderer};
     
     // Initialize resolution rendering state
     bool mode_applied = false;
@@ -1559,100 +1389,17 @@ int main(int /* argc */, char* /* argv */[]) {
         // frame. (Read before the block, which clears the flag.)
         const bool display_reset_this_iteration = state.reset_display;
 
-        // Check for display reset signal (e.g. after returning from RetroArch)
+        // Check for display reset signal (e.g. after returning from
+        // RetroArch): DRM master, mode, EGL, GL resources, GStreamer, audio.
+        // See app/game_handoff_kiosk.h.
         if (state.reset_display) {
-            std::cout << "Resetting display state after external application..." << std::endl;
-
-            // Re-acquire DRM master (in case it was dropped or stolen)
-            if (!display.acquire_master()) {
-                std::cerr << "Warning: Failed to re-acquire DRM master" << std::endl;
-            }
-
-            // Force mode restoration (RetroArch might have changed resolution)
-            // — unless the game-exit path already did it, in which case a
-            // second set_mode here would make the TV resync twice.
-            if (state.display_mode_restored.exchange(false)) {
-                std::cout << "Display mode already restored by game-exit path; skipping set_mode" << std::endl;
-            } else if (!display.set_mode(mode.width, mode.height)) {
-                std::cerr << "Warning: Failed to restore display mode: " << mode.width << "x" << mode.height << std::endl;
-            } else {
-                std::cout << "Restored display mode: " << mode.width << "x" << mode.height << std::endl;
-            }
-
-            // Reset all frame presentation state (framebuffers, GBM buffers, counters)
-            frame_presenter.reset();
-            state.reset_display = false;
-            
-            // CRITICAL: Re-make EGL context current after RetroArch released it
-            // RetroArch uses its own EGL/DRM context, so we need to restore ours
-            if (!egl.make_current()) {
-                std::cerr << "Warning: Failed to re-make EGL context current after RetroArch exit" << std::endl;
-            } else {
-                std::cout << "EGL context restored after RetroArch exit" << std::endl;
-            }
-            
-            // CRITICAL: Reset GstRenderer GL resources after context restore
-            // RetroArch invalidates our textures, shaders, VAOs etc. when it takes over EGL
-            // This triggers lazy re-initialization on the next video frame render
-            gst_renderer.reset_gl();
-
-            // CRITICAL CHECK: Has the player been cleaned up?
-            if (!player.is_initialized()) {
-                std::cout << "Re-initializing GStreamer player and linking renderer..." << std::endl;
-                // Use default initialization as done in main()
-                if (!player.initialize()) {
-                     std::cerr << "Failed to re-initialize GStreamer player!" << std::endl;
-                }
-                // Re-link renderer to the new pipeline/appsink
-                if (!gst_renderer.initialize(&player)) {
-                    std::cerr << "Failed to re-initialize GStreamer renderer!" << std::endl;
-                }
-            }
-
-            // Restore audio output after RetroArch
-            // 1. Set PulseAudio default sink (for any non-GStreamer streams)
-            std::cout << "Restoring audio output after display reset..." << std::endl;
-            // apply_output() returns the sink it resolved — reused below
-            // instead of listing the sinks a second time on this thread.
-            const std::string pulse_device = state.audio_settings.apply_output();
-
-            // 2. Set pulsesink device directly on GStreamer pipeline
-            // This bypasses PulseAudio default sink which can be overridden by
-            // module-switch-on-port-available or module-default-device-restore
-            {
-                if (!pulse_device.empty()) {
-                    player.set_audio_device(pulse_device);
-                }
-            }
-
-            // CRITICAL: Also reset UI Renderer GL resources
-            // The UI shaders, VAO, VBO, and logo texture also become invalid
-            ui_renderer.reset_gl();
-            
-            // Force an immediate clear to black to ensure screen is in known state
-            glViewport(0, 0, mode.width, mode.height);
-            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
-            if (!egl.swap_buffers()) {
-                 std::cerr << "Error: Initial swap buffers after reset failed!" << std::endl;
-            } else {
-                 std::cout << "Initial swap buffers after reset success." << std::endl;
-            }
+            app::restore_display_after_game(kiosk_graphics, state, mode);
         }
 
-        // Return-from-game ready edge: the reset above has run (or none was
-        // needed — a launch that failed before the handover), so the kiosk
-        // can take input again. Anything queued since the input devices
-        // reopened was pressed at a dissolving plate or a black screen, not
-        // at the menu that is about to fade in — drain it unseen. Only
-        // after that does the status stop saying "retroarch".
-        if (post_game_gate.take_ready(state.reset_display.load())) {
-            (void)input.poll();
-            if (gpio.is_available()) (void)gpio.poll();
-            state.retroarch_rom_name.clear();
-            state.retroarch_core.clear();
-            std::cout << "Post-game reset complete; accepting input" << std::endl;
-        }
+        // Return-from-game ready edge (app/post_game_gate.h): drain the
+        // input queued at a black screen unseen, then stop publishing
+        // "retroarch".
+        app::finish_post_game_if_ready(post_game_gate, state, input, gpio);
 
         // Check for display mode changes from Settings Menu
         if (state.display_settings.mode != current_display_mode) {
@@ -2068,69 +1815,15 @@ int main(int /* argc */, char* /* argv */[]) {
                                         std::cout << "Back button selected - returning to playlist list" << std::endl;
                                         settings_menu.exit_game_list();
                                     } else if (game_idx >= 0 && game_idx < static_cast<int>(playlist.items.size())) {
-                                        std::cout << "Launching game: " << playlist.items[game_idx].title << std::endl;
-
-                                        // Create progress callback to keep UI alive during launch
-                                        auto progress_callback = [&]() {
-                                            // Clear screen
-                                            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-                                            glClear(GL_COLOR_BUFFER_BIT);
-
-                                            // Render loading screen FIRST so the bezel can layer on top
-                                            ui_renderer.render_loading_overlay(state);
-
-                                            // Render bezel overlay LAST so it frames the loading screen
-                                            // (same z-order as the main render path at end of frame)
-                                            if (state.display_settings.mode == app::DisplayMode::MODERN_TV &&
-                                                !state.available_bezels.empty() &&
-                                                state.display_settings.bezel_index >= 0 &&
-                                                state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
-                                                const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
-                                                if (!bezel.file.empty()) {
-                                                    ui_renderer.load_bezel(bezel.file);
-                                                    glViewport(0, 0, mode.width, mode.height);
-                                                    ui_renderer.render_bezel();
-                                                }
-                                            }
-
-                                            // Swap buffers (renders to GBM surface)
-                                            egl.swap_buffers();
-
-                                            // Present frame (flips DRM page)
-                                            present_frame();
-                                        };
-                                        
-                                        // Launch the game. All session bracketing — watchdog
-                                        // disable/re-enable, GPIO poll thread, phone-remote
-                                        // status writes, quiet mode, artwork pause, loading
-                                        // state — happens inside load_playlist_item via the
-                                        // game-session hooks installed at startup, shared with
-                                        // every other launch route.
-                                        auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
-
-                                        if (launch_result) {
-                                            std::cout << "Game launched successfully" << std::endl;
-                                        } else {
-                                            std::cout << "Game launch failed: " << launch_result.error() << std::endl;
-                                            state.set_error("Unable to start game");
-                                        }
-                                        // Return to the playlist UI after every launch outcome;
-                                        // a failed takeover must not leave the game browser open.
-                                        //
-                                        // force_close (teleport), NOT close (animate). The call
-                                        // above blocks for the entire game session, so by the time
-                                        // we reach this line RetroArch has already exited and the
-                                        // display handover back to the kiosk is done. close() would
-                                        // start a FRESH 300ms slide-shut right then — outlasting the
-                                        // 250ms post-game fade-up — so the fade revealed the settings
-                                        // menu animating closed instead of the main menu, which reads
-                                        // as a glitch on the way out of every game.
-                                        //
-                                        // Nothing is lost by skipping the animation: the menu was on
-                                        // screen before RetroArch took over, minutes or hours ago, and
-                                        // the user's mental model is "I was in a game, now I'm back",
-                                        // not "I am still in the menu I launched from".
-                                        settings_menu.force_close();
+                                        // Loading plate, launch, outcome, then
+                                        // force-close Settings. Blocks for the
+                                        // whole game session; the bracketing
+                                        // runs in the controller's session
+                                        // hooks. See app/game_handoff_kiosk.h.
+                                        app::launch_game_from_browser(
+                                            controller, state, settings_menu,
+                                            kiosk_graphics, mode, playlist,
+                                            game_idx, playlist_directory);
                                     } else {
                                         std::cout << "Invalid game index: " << game_idx << " (max: " << playlist.items.size() << ")" << std::endl;
                                     }
@@ -2437,232 +2130,29 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                 case InputAction::SELECT:
                     if (!ev.pressed) break; // Only trigger on press
-                    
-                    // Don't allow playlist selection during intro video
-                    if (state.showing_intro_video) {
-                        break;  // Ignore input during intro
-                    }
-                    
-                    // If video is playing and UI is hidden, just show UI
-                    if (state.video_active && !state.ui_visible_when_playing) {
-                        state.ui_visible_when_playing = true;
-                        state.ui_visibility_timer = 3.0; // Show for 3 seconds
-                        break; // Don't trigger selection yet
-                    }
-                    
-                    // If video is already playing
-                    if (state.video_active) {
-                // Check if the selected playlist is the same as the one currently playing
-                // Special case for Master Shuffle (index 0): current_playlist_index points to the source playlist,
-                // so we check master_shuffle_active flag instead.
-                bool is_same_playlist = (state.current_playlist_index == state.selected_index) || 
-                                      (state.master_shuffle_active && state.selected_index == 0);
-                                      
-                if (is_same_playlist) {
-                    // Same playlist: just toggle UI visibility with fade
-                    state.ui_visible_when_playing = !state.ui_visible_when_playing;
-                    
-                    // Start fade animation (synchronized UI and audio)
-                    state.fade_start_time = std::chrono::steady_clock::now();
-                    state.fade_target_ui_visible = state.ui_visible_when_playing;
-                    state.is_fading = true;
-                } else {
-                    // Different playlist: stop current and start new playlist
-                    // Prevent overlapping playlist switches
-                    if (state.is_switching_playlist) {
-                        break;  // Skip if already switching
-                    }
-                    
-                    state.is_switching_playlist = true;  // Set flag to prevent overlapping operations
-                    state.playlist_switch_start_time = std::chrono::steady_clock::now();  // Track when switch started
-                    
-                    // First, update the playlist index BEFORE stopping to prevent reset
-                    state.current_playlist_index = state.selected_index;
-                    state.current_item_index = 0;
-                    
-                    // Reset advance flags when switching playlists to prevent issues
-                    state.last_advanced_item_index = -1;
-                    state.last_advanced_duration = 0.0;
-                    // No volume reset here: nothing dims the stream any more,
-                    // and forcing 100% blasted the outgoing video at full
-                    // level until stop() landed. load_file re-applies the
-                    // user's volume to the new stream.
-
-                    controller.stop();
-                    // Wait longer to ensure stop completes and buffers are released
-                    // Increased delay to prevent race conditions and buffer export errors
-                    // The DRM driver needs time to release GEM buffers from previous video
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                    
-                    // Verify that mpv actually stopped before proceeding
-                    // This prevents race conditions when loading new videos
-                    int retry_count = 0;
-                    const int max_retries = 10;
-                    while (controller.is_playing() && retry_count < max_retries) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                        retry_count++;
-                    }
-                    
-                    if (controller.is_playing()) {
-                        std::cerr << "Warning: Video did not stop cleanly after " << (max_retries * 50) << "ms, proceeding anyway" << std::endl;
-                    }
-                    
-                    // Then start the new playlist
-                    bool load_success = false;
-                    
-                    // Check for Master Shuffle (index 0)
-                    if (state.selected_index == 0) {
-                        std::cout << "Master Shuffle selected!" << std::endl;
-                        state.master_shuffle_active = true;
-                        controller.play_random_global_video(state, playlist_directory);
-                        load_success = true; // Assume success for now (play_random_global_video handles retries)
-                        
-                        // When starting video, hide UI completely so video shows through fully
-                        state.ui_visible_when_playing = false;
-                    } else if (!state.playlists.empty() && state.selected_index < static_cast<int>(state.playlists.size())) {
-                        state.master_shuffle_active = false; // Disable master shuffle for normal playlists
-                        const auto& pl = state.playlists[state.selected_index];
-                        if (!pl.items.empty() && pl.is_video_playlist()) {
-                            // Load first item of new playlist
-                            auto load_result = controller.load_playlist_item(state, pl, 0, playlist_directory);
-                            load_success = static_cast<bool>(load_result);
-                            if (!load_result) {
-                                std::cerr << "Failed to load playlist item: " << load_result.error() << std::endl;
-                                state.set_error("Could not load: " + pl.title);
-                            }
-                            if (load_success) {
-                                // Only hide UI when video actually loaded
-                                state.ui_visible_when_playing = false;
-                            }
-                        } else if (!pl.items.empty() && pl.is_game_playlist()) {
-                            // Game playlists are launched from Settings > Video Games
-                            state.set_error("Use Settings to launch games");
-                            load_success = false;
-                        } else {
-                            state.set_error("No content in playlist");
-                            load_success = false;
-                        }
-                    }
-
-                    // If load failed, the old video is already stopped:
-                    // land on the menu. stop_to_menu, not the three flags
-                    // this used to clear — current_playlist_index /
-                    // current_item_index were set to the NEW playlist above,
-                    // and indexes set with no video is the Renderer's
-                    // "between items" early-out, so the menu AND the error
-                    // banner just raised stayed blank until another press.
-                    // (An empty message leaves that banner in place.)
-                    if (!load_success) {
-                        app::stop_to_menu(state);
-                        std::cerr << "Playlist switch failed - flag cleared, ready for retry" << std::endl;
-                    }
-                    // Otherwise, the flag will be cleared when the new video becomes active
-                    // If video doesn't become active within timeout, flag will be cleared by timeout mechanism
-                }
-                } else {
-                    // No video playing: start the selected playlist
-                    // Prevent overlapping playlist switches
-                    if (state.is_switching_playlist) {
-                        break;  // Skip if already switching
-                    }
-                    
-                    // Check for Master Shuffle (index 0)
-                    if (state.selected_index == 0) {
-                        std::cout << "Master Shuffle selected (from stopped)!" << std::endl;
-                        state.is_switching_playlist = true;
-                        state.playlist_switch_start_time = std::chrono::steady_clock::now();
-                        state.master_shuffle_active = true;
-                        
-                        controller.play_random_global_video(state, playlist_directory);
-                        
-                        // When starting video, hide UI completely so video shows through fully
-                        state.ui_visible_when_playing = false;
-                        
-                        // Note: play_random_global_video handles loading, but doesn't return success/fail
-                        // We assume it works or retries.
-                    } else if (!state.playlists.empty() && state.selected_index < static_cast<int>(state.playlists.size())) {
-                        state.master_shuffle_active = false; // Disable master shuffle for normal playlists
-                        const auto& pl = state.playlists[state.selected_index];
-                        if (!pl.items.empty() && pl.is_video_playlist()) {
-                            state.is_switching_playlist = true;  // Set flag
-                            state.playlist_switch_start_time = std::chrono::steady_clock::now();
-
-                            // Load first item of playlist
-                            auto load_result = controller.load_playlist_item(state, pl, 0, playlist_directory);
-                            if (load_result) {
-                                // Track which playlist and item is playing
-                                state.current_playlist_index = state.selected_index;
-                                state.current_item_index = 0;
-                                // When starting video, hide UI completely so video shows through fully
-                                state.ui_visible_when_playing = false;
-                            } else {
-                                // Load failed - clear flag and show error
-                                std::cerr << "Failed to load playlist item: " << load_result.error() << std::endl;
-                                state.set_error("Could not load: " + pl.title);
-                                state.is_switching_playlist = false;
-                            }
-                        } else if (!pl.items.empty() && pl.is_game_playlist()) {
-                            state.set_error("Use Settings to launch games");
-                        } else {
-                            state.set_error("No content in playlist");
-                        }
-                    }
-                }
+                    // Intro guard, reveal hidden UI, same-playlist UI toggle,
+                    // or switch to / start the highlighted playlist (row 0 =
+                    // Master Shuffle). See PlaylistPlayback::on_select.
+                    playlist_playback.on_select();
                     break;
                     
                 case InputAction::PLAY_PAUSE:
                     if (!ev.pressed) break; // Only trigger on press, not release
-                    // Only allow play/pause if intro is complete and we have an active video
-                    if (state.intro_complete && state.video_active) {
-                        controller.toggle_pause();
-                    }
+                    playlist_playback.on_play_pause();
                     break;
                     
                 case InputAction::NEXT:
                     if (!ev.pressed) break; // Only trigger on press, not release
-                    // If video is playing, advance to next playlist item
-                    // In Master Shuffle mode, pick another random video
-                    // Otherwise, seek forward in current video
-                    // Don't allow if we're switching playlists
-                    if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
-                        if (state.master_shuffle_active) {
-                            // In Master Shuffle, NEXT triggers another random video,
-                            // saving the current one to the shuffle history for
-                            // "Previous". Index 0 is the VIRTUAL Master Shuffle row
-                            // (one dummy item, no file), never a real source
-                            // playlist — the reload path parks
-                            // current_playlist_index there when a source playlist is
-                            // deleted mid-playback; record_history refuses it (see
-                            // app/shuffle_queue.h for why recording it stalled
-                            // auto-advance).
-                            controller.master_shuffle_advance(state, playlist_directory);
-                        } else {
-                            controller.load_next_item(state, playlist_directory);
-                        }
-                    } else if (!state.is_switching_playlist && state.video_active) {
-                        // Only seek if we have an active video (not intro)
-                        controller.seek(10.0);
-                    }
+                    // Next item / Master Shuffle pick; seek +10 s when no
+                    // playlist is playing.
+                    playlist_playback.on_next();
                     break;
                     
                 case InputAction::PREV:
                     if (!ev.pressed) break; // Only trigger on press, not release
-                    // If video is playing, go to previous playlist item
-                    // In Master Shuffle mode, pick another random video
-                    // Otherwise, seek backward in current video
-                    // Don't allow if we're switching playlists
-                    if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
-                        if (state.master_shuffle_active) {
-                            // In Master Shuffle, PREV goes back through shuffle
-                            // history (random pick when it is empty).
-                            controller.master_shuffle_back(state, playlist_directory);
-                        } else {
-                            controller.load_previous_item(state, playlist_directory);
-                        }
-                    } else if (!state.is_switching_playlist && state.video_active) {
-                        // Only seek if we have an active video (not intro)
-                        controller.seek(-10.0);
-                    }
+                    // Previous item / Master Shuffle history; seek -10 s
+                    // when no playlist is playing.
+                    playlist_playback.on_prev();
                     break;
                     
                 case InputAction::SEEK_LEFT:
@@ -2697,27 +2187,9 @@ int main(int /* argc */, char* /* argv */[]) {
                // GStreamer remains alive after intro, just ensure proper state management
         sample_mode.update_state(state);
         
-        // Clear playlist switching flag if it's been stuck for too long (timeout safety)
-        // This prevents the flag from getting stuck if video fails to load or gets into bad state
-        if (state.is_switching_playlist) {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.playlist_switch_start_time);
-            if (elapsed.count() > 2000) {  // 2 second timeout
-                std::cerr << "CRITICAL: Playlist switch timeout after " << elapsed.count() << "ms - clearing flag and resetting state" << std::endl;
-                std::cerr << "  Debug info: video_active=" << state.video_active
-                          << ", is_playing=" << controller.is_playing()
-                          << ", current_playlist=" << state.current_playlist_index
-                          << ", current_item=" << state.current_item_index << std::endl;
-                state.is_switching_playlist = false;
-
-                // Also reset video state to ensure clean recovery
-                if (!controller.is_playing() && !state.video_active) {
-                    std::cerr << "MPV appears stuck - attempting recovery by stopping and clearing state" << std::endl;
-                    controller.stop();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                }
-            }
-        }
+        // Clear playlist switching flag if it's been stuck for too long
+        // (2 s timeout safety). See PlaylistPlayback::tick_switch_timeout.
+        playlist_playback.tick_switch_timeout();
         
         // Handle intro video completion
         // When intro video ends, fade it out first, then fade in the UI
@@ -2842,75 +2314,13 @@ int main(int /* argc */, char* /* argv */[]) {
         }
         
         // Pipeline error on a playlist item -> skip it (or give up after a
-        // run of failures). Not gated on video_active: an error before
-        // preroll leaves duration 0, so video_active never turned on.
-        if (playlist_owns_pipeline()) {
-            const auto decision = playback_error_policy.on_frame(
-                player.stream_generation(), player.has_error(),
-                player.get_position(), failure_budget());
-            if (decision != video::PlaybackErrorPolicy::Decision::None) {
-                act_on_failed_item(decision, "pipeline error");
-            }
-        }
+        // run of failures). See PlaylistPlayback::tick_pipeline_error.
+        playlist_playback.tick_pipeline_error();
 
-        // Auto-advance to next item in playlist when current video ends.
-        // "Ends" honors the item's `end:` trim (decide_auto_advance) — the
-        // old full-file comparison played every trimmed item to EOF.
-        if (state.video_active && state.current_playlist_index >= 0 && state.current_item_index >= 0) {
-            // Snapshot the (position, duration) pair so the whole advance
-            // decision sees a consistent view rather than reading the
-            // mutex-protected fields multiple times.
-            app::AutoAdvanceInput adv;
-            adv.position = state.get_position();
-            adv.duration = state.get_duration();
-            if (state.current_playlist_index < static_cast<int>(state.playlists.size())) {
-                const auto& adv_pl = state.playlists[state.current_playlist_index];
-                if (state.current_item_index < static_cast<int>(adv_pl.items.size())) {
-                    adv.item_end = adv_pl.items[state.current_item_index].end;
-                }
-            }
-            adv.playback_started = state.playback_started_;
-            adv.master_shuffle = state.master_shuffle_active;
-            adv.current_item = state.current_item_index;
-            adv.last_advanced_item = state.last_advanced_item_index;
-
-            switch (app::decide_auto_advance(adv)) {
-                case app::AutoAdvance::Advance:
-                    std::cout << "Auto-advancing from item " << state.current_item_index
-                              << " at position " << adv.position << "/"
-                              << app::effective_end(adv.duration, adv.item_end) << std::endl;
-                    // Set flag BEFORE calling load_next_item to prevent race
-                    // conditions. The REAL duration: update_state compares it
-                    // to the new file's duration to detect the next item loaded.
-                    state.last_advanced_item_index = state.current_item_index;
-                    state.last_advanced_duration = adv.duration;
-                    // Note: load_next_item handles errors internally (skips broken files)
-                    if (state.master_shuffle_active) {
-                        // Saves the current item to the shuffle history first
-                        // (virtual row excluded — see the NEXT handler above).
-                        controller.master_shuffle_advance(state, playlist_directory);
-                    } else {
-                        controller.load_next_item(state, playlist_directory);
-                    }
-                    break;
-                case app::AutoAdvance::Held:
-                    if (!state.master_shuffle_active) {
-                        std::cout << "NOT auto-advancing: item=" << state.current_item_index
-                                  << ", last_advanced=" << state.last_advanced_item_index
-                                  << ", playback_started=" << state.playback_started_ << std::endl;
-                    }
-                    break;
-                case app::AutoAdvance::ResetGuard:
-                    // Well away from the end: re-arm the once-per-item guard,
-                    // so auto-advance works even after manual navigation.
-                    // Master Shuffle stays active - only exits when user selects a different playlist
-                    state.last_advanced_item_index = -1;
-                    state.last_advanced_duration = 0.0;
-                    break;
-                case app::AutoAdvance::None:
-                    break;
-            }
-        }
+        // Auto-advance to next item in playlist when current video ends
+        // (honoring the item's `end:` trim). See
+        // PlaylistPlayback::tick_auto_advance.
+        playlist_playback.tick_auto_advance();
         
         // Update fade animation (UI only - no audio changes)
         if (state.is_fading && state.video_active) {
@@ -3477,52 +2887,12 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // ── Playback stall watchdog ──────────────────────────────────────
         // Catches the pipeline silently stalling while the kiosk still
-        // believes it is playing. Seen live 2026-07-29: a playlist-switch
-        // timeout restored the "playing" flags but left GStreamer PAUSED
-        // (its PulseAudio stream read `Corked: yes` against the kiosk's
-        // `is_paused = false`), position sat at 0.00 for seven hours, and
-        // nothing detected it. Logic and thresholds live in
-        // app::PlaybackStallWatchdog — see tests/app/test_playback_stall.cpp.
-        {
-            // A new stream (every load_file bumps the generation) starts at
-            // 0.0, which must not read as "frozen at 0.0" from the previous
-            // item's baseline — and its escalation count starts fresh.
-            static uint64_t watchdog_generation = 0;
-            if (player.stream_generation() != watchdog_generation) {
-                watchdog_generation = player.stream_generation();
-                playback_watchdog.reset();
-            }
-            const bool expect_playing =
-                state.video_active && controller.is_playing() &&
-                !controller.is_paused() && !state.is_loading_game &&
-                !state.showing_intro_video && !state.is_switching_playlist;
-            const double watchdog_now =
-                std::chrono::duration<double>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count();
-            const auto wd_action = playback_watchdog.update(
-                expect_playing, state.get_position(), watchdog_now);
-            if (wd_action == app::PlaybackStallWatchdog::Action::Advance &&
-                playlist_owns_pipeline()) {
-                // Repeated play() never got position moving: skip the item,
-                // counted in the same failure run as pipeline errors.
-                std::cerr << "Playback still stalled at "
-                          << state.get_position() << "s after "
-                          << app::PlaybackStallWatchdog::kMaxRecoveriesBeforeAdvance
-                          << " restarts — giving up on this item" << std::endl;
-                act_on_failed_item(
-                    playback_error_policy.on_failure(
-                        player.stream_generation(), failure_budget()),
-                    "stalled");
-            } else if (wd_action != app::PlaybackStallWatchdog::Action::None) {
-                // Recover — or Advance where there is no playlist to
-                // advance (Media Browser playback): one more restart.
-                std::cerr << "Playback stalled at " << state.get_position()
-                          << "s while reported playing — restarting playback"
-                          << std::endl;
-                controller.play();
-            }
-        }
+        // believes it is playing: restart it, or give up on the item after
+        // repeated restarts. See PlaylistPlayback::tick_stall_watchdog.
+        playlist_playback.tick_stall_watchdog(
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
 
         // Phone Remote — drain pending tap-to-seek requests each frame.
         // Cheap (single fs::exists check) when nothing is queued.
@@ -3580,7 +2950,8 @@ int main(int /* argc */, char* /* argv */[]) {
         // as the settings poke above — poll ~1 Hz, delete the marker, then
         // reload — and deliberately the same shape: a kiosk binary that
         // predates the marker just ignores the file, which is what makes
-        // the web-side change safe to ship first.
+        // the web-side change safe to ship first. The swap and every index
+        // repair live in app/playlist_reload.h.
         {
             static int playlists_reload_check = 0;
             if (++playlists_reload_check >= 60) {
@@ -3624,222 +2995,45 @@ int main(int /* argc */, char* /* argv */[]) {
                             LOG_WARN("Playlist reload requested but no playlist directory exists");
                             ui::Toast::show("Playlist reload failed - no playlist folder");
                         } else {
-                            // ── Identity snapshot, taken BEFORE the swap ──
-                            // Everything the kiosk is holding — what is
-                            // playing, where the menu cursor sits, which
-                            // game list is open — is an INDEX into the
-                            // vectors about to be replaced, and importing
-                            // one playlist renumbers every playlist after
-                            // it. So re-find things by identity, not index.
-                            auto playlist_id = [](const Playlist& p) {
-                                // path is the playlist's file on disk and is
-                                // unique; only the virtual Master Shuffle
-                                // row has none.
-                                return p.path.empty() ? ("title:" + p.title)
-                                                      : ("path:" + p.path);
-                            };
-                            auto find_playlist = [&](const std::vector<Playlist>& v,
-                                                     const std::string& id) {
-                                for (size_t i = 0; i < v.size(); ++i) {
-                                    if (playlist_id(v[i]) == id) {
-                                        return static_cast<int>(i);
-                                    }
-                                }
-                                return -1;
-                            };
+                            // Identity snapshot, taken BEFORE the swap:
+                            // what is playing, the menu cursor, and the open
+                            // game list are all indexes into the vectors
+                            // about to be replaced.
+                            const bool game_list_open =
+                                settings_menu.is_game_browser_active() &&
+                                settings_menu.is_viewing_games_in_playlist();
+                            const app::PlaylistReloadSnapshot reload_snap =
+                                app::snapshot_for_reload(
+                                    state, game_list_open
+                                               ? settings_menu.get_current_game_playlist_index()
+                                               : -1);
 
-                            std::string playing_id;
-                            std::string playing_item_path;
-                            std::string playing_item_title;
-                            if (state.current_playlist_index >= 0 &&
-                                state.current_playlist_index <
-                                    static_cast<int>(state.playlists.size())) {
-                                const auto& old_pl =
-                                    state.playlists[state.current_playlist_index];
-                                playing_id = playlist_id(old_pl);
-                                if (state.current_item_index >= 0 &&
-                                    state.current_item_index <
-                                        static_cast<int>(old_pl.items.size())) {
-                                    playing_item_path =
-                                        old_pl.items[state.current_item_index].path;
-                                    playing_item_title =
-                                        old_pl.items[state.current_item_index].title;
-                                }
-                            }
-                            std::string selected_id;
-                            if (state.selected_index >= 0 &&
-                                state.selected_index <
-                                    static_cast<int>(state.playlists.size())) {
-                                selected_id = playlist_id(state.playlists[state.selected_index]);
-                            }
-                            std::string open_game_id;
-                            if (settings_menu.is_game_browser_active() &&
-                                settings_menu.is_viewing_games_in_playlist()) {
-                                const int open_idx =
-                                    settings_menu.get_current_game_playlist_index();
-                                if (open_idx >= 0 &&
-                                    open_idx < static_cast<int>(game_playlists.size())) {
-                                    open_game_id = playlist_id(game_playlists[open_idx]);
-                                }
-                            }
-
-                            // ── The boot sequence, re-run ────────────────
-                            // load -> platform filter -> UI split -> Master
-                            // Shuffle row, through the same lambda boot uses.
-                            auto reloaded = split_for_ui_with_master_shuffle(
-                                PlaylistLoader::filter_for_platform(
-                                    PlaylistLoader::load_playlists(playlist_directory),
-                                    state.platform_profile));
-                            state.playlists = std::move(reloaded.video);
-                            // game_playlists is a REFERENCE to this member:
-                            // the Settings browser's ROM launch and the
-                            // renderer read the same vector, so they cannot
-                            // disagree about which ROM row 3 is.
-                            state.game_playlists = std::move(reloaded.games);
-
-                            // Both shuffle queues and the master-shuffle
-                            // history are (playlist, item) coordinates into
-                            // the vectors just replaced. Keeping them would
-                            // play files nobody picked; they regenerate
-                            // lazily on the next advance.
-                            state.shuffle_queue.clear();
-                            state.shuffle_queue_position = 0;
-                            state.shuffle_queue_playlist_id = -1;
-                            state.master_shuffle_queue.clear();
-                            state.master_shuffle_queue_position = 0;
-                            state.shuffle_history.clear();
-
-                            // ── Playback is never interrupted, only re-anchored ──
-                            // Explicit decision: whatever is on screen keeps
-                            // playing to its natural end. Only the
-                            // coordinates describing what comes NEXT are
-                            // repaired.
-                            if (!playing_id.empty()) {
-                                const int new_pl = find_playlist(state.playlists, playing_id);
-                                if (new_pl >= 0) {
-                                    state.current_playlist_index = new_pl;
-                                    const auto& pl = state.playlists[new_pl];
-                                    int new_item = -1;
-                                    for (size_t i = 0; i < pl.items.size(); ++i) {
-                                        if (pl.items[i].path == playing_item_path &&
-                                            pl.items[i].title == playing_item_title) {
-                                            new_item = static_cast<int>(i);
-                                            break;
-                                        }
-                                    }
-                                    if (new_item >= 0) {
-                                        state.current_item_index = new_item;
-                                    } else if (!pl.items.empty()) {
-                                        // The playing item was edited out.
-                                        // Keep advancing inside the playlist
-                                        // the operator chose; just clamp.
-                                        if (state.current_item_index < 0) {
-                                            state.current_item_index = 0;
-                                        }
-                                        if (state.current_item_index >=
-                                            static_cast<int>(pl.items.size())) {
-                                            state.current_item_index =
-                                                static_cast<int>(pl.items.size()) - 1;
-                                        }
-                                    } else {
-                                        state.current_item_index = -1;
-                                    }
-                                } else if (state.master_shuffle_active &&
-                                           state.playlists.size() > 1) {
-                                    // Master Shuffle's SOURCE playlist is
-                                    // gone but the pool is not empty. Park on
-                                    // row 0 — the virtual Master Shuffle
-                                    // entry, always present — so auto-advance
-                                    // and NEXT still fire; both call
-                                    // play_random_global_video(), which
-                                    // re-picks from the new pool and
-                                    // overwrites these coordinates. Row 0 is
-                                    // also the correct "now playing"
-                                    // highlight while Master Shuffle runs.
-                                    state.current_playlist_index = 0;
-                                    state.current_item_index = 0;
-                                } else {
-                                    // Either the playlist that owned this
-                                    // video is gone, or Master Shuffle has no
-                                    // pool left (size() <= 1 means only the
-                                    // virtual row survived).
-                                    //
-                                    // Both must STOP, not merely unset the
-                                    // index. Leaving video_active true parks
-                                    // the TV on the last decoded frame with
-                                    // no UI, recoverable only by an operator
-                                    // guessing to press SELECT. And an empty
-                                    // Master Shuffle pool is worse: EOS calls
-                                    // play_random_global_video() every frame,
-                                    // which early-returns without clearing
-                                    // playback_started_, so it re-fires at
-                                    // frame rate and floods stderr until the
-                                    // box is power-cycled.
-                                    state.master_shuffle_active = false;
-                                    controller.stop();
-                                    app::stop_to_menu(state);
-                                }
-
-                                // The auto-advance guard is an item index
-                                // into the OLD playlist too. If a remap
-                                // happens to land current_item_index on that
-                                // stale value, can_advance stays false and
-                                // the video ends with nothing following it.
-                                // Clearing it is what the loop does anyway
-                                // one frame into the next item.
-                                state.last_advanced_item_index = -1;
-                                state.last_advanced_duration = 0.0;
-                            }
-
-                            // ── Main-menu cursor follows its playlist ────
-                            int new_sel = selected_id.empty()
-                                              ? -1
-                                              : find_playlist(state.playlists, selected_id);
-                            if (new_sel < 0) new_sel = state.selected_index;
-                            if (new_sel >= static_cast<int>(state.playlists.size())) {
-                                new_sel = static_cast<int>(state.playlists.size()) - 1;
-                            }
-                            if (new_sel < 0) new_sel = 0;
-                            state.selected_index = new_sel;
-                            {
-                                const int max_visible = std::max(1, state.playlist_max_visible);
-                                int max_scroll =
-                                    static_cast<int>(state.playlists.size()) - max_visible;
-                                if (max_scroll < 0) max_scroll = 0;
-                                if (state.selected_index < state.playlist_scroll_offset) {
-                                    state.playlist_scroll_offset = state.selected_index;
-                                }
-                                if (state.selected_index >=
-                                    state.playlist_scroll_offset + max_visible) {
-                                    state.playlist_scroll_offset =
-                                        state.selected_index - max_visible + 1;
-                                }
-                                if (state.playlist_scroll_offset > max_scroll) {
-                                    state.playlist_scroll_offset = max_scroll;
-                                }
-                                if (state.playlist_scroll_offset < 0) {
-                                    state.playlist_scroll_offset = 0;
-                                }
-                            }
+                            // The boot sequence, re-run: load -> platform
+                            // filter -> UI split -> Master Shuffle row,
+                            // through the same function boot uses. Playback
+                            // is re-anchored, never interrupted — unless its
+                            // playlist is gone (then controller.stop() +
+                            // stop_to_menu).
+                            app::apply_reloaded_playlists(
+                                state,
+                                app::split_for_ui_with_master_shuffle(
+                                    PlaylistLoader::filter_for_platform(
+                                        PlaylistLoader::load_playlists(playlist_directory),
+                                        state.platform_profile)),
+                                reload_snap,
+                                [&controller]() { controller.stop(); });
 
                             // ── Settings game browser ────────────────────
                             if (settings_menu.is_game_browser_active()) {
                                 if (settings_menu.is_viewing_games_in_playlist()) {
-                                    const int gi =
-                                        open_game_id.empty()
-                                            ? -1
-                                            : find_playlist(game_playlists, open_game_id);
-                                    if (gi < 0) {
-                                        // The open game playlist is gone.
-                                        // Back out to the list: at item
-                                        // level the only exit ("Back") is
-                                        // bounds-checked against that
-                                        // playlist, so a dead index would
-                                        // trap the operator on a screen with
-                                        // no way out but a power cycle.
+                                    const app::OpenGameListRemap remap =
+                                        app::remap_open_game_list(
+                                            game_playlists, reload_snap.open_game_id,
+                                            settings_menu.get_current_game_playlist_index());
+                                    if (remap.action == app::OpenGameListRemap::Action::Exit) {
                                         settings_menu.exit_game_list();
-                                    } else if (gi != settings_menu.get_current_game_playlist_index()) {
-                                        settings_menu.enter_game_list(gi);
+                                    } else if (remap.action == app::OpenGameListRemap::Action::Enter) {
+                                        settings_menu.enter_game_list(remap.index);
                                     }
                                 }
                                 // navigate(0, ...) re-clamps both game
@@ -3847,13 +3041,9 @@ int main(int /* argc */, char* /* argv */[]) {
                                 // moving them.
                                 int games_in_current = 0;
                                 if (settings_menu.is_viewing_games_in_playlist()) {
-                                    const int gi =
-                                        settings_menu.get_current_game_playlist_index();
-                                    if (gi >= 0 &&
-                                        gi < static_cast<int>(game_playlists.size())) {
-                                        games_in_current =
-                                            static_cast<int>(game_playlists[gi].items.size());
-                                    }
+                                    games_in_current = app::games_in_game_playlist(
+                                        game_playlists,
+                                        settings_menu.get_current_game_playlist_index());
                                 }
                                 settings_menu.navigate(
                                     0, static_cast<int>(game_playlists.size()),
