@@ -330,6 +330,10 @@ if(BUILD_KIOSK)
             # hand-off table (ui/mb_transition.h) is header-only and
             # unit-tested in test_media_browser_unit.
             src/media_browser/mb_host.cpp
+            # Service-client setup (Radarr/Sonarr/TMDB/Prowlarr/qBit, the VPN
+            # monitor start, the qBit alt-limit bootstrap). Renderer-free, so
+            # it is ALSO in MEDIA_BROWSER_TEST_SOURCES and unit-tested.
+            src/media_browser/mb_services.cpp
         )
         # libcurl is required by radarr_client.cpp.
         pkg_check_modules(CURL REQUIRED libcurl)
@@ -575,9 +579,17 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_browse_view.cpp
         tests/media_browser/test_queue_view.cpp
         tests/media_browser/test_playback_view.cpp
+        tests/media_browser/test_mb_services.cpp
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
+        # main()'s service-client setup (also in KIOSK_MEDIA_BROWSER_SOURCES).
+        # Test-list only, like vpn_health_monitor.cpp which it starts: the
+        # test_media_browser CLI links MEDIA_BROWSER_SOURCES without the
+        # monitor. Needs the services/.env reader, which the kiosk gets from
+        # UTILS_SOURCES.
+        src/media_browser/mb_services.cpp
+        src/utils/services_env.cpp
         # Renderer-free, jsoncpp-only mapping of the four per-mode filter sets
         # to/from settings.json. Lives in APP_SOURCES for the kiosk; listed
         # here so the legacy-key migration is unit-tested (BUILD_KIOSK=OFF

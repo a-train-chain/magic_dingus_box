@@ -27,9 +27,7 @@
 #include "media_browser/prowlarr/prowlarr_client.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
-#include "media_browser/radarr/radarr_mock.h"
 #include "media_browser/sonarr/sonarr_client.h"
-#include "media_browser/sonarr/sonarr_mock.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/playback_screen.h"
 #include "media_browser/health/vpn_health_monitor.h"
@@ -37,6 +35,7 @@
 #include "media_browser/library/watch_store.h"
 #include "media_browser/mb_entry_gate.h"
 #include "media_browser/mb_host.h"
+#include "media_browser/mb_services.h"
 #endif
 #include "app/app_state.h"
 #include "app/game_quiet_mode.h"
@@ -531,30 +530,13 @@ int main(int /* argc */, char* /* argv */[]) {
     }
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // Layer 3 monitor — only meaningful when Layers 1+2 already pass.
-    // Otherwise the Settings menu won't expose MB anyway, so save the
-    // background polling work. Lifetime: declared here at function scope
-    // so its destructor stops the worker thread cleanly on main() exit.
-    std::unique_ptr<media_browser::VpnHealthMonitor> vpn_health_monitor;
-    if (state.media_browser_unlocked && state.media_browser_vpn_configured) {
-        vpn_health_monitor = std::make_unique<media_browser::VpnHealthMonitor>(state);
-        vpn_health_monitor->start();
-
-        // Startup safety: call playback_services_pause.sh unpause to bring
-        // any stopped MB containers back up. This is the recovery path for
-        // "PlaybackScreen::leave() didn't run cleanly" cases — e.g. kiosk
-        // crashed mid-playback or was SIGABRT'd by systemd watchdog. With
-        // the docker-stop pause behavior, missed leave() = stranded
-        // containers (Docker's restart=unless-stopped doesn't auto-start
-        // manually-stopped containers). Without this safety: Movies entry
-        // silently vanishes on next boot. unpause is idempotent — no-op
-        // for already-running containers, starts stopped ones. Backgrounded
-        // (& at end) so the ~1-2 s docker start doesn't block the kiosk
-        // entering its main loop.
-        std::system(
-            "/usr/local/bin/playback_services_pause.sh unpause "
-            ">/dev/null 2>&1 &");
-    }
+    // Layer 3 monitor (started only when Layers 1+2 already pass) plus the
+    // backgrounded container-unpause startup safety net — see
+    // media_browser::start_vpn_health_monitor. Lifetime: declared here at
+    // function scope so its destructor stops the worker thread cleanly on
+    // main() exit.
+    std::unique_ptr<media_browser::VpnHealthMonitor> vpn_health_monitor =
+        media_browser::start_vpn_health_monitor(state);
 #endif
 
     // Load available bezels from bezels.json using JsonCpp
@@ -655,256 +637,16 @@ int main(int /* argc */, char* /* argv */[]) {
 #ifdef MEDIA_BROWSER_ENABLED
     // Task 17: service clients for the Media Browser (the screens and
     // their dispatcher live in MediaBrowserHost, constructed below).
-    //
-    // Radarr client is the real HTTP client when we can find an API key:
-    //   1. MDB_RADARR_API_KEY env var (preferred — explicit kiosk config)
-    //   2. RADARR_API_KEY env var (systemd EnvironmentFile of services/.env)
-    //   3. Parse /opt/magic_dingus_box/services/.env directly (fallback
-    //      for when systemd env propagation isn't set up)
-    // Otherwise we fall back to RadarrMockClient for dev machines.
-    // (Step 3 for every client below goes through utils::read_env_value —
-    // see utils/services_env.h for the quoting rules.)
+    // Radarr / Sonarr / TMDB / Prowlarr / qBittorrent, in that order, with
+    // the mock fallbacks for a box without keys — see
+    // media_browser/mb_services.h for the key chains and path prefixes.
+    media_browser::MbServiceClients mb_clients =
+        media_browser::make_service_clients();
 
-    std::unique_ptr<media_browser::RadarrClient> radarr_owned;
-    std::string radarr_key;
-    if (const char* rk = std::getenv("MDB_RADARR_API_KEY"); rk && *rk) radarr_key = rk;
-    else if (const char* rk2 = std::getenv("RADARR_API_KEY"); rk2 && *rk2) radarr_key = rk2;
-    else radarr_key = utils::read_env_value(utils::kServicesEnvPath, "RADARR_API_KEY");
-
-    if (!radarr_key.empty()) {
-        media_browser::RadarrClient::Config radarr_cfg;
-        if (const char* base = std::getenv("MDB_RADARR_BASE_URL"); base && *base) {
-            radarr_cfg.base_url = base;
-        }
-        radarr_cfg.api_key = radarr_key;
-        // Path-translation overrides: redirect /library/* between the Radarr
-        // container's view and the host's actual mount point. Default in
-        // radarr_cfg works for the standard /mnt/ssd setup; the env vars
-        // exist so STORAGE_ROOT can change without a kiosk recompile. The
-        // download/incomplete tree is not exposed via Radarr's API to the
-        // kiosk, so it doesn't need translation here. normalize_prefix
-        // ensures both prefixes end with '/' to avoid /library2/foo
-        // falsely matching /library.
-        if (const char* p = std::getenv("MDB_CONTAINER_LIBRARY_PREFIX"); p && *p) {
-            radarr_cfg.container_library_prefix =
-                media_browser::RadarrClient::normalize_prefix(p);
-            std::cout << "[media_browser] container_library_prefix override: "
-                      << radarr_cfg.container_library_prefix << std::endl;
-        }
-        if (const char* p = std::getenv("MDB_HOST_LIBRARY_PREFIX"); p && *p) {
-            radarr_cfg.host_library_prefix =
-                media_browser::RadarrClient::normalize_prefix(p);
-            std::cout << "[media_browser] host_library_prefix override: "
-                      << radarr_cfg.host_library_prefix << std::endl;
-        }
-        std::string base_url_for_log = radarr_cfg.base_url;
-        radarr_owned = std::make_unique<media_browser::RadarrClient>(std::move(radarr_cfg));
-        std::cout << "[media_browser] Using real RadarrClient (base_url="
-                  << base_url_for_log << ")" << std::endl;
-    } else {
-        radarr_owned = std::make_unique<media_browser::RadarrMockClient>();
-        std::cout << "[media_browser] No Radarr API key found — using RadarrMockClient" << std::endl;
-    }
-    media_browser::RadarrClient& radarr = *radarr_owned;
-
-    // Sonarr client (Phase 2b). Same three-stage key chain as Radarr above:
-    //   1. MDB_SONARR_API_KEY env var (explicit kiosk config)
-    //   2. SONARR_API_KEY env var (systemd EnvironmentFile of services/.env)
-    //   3. Parse /opt/magic_dingus_box/services/.env directly
-    // setup_services.sh writes SONARR_API_KEY into that .env after Sonarr's
-    // first container start; a box provisioned before the Sonarr stack landed
-    // simply has no line and falls through to the mock.
-    std::unique_ptr<media_browser::SonarrClient> sonarr_owned;
-    std::string sonarr_key;
-    if (const char* sk = std::getenv("MDB_SONARR_API_KEY"); sk && *sk) sonarr_key = sk;
-    else if (const char* sk2 = std::getenv("SONARR_API_KEY"); sk2 && *sk2) sonarr_key = sk2;
-    else sonarr_key = utils::read_env_value(utils::kServicesEnvPath, "SONARR_API_KEY");
-
-    if (!sonarr_key.empty()) {
-        media_browser::SonarrClient::Config sonarr_cfg;
-        if (const char* base = std::getenv("MDB_SONARR_BASE_URL"); base && *base) {
-            sonarr_cfg.base_url = base;
-        }
-        sonarr_cfg.api_key = sonarr_key;
-        // TV path prefixes, resolved in three tiers.
-        //
-        // The TV subtree is /data/library/tv ↔ /mnt/ssd/library/tv — one level
-        // below the movie library root — so it cannot simply reuse the Radarr
-        // vars (every TV path would translate one directory too high). But it
-        // must not ignore them either: MDB_HOST_LIBRARY_PREFIX exists so
-        // STORAGE_ROOT can move without a recompile, and a box where the
-        // operator points movies at /mnt/nvme/library/ while Sonarr keeps a
-        // compiled-in /mnt/ssd/library/tv/ would hand GStreamer an
-        // unresolvable container path — with nothing but a spdlog::warn to say
-        // so, and none of the legacy-alternate fallbacks the Radarr resolver
-        // has. Nothing in provisioning writes MDB_*_TV_PREFIX, so deriving
-        // from the parent is what actually fires in the field.
-        //
-        // Order: explicit TV var → parent movie var + "tv" → compiled default.
-        auto tv_prefix = [](const char* tv_var, const char* parent_var,
-                            const std::string& compiled_default) -> std::string {
-            if (const char* p = std::getenv(tv_var); p && *p) {
-                return media_browser::SonarrClient::normalize_prefix(p);
-            }
-            if (const char* p = std::getenv(parent_var); p && *p) {
-                return media_browser::SonarrClient::normalize_prefix(
-                    media_browser::SonarrClient::normalize_prefix(p) + "tv");
-            }
-            return compiled_default;
-        };
-        sonarr_cfg.container_library_prefix =
-            tv_prefix("MDB_CONTAINER_TV_PREFIX", "MDB_CONTAINER_LIBRARY_PREFIX",
-                      sonarr_cfg.container_library_prefix);
-        sonarr_cfg.host_library_prefix =
-            tv_prefix("MDB_HOST_TV_PREFIX", "MDB_HOST_LIBRARY_PREFIX",
-                      sonarr_cfg.host_library_prefix);
-        std::cout << "[media_browser] sonarr tv prefixes: "
-                  << sonarr_cfg.container_library_prefix << " -> "
-                  << sonarr_cfg.host_library_prefix << std::endl;
-        std::string sonarr_url_for_log = sonarr_cfg.base_url;
-        sonarr_owned = std::make_unique<media_browser::SonarrClient>(std::move(sonarr_cfg));
-        std::cout << "[media_browser] Using real SonarrClient (base_url="
-                  << sonarr_url_for_log << ")" << std::endl;
-    } else {
-        sonarr_owned = std::make_unique<media_browser::SonarrMockClient>();
-        std::cout << "[media_browser] No Sonarr API key found — using SonarrMockClient"
-                  << std::endl;
-    }
-    media_browser::SonarrClient& sonarr = *sonarr_owned;
-    // Consumed by BrowseScreen (Phase 2c-1): the TV library feeds the
-    // in-library hide and the For You seed sample in TV mode.
-
-    // TMDB client — Phase A: Discover endpoints for Browse categories.
-    // Radarr still handles library/add/queue; TMDB only drives discovery.
-    std::string tmdb_key;
-    if (const char* k = std::getenv("MDB_TMDB_API_KEY"); k && *k) {
-        tmdb_key = k;
-    } else if (const char* home = std::getenv("HOME"); home) {
-        std::ifstream kf(std::string(home) + "/.config/magic_dingus_box/tmdb_api_key");
-        if (kf) std::getline(kf, tmdb_key);
-        while (!tmdb_key.empty() &&
-               (tmdb_key.back() == '\n' || tmdb_key.back() == '\r' ||
-                tmdb_key.back() == ' ')) {
-            tmdb_key.pop_back();
-        }
-    }
-    if (tmdb_key.empty()) {
-        std::cout << "[media_browser] WARN: No TMDB API key (MDB_TMDB_API_KEY or "
-                     "~/.config/magic_dingus_box/tmdb_api_key). Browse categories "
-                     "will be empty until a key is configured." << std::endl;
-    } else {
-        std::cout << "[media_browser] TMDB API key loaded (len=" << tmdb_key.size() << ")"
-                  << std::endl;
-    }
-    auto tmdb = std::make_unique<media_browser::TmdbClient>(tmdb_key);
-
-    // Optional Prowlarr client for the AVAILABILITY readout on Detail.
-    // Same key lookup chain as Radarr above:
-    //   1. MDB_PROWLARR_API_KEY env var
-    //   2. PROWLARR_API_KEY env var (systemd EnvironmentFile)
-    //   3. Parse /opt/magic_dingus_box/services/.env directly
-    // Falls back to nullptr (readout suppressed) if no key is found.
-    std::unique_ptr<media_browser::ProwlarrClient> prowlarr_owned;
-    {
-        std::string prowlarr_key;
-        if (const char* k = std::getenv("MDB_PROWLARR_API_KEY"); k && *k) {
-            prowlarr_key = k;
-        } else if (const char* k2 = std::getenv("PROWLARR_API_KEY"); k2 && *k2) {
-            prowlarr_key = k2;
-        } else {
-            prowlarr_key = utils::read_env_value(
-                utils::kServicesEnvPath, "PROWLARR_API_KEY");
-        }
-
-        if (!prowlarr_key.empty()) {
-            media_browser::ProwlarrClient::Config pcfg;
-            pcfg.api_key = prowlarr_key;
-            if (const char* base = std::getenv("MDB_PROWLARR_BASE_URL");
-                base && *base) {
-                pcfg.base_url = base;
-            }
-            prowlarr_owned = std::make_unique<media_browser::ProwlarrClient>(
-                std::move(pcfg));
-            std::cout << "[media_browser] Prowlarr client enabled "
-                      << "(base_url=" << "http://localhost:9696" << ", "
-                      << "key_len=" << prowlarr_key.size() << ")"
-                      << std::endl;
-        } else {
-            std::cout << "[media_browser] Prowlarr client disabled "
-                      << "(no PROWLARR_API_KEY found; AVAILABILITY readout "
-                      << "on Detail will be suppressed)" << std::endl;
-        }
-    }
-
-    // qBittorrent client — used by QueueScreen to overlay live
-    // download progress over Radarr's stale-cached queue snapshot.
-    // qBit always runs on localhost:8080 in our docker-compose setup;
-    // credentials come from MDB_QBIT_USER / MDB_QBIT_PASS env vars,
-    // or fall back to the docker-compose default (admin/adminadmin).
-    auto qbit_owned = std::make_unique<media_browser::QbittorrentClient>(
-        []() {
-            media_browser::QbittorrentClient::Config cfg;
-            if (const char* u = std::getenv("MDB_QBIT_USER"); u && *u) {
-                cfg.username = u;
-            }
-            if (const char* p = std::getenv("MDB_QBIT_PASS"); p && *p) {
-                cfg.password = p;
-            }
-            if (const char* url = std::getenv("MDB_QBIT_BASE_URL");
-                url && *url) {
-                cfg.base_url = url;
-            }
-            return cfg;
-        }());
-    std::cout << "[media_browser] qBittorrent client enabled "
-              << "(base_url=http://localhost:8080)" << std::endl;
-
-    // Trickle-limit bootstrap (movie playback contention guard, Pi 5).
-    // Two one-shot, best-effort calls — qBit may well be down this early
-    // in boot (the Docker stack races kiosk startup), so a failure is
-    // informational only and must never block the kiosk coming up.
-    //
-    // (a) Converge the alternative-limit rates: 2 MiB/s down (leaves the
-    //     swarm progressing through a 2h movie without contending with
-    //     GStreamer's reads), 8 KiB/s up — effectively OFF. Seeding is
-    //     the expensive direction during playback: serving strangers'
-    //     piece requests is random reads over the whole library, and
-    //     with no free RAM for page cache it measured 8x amplified
-    //     (122 GB read to upload 18 GB, 2026-08-11) on the same SSD the
-    //     movie streams from. Downloads the user is waiting on are
-    //     cheap sequential writes; those stay at 2 MiB/s.
-    //     Written every boot so shipped boxes converge on retuned rates
-    //     via OTA without anyone touching the qBit WebUI.
-    // (b) CRASH RECOVERY: unconditionally clear the alt-limits cap. Only
-    //     PlaybackScreen sets it (Pi 5 movie playback), and its leave()
-    //     clears it — but a kiosk crash/power-cut mid-movie would leave
-    //     every future download silently capped at trickle speed with
-    //     nothing in any UI to explain why. The wrapper is idempotent
-    //     (read-then-toggle), so the ordinary clean boot is a no-op read.
-    // Gated on the provisioning marker like GameQuietMode below, so
-    // unprovisioned Pis and dev machines do exactly nothing (no qBit
-    // failure lines on every boot). Provisioned boxes still clear
-    // unconditionally — board-agnostic, since a leftover cap is
-    // qBit-side state that can travel with a cloned image or SSD.
-    if (std::filesystem::exists("/opt/magic_dingus_box/services/.env")) {
-        // 2 MiB/s down / 8 KiB/s up, IN BYTES (see the client header:
-        // qBit 5's preference field is bytes/s despite docs claiming
-        // KiB — the KiB assumption strangled downloads to 1.5 KB/s).
-        // Upload deliberately near-zero, not zero: 0 means UNLIMITED to
-        // qBit, and a token allowance keeps peer connections from
-        // erroring out mid-handshake.
-        if (!qbit_owned->configure_alt_speed_limits(
-                /*dl_bytes_s=*/2 * 1024 * 1024,
-                /*up_bytes_s=*/8 * 1024)) {
-            std::cout << "[media_browser] qbit alt-limit rate config failed "
-                         "(best-effort; qBit may not be up yet)" << std::endl;
-        }
-        if (!qbit_owned->set_alt_speed_limits_enabled(false)) {
-            std::cout << "[media_browser] qbit alt-limit crash-recovery "
-                         "clear failed (best-effort; qBit may not be up yet)"
-                      << std::endl;
-        }
-    }
+    // Trickle-limit bootstrap: converge qBit's alt-limit rates and clear a
+    // crash-stranded cap. Best-effort, gated on the provisioning marker.
+    media_browser::bootstrap_qbit_alt_limits(*mb_clients.qbit,
+                                             utils::kServicesEnvPath);
 
     // Torrents the kiosk paused (movie FullPause / game quiet mode) and
     // never resumed — kiosk crashed, was stopped mid-movie, or an OTA
@@ -915,7 +657,7 @@ int main(int /* argc */, char* /* argv */[]) {
         config::get_data_path() + "/qbit_paused_by_kiosk";
     std::function<bool()> qbit_pause_all;
     std::function<bool()> qbit_resume_all;
-    if (auto* qbit = qbit_owned.get(); qbit != nullptr) {
+    if (auto* qbit = mb_clients.qbit.get(); qbit != nullptr) {
         qbit_pause_all = [qbit]() { return qbit->pause_all(); };
         qbit_resume_all = [qbit]() { return qbit->resume_all(); };
     }
@@ -954,7 +696,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // thread (WatchdogSec=10). See app/movie_quiet_mode.h.
     app::MovieQuietMode movie_quiet_mode(
         media_browser::ui::PlaybackScreen::make_quiet_actions(
-            qbit_owned.get(),
+            mb_clients.qbit.get(),
             /*barrier=*/[&game_quiet_mode]() {
                 (void)game_quiet_mode.wait_until_idle_for(
                     std::chrono::seconds(20));
@@ -988,17 +730,17 @@ int main(int /* argc */, char* /* argv */[]) {
     // owned here and is borrowed by reference; declared after all of it,
     // so the host never outlives what it points at.
     //
-    // sonarr_configured = !sonarr_key.empty() is exactly the
-    // fallback-to-SonarrMockClient condition above — the screens must not
+    // sonarr_configured is exactly the fallback-to-SonarrMockClient
+    // condition (media_browser/mb_services.h) — the screens must not
     // present the mock's fixtures as real TV on a box that never had
     // Sonarr set up.
     media_browser::MediaBrowserHost mb_host(media_browser::MediaBrowserHost::Deps{
-        radarr,
-        sonarr,
-        /*sonarr_configured=*/!sonarr_key.empty(),
-        *tmdb,
-        prowlarr_owned.get(),
-        *qbit_owned,
+        *mb_clients.radarr,
+        *mb_clients.sonarr,
+        /*sonarr_configured=*/mb_clients.sonarr_configured,
+        *mb_clients.tmdb,
+        mb_clients.prowlarr.get(),
+        *mb_clients.qbit,
         watch_store,
         movie_quiet_mode,
         controller,
