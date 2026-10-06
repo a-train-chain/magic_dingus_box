@@ -863,6 +863,30 @@ RetroArch accepts for player 1, so every per-core controller mapping
 landed on a port with no pad — `controller_detector.cpp` now skips it
 during port assignment while keeping it as a UI input).
 
+**One WireGuard key per box — the source's key must never run on a unit**
+(2026-10). Two VPN clients on one key knock each other off ProtonVPN in
+bursts, on both boxes, invisibly. Units inherit the source's key through
+`services/.env` (the 2026-08-04 image's first boot died before its wipe)
+AND through Docker's `config.v2.json`, from which `restart: unless-stopped`
+starts gluetun with or without `.env`. `scripts/golden_image/source_secrets_lib.sh`
+holds the defence: `first_boot.sh` Step 1c deletes `.env` and removes every
+inherited container right after the identity reset (before the Step 2 expand;
+never fatal — `docker rm -f` when dockerd is up, the container's state dir
+when it is down); `prepare_for_cloning.sh` Step 2a records salted
+fingerprints (never values) of every secret-named `.env` value + the Flask
+secret into `/etc/magic-dingus/source_secret_fingerprints` in the image, and
+its leak check refuses a leftover `config.v2.json`; `verify_box.sh` FAILs a
+unit whose `.env` or any container (running or stopped) holds one. The SOURCE
+never flags itself: `restore_after_cloning.sh` deletes the file there, and
+the file carries a salted hash of the source BOARD's SoC serial
+(`/proc/device-tree/serial-number`, which no dd copies) that `verify_box.sh`
+recognises. Secret-ness is by key NAME (`MDB_FP_SECRET_KEY_RE`), so a new
+credential is covered automatically — but a key whose value is legitimately
+identical on every box must never match that regex, or every clean unit
+fails. Old units / images: CLONING.md "One VPN key per box"
+(`source_secrets_lib.sh record -` piped to a unit;
+`scan_image_for_secrets.sh --vpn-key`).
+
 ### Live SD cloning
 
 `scripts/golden_image/clone_live_sd.sh` clones a running Pi's SD card to a `.img.gz` over SSH without removing the SD physically. Three Pi-side scripts (`prepare_for_cloning.sh`, `restore_after_cloning.sh`, `first_boot.sh` Step 6) handle prepare/restore + per-Pi state cleanup on the cloned image. Source Pi loses no data; total downtime ~1 minute. See `scripts/golden_image/CLONING.md` for full operator workflow.

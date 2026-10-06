@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **A box cloned from another can no longer quietly share its VPN
+  connection.** Two boxes using the same VPN key knock each other off the
+  VPN, over and over, and nothing on either box says why — Movies
+  downloads stall and searches fail in bursts. A new box used to be able
+  to start up holding the original box's VPN key (the very first batch did,
+  because their first-start setup stopped early). Now a new box throws that
+  key away — and the background services that carried a copy of it — as
+  the very first thing it does, even if the rest of its first start runs
+  into trouble. The box health check in the Content Manager also now fails,
+  with plain instructions, on any box still using another box's VPN key or
+  passwords; the original box itself is never flagged. No secret is ever
+  shown or stored to do this — only one-way fingerprints of it.
+
 ### Changed
 - **Updates that need to build on the box no longer leave the TV dark for
   ten minutes.** Most updates install a ready-made program in seconds, but

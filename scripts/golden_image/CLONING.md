@@ -88,6 +88,10 @@ ControlMaster + ControlPersist). Seven steps:
      `/var/lib/magic-dingus-box/cloning_backup/` (these need to differ
      on each clone, so we remove them from disk for the dd, then put
      them back during restore)
+   - Records salted **fingerprints** (never values) of the box's per-box
+     secrets — the WireGuard private key above all — into
+     `/etc/magic-dingus/source_secret_fingerprints`, which ships in the
+     image (see "One VPN key per box" below)
    - Stashes every secret-bearing file to the movie drive
      (`/mnt/ssd/.mdb-secret-stash`, root-owned 0700: copy all, flush,
      verify byte-for-byte, and only then zero + unlink the originals) and
@@ -107,6 +111,8 @@ ControlMaster + ControlPersist). Seven steps:
    - Restores `device_info.json` + `/etc/hostname` + `/etc/hosts` from
      backup, and the curated content to its exact path
    - Disables `magic-first-boot.service` (don't re-fire on source)
+   - Deletes `/etc/magic-dingus/source_secret_fingerprints` from the
+     source (only when the file names this board — a clone keeps its copy)
    - Restarts the Docker stack, Content Manager, kiosk, timers, and
      watchers
    - Removes the marker + backup files
@@ -134,6 +140,7 @@ That runs `first_boot.sh`, which does:
 |------|------|-------------------|
 | 1 | Regenerate SSH host keys | Old keys removed, `ssh-keygen -A`, sshd restarted — every unit gets its own |
 | 1b | Regenerate machine-id | New DHCP DUID so clones don't fight the source box for a lease |
+| 1c | **Revoke the source's VPN identity** | `services/.env` deleted and every inherited Docker container removed (`docker rm -f`, or straight from `/var/lib/docker/containers` when dockerd is down) — BEFORE the risky expand, and never fatal |
 | 2 | Expand root FS to fill SD | `growpart` + `resize2fs` (non-fatal on failure — the wipes below always run) |
 | 3 | Generate device identity | New UUID + new hostname `magicpi-XXXX` (hostname files first, gate record last) |
 | 4 | Create required directories | (idempotent) |
@@ -164,6 +171,92 @@ default, and its owner can capture it through the same wizard.
 > clone session), and `first_boot.sh` Step 1 regenerates them on every
 > unit. The image scanner accordingly reports host keys as
 > `expected-present`, not as a leak.
+
+## One VPN key per box (2026-10)
+
+Two VPN clients on **one WireGuard private key knock each other off the
+tunnel**: ProtonVPN keeps one peer per key, so every handshake from one
+box drops the other — in bursts, on both boxes, with nothing in either
+box's logs saying why. Every unit starts life holding the source box's
+key, three ways over:
+
+- `services/.env` (`WIREGUARD_PRIVATE_KEY`). `first_boot.sh` wipes it —
+  but on the **2026-08-04 image** first boot died at Step 2, long before
+  that wipe, so every unit flashed from it kept the key and its
+  `magic-dingus-services` brought the stack up on it.
+- Docker's own state. `/var/lib/docker/containers/*/config.v2.json`
+  embeds each container's environment, gluetun is `restart:
+  unless-stopped`, and dockerd starts such a container by itself — `.env`
+  or no `.env`. (The 2026-08-04 image carried 5 copies of the key.)
+- By hand, when a working `.env` is copied onto a unit.
+
+Three layers now close it (`source_secrets_lib.sh` holds the logic):
+
+1. **Prevent.** `first_boot.sh` Step 1c deletes `.env` and removes every
+   inherited container as the first thing after the identity reset —
+   before the expand step that once killed first boot — and a failure
+   there is logged loudly but never aborts the rest. `prepare` also
+   refuses to ship an image with any `config.v2.json` left (post-scrub
+   leak check), on top of stashing them.
+2. **Detect.** `prepare` records `sha256(salt:value)` (128 bits, random
+   salt per image) of every secret-named `.env` value and the Flask HMAC
+   secret into `/etc/magic-dingus/source_secret_fingerprints`. On any unit,
+   `verify_box.sh` **FAILs** when `services/.env` or any container (running
+   or stopped) holds one: *"this unit is using the SOURCE box's WireGuard
+   VPN key"*. No value is ever printed.
+3. **The source never flags itself.** `restore_after_cloning.sh` deletes the
+   file from the source, and the file records a salted hash of the source
+   **board's** hardware serial (`/proc/device-tree/serial-number` — burned
+   into the SoC, so no dd can copy it). `verify_box.sh` skips the comparison
+   on that board, so even a leftover copy is harmless.
+
+### Is a unit using the source's VPN key? (units cloned before 2026-10)
+
+Those units have no fingerprint file. Give them one — it carries only
+salted hashes, so piping it between boxes moves no secret:
+
+```bash
+# On the Mac. SOURCE = the box the image was made from; UNIT = the clone.
+ssh magic@SOURCE 'sudo bash /opt/magic_dingus_box/scripts/golden_image/source_secrets_lib.sh record -' \
+  | ssh magic@UNIT 'sudo mkdir -p /etc/magic-dingus && sudo tee /etc/magic-dingus/source_secret_fingerprints >/dev/null'
+ssh magic@UNIT 'sudo /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/verify_box.sh'
+```
+
+(Both boxes need a tree with `source_secrets_lib.sh` — sync or OTA first.
+The fingerprints describe the source's **current** secrets: do this before
+rotating its key, or it cannot recognise the old one.)
+A FAIL on *"WireGuard VPN key"* means that unit is fighting the source for
+the tunnel. Fix the unit: remove its stack containers (`sudo docker rm -f
+$(sudo docker ps -aq --filter name=mdb_)`), **Reset Media Browser** in its
+Content Manager, then set it up with a WireGuard config generated **for that
+unit** in the ProtonVPN dashboard (NAT-PMP on). If units are out of reach,
+fix it from the source side instead: generate a new WireGuard config for the
+SOURCE box, upload it there, and **delete the old config in the ProtonVPN
+dashboard** — that revokes the leaked key on every unit at once.
+
+### Does an old image carry the VPN key?
+
+`scan_image_for_secrets.sh` already harvests `WIREGUARD_PRIVATE_KEY` (every
+`services/.env` value outside a short non-secret list) and searches the whole
+decompressed image for it, Docker's `config.v2.json` and containerd's
+`meta.db` included. `--vpn-key` narrows the report to just that question:
+
+```bash
+./scripts/golden_image/scan_image_for_secrets.sh --image ~/golden-2026-08-04.img.gz \
+    --pi magic@SOURCE --vpn-key
+```
+
+- `LEAK: env:WIREGUARD_PRIVATE_KEY ... appears N time(s)` → every unit
+  flashed from that image started with the source's key. Audit those units
+  (above) or rotate the source's key.
+- The harvest reads the source's **current** key. Run this **before**
+  rotating; after a rotation, scan for the old key with a needles file
+  instead (`--needles FILE`, one line `env:WIREGUARD_PRIVATE_KEY<TAB>key`,
+  `chmod 600`, delete it afterwards). A box with no key makes the scan exit 2
+  ("not a pass"), never CLEAN.
+- The search is over raw bytes, so a key split across two non-adjacent ext4
+  blocks could be missed; a hit is definitive, a clean is strong evidence.
+  The live-unit check above is the authoritative one.
 
 ## Recovery if a clone goes sideways
 
