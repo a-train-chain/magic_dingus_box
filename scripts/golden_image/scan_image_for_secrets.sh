@@ -25,6 +25,11 @@
 #   --needles FILE   use a file of literal secrets instead, one per line
 #   --skip-integrity skip the gzip CRC check (faster, but a truncated image
 #                    can then report a false clean -- not recommended)
+#   --only REGEX     scan only needles whose label matches REGEX (anchored),
+#                    e.g. --only 'env:WIREGUARD_PRIVATE_KEY'
+#   --vpn-key        shorthand for --only env:WIREGUARD_PRIVATE_KEY: "does
+#                    this image carry the source box's VPN key?" -- the audit
+#                    for images made before the fingerprint gate (CLONING.md)
 #
 # Exit: 0 clean, 1 leak found, 2 could not check.
 #
@@ -36,6 +41,7 @@ PI_HOST=""
 NEEDLES=""
 CHECK_INTEGRITY=1
 EXPECT_BYTES=0
+ONLY=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,7 +50,9 @@ while [[ $# -gt 0 ]]; do
         --needles)        NEEDLES="$2"; shift 2 ;;
         --skip-integrity) CHECK_INTEGRITY=0; shift ;;
         --expect-bytes)   EXPECT_BYTES="$2"; CHECK_INTEGRITY=0; shift 2 ;;
-        -h|--help)        sed -n 's/^# \{0,1\}//;1,/^$/p' "$0" | head -32; exit 0 ;;
+        --only)           ONLY="$2"; shift 2 ;;
+        --vpn-key)        ONLY="env:WIREGUARD_PRIVATE_KEY"; shift ;;
+        -h|--help)        awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
         *)                echo "Unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -157,6 +165,25 @@ if [[ -n "$NEEDLES" && -f "$NEEDLES" ]] && LC_ALL=C grep -q $'\r' "$NEEDLES" 2>/
     [[ -n "$TMP_NEEDLES" ]] && rm -f "$TMP_NEEDLES"
     TMP_NEEDLES="$NORMALISED"
     NEEDLES="$NORMALISED"
+fi
+
+# --only / --vpn-key: keep just the needles whose SOURCE label matches. The
+# audit question for an image made before the fingerprint gate is narrow --
+# "would a unit flashed from this dial the VPN on the source's key?" -- and a
+# whole-box scan buries that one answer among every other credential.
+if [[ -n "$ONLY" ]]; then
+    FILTERED=$(mktemp "${TMPDIR:-/tmp}/mdb-needles-only.XXXXXX")
+    chmod 600 "$FILTERED"
+    awk -F'\t' -v re="^(${ONLY})$" 'NF >= 2 && $1 ~ re' "$NEEDLES" > "$FILTERED"
+    [[ -n "$TMP_NEEDLES" ]] && rm -f "$TMP_NEEDLES"
+    TMP_NEEDLES="$FILTERED"
+    NEEDLES="$FILTERED"
+    if ! grep -q . "$NEEDLES" 2>/dev/null; then
+        echo -e "  ${RED}No secret labelled '${ONLY}' to scan for.${NC} A vacuous scan is not a pass."
+        echo -e "  (Rotated already, or Media Browser never set up on the box? Scan for the"
+        echo -e "  OLD value with --needles: one line, label<TAB>value, chmod 600, then delete it.)"
+        exit 2
+    fi
 fi
 
 N_TOTAL=$(grep -c . "$NEEDLES" 2>/dev/null || echo 0)

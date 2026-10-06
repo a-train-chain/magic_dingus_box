@@ -87,6 +87,11 @@ push scripts/golden_image/restore_after_cloning.sh \
 push scripts/golden_image/clone_stash_lib.sh \
      /opt/magic_dingus_box/scripts/golden_image/clone_stash_lib.sh 644 \
      "clone_stash_lib.sh     (reboot-safe secret stash on the movie drive)"
+# Sourced by prepare (fingerprints), restore (removes them), first_boot
+# (Step 1c purge) and verify_box.sh — prepare refuses to start without it.
+push scripts/golden_image/source_secrets_lib.sh \
+     /opt/magic_dingus_box/scripts/golden_image/source_secrets_lib.sh 644 \
+     "source_secrets_lib.sh  (source VPN-key fingerprints + inherited-container purge)"
 
 echo
 echo -e "${BOLD}[2/5] Pushing service scripts${NC}"

@@ -164,6 +164,59 @@ ln -sf /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null \
 log "[1b/7] machine-id regenerated: $(cut -c1-8 /etc/machine-id 2>/dev/null)..."
 
 # ---------------------------------------------------------------------------
+# Step 1c: Revoke the source box's VPN identity — EARLY, and never fatal
+# ---------------------------------------------------------------------------
+# Two VPN clients on one WireGuard private key knock each other off the
+# tunnel. Every unit boots holding the SOURCE box's key two ways:
+#   - services/.env (WIREGUARD_PRIVATE_KEY). Step 6 wipes it too, but Step 6
+#     is far down this script: on the 2026-08-04 image first boot died at
+#     Step 2, the wipe never ran, magic-dingus-services (ConditionPathExists=
+#     .env) brought the stack up, and every such unit dialled ProtonVPN on
+#     the source's key from then on.
+#   - Docker's own container state. config.v2.json embeds each container's
+#     environment, gluetun is `restart: unless-stopped`, and dockerd starts
+#     such a container by itself whenever dockerd starts — .env or no .env.
+#
+# So both go here, before the riskiest step, as the first thing after the
+# identity regeneration. Wrapped so a failure cannot abort first boot (every
+# later wipe matters as much) — but it is logged loudly, and verify_box.sh
+# FAILs a unit still holding the key (source_secret_fingerprints).
+log "[1c/7] Revoking the source box's VPN identity (services/.env + inherited containers)..."
+SOURCE_SECRETS_LIB="$(dirname "${BASH_SOURCE[0]}")/source_secrets_lib.sh"
+
+revoke_source_vpn_identity() {
+    local rc=0 env_file="${INSTALL_DIR}/services/.env"
+    if [[ -e "$env_file" ]]; then
+        if rm -f "$env_file"; then
+            log "[1c/7] Wiped services/.env (source box's WireGuard key, API keys, qBit password)"
+        else
+            log "[1c/7] ERROR: could not remove ${env_file}"
+            rc=1
+        fi
+    fi
+    if [[ -f "$SOURCE_SECRETS_LIB" ]]; then
+        # shellcheck source=source_secrets_lib.sh
+        source "$SOURCE_SECRETS_LIB" || return 1
+        mdb_purge_inherited_containers "$MDB_SOURCE_FP_FILE" || rc=1
+    else
+        log "[1c/7] ERROR: ${SOURCE_SECRETS_LIB} missing — inherited Docker containers NOT checked"
+        rc=1
+    fi
+    return "$rc"
+}
+if revoke_source_vpn_identity; then
+    log "[1c/7] Source VPN identity revoked"
+else
+    log "[1c/7] WARNING: =============================================================="
+    log "[1c/7] WARNING: could NOT fully remove the source box's VPN identity (above)."
+    log "[1c/7] WARNING: This unit may still dial ProtonVPN on the SOURCE box's WireGuard"
+    log "[1c/7] WARNING: key, knocking both boxes off the tunnel. Remove the stack's"
+    log "[1c/7] WARNING: containers (docker rm -f \$(docker ps -aq --filter name=mdb_))"
+    log "[1c/7] WARNING: and confirm with verify_box.sh. Continuing first boot."
+    log "[1c/7] WARNING: =============================================================="
+fi
+
+# ---------------------------------------------------------------------------
 # Step 2: Expand root filesystem to fill SD card
 # ---------------------------------------------------------------------------
 log "[2/7] Expanding root filesystem..."
