@@ -110,6 +110,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/superpowers/specs/2026-10-05-update-sh-split-design.md`. No code
   moved yet.
 
+### Internal
+- `main.cpp` slimmed further (4,123 → ~3,300 lines), with no behavior
+  change: main-menu playlist playback control moved to
+  `app/playlist_playback` (behind a `PlaylistTransport` interface), the
+  playlist reload's re-anchoring to `app/playlist_reload`, and the game
+  hand-off to `app/game_handoff` (session bracketing, quiet mode, torrent
+  resume recovery) + `app/game_handoff_kiosk` (loading-plate launch,
+  post-game display restore). New Mac unit tests cover all three.
+
 ## [1.10.0] - 2026-10-04
 
 ### Security

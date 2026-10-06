@@ -183,6 +183,11 @@ set(APP_SOURCES
     src/app/audio_router.cpp
     src/app/shuffle_queue.cpp
     src/app/playlist_cursor.cpp
+    src/app/playlist_playback.cpp
+    src/app/playlist_reload.cpp
+    src/app/game_handoff.cpp
+    # GL/DRM half of the game hand-off: kiosk-only, in no test target.
+    src/app/game_handoff_kiosk.cpp
 )
 
 set(UTILS_SOURCES
@@ -687,6 +692,9 @@ if(RETROARCH_TEST_SOURCES)
         src/utils/path_resolver.cpp
         src/app/game_quiet_mode.cpp
         src/app/movie_quiet_mode.cpp
+        # main.cpp's game-session bracketing, quiet-mode actions and
+        # torrent resume recovery (app/game_handoff.h).
+        src/app/game_handoff.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/utils/config.cpp
     )
@@ -772,6 +780,11 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # (controller.cpp is in no test target).
         src/app/shuffle_queue.cpp
         src/app/playlist_cursor.cpp
+        # main.cpp's playlist playback control (SELECT/NEXT/PREV, auto-
+        # advance, failed-item skip, stall watchdog) against a fake
+        # transport, and the web-admin playlist reload's re-anchoring.
+        src/app/playlist_playback.cpp
+        src/app/playlist_reload.cpp
         # settings.json load/save against real temp files (round-trip,
         # wrong-typed quarantine). Pulls jsoncpp + spdlog, linked below.
         src/app/settings_persistence.cpp
