@@ -17,9 +17,10 @@ load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 @test "sync_qbit_password.sh pins the same alt-speed rates as the kiosk" {
     # The boot unit runs after the kiosk's own configure_alt_speed_limits
     # (2 MiB/s down, 8 KiB/s up), so any drift here silently wins on every
-    # box — it pinned 1 MiB/s up until 2026-10.
-    grep -q '/\*dl_bytes_s=\*/2 \* 1024 \* 1024' "$CPP_DIR/src/main.cpp"
-    grep -q '/\*up_bytes_s=\*/8 \* 1024)' "$CPP_DIR/src/main.cpp"
+    # box — it pinned 1 MiB/s up until 2026-10. (The kiosk call lives in
+    # media_browser/mb_services.cpp since main.cpp was slimmed.)
+    grep -q '/\*dl_bytes_s=\*/2 \* 1024 \* 1024' "$CPP_DIR/src/media_browser/mb_services.cpp"
+    grep -q '/\*up_bytes_s=\*/8 \* 1024)' "$CPP_DIR/src/media_browser/mb_services.cpp"
     grep -q '"alt_dl_limit":2097152,"alt_up_limit":8192' "$CPP_DIR/scripts/sync_qbit_password.sh"
 }
 
