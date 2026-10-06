@@ -1,71 +1,48 @@
+"""The Content Manager (web admin) Flask app: create_app() and its wiring.
+
+The routes live in the admin_*.py modules next to this file, one per area
+(see "ROUTE MODULE WIRING" below for how create_app() hands them their
+shared state); this module keeps the process-wide startup work that must run
+exactly once per serving process — secret key, status broadcaster, uinput
+virtual gamepad, upload_temp sweep — plus the storage/reload helpers and the
+maintenance-job launcher the route modules share.
+"""
 from __future__ import annotations
 
-import collections
-import io
-import ipaddress
+# socket, subprocess, tempfile and zipfile are not used below any more, but
+# the test suite patches stdlib functions THROUGH this module
+# (admin.socket.gethostname, admin.subprocess.run, admin.tempfile.mkstemp,
+# admin.zipfile.ZipFile, admin.os.open, admin.threading.Thread) — keep them.
 import json
-import posixpath
-from urllib.parse import urlencode, urlsplit
-import socket
 import os
-import re
-import subprocess
+import secrets
+import shutil
+import socket  # noqa: F401 - reached by tests as admin.socket
+import subprocess  # noqa: F401 - reached by tests as admin.subprocess
 import sys
+import tempfile  # noqa: F401 - reached by tests as admin.tempfile
+import threading
+import time
+import zipfile  # noqa: F401 - reached by tests as admin.zipfile
+from pathlib import Path
+from types import SimpleNamespace
+
+from flask import Flask
 
 # admin.py is imported both as a package member and as a flat module (the test
 # harness does the latter), so sibling imports need the same dual form the
 # remote/* imports below use.
 try:  # noqa: E402
-    from storage_prepare import (
-        PROTECTED_MOUNTPOINTS,
-        eligible_devices,
-        movies_drive_devices,
-        protected_disk_names,
-    )
     from detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
-    import box_health
-    import diagnostics
     import vpn_settings
-    from redact import Redactor
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
-    from . import box_health
-    from . import diagnostics
     from . import vpn_settings
-    from .redact import Redactor
-    from .storage_prepare import (
-        PROTECTED_MOUNTPOINTS,
-        eligible_devices,
-        movies_drive_devices,
-        protected_disk_names,
-    )
-import secrets
-import threading
-import time
-import uuid
-import zipfile
-import shutil
-import tempfile
-from datetime import datetime
-from functools import wraps
-from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Optional
-
-import yaml
-from flask import Flask, jsonify, redirect, render_template_string, request, send_file, send_from_directory
-from werkzeug.exceptions import HTTPException
 
 try:
-    from remote import auth as remote_auth
-    from remote import devices as remote_devices
-    from remote import ws_handler
     from remote.uinput_writer import UinputWriter
     from remote.text_input_writer import TextInputWriter
 except ImportError:
-    from .remote import auth as remote_auth
-    from .remote import devices as remote_devices
-    from .remote import ws_handler
     from .remote.uinput_writer import UinputWriter
     from .remote.text_input_writer import TextInputWriter
 
