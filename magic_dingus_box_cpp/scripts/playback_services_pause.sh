@@ -47,7 +47,7 @@ fi
 ACTION="${1}"
 CONTAINERS=(mdb_radarr mdb_sonarr mdb_prowlarr mdb_byparr)
 
-# Marker read by the Content Manager (admin.py PLAYBACK_PAUSE_MARKER) so the
+# Marker read by the Content Manager (admin_media_browser.py PLAYBACK_PAUSE_MARKER) so the
 # services panel can label these containers "paused for playback" instead of
 # their raw docker exit codes — Radarr/Prowlarr always blow the 2 s SIGTERM
 # grace below and land at "Exited (137)", which reads as a crash/OOM (caused

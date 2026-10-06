@@ -109,6 +109,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs during an OTA, and an incremental, rehearsed plan):
   `docs/superpowers/specs/2026-10-05-update-sh-split-design.md`. No code
   moved yet.
+- **Content Manager split into modules (internal; no behavior change).**
+  `web/admin.py` (6,800 lines) keeps `create_app()` and its once-per-process
+  startup work; the routes moved verbatim into `admin_*.py` modules by area
+  (security guards, system/backup, playlists, playlist import, media +
+  transcode, ROMs, support tools, OTA updates, Media Browser setup and
+  operations, page serving + Phone Remote) plus pure helper modules, each
+  wired by a `register(app, ctx)` call at its original position — the URL
+  map, methods, endpoint names, hook order and per-process singletons are
+  identical (checked by dumping `app.url_map` before/after). `manager.js`
+  (7,000 lines) became eight classic scripts loaded in a fixed order by
+  `index.html`; global function names used by inline handlers are
+  unchanged. Two CSRF-store / pause-marker tests now patch the module that
+  owns that state.
 
 ## [1.10.0] - 2026-10-04
 

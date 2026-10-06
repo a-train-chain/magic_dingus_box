@@ -10,13 +10,13 @@ on:
       # to be appended after being missed, and the scripts under
       # missing_search/ + emulator_smoke_test.py were never listed at all.
       - 'magic_dingus_box_cpp/scripts/**'
-      - 'magic_dingus_box/web/admin.py'
+      - 'magic_dingus_box/web/admin*.py'
       - 'magic_dingus_box/web/tests/**'
       - '.github/workflows/test-ota.yml'
   pull_request:
     paths:
       - 'magic_dingus_box_cpp/scripts/**'
-      - 'magic_dingus_box/web/admin.py'
+      - 'magic_dingus_box/web/admin*.py'
       - 'magic_dingus_box/web/tests/**'
       - '.github/workflows/test-ota.yml'
   workflow_dispatch:  # Allow manual trigger

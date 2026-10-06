@@ -240,7 +240,7 @@
                             <div class="upload-content" id="libraryUploadContent" style="display: none;">
                                 <div class="resolution-row">
                                     <label>Quality:</label>
-                                    <!-- Values must match TRANSCODE_RESOLUTIONS in admin.py;
+                                    <!-- Values must match TRANSCODE_RESOLUTIONS in admin_media.py;
                                          crt_hd is the master default (4:3, 1:1 in the kiosk's
                                          4:3 viewport at 720p output). -->
                                     <select id="targetResolution" class="resolution-select-compact">
@@ -250,7 +250,7 @@
                                 </div>
                                 <div class="resolution-row">
                                     <label>Framing:</label>
-                                    <!-- Values must match TRANSCODE_FIT_MODES in admin.py. -->
+                                    <!-- Values must match TRANSCODE_FIT_MODES in admin_media.py. -->
                                     <select id="framingMode" class="resolution-select-compact">
                                         <option value="crop" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> Fill screen — crop edges (TV look)</option>
                                         <option value="fit"><svg class="ic" aria-hidden="true"><use href="#ic-monitor"/></svg> Show everything — add borders</option>

@@ -435,7 +435,7 @@ const UPLOAD_CONFIG = {
     // Server-side transcoding settings (Pi handles conversion via FFmpeg)
     TRANSCODE: {
         ENABLED: true,                    // Enable Pi-side transcoding
-        DEFAULT_RESOLUTION: 'crt_hd',     // Default master: 4:3 @ 720p height (see TRANSCODE_RESOLUTIONS in admin.py)
+        DEFAULT_RESOLUTION: 'crt_hd',     // Default master: 4:3 @ 720p height (see TRANSCODE_RESOLUTIONS in admin_media.py)
         DEFAULT_FIT_MODE: 'crop',         // 'crop' = fill 4:3 (historical); 'fit' = whole frame + borders (see TRANSCODE_FIT_MODES)
     }
 };

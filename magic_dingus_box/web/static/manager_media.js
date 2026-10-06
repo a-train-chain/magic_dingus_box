@@ -642,7 +642,7 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                     continue;
                 }
                 // The server's terminal success status is 'complete'
-                // (run_transcode_job in admin.py; the click path at
+                // (run_transcode_job in admin_media.py; the click path at
                 // handleDirectUpload tests the same string). This poller
                 // shipped in v1.9.5 checking 'completed', which never
                 // matched — the transcode finished server-side but the bar

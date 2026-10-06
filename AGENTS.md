@@ -176,8 +176,8 @@ This guarantees correct compositing without X11/compositor overhead.
 
 ### Web Admin (`magic_dingus_box/web/`)
 
-- `admin.py` - Flask routes for device discovery, playlist CRUD, content uploads, game ROM management
-- `static/manager.js` - Frontend: device discovery, drag-and-drop playlist builder, file uploads
+- `admin.py` - `create_app()` + wiring; routes live in `admin_*.py` by area (see CLAUDE.md "Web Admin" module map)
+- `static/manager*.js` - Frontend, split per feature into classic scripts loaded in a fixed order by `index.html`
 - Features: video transcoding (CRT 640x480 / Modern 720p presets), playlist package import/export (ZIP), system monitoring
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
 

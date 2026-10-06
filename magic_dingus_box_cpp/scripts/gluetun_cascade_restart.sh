@@ -50,7 +50,7 @@ CASCADE_STATE_DIR="${CASCADE_STATE_DIR:-/run/mdb-cascade}"  # unhealthy-since st
 
 # Playback pause awareness. playback_services_pause.sh stops the
 # RAM-heavy dependents during games/movies and maintains this marker for
-# the duration (see that script; admin.py PLAYBACK_PAUSE_MARKER reads the
+# the duration (see that script; admin_media_browser.py PLAYBACK_PAUSE_MARKER reads the
 # same path). Pre-fix, this watcher's cascade brought them back UP
 # mid-game whenever Gluetun restarted/flapped during play — observed live
 # 2026-07-31 (Super Mario 64 running with the full stack Up), defeating
