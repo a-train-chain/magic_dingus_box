@@ -230,6 +230,36 @@ def _needs(*mods):
         pytest.importorskip(m)
 
 
+# Generous on purpose: these bound a CONDITION, not a sleep, so a healthy
+# run returns in milliseconds and only a genuinely stuck one waits this long.
+_DEADLINE_S = 30.0
+
+
+def _wait_for(cond, what, deadline_s=_DEADLINE_S):
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if cond():
+            return
+        time.sleep(0.05)
+    pytest.fail(f"timed out after {deadline_s:.0f}s waiting for {what}")
+
+
+def _ws_messages_until(ws, done, deadline_s=_DEADLINE_S):
+    """Every JSON message received, in order, up to and including the first
+    one `done` accepts. Fails (with what DID arrive) at the deadline instead
+    of handing None to json.loads."""
+    msgs = []
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        raw = ws.receive(timeout=max(0.0, min(1.0, end - time.monotonic())))
+        if raw is None:
+            continue
+        msgs.append(json.loads(raw))
+        if done(msgs[-1]):
+            return msgs
+    pytest.fail(f"timed out after {deadline_s:.0f}s; received {msgs}")
+
+
 SERVERS = ["gunicorn", "werkzeug"]
 
 
@@ -268,16 +298,21 @@ def test_phone_remote_ws_and_reconnect_storm(live_server):
     headers = {"Cookie": _cookie()}
 
     def roundtrip(ws):
-        hello = json.loads(ws.receive(timeout=10))
-        assert hello["t"] == "hello_ack"
+        # The seek goes out BEFORE waiting for hello_ack, on purpose. The
+        # server sends hello_ack unprompted right behind its 101 response;
+        # on a loaded machine both arrive in the client's single handshake
+        # recv(), and simple_websocket's Client.handshake() takes only the
+        # AcceptConnection event from it — the hello_ack stays parked in
+        # wsproto's buffer, because the client's reader thread recv()s
+        # BEFORE draining buffered events. Nothing else arrives until the
+        # client speaks, so waiting for hello first timed out (receive()
+        # -> None) about 1 run in 10 under load. The seek's ack is the
+        # data that releases the parked hello_ack; the ORDER is still
+        # asserted: hello_ack must be the first message on the socket.
         ws.send(json.dumps({"t": "seek", "pos": 0.5}))
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            msg = json.loads(ws.receive(timeout=10))
-            if msg.get("t") == "ack":
-                assert msg["of"] == "seek"
-                return
-        pytest.fail("no seek ack")
+        msgs = _ws_messages_until(ws, lambda m: m.get("t") == "ack")
+        assert msgs[0].get("t") == "hello_ack", msgs
+        assert msgs[-1]["of"] == "seek", msgs
 
     # Many sequential reconnects — the phone does this on every wake/WiFi blip.
     for _ in range(25):
@@ -295,13 +330,17 @@ def test_phone_remote_ws_and_reconnect_storm(live_server):
     for ws in held:
         ws.close()
     assert (live_server["data"] / "seek_request.json").exists()
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        events = live_server["uinput_log"].read_text()
-        if "ev 1 304 1" in events:
-            break
-        time.sleep(0.1)
-    assert "ev 1 304 1" in events and "ev 1 304 0" in events
+
+    # The tap's own down AND up, in that order. ("ev 1 304 0" alone proves
+    # nothing: every connect/disconnect's release_all() sweep writes it.)
+    def tap_landed():
+        lines = live_server["uinput_log"].read_text().splitlines()
+        if "ev 1 304 1" not in lines:
+            return False
+        return "ev 1 304 0" in lines[lines.index("ev 1 304 1") + 1:]
+
+    _wait_for(tap_landed, what="the OK tap on the virtual gamepad")
+    events = live_server["uinput_log"].read_text()
     assert sum(1 for l in events.splitlines() if l.startswith("open")) == 1
 
 
