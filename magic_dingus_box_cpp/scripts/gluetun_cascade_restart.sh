@@ -86,6 +86,88 @@ compose_unlock() { flock -u 9 2>/dev/null; exec 9<&-; }
 
 log() { echo "[gluetun-cascade] $*"; }
 
+# ---------------------------------------------------------------------------
+# VPN tunnel event log — a durable, cheap record of every tunnel transition,
+# read by verify_box.sh (Box Health card) through vpn_events_summary.py and
+# shipped in the diagnostics bundle. Before it, the only record was this
+# watcher's journal lines: ~170 drops over 2026-10-03/04 on the owner's box
+# went unnoticed until someone dug through journalctl by hand.
+#
+# One line per event, `<epoch> <kind> [detail]`:
+#   watch               this watcher started (marks when recording began)
+#   unhealthy <cause>   Docker flagged gluetun unhealthy. cause is `portfwd`
+#                       when traffic still flowed through the tunnel at that
+#                       moment (only the healthcheck's forwarded-port half
+#                       failed) or `tunnel` when it did not.
+#   healthy             gluetun is healthy again (closes an outage)
+#   restart             this watcher restarted gluetun
+# Event times come from Docker's own event timestamp when there is one, so a
+# healthy event that queued behind the 5-minute confirm sleep is still
+# stamped with when it happened. NOTE an outage is measured from Docker's
+# unhealthy mark, which lands ~5 min (5 x 60 s checks) after the first failed
+# check, so recorded down time UNDERSTATES real down time by up to that much.
+#
+# /var/lib (persistent, root-owned; same parent as qbit_port_sync.sh's
+# drive_guard state), world-readable: timestamps only, and verify_box.sh may
+# run unprivileged. Bounded to the last VPN_EVENTS_MAX_LINES lines and
+# VPN_EVENTS_MAX_AGE_S seconds on every write. A failed write (read-only
+# card, full disk, not root in a test) is swallowed: the log is a report,
+# and must never take the watcher down with it.
+VPN_EVENTS_FILE="${VPN_EVENTS_FILE:-/var/lib/magic-dingus/vpn_events.log}"
+VPN_EVENTS_MAX_LINES="${VPN_EVENTS_MAX_LINES:-2000}"
+VPN_EVENTS_MAX_AGE_S="${VPN_EVENTS_MAX_AGE_S:-604800}"   # 7 days
+
+# vpn_event_record KIND [EPOCH] [DETAIL] — never fails, never blocks long.
+vpn_event_record() {
+    local kind="$1" ts="${2:-}" detail="${3:-}" now
+    now=$(date +%s)
+    [[ "$ts" =~ ^[0-9]+$ ]] || ts="$now"
+    (
+        set +e
+        umask 022
+        mkdir -p "$(dirname "$VPN_EVENTS_FILE")" || exit 0
+        # The startup check runs in a background subshell beside the event
+        # loop, so two writers are possible: serialize append + trim (bounded
+        # wait; on timeout write anyway — a lost trim is harmless).
+        if command -v flock >/dev/null 2>&1 && exec 7>>"${VPN_EVENTS_FILE}.lock"; then
+            flock -w 5 7
+        fi
+        printf '%s %s%s\n' "$ts" "$kind" "${detail:+ $detail}" >> "$VPN_EVENTS_FILE" || exit 0
+        tmp="${VPN_EVENTS_FILE}.tmp.$$"
+        if awk -v cutoff="$((now - VPN_EVENTS_MAX_AGE_S))" \
+               '$1 ~ /^[0-9]+$/ && $1 >= cutoff' "$VPN_EVENTS_FILE" \
+               | tail -n "$VPN_EVENTS_MAX_LINES" > "$tmp"; then
+            mv -f "$tmp" "$VPN_EVENTS_FILE"
+        fi
+        rm -f "$tmp"
+    ) 2>/dev/null || true
+}
+
+# Does traffic still flow through the tunnel? The same probe as the first
+# half of the compose healthcheck (DNS + TCP + TLS through the tunnel).
+# Success while gluetun is UNHEALTHY means only the healthcheck's
+# forwarded-port half failed: the tunnel works and Proton's NAT-PMP gateway
+# took the port away. Captured live 2026-10-05: all 9 full-stack restarts in
+# two hours were that, with in-tunnel traffic fine throughout. One
+# `docker exec`, bounded to 20 s, once per unhealthy event. Output is
+# captured, never piped into `grep -q`: under pipefail wget's SIGPIPE would
+# read as a failed probe.
+vpn_tunnel_passes_traffic() {
+    local out probe=(docker exec mdb_gluetun wget -qO- --tries=1 --timeout=5
+                     https://one.one.one.one/cdn-cgi/trace)
+    if command -v timeout >/dev/null 2>&1; then
+        out=$(timeout "${VPN_PROBE_TIMEOUT_S:-20}" "${probe[@]}" 2>/dev/null) || true
+    else
+        out=$("${probe[@]}" 2>/dev/null) || true
+    fi
+    grep -q '^ip=' <<< "$out"
+}
+
+# Prints portfwd | tunnel (see the event log notes above).
+vpn_unhealthy_cause() {
+    if vpn_tunnel_passes_traffic; then echo portfwd; else echo tunnel; fi
+}
+
 local_compose() {
     docker compose -f "${COMPOSE_DIR}/docker-compose.yml" "$@"
 }
@@ -227,6 +309,7 @@ restart_gluetun() {
     compose_lock 120 || rc=$?
     [ "$rc" = "1" ] && log "compose lock busy for 120s — restarting gluetun anyway"
     if docker restart mdb_gluetun; then
+        vpn_event_record restart
         log "gluetun restart issued$1; cascade will follow start event"
     else
         log "gluetun restart FAILED$1 — manual intervention required"
@@ -297,6 +380,7 @@ main() {
     fi
 
     log "watching docker events for mdb_gluetun start + health_status..."
+    vpn_event_record watch
 
     # Blind-start guard: `docker events` reports TRANSITIONS only, so a
     # gluetun that is ALREADY unhealthy when this watcher starts emits no
@@ -314,8 +398,16 @@ main() {
     (
         startup_state=$(docker inspect mdb_gluetun \
             --format '{{.State.Health.Status}}' 2>/dev/null || echo absent)
-        if [ "${startup_state}" = "unhealthy" ]; then
-            log "gluetun ALREADY unhealthy at watcher start, waiting ${UNHEALTHY_CONFIRM_S}s to confirm..."
+        if [ "${startup_state}" = "healthy" ]; then
+            # Closes an outage whose healthy transition fired while no
+            # watcher was subscribed (a reboot or watcher restart mid-outage)
+            # — otherwise the event log would count it as down until the
+            # NEXT healthy event, possibly hours later.
+            vpn_event_record healthy
+        elif [ "${startup_state}" = "unhealthy" ]; then
+            startup_cause=$(vpn_unhealthy_cause)
+            vpn_event_record unhealthy "" "${startup_cause}"
+            log "gluetun ALREADY unhealthy at watcher start (${startup_cause}), waiting ${UNHEALTHY_CONFIRM_S}s to confirm..."
             sleep "${UNHEALTHY_CONFIRM_S}"
             current=$(docker inspect mdb_gluetun \
                 --format '{{.State.Health.Status}}' 2>/dev/null || echo unknown)
@@ -398,7 +490,13 @@ main() {
                 # the sleep queue up and process after. The post-sleep
                 # check looks at the *current* state, not the queued
                 # events, so a recovery during the wait is handled cleanly.
-                log "gluetun went UNHEALTHY at ${event_time}, waiting ${UNHEALTHY_CONFIRM_S}s to confirm..."
+                cause=$(vpn_unhealthy_cause)
+                vpn_event_record unhealthy "${event_time}" "${cause}"
+                if [ "${cause}" = "portfwd" ]; then
+                    log "gluetun went UNHEALTHY at ${event_time} — tunnel still passes traffic, the forwarded port was lost; waiting ${UNHEALTHY_CONFIRM_S}s to confirm..."
+                else
+                    log "gluetun went UNHEALTHY at ${event_time} — no traffic through the tunnel; waiting ${UNHEALTHY_CONFIRM_S}s to confirm..."
+                fi
                 sleep "${UNHEALTHY_CONFIRM_S}"
                 current=$(docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null || echo unknown)
                 if [ "${current}" = "unhealthy" ]; then
@@ -414,6 +512,7 @@ main() {
                 # parent healthcheck failure) — but a boot whose `compose
                 # up` was cut short, or a dependent removed while the
                 # tunnel was down, is only noticed here.
+                vpn_event_record healthy "${event_time}"
                 log "gluetun healthy at ${event_time} — converging dependents"
                 converge_dependents || true
                 clear_cooldowns_after_recovery || true

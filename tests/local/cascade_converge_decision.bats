@@ -58,7 +58,7 @@ setup() {
 
 @test "every compose-touching script takes the same shared lock" {
     for f in gluetun_cascade_restart.sh playback_services_pause.sh \
-             storage_attach.sh migrate_hardlink_layout.sh; do
+             storage_attach.sh migrate_hardlink_layout.sh recreate_gluetun.sh; do
         grep -q '/run/lock/mdb-compose.lock' "$CPP_DIR/scripts/$f" \
             || { echo "$f does not take the compose lock" >&2; false; }
     done

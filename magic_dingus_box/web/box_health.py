@@ -151,8 +151,25 @@ def headline(result: dict) -> str:
     if result.get("exit_code") not in (0, None):
         return "The health check did not finish cleanly"
     if warns:
-        return f"Everything important looks good ({warns} note{'s' if warns != 1 else ''})"
+        notes = f"{warns} note{'s' if warns != 1 else ''}"
+        # A flaky VPN is a WARN (it never makes a box unshippable), but it is
+        # the one note an owner can act on and would otherwise never see:
+        # downloads just stall. Name it in the headline instead of letting
+        # it read like the usual "no movie drive plugged in".
+        if _vpn_tunnel_warning(result):
+            return f"Everything important looks good, but the VPN tunnel is unreliable ({notes})"
+        return f"Everything important looks good ({notes})"
     return "Everything looks good"
+
+
+def _vpn_tunnel_warning(result: dict) -> bool:
+    """True iff verify_box.sh's VPN tunnel section carried a WARN."""
+    for s in result.get("sections") or ():
+        if s.get("name") != "VPN tunnel":
+            continue
+        if any(c.get("level") == "warn" for c in s.get("checks") or ()):
+            return True
+    return False
 
 
 def _atomic_write_json(path: Path, doc: dict) -> None:

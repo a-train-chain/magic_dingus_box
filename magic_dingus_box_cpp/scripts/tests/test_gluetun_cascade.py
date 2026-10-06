@@ -70,6 +70,11 @@ case "$1" in
             echo "${INSPECT_RUNNING:-true}"
         fi
         ;;
+    exec)
+        # The watcher's in-tunnel traffic probe (wget of Cloudflare's
+        # trace page inside gluetun). Empty output = no traffic.
+        [ -n "${EXEC_OUT:-}" ] && printf '%b\\n' "$EXEC_OUT"
+        ;;
 esac
 exit 0
 """
@@ -103,7 +108,9 @@ class StubDockerTestCase(unittest.TestCase):
             CONVERGE_INTERVAL_S="0",
             CASCADE_STATE_DIR=str(tmp / "cascade_state"),
             MDB_COMPOSE_LOCK=str(tmp / "compose.lock"),
+            VPN_EVENTS_FILE=str(tmp / "vpn" / "vpn_events.log"),
         )
+        self.events_file = tmp / "vpn" / "vpn_events.log"
         self.state_dir = tmp / "cascade_state"
         MARKER.unlink(missing_ok=True)
         self.addCleanup(lambda: MARKER.unlink(missing_ok=True))
@@ -329,6 +336,87 @@ class CascadeConvergeTests(StubDockerTestCase):
         (self.compose_dir / ".env").unlink()
         self.converge(radarr="absent")
         self.assertEqual(self.compose_lines(), [])
+
+
+class VpnEventLogTests(StubDockerTestCase):
+    # ~170 tunnel drops over 2026-10-03/04 were only visible by digging
+    # through the journal. The watcher now appends each transition to a
+    # small log that verify_box.sh summarizes for the Box Health card.
+    def events(self):
+        deadline = time.time() + 3
+        while time.time() < deadline:   # the startup check is backgrounded
+            if self.events_file.exists():
+                break
+            time.sleep(0.05)
+        time.sleep(0.2)
+        if not self.events_file.exists():
+            return []
+        return [l.split() for l in self.events_file.read_text().splitlines()]
+
+    def test_start_records_watch(self):
+        result = self.run_script(CASCADE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("watch", [e[1] for e in self.events()])
+
+    def test_unhealthy_event_records_docker_time_and_tunnel_cause(self):
+        result = self.run_script(CASCADE, extra_env={
+            "EVENTS_LINE": "1800000000 health_status: unhealthy",
+            "UNHEALTHY_CONFIRM_S": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["1800000000", "unhealthy", "tunnel"], self.events())
+        self.assertIn("no traffic through the tunnel", result.stdout)
+
+    def test_unhealthy_with_working_tunnel_is_port_forwarding(self):
+        # 2026-10-05: all 9 full-stack restarts were Proton's NAT-PMP
+        # gateway dropping the forwarded port while the tunnel itself
+        # passed traffic the whole time.
+        result = self.run_script(CASCADE, extra_env={
+            "EVENTS_LINE": "1800000000 health_status: unhealthy",
+            "UNHEALTHY_CONFIRM_S": "0",
+            "EXEC_OUT": "fl=1\\nip=203.0.113.9\\nloc=NL"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["1800000000", "unhealthy", "portfwd"], self.events())
+        self.assertIn("forwarded port was lost", result.stdout)
+
+    def test_healthy_event_records(self):
+        (self.compose_dir / ".env").write_text("X=1\n")
+        result = self.run_script(CASCADE, extra_env={
+            "EVENTS_LINE": "1800000300 health_status: healthy",
+            "INSPECT_RUNNING": "healthy",
+            "COOLDOWN_CLEAR_CMD": "/nonexistent"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["1800000300", "healthy"], self.events())
+
+    def test_confirmed_unhealthy_records_restart(self):
+        result = self.run_script(CASCADE, extra_env={
+            "EVENTS_LINE": "1800000000 health_status: unhealthy",
+            "INSPECT_RUNNING": "unhealthy",
+            "UNHEALTHY_CONFIRM_S": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("restart", [e[1] for e in self.events()])
+
+    def test_log_is_bounded_by_age_and_lines(self):
+        self.events_file.parent.mkdir()
+        recent = int(time.time()) - 60
+        old = [f"{1000 + i} healthy" for i in range(5)]            # decades old
+        fresh = [f"{recent} healthy" for _ in range(30)]
+        self.events_file.write_text("\n".join(old + fresh) + "\n")
+        result = self.run_script(CASCADE, extra_env={"VPN_EVENTS_MAX_LINES": "10"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ev = self.events()
+        self.assertTrue(all(int(e[0]) >= recent for e in ev), ev)
+        self.assertLessEqual(len(ev), 10)
+        self.assertIn("watch", [e[1] for e in ev])
+
+    def test_unwritable_log_never_breaks_the_watcher(self):
+        blocker = Path(self._tmp.name) / "not_a_dir"
+        blocker.write_text("")
+        result = self.run_script(CASCADE, extra_env={
+            "VPN_EVENTS_FILE": str(blocker / "vpn_events.log"),
+            "EVENTS_LINE": "1800000000 health_status: unhealthy",
+            "UNHEALTHY_CONFIRM_S": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("recovered to", result.stdout)
 
 
 if __name__ == "__main__":

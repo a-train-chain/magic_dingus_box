@@ -642,6 +642,12 @@ for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revo
         log "    wiped: ${f}"
     fi
 done
+# The VPN tunnel event log (gluetun_cascade_restart.sh) is the SOURCE box's
+# drop history; a clone must not report it on its own Box health card.
+if [[ -f /var/lib/magic-dingus/vpn_events.log ]]; then
+    rm -f /var/lib/magic-dingus/vpn_events.log /var/lib/magic-dingus/vpn_events.log.lock
+    log "    wiped: VPN tunnel event log"
+fi
 
 # Any *.jsonl left in the data dir. This is a GLOB, deliberately, not more
 # filenames added to the list above — that list is hand-maintained, and the

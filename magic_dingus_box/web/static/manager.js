@@ -6480,7 +6480,10 @@ function _renderBoxHealth(status) {
                 ? `<pre style="margin: 0.25rem 0 0 1rem; font-size: 0.75rem; white-space: pre-wrap;">${escapeHtml(c.details.join('\n'))}</pre>`
                 : '') +
             `</div>`).join('');
-        return `<details style="padding: 0.2rem 0;"${fails ? ' open' : ''}>` +
+        // A VPN tunnel note is the one WARN an owner can act on (and the
+        // headline names it), so show its numbers without a click.
+        const open = fails || (warns && s.name === 'VPN tunnel');
+        return `<details style="padding: 0.2rem 0;"${open ? ' open' : ''}>` +
                `<summary style="cursor: pointer;">` +
                `<span style="color: ${color[mark]};">${icon[mark]}</span> ` +
                `${escapeHtml(s.name)} <span style="opacity: 0.75;">— ${tally}</span></summary>` +

@@ -99,6 +99,44 @@ def test_headlines():
     assert headline({"error": "x"}) == "The health check could not run"
 
 
+VPN_OUTPUT = """
+== Storage & Media Browser ==
+  [WARN] movie drive not mounted — Movies shows 'drive not connected' (expected if unplugged)
+  [PASS] Radarr reachable (Media Browser functional)
+
+== VPN tunnel ==
+  [{level}] VPN tunnel dropped 23 times in the last 24 h (down 1 h 40 min total, longest 9 min, last 12 min ago)
+
+== RESULT ==
+  3 passed, 0 failed, 2 warnings
+  SHIPPABLE
+"""
+
+
+def test_vpn_tunnel_section_parses_and_names_itself_in_the_headline():
+    # The owner's tunnel dropped ~170 times over two days with nothing on
+    # any screen saying so. A VPN WARN is the one note an owner can act on,
+    # so the headline names it rather than reading like "no drive plugged in".
+    r = parse_verify_box(VPN_OUTPUT.format(level="WARN"), exit_code=0)
+    vpn = [s for s in r["sections"] if s["name"] == "VPN tunnel"][0]
+    assert vpn["checks"][0]["level"] == "warn"
+    assert vpn["checks"][0]["text"].startswith("VPN tunnel dropped 23 times")
+    assert r["shippable"] is True
+    assert headline(r) == ("Everything important looks good, but the VPN tunnel "
+                           "is unreliable (2 notes)")
+
+
+def test_quiet_vpn_tunnel_keeps_the_ordinary_headline():
+    r = parse_verify_box(VPN_OUTPUT.format(level="PASS"), exit_code=0)
+    assert headline(r) == "Everything important looks good (1 note)"
+
+
+def test_failures_outrank_a_vpn_note():
+    r = parse_verify_box(VPN_OUTPUT.format(level="WARN") +
+                         "== Kiosk ==\n  [FAIL] service NOT active\n", exit_code=1)
+    assert headline(r) == "1 problem found"
+
+
 # ----------------------------------------------------------------- runner
 
 class FakeRun:

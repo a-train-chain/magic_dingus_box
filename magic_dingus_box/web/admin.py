@@ -25,11 +25,13 @@ try:  # noqa: E402
     from detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
     import box_health
     import diagnostics
+    import vpn_settings
     from redact import Redactor
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
     from . import box_health
     from . import diagnostics
+    from . import vpn_settings
     from .redact import Redactor
     from .storage_prepare import (
         PROTECTED_MOUNTPOINTS,
@@ -4625,11 +4627,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # process; "is one running" is answered from disk + liveness, so it also
     # holds across a Flask restart. update.sh flocks as well, for runs that
     # don't come through here.
-    _MAINTENANCE_KINDS = ("ota-install", "ota-rollback", "mb-setup")
+    _MAINTENANCE_KINDS = ("ota-install", "ota-rollback", "mb-setup",
+                          vpn_settings.JOB_KIND)
     _MAINTENANCE_LABELS = {
         "ota-install": "A software update",
         "ota-rollback": "A rollback",
         "mb-setup": "Media Browser setup",
+        vpn_settings.JOB_KIND: "A VPN country change",
     }
     _maintenance_launch_lock = threading.Lock()
 
@@ -5376,6 +5380,25 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "vpn_configured": _vpn_configured(),
         })
 
+    # VPN server country (Media Browser > Advanced). All logic lives in
+    # vpn_settings.py; this hands it the gates and helpers it must share.
+    vpn_settings.register(
+        app,
+        require_csrf=require_csrf,
+        check_gates=_check_media_browser_gates,
+        env_path=SERVICES_ENV,
+        script_path=data_dir.parent / "scripts" / "recreate_gluetun.sh",
+        read_env=_read_env_file,
+        env_read_error=EnvFileReadError,
+        format_env_line=_format_env_line,
+        require_sudo=lambda: _require_nopasswd_sudo(),
+        maintenance_precheck=_maintenance_precheck,
+        launch_job=_launch_maintenance_job,
+        detached=detached,
+        success_response=success_response,
+        error_response=error_response,
+    )
+
     # ===== PREPARE DRIVE =====
     #
     # A customer's new drive is exFAT or NTFS with some arbitrary label, so it
@@ -5746,7 +5769,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # stay mutually consistent with the config that was just uploaded:
         # a VPN_PORT_FORWARDING=on or a WIREGUARD_ENDPOINT_IP left over from
         # a previous provider is precisely what stops gluetun from starting.
-        country = (request.form.get("country") or "").strip() or "Netherlands"
+        #
+        # Country: the form's value, else the one this box already uses (the
+        # Content Manager's VPN-country setting writes it — a Reconfigure
+        # with a fresh .conf must not silently move the box back to the
+        # Netherlands), else the historical default.
+        country = ((request.form.get("country") or "").strip()
+                   or (env.get("VPN_COUNTRIES") or "").strip()
+                   or vpn_settings.DEFAULT_COUNTRY)
         env.update(_vpn_provider_env(provider, wg, country=country))
 
         try:

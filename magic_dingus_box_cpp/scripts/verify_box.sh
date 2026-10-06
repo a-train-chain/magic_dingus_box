@@ -609,6 +609,33 @@ else
 fi
 
 # ---------------------------------------------------------------------
+# VPN tunnel reliability (Media Browser boxes only — nothing to report
+# without a tunnel, so an unprovisioned box gets no section at all).
+# The owner's tunnel dropped ~170 times over 2026-10-03/04, every ~11 min
+# in bursts, and nothing on any screen said so: the only trace was the
+# cascade watcher's journal. gluetun_cascade_restart.sh now appends each
+# transition to VPN_EVENTS; vpn_events_summary.py turns the last 24 h into
+# one plain-language PASS/WARN line (thresholds and wording live there and
+# are unit-tested in scripts/tests/test_vpn_events_summary.py). Never a
+# FAIL: a flaky VPN does not make a box unshippable. Gluetun's CURRENT
+# health is passed in so an outage whose recovery went unrecorded (watcher
+# restarted mid-outage) is not reported as still running.
+# ---------------------------------------------------------------------
+VPN_EVENTS="${MDB_VPN_EVENTS_FILE:-/var/lib/magic-dingus/vpn_events.log}"
+if [[ -f "${BASE}/services/.env" ]]; then
+  header "VPN tunnel"
+  G_HEALTH=$(docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null \
+             || sudo -n docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null)
+  VPN_LINE=$(python3 "${APP}/scripts/vpn_events_summary.py" --file "$VPN_EVENTS" \
+               --current-health "${G_HEALTH:-}" 2>/dev/null)
+  case "${VPN_LINE%%$'\t'*}" in
+    pass) pass "${VPN_LINE#*$'\t'}" ;;
+    warn) warn "${VPN_LINE#*$'\t'}" ;;
+    *)    warn "VPN tunnel history could not be summarized (${APP}/scripts/vpn_events_summary.py, ${VPN_EVENTS})" ;;
+  esac
+fi
+
+# ---------------------------------------------------------------------
 if (( RUN_SERVICES )); then
   header "Service stack (verify_services.sh)"
   # A fresh file per run: a fixed /tmp/vs.log left root-owned by one

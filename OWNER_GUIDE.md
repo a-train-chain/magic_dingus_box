@@ -123,6 +123,17 @@ Other WireGuard-based VPN providers also work (the box accepts any
 standard WireGuard `.conf`), but ProtonVPN is the one the box's
 port-forwarding automation is built for.
 
+**Changing the VPN country (ProtonVPN only).** The box uses servers in
+the Netherlands unless you choose otherwise. If downloads keep stalling
+because the VPN keeps dropping (the Box Health check tells you — see
+section 11), a different country often helps: Content Manager → **Media
+Browser** tab → **Advanced** → **VPN server country** → pick one →
+**Apply** (tap twice to confirm). The VPN reconnects and downloads pause
+for about a minute. Your choice is kept if you later re-upload a config
+with **Reconfigure**. With a non-ProtonVPN config the country comes from
+the config file itself, so this setting is shown but can't be changed —
+download a config for a server in the country you want instead.
+
 ## 8. Add your movie-info account (TMDB)
 
 Movie posters, descriptions, and search come from The Movie Database
@@ -182,7 +193,11 @@ Movies are stored on a USB drive so they never crowd the games.
   **Box Health** → **Run Health Check**. In about half a minute it checks
   sound, picture, games, storage and (if you use Movies) the download
   services, and says "Everything looks good" or lists what needs
-  attention in plain English.
+  attention in plain English. If you use Movies it also tells you how
+  often the VPN dropped in the last 24 hours — for example "VPN tunnel
+  dropped 23 times in the last 24 h (down 1 h 40 min total, longest
+  9 min)". An occasional drop is normal and fixes itself; if it says the
+  tunnel is unreliable, try another VPN country (section 7).
 - **Asked for logs by support?** → same card → **Download Diagnostics**.
   It saves one small .zip you can email. Passwords, keys and your Wi-Fi
   details are removed before it's created.
