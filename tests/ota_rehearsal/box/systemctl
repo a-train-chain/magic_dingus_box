@@ -103,6 +103,7 @@ web_start() {
     local n; n=$(( $(ls /out/web_*.log 2>/dev/null | wc -l) + 1 ))
     echo "$(ts) web start #$n (VERSION $(cat $INSTALL/VERSION 2>/dev/null))" >> "$SHIM_LOG"
     # The unit's environment, plus whatever the rehearsal exports for it.
+    # shellcheck disable=SC2046  # web.extra_env holds K=V words; splitting them is the point
     ( cd "$INSTALL" && exec setsid runuser -u magic -- env -i \
         HOME=/home/magic USER=magic LOGNAME=magic PATH=/usr/local/bin:/usr/bin:/bin \
         PYTHONPATH="$INSTALL" MAGIC_DATA_DIR="$INSTALL/magic_dingus_box_cpp/data" \

@@ -20,15 +20,15 @@ set_led() {
     local pin=$1
     local state=$2  # 1=on, 0=off
     if [ "$state" = "1" ]; then
-        pinctrl set $pin op dh 2>/dev/null
+        pinctrl set "$pin" op dh 2>/dev/null
     else
-        pinctrl set $pin op dl 2>/dev/null
+        pinctrl set "$pin" op dl 2>/dev/null
     fi
 }
 
 all_leds_off() {
     for pin in "${LED_PINS[@]}"; do
-        pinctrl set $pin op dl 2>/dev/null
+        pinctrl set "$pin" op dl 2>/dev/null
     done
 }
 
@@ -41,10 +41,10 @@ chase_step() {
     all_leds_off
     
     # Turn on current LED
-    set_led ${LED_PINS[$current]} 1
+    set_led "${LED_PINS[$current]}" 1
     
     # Sleep with floating point format (0.xxx)
-    sleep 0.$(printf '%03d' $on_ms)
+    sleep "0.$(printf '%03d' "$on_ms")"
 }
 
 # Main loop

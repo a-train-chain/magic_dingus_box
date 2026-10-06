@@ -108,9 +108,11 @@ BOOT_RECOVERY="false"
 # Set these environment variables to enable test mode:
 #   MAGIC_SKIP_SYSTEMCTL=true  - Skip all systemctl calls
 #   MAGIC_SKIP_BUILD=true      - Skip cmake/make build steps
-#   MAGIC_DRY_RUN=true         - Skip all destructive operations
+#   MAGIC_DRY_RUN=true         - NOT IMPLEMENTED: parsed below but no code path
+#                                consults DRY_RUN, so it skips nothing
 SKIP_SYSTEMCTL="${MAGIC_SKIP_SYSTEMCTL:-false}"
 SKIP_BUILD="${MAGIC_SKIP_BUILD:-false}"
+# shellcheck disable=SC2034  # inert, see MAGIC_DRY_RUN above
 DRY_RUN="${MAGIC_DRY_RUN:-false}"
 
 # Colors for terminal output (when not outputting JSON)
@@ -804,7 +806,7 @@ retry_download() {
 
 # Get device architecture for binary matching
 get_device_arch() {
-    local arch=$(uname -m)
+    local arch; arch=$(uname -m)
     case "$arch" in
         aarch64) echo "arm64" ;;
         armv7l) echo "arm32" ;;
@@ -847,7 +849,7 @@ get_device_arch() {
 # on any real install failure that occurs later.
 get_binary_url() {
     local version="${1#v}"   # Strip optional leading "v" (bug #1 fix)
-    local arch=$(get_device_arch)
+    local arch; arch=$(get_device_arch)
 
     # Never interpolate anything but X.Y.Z[-beta.N] into the API URL below
     # (curl would normalize a "/../" in it onto another repo).
@@ -2105,7 +2107,7 @@ install_update() {
     # This ensures version consistency if build fails
 
     # Check for pre-compiled binary (faster than compiling)
-    local device_arch=$(get_device_arch)
+    local device_arch; device_arch=$(get_device_arch)
     local binary_url=""
     local use_binary=false
 
@@ -2565,6 +2567,10 @@ rollback() {
     fi
 
     local backup_version
+    # Unused, but kept on purpose: under set -e a failed read of the backup's
+    # VERSION aborts here, BEFORE the kiosk is stopped. Deleting it is a
+    # behavior change, so it is not a lint fix.
+    # shellcheck disable=SC2034
     if [ -f "$BACKUP_DIR/VERSION" ]; then
         backup_version=$(cat "$BACKUP_DIR/VERSION" | tr -d '[:space:]')
     else
@@ -2711,6 +2717,7 @@ acquire_update_lock() {
 # Main command dispatcher. Skipped when the file is SOURCED (the BATS suite
 # sources it to unit-test individual functions).
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    # shellcheck disable=SC2317  # `|| true` is reached only if return fails (not sourced after all)
     return 0 2>/dev/null || true
 fi
 

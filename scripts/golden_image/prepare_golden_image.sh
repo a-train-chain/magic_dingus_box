@@ -67,6 +67,7 @@ LEGACY_PLAYLISTS=(
 # The check in Step 2 doesn't actively keep these — it's just for
 # the verification block at the end so the script confirms expected
 # defaults are present.
+# shellcheck disable=SC2034  # empty placeholder; no verification block reads it yet
 EXPECTED_DEFAULT_PLAYLISTS=(
     # e.g. "kids_movies.yaml"
     # e.g. "kiosk_demo.yaml"

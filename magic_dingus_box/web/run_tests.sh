@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2155  # under set -e, `local x=$(probe)` deliberately tolerates a failing curl/stat/bc; splitting would turn a failed probe into an abort
 #
 # Magic Dingus Box - Web UI Test Runner
 #
@@ -159,7 +160,7 @@ wait_for_transcode() {
     echo -e "  Waiting for transcode (job: ${job_id})..."
 
     local elapsed=0
-    while [ $elapsed -lt $max_wait ]; do
+    while [ "$elapsed" -lt "$max_wait" ]; do
         local status=$(curl -s "${BASE_URL}/admin/transcode-status/${job_id}" | \
             python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}); print(d.get('status','unknown'), d.get('progress',0))" 2>/dev/null)
 
@@ -236,9 +237,9 @@ if [ "$STRESS_MODE" = true ]; then
 
     # Upload all batch files
     echo -e "  Uploading 5 files concurrently..."
-    local csrf=$(curl -s "${BASE_URL}/admin/csrf-token" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('token',''))" 2>/dev/null)
+    csrf=$(curl -s "${BASE_URL}/admin/csrf-token" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('token',''))" 2>/dev/null)
 
-    local start_time=$(date +%s.%N)
+    start_time=$(date +%s.%N)
 
     for i in 1 2 3 4 5; do
         curl -s -X POST \
@@ -249,8 +250,8 @@ if [ "$STRESS_MODE" = true ]; then
     done
     wait
 
-    local end_time=$(date +%s.%N)
-    local duration=$(echo "$end_time - $start_time" | bc)
+    end_time=$(date +%s.%N)
+    duration=$(echo "$end_time - $start_time" | bc)
     echo -e "${GREEN}  ✓ Batch upload completed in ${duration}s${NC}"
 
     # Cleanup batch files

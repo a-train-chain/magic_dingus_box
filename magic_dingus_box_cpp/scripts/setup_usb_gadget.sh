@@ -198,7 +198,7 @@ echo "  3. Open browser to: http://10.55.0.1:5000"
 echo ""
 echo "WiFi access will continue to work as before."
 echo ""
-read -p "Reboot now? (y/N): " answer
+read -r -p "Reboot now? (y/N): " answer
 if [[ "$answer" =~ ^[Yy]$ ]]; then
     echo "Rebooting..."
     reboot

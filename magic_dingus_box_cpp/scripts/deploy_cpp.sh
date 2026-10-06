@@ -315,6 +315,7 @@ rsync -avz --checksum \
 # installer the OTA uses, so the two paths cannot disagree.
 ssh "${PI_HOST}" "bash -c 'source ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh && ensure_web_server_dep'" 2>&1 \
     | sed 's/^/  /'
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
 sudo cp ${PI_DIR}/systemd/magic-dingus-web.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -345,6 +346,7 @@ rsync -avz --checksum \
     "${CPP_DIR}/../systemd/magic-first-boot.service" \
     "${PI_HOST}:/tmp/magic-first-boot.service"
 
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
 sudo install -m 644 -o magic -g magic /tmp/magic-first-boot.service ${PI_DIR}/systemd/magic-first-boot.service
 sudo cp /tmp/magic-first-boot.service /etc/systemd/system/magic-first-boot.service
@@ -387,6 +389,7 @@ rsync -avz --checksum \
     "${CPP_DIR}/../systemd/usb-gadget-network.service" \
     "${PI_HOST}:/tmp/usb-gadget-network.service"
 
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
 sudo install -m 644 -o magic -g magic /tmp/usb-gadget-network.service ${PI_DIR}/systemd/usb-gadget-network.service
 sudo cp /tmp/usb-gadget-network.service /etc/systemd/system/usb-gadget-network.service
@@ -477,6 +480,7 @@ rsync -avz --checksum \
 #
 # So: stop, poll for inactive, settle, clear any latched failure, start, then
 # poll for active and surface the journal if it did not make it.
+# shellcheck disable=SC2016  # single-quoted on purpose: runs on the Pi; only PI_DIR is spliced in here
 RESTART_CMD='if [ -x "'"${PI_DIR}"'/magic_dingus_box_cpp/build/magic_dingus_box_cpp" ]; then
     sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
     for i in $(seq 1 30); do
@@ -501,6 +505,7 @@ RESTART_CMD='if [ -x "'"${PI_DIR}"'/magic_dingus_box_cpp/build/magic_dingus_box_
 else
     echo "  Skipping kiosk restart (binary not yet built — run with --build to compile)"
 fi'
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
 sudo cp ${PI_DIR}/systemd/magic-dingus-box-cpp.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -520,6 +525,7 @@ rsync -avz --checksum \
     "${CPP_DIR}/systemd/magic-cpu-performance.service" \
     "${PI_HOST}:${PI_DIR}/systemd/"
 
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
 sudo cp ${PI_DIR}/systemd/magic-cpu-performance.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -572,6 +578,7 @@ echo ""
 
 # Step 2: Download stb_truetype.h (always update to ensure it's the real file)
 echo "Step 2: Ensuring stb_truetype.h is present..."
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
 cd ${PI_DIR}/magic_dingus_box_cpp/src/ui
 

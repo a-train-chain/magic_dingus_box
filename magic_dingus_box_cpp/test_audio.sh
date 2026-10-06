@@ -63,7 +63,7 @@ for config in "${configs[@]}"; do
     echo "----------------------------------------"
 
     # Create test config
-    CONFIG_FILE="/tmp/test_audio_$driver_$(echo $device | tr ':/' '_').cfg"
+    CONFIG_FILE="/tmp/test_audio_${driver}_$(echo "$device" | tr ':/' '_').cfg"
     cat > "$CONFIG_FILE" << EOF
 # Test audio configuration
 video_driver = "gl"

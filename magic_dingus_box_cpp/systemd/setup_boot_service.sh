@@ -31,6 +31,8 @@ echo "✓ Found app at: $APP_PATH"
 
 # Get absolute paths
 PROJECT_ROOT_ABS="$(cd "$PROJECT_ROOT" && pwd)"
+# Unused, but under set -e the cd doubles as a "build dir exists" check.
+# shellcheck disable=SC2034
 BUILD_DIR_ABS="$(cd "$BUILD_DIR" && pwd)"
 
 # Step 1: Stop old services
