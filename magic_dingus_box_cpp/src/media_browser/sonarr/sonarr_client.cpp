@@ -1158,39 +1158,45 @@ namespace {
 // is correct too: after a reboot nobody can tell an interrupted run from a
 // deliberate owner setting either, so a stale-after-reboot false negative
 // beats a false alarm.
-constexpr const char* kAutoRedownloadHeldMarkerPath =
-    "/tmp/mdb_sonarr_autoredownload_held";
+std::string& held_marker_path() {
+    static std::string path = "/tmp/mdb_sonarr_autoredownload_held";
+    return path;
+}
 
 // Best-effort by design: a marker write failing must never abort a delete
 // that is otherwise safe to proceed with. Log and move on.
 void write_autoredownload_held_marker(bool original_value) {
-    std::ofstream f(kAutoRedownloadHeldMarkerPath, std::ios::trunc);
+    std::ofstream f(held_marker_path(), std::ios::trunc);
     if (!f) {
         spdlog::warn("[Sonarr] auto-redownload guard: could not write held "
                      "marker '{}' (best-effort, continuing)",
-                     kAutoRedownloadHeldMarkerPath);
+                     held_marker_path());
         return;
     }
     f << (original_value ? "true" : "false");
     if (!f) {
         spdlog::warn("[Sonarr] auto-redownload guard: held marker write to "
                      "'{}' failed mid-write (best-effort, continuing)",
-                     kAutoRedownloadHeldMarkerPath);
+                     held_marker_path());
     }
 }
 
 void remove_autoredownload_held_marker() {
     std::error_code ec;
-    std::filesystem::remove(kAutoRedownloadHeldMarkerPath, ec);
+    std::filesystem::remove(held_marker_path(), ec);
     if (ec) {
         spdlog::warn("[Sonarr] auto-redownload guard: could not remove held "
                      "marker '{}' ({}) — verify_box.sh will flag this box "
                      "until it is deleted or the box reboots",
-                     kAutoRedownloadHeldMarkerPath, ec.message());
+                     held_marker_path(), ec.message());
     }
 }
 
 }  // namespace
+
+void set_autoredownload_held_marker_path_for_testing(std::string path) {
+    held_marker_path() = std::move(path);
+}
 
 AutoRedownloadGuard::AutoRedownloadGuard(SonarrClient& client)
     : client_(client) {

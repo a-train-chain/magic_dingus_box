@@ -514,6 +514,13 @@ private:
 // best-effort. It runs on every exit path (explicit call, abort, exception),
 // retries, logs at error, and reports failure so the caller can tell the
 // owner in words.
+// TEST SEAM. Points the guard's held marker (default
+// /tmp/mdb_sonarr_autoredownload_held — the path verify_box.sh checks) at
+// another file. The unit tests redirect it so a ctest run ON A REAL BOX
+// cannot leave a false "season delete interrupted" FAIL behind (it did,
+// 2026-10-05). Never called by the kiosk.
+void set_autoredownload_held_marker_path_for_testing(std::string path);
+
 class AutoRedownloadGuard {
 public:
     // Reads the current config and, if auto-redownload is ON, switches it
