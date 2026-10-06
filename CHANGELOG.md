@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The Box Health check now says how reliable the VPN is.** On boxes
+  that use Movies, a new "VPN tunnel" line reports how often the VPN
+  dropped in the last 24 hours, how long it was down in total and the
+  longest single outage — e.g. "VPN tunnel dropped 23 times in the last
+  24 h (down 1 h 40 min total, longest 9 min)". It's a note, not a
+  failure, and it is called out in the headline when the tunnel has been
+  unreliable (6 or more drops, 30 minutes or more down, or down right
+  now). It also says when the tunnel itself was fine and only the
+  forwarded port was lost. The same history is included in Download
+  Diagnostics. Until now ~170 drops over two days on one box were only
+  visible by reading system logs.
+- **Choose the VPN country (ProtonVPN).** Content Manager → Media
+  Browser → Advanced → VPN server country, from a short list of
+  countries with plenty of download-friendly (P2P) servers. Applying it
+  reconnects only the VPN; downloads pause for about a minute. Boxes
+  stay on the Netherlands until someone changes it, and re-uploading a
+  VPN config with Reconfigure now keeps the chosen country instead of
+  resetting it.
+
 ### Changed
 - **Updates that need to build on the box no longer leave the TV dark for
   ten minutes.** Most updates install a ready-made program in seconds, but
@@ -28,6 +48,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Like every updater improvement, this applies from the update *after* the
   one that delivers it, because a box always updates using the updater it
   already has.
+
+### Fixed
+- **The VPN no longer restarts every few minutes when ProtonVPN takes
+  back its forwarded port.** Watched live on 2026-10-05: all 9 restarts
+  of the whole Movies service stack in two hours were caused by port
+  forwarding, not the VPN — Proton's gateway refused to renew the port a
+  few minutes after granting it ("connection refused" from 10.2.0.1:5351),
+  the VPN software (gluetun 3.41.1) then never got a port again, the
+  box's health check flagged it ~5 minutes later and the box restarted
+  the VPN and all five services ~5 minutes after that, even though the
+  tunnel itself was carrying traffic the whole time. Gluetun is updated
+  to 3.41.3, whose release notes fix exactly this ("no longer stuck after
+  failed port forwarding", plus a follow-up deadlock fix), so it gets a
+  new port by itself. The health check still treats a lost port as a
+  problem as a last resort.
+- **The VPN connection is kept alive while idle.** The box now sends a
+  WireGuard keepalive every 25 seconds, as ProtonVPN's own config files
+  ask for; before, gluetun ignored that setting and sent none.
 
 ## [1.10.0] - 2026-10-04
 
