@@ -199,8 +199,11 @@ def _media_browser_locked_response():
 # Test seams. The suite monkeypatches these names ON THIS MODULE
 # (monkeypatch.setattr(admin, "get_free_bytes", ...)); route modules get
 # late-binding shims that look the name up here at call time, so such a patch
-# still reaches every caller. Add a name here if a test needs to patch it
-# for routes that live in an admin_*.py module.
+# still reaches every caller. To make another name patchable as
+# admin.<name> for routes in an admin_*.py module: add it here AND bind it
+# from ctx at the top of that module's register() (`name = ctx.name`).
+# Module STATE (a dict, a Path constant) cannot be shimmed — tests patch
+# those on the module that owns them.
 _ROUTE_SEAMS = (
     "get_free_bytes",
     "_atomic_write_text",
