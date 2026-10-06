@@ -209,6 +209,18 @@ private:
         return static_cast<int>(queue_.size() + tv_.size());
     }
 
+    // The row under the cursor, in the cancel arm's id space (a movie
+    // row's queue id, or a TV group's first queue id). False when the
+    // cursor addresses no row. Shared by SELECT and the footer label.
+    bool focused_row(bool& is_tv, int& id) const {
+        if (cursor_ < 0 || cursor_ >= row_count()) return false;
+        const int movie_rows = static_cast<int>(queue_.size());
+        is_tv = cursor_ >= movie_rows;
+        id = is_tv ? tv_[static_cast<size_t>(cursor_ - movie_rows)].group.first_queue_id
+                   : queue_[static_cast<size_t>(cursor_)].id;
+        return true;
+    }
+
     RadarrClient&      radarr_;
     QbittorrentClient* qbit_ = nullptr;
     SonarrClient*      sonarr_ = nullptr;

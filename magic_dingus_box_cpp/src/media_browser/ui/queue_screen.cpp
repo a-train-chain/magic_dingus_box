@@ -511,14 +511,9 @@ Screen QueueScreen::handle_input(const std::vector<platform::InputEvent>& events
         // in main.cpp. It never reaches here; no per-screen handler needed.
 
         if (e.action == platform::InputAction::SELECT && e.pressed) {
-            if (cursor_ < 0 || cursor_ >= row_count()) continue;
-            const int movie_rows = static_cast<int>(queue_.size());
-            const bool focused_is_tv = cursor_ >= movie_rows;
-            const int focused_id =
-                focused_is_tv
-                    ? tv_[static_cast<size_t>(cursor_ - movie_rows)]
-                          .group.first_queue_id
-                    : queue_[cursor_].id;
+            bool focused_is_tv = false;
+            int focused_id = 0;
+            if (!focused_row(focused_is_tv, focused_id)) continue;
             if (decide_queue_select(cancel_pending_, cancel_pending_is_tv_,
                                     cancel_pending_queue_id_, focused_is_tv,
                                     focused_id) == QueueSelect::Confirm) {
@@ -678,20 +673,10 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
     }
 
-    // --- Footer hint (drawn early so we can reserve the bottom band) -
-    // No background fill, no rule — DetailScreen's footer is a plain
-    // centered dim small-font line, and we match. We compute and draw it
-    // up front so the row-list's available height calc can use the same
-    // y-extent as the visible content.
-    const std::string hint = cancel_pending_
-        ? "SELECT: Confirm Cancel   Rotate: nav   BTN4: back (hold: exit)"
-        : "Rotate: nav   RCLICK / BTN2: cancel   BTN4: back (hold: exit)";
-    const int hint_size = th.font_small_size;
-    const int hint_baseline = r.mb_text_baseline(hint_size);
-    const float hint_y = h - kFooterMarginY - static_cast<float>(hint_size)
-                       + static_cast<float>(hint_baseline);
+    // --- Footer band (the hints themselves are drawn last) ------------
     // Reserve the footer band height (font + a little breathing room
     // above) so list rows don't collide with it.
+    const int hint_size = th.font_small_size;
     const float footer_band_top = h - kFooterMarginY
                                 - static_cast<float>(hint_size) - 8.0f;
 
@@ -1122,16 +1107,19 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // --- Footer hints (Marquee shared style) -------------------------
-    // The bordered-key glyphs from mb_chrome replace the previous
-    // centered text-only hint. Cancel-armed state still surfaces visually
-    // through the "Confirm" text in the rotary key's label.
-    // Identical whether or not a cancel is armed (the armed state shows on
-    // the row itself) — queue_footer_hints.
-    ::media_browser::ui::chrome::draw_footer_hints(r, screen_w, screen_h,
-                                                   queue_footer_hints());
-    (void)hint;
-    (void)hint_size;
-    (void)hint_y;
+    // The rotary press is the two-stage cancel: "Cancel" on a focused row,
+    // "Confirm" while that row is armed (the footer half of the row's
+    // CONFIRM CANCEL box) — queue_footer_hints.
+    bool focused_is_tv = false;
+    int focused_id = 0;
+    const bool has_focused = focused_row(focused_is_tv, focused_id);
+    const bool focused_armed =
+        has_focused &&
+        decide_queue_select(cancel_pending_, cancel_pending_is_tv_,
+                            cancel_pending_queue_id_, focused_is_tv,
+                            focused_id) == QueueSelect::Confirm;
+    ::media_browser::ui::chrome::draw_footer_hints(
+        r, screen_w, screen_h, queue_footer_hints(has_focused, focused_armed));
 }
 
 }  // namespace media_browser::ui

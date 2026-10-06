@@ -204,7 +204,6 @@ private:
 
     Category category_ = Category::Popular;
     Focus focus_ = Focus::PosterGrid;
-    int category_cursor_ = 0;   // Index into the top strip when Focus::CategoryStrip.
     int grid_cursor_ = 0;       // Flat index into movies_ when Focus::PosterGrid.
     int scroll_row_ = 0;        // Topmost visible row index.
 

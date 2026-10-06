@@ -355,7 +355,21 @@ TEST_CASE("queue view: awaiting section", "[queue_view]") {
     CHECK(awaiting_row_label(awaiting[1], true) ==
           "Untitled Project" + kBullet + "Searching indexers now\xE2\x80\xA6");
 
-    const auto hints = queue_footer_hints();
+    const auto hints = queue_footer_hints(true, false);
     REQUIRE(hints.size() == 6);
     CHECK(hints[4].action == "Browse");
+}
+
+TEST_CASE("Queue footer: the rotary press reads Cancel, then Confirm when armed",
+          "[queue_view]") {
+    // Index 5 is the rotary press — the two-stage cancel's only control.
+    CHECK(queue_footer_hints(true, false)[5].action == "Cancel");
+    CHECK(queue_footer_hints(true, true)[5].action == "Confirm");
+    // Nothing focused (empty queue): a no-op, drawn dim.
+    CHECK(queue_footer_hints(false, false)[5].action == "\xE2\x80\x94");
+    CHECK(queue_footer_hints(false, true)[5].action == "\xE2\x80\x94");
+    // The armed state changes only that key.
+    const auto a = queue_footer_hints(true, false);
+    const auto b = queue_footer_hints(true, true);
+    for (size_t i = 0; i < 5; ++i) CHECK(a[i].action == b[i].action);
 }
