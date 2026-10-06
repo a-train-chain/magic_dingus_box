@@ -75,6 +75,26 @@ Tests:
 
 See [`tests/README.md`](tests/README.md) for tiers, helpers, and the pre-image gate.
 
+Shell lint (the same blocking gate CI runs — every tracked shell script at
+`shellcheck -S info`; config in [`.shellcheckrc`](.shellcheckrc)):
+
+```bash
+./tests/shellcheck_gate.sh
+```
+
+Fleet check — run every box's own `verify_box.sh` acceptance test in
+parallel and get one table (strictly read-only on the boxes):
+
+```bash
+./scripts/fleet_check.sh magic@10.0.0.227 magic@magicpi-ab12.local
+./scripts/fleet_check.sh --hosts fleet.txt --with-services -j 8   # one host per line, # comments
+```
+
+It prints host / board / version / update channel / uptime /
+pass-warn-fail counts / result / first failing check, and exits non-zero
+if any box is not shippable or unreachable. `--log-dir DIR` keeps each
+box's full output.
+
 ## Build & dependencies
 
 The kiosk engine must build and run on **both Raspberry Pi 4B and Raspberry Pi 5** — one golden image and one release artifact serve both board types, with per-board behavior resolved at runtime (`platform::PlatformProfile`) and Pi 5-only features (N64/Dreamcast emulation) gated off on the Pi 4. See the "Dual-board contract" section in [CLAUDE.md](CLAUDE.md) before adding features. The kiosk engine targets Raspberry Pi OS Lite 64-bit on **Trixie (Debian 13)**. Bookworm is no longer supported as of v1.7.0 — the Pi 5 groundwork (2026-07-20) moved `gpio_manager` to the libgpiod 2.x API, which Bookworm does not ship, and the CI release binary links Trixie's glibc. **v1.6.4 is the last Bookworm-compatible release**; Bookworm-era Pi 4B units cannot OTA past it (the update fails cleanly and rolls back) and need an OS migration to rejoin the release train. Required system packages — install via [`magic_dingus_box_cpp/scripts/install_deps.sh`](magic_dingus_box_cpp/scripts/install_deps.sh):

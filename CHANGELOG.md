@@ -29,6 +29,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one that delivers it, because a box always updates using the updater it
   already has.
 
+### Tooling
+- **Blocking ShellCheck gate over every shell script.** New
+  `tests/shellcheck_gate.sh` lints every tracked `*.sh`/`*.bash` file and
+  extensionless sh/bash-shebang script at `-S info` (ShellCheck pinned to
+  0.11.0 in CI, new test-local.yml `shellcheck` job — release.yml runs it,
+  so a finding blocks a release). Repo-wide exclusions, each justified, are
+  in the new `.shellcheckrc` (SC2029, SC2012, SC2015); deliberate one-off
+  patterns carry an inline reasoned disable. test-ota.yml's non-blocking
+  `shellcheck update.sh || true` is gone. In-scope findings went from 118
+  (49 at warning or above) to 0 — 45 covered by the three repo-wide
+  exclusions, the rest fixed or justified inline — with no behavior change
+  on any box; two real bugs in dev-only scripts
+  were fixed: `web/run_tests.sh --stress` died at a top-level `local`
+  under `set -e`, and `test_audio.sh` wrote every driver's config to the
+  same file (`$driver_` is an unset variable). `update.sh`'s comment now
+  says `MAGIC_DRY_RUN` is inert (nothing ever consulted it).
+- **`scripts/fleet_check.sh`** (Mac-side): runs each box's own
+  `verify_box.sh` over ssh in parallel (bounded `-j`, ssh
+  `ConnectTimeout`), reads board, VERSION, update channel and uptime, and
+  prints one table — host / board / version / channel / uptime /
+  pass-warn-fail / result / first failing check. `--hosts FILE`,
+  `--with-services`, `--log-dir`. Strictly read-only on the boxes; exits
+  non-zero if any box is not shippable or unreachable. Now a pre-tag step
+  in `RELEASING.md`.
+- Design note for splitting `update.sh` safely (which updater actually
+  runs during an OTA, and an incremental, rehearsed plan):
+  `docs/superpowers/specs/2026-10-05-update-sh-split-design.md`. No code
+  moved yet.
+
 ## [1.10.0] - 2026-10-04
 
 ### Security
