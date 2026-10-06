@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "media_browser/series_mutations.h"
 #include "media_browser/sonarr/sonarr_types.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/episode_logic.h"
@@ -35,9 +36,13 @@ namespace media_browser::ui {
 //
 // Deliberately Radarr-free: everything mutating is SonarrClient-shaped,
 // the mirror image of DetailScreen being Radarr-shaped — the two screens
-// share chrome helpers and idioms, never clients. All decisions live in
-// series_detail_logic.h (pure, Mac-tested); this class is transport +
-// paint.
+// share chrome helpers and idioms, never clients. The decisions live in
+// three Mac-tested units: series_detail_logic.h (page state, season merge,
+// action row, disk verdict, deferred start), series_detail_view.h (row and
+// footer text, paging, the rotary/paging/SELECT input mapping) and
+// ../series_mutations.h (the mutation workers' Sonarr sequences and their
+// toasts; the per-season delete is ../season_delete.h). This class is
+// thread plumbing + paint: it spawns, drains and draws.
 class SeriesDetailScreen : public MbScreen {
 public:
     // watch is nullable (null-safe: no resume points, no ✓/▶ glyphs, no
@@ -208,27 +213,13 @@ private:
     // Season 1 when another season was chosen; an unsettled add stops with
     // a "choose the season again" toast instead.
     void start_add_at_season(int season);
-    // WORKER thread. One get_episodes_checked + one bulk PUT re-monitoring
-    // every episode of `seasons`. Probe P3: season->episode monitoring does
-    // NOT cascade and SeasonSearch skips unmonitored episodes, so EVERY
-    // path that monitors a season in order to download it needs this — it
-    // is a shared helper because it once lived inline in only one of the
-    // two, and "Whole series…" silently downloaded nothing for a
-    // previously deleted season.
-    //
-    // Returns nullopt for a real failure (the read failed or the PUT was
-    // refused); otherwise the number of episode ids actually monitored,
-    // which callers use to distinguish "nothing to do" from "suspiciously
-    // nothing" — the split contract, by call site:
-    //   - whole-series worker: 0 is tolerated (an announced-but-unaired
-    //     season legitimately has no episode records).
-    //   - start_season_download: 0 is suspicious. The season came from a
-    //     row the user can see, so an empty read is more likely
-    //     get_episodes_checked's documented engaged-but-empty
-    //     misclassification (malformed body, or a series id Sonarr no
-    //     longer knows) than a real absence of episodes.
-    std::optional<int> monitor_episodes_for_seasons(
-        int sonarr_id, const std::vector<int>& seasons);
+    // The worker BODIES behind start_season_download, start_add_at_season,
+    // Whole series… (both presses) and Remove — including the shared probe-P3
+    // episode re-monitor (monitor_episodes_for_seasons) and Quick Start's E1
+    // search — live in series_mutations.{h,cpp}, unit-tested. Each worker
+    // hands its SeriesMutationOutcome to publish_mutation, which copies it
+    // into the mut_* block below under mut_mtx_. WORKER thread.
+    void publish_mutation(SeriesMutationOutcome out);
 
     // ONE mutation at a time, on ONE reused worker thread (WatchdogSec=10:
     // add_series alone can take ~13.5 s — never on the render thread).

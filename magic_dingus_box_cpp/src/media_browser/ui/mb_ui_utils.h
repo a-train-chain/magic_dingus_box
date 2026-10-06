@@ -43,6 +43,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "ui/theme.h"  // ::ui::Color
 
@@ -232,6 +233,10 @@ float ease_out_cubic(float t);
 //     TB branch is a two-line change plus that test's expectation if drive
 //     sizes ever make it worth doing.
 std::string format_bytes(int64_t bytes);
+
+// Up to `max` genre names joined with " · " — the PlayTarget/overlay genre
+// line both detail screens hand to Playback (DetailScreen's precedent).
+std::string join_genres(const std::vector<std::string>& genres, size_t max = 3);
 
 // Detail-screen copy shown while the informational availability probe runs.
 // Kept renderer-free so the exact user guidance can be unit-tested.

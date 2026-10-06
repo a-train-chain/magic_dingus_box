@@ -293,6 +293,9 @@ if(BUILD_KIOSK)
             # SeriesDetail's Delete Season N sequence — same dual-list
             # arrangement as movie_remove.cpp.
             src/media_browser/season_delete.cpp
+            # SeriesDetail's other mutation-worker bodies (Download/Add
+            # Season N, Whole series, Remove) — same dual-list arrangement.
+            src/media_browser/series_mutations.cpp
             # Renderer-free, so it is ALSO in MEDIA_BROWSER_SOURCES and gets
             # unit-tested — but library_screen.cpp calls into it, so the kiosk
             # binary needs its own copy here or the link fails on an undefined
@@ -491,6 +494,7 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/service_gate.cpp
         src/media_browser/movie_remove.cpp
         src/media_browser/season_delete.cpp
+        src/media_browser/series_mutations.cpp
         src/platform/sequence_detector.cpp
         # Pure UI helpers shared by every Marquee screen. Deliberately has no
         # ::ui::Renderer dependency (Renderer pulls in GLES, which does not
@@ -565,6 +569,12 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_service_gate.cpp
         tests/media_browser/test_movie_remove.cpp
         tests/media_browser/test_season_delete.cpp
+        tests/media_browser/test_series_mutations.cpp
+        tests/media_browser/test_series_detail_view.cpp
+        tests/media_browser/test_detail_logic.cpp
+        tests/media_browser/test_browse_view.cpp
+        tests/media_browser/test_queue_view.cpp
+        tests/media_browser/test_playback_view.cpp
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp

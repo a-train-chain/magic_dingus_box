@@ -14,6 +14,7 @@ namespace media_browser { class QbittorrentClient; }
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/queue_groups.h"
+#include "media_browser/ui/queue_view.h"
 
 namespace media_browser { class RadarrClient; }
 namespace media_browser { class SonarrClient; }
@@ -170,14 +171,10 @@ private:
     // live telemetry the qBit overlay supplies. The telemetry lives here
     // rather than on TvQueueGroup so queue_groups.h stays a pure,
     // Renderer-free, network-free grouping helper.
-    struct TvQueueRow {
-        TvQueueGroup group;      // size/sizeleft/status updated by the overlay
-        double progress = 0.0;
-        int download_rate_bps = 0;
-        int peers = 0;
-        int seeds = 0;
-        int eta_seconds = 0;
-    };
+    // One TV download row (the collapsed group + live telemetry) — defined
+    // in queue_view.h so the refresh worker's pure passes over it are
+    // Mac-testable; this alias keeps the screen's spelling.
+    using TvQueueRow = ::media_browser::ui::TvQueueRow;
 
     // Refresh cadence. With the new async path the UI never blocks on
     // a refresh, so we can poll faster — 1.5s gives the user a

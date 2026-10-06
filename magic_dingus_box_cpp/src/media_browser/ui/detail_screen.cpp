@@ -96,43 +96,6 @@ constexpr float kButtonMarkerW   = 30.0f;
 // render time and lets truncate_wrapped add "..." when content actually
 // overflows.
 
-// Format runtime as "2h 15m", "95m" (under an hour), "2h" (no minutes), or
-// "N/A" when zero/missing.
-std::string format_runtime(int minutes) {
-    if (minutes <= 0) return "N/A";
-    int h = minutes / 60;
-    int m = minutes % 60;
-    if (h == 0) return std::to_string(m) + "m";
-    std::ostringstream os;
-    os << h << "h";
-    if (m > 0) os << " " << m << "m";
-    return os.str();
-}
-
-// Format rating as e.g. "7.4" (one decimal). Empty string if unrated.
-std::string format_rating(double rating) {
-    if (rating <= 0.0) return "";
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%.1f", rating);
-    return buf;
-}
-
-// Compact vote-count formatter: 120 -> "120", 1234 -> "1.2k",
-// 15000 -> "15k", 1500000 -> "1M".
-std::string format_vote_count(int n) {
-    if (n < 1000) return std::to_string(n);
-    if (n < 10000) {
-        // Two-significant-digit format like "1.2k".
-        int whole = n / 1000;
-        int tenth = (n % 1000) / 100;
-        std::ostringstream os;
-        os << whole << "." << tenth << "k";
-        return os.str();
-    }
-    if (n < 1000000) return std::to_string(n / 1000) + "k";
-    return std::to_string(n / 1000000) + "M";
-}
-
 // Cap an already-wrapped vector of lines at max_lines, appending ellipsis
 // to the (now last) line if truncation occurred. Width-aware: tries to
 // keep the ellipsis from overflowing the wrap width.
@@ -147,16 +110,6 @@ void truncate_wrapped(::ui::Renderer& r, std::vector<std::string>& lines,
         ::ui::utf8_pop_back(last);
     }
     last += "...";
-}
-
-// Join names with " · " (middle dot). Preserves order. Used for cast list.
-std::string join_with_bullet(const std::vector<std::string>& items) {
-    std::string out;
-    for (size_t i = 0; i < items.size(); ++i) {
-        if (i > 0) out += "  \xE2\x80\xA2  ";  // U+2022
-        out += items[i];
-    }
-    return out;
 }
 
 }  // namespace
@@ -189,9 +142,7 @@ void DetailScreen::enter() {
     // movie-change still triggers a fresh fetch. do_retry() and the
     // post-add path call fetch() directly, bypassing this short-circuit
     // when they explicitly want a reload.
-    const bool have_loaded_data = (mode_ != Mode::Loading
-                                && mode_ != Mode::Error
-                                && mode_ != Mode::NoTmdb);
+    const bool have_loaded_data = detail_has_loaded_data(mode_);
     if (!needs_refresh_ && have_loaded_data) {
         spdlog::info("[DetailScreen] enter: reusing cached data for tmdb_id={}",
                      tmdb_id_);
@@ -380,17 +331,13 @@ void DetailScreen::apply_pending_detail() {
     }
     tmdb_detail_ = std::move(incoming.detail);
 
-    const Movie* found = nullptr;
-    if (incoming.library_ok) {
-        for (const auto& m : incoming.library) {
-            if (m.tmdb_id == tmdb_id_) { found = &m; break; }
-        }
-    }
+    const Movie* found = incoming.library_ok
+        ? find_movie_by_tmdb(incoming.library, tmdb_id_)
+        : nullptr;
 
+    mode_ = mode_for_library_match(found);
     if (found) {
         movie_ = *found;
-        mode_ = found->has_file ? Mode::InLibraryWithFile
-                                : Mode::InLibraryNoFile;
         // Backfill the watchdog with the now-known radarr id. The Add to
         // Library flow registers a watch before Radarr's POST surfaces a
         // movie id; without this upgrade, any subsequent stall event
@@ -406,8 +353,6 @@ void DetailScreen::apply_pending_detail() {
         // set it if the queue shows an import underway.
         last_library_poll_at_ = std::chrono::steady_clock::now();
         import_in_progress_ = false;
-    } else {
-        mode_ = Mode::NotInLibrary;
     }
 
     if (incoming.profiles_ok) {
@@ -523,14 +468,7 @@ void DetailScreen::run_library_poll(uint64_t gen, int radarr_id) {
     // MONITORED banner) rather than erroring the poll.
     if (r.ok && r.movie && !r.movie->has_file) {
         if (const auto queue = radarr_.get_queue_checked()) {
-            for (const auto& qi : *queue) {
-                if (qi.movie_id != radarr_id) continue;
-                if (qi.tracked_download_state == "importing" ||
-                    qi.tracked_download_state == "importPending") {
-                    r.import_active = true;
-                }
-                break;
-            }
+            r.import_active = queue_shows_import(*queue, radarr_id);
         }
     }
     if (gen != lib_poll_gen_.load()) return;
@@ -562,10 +500,11 @@ void DetailScreen::apply_library_poll() {
     // Backstop: only apply while awaiting a file. If the user hit Retry or
     // navigated to a different movie (both set Mode::Loading via fetch),
     // this stale result must not clobber the new state.
-    if (mode_ != Mode::InLibraryNoFile) return;
-    if (!r.ok || !r.movie.has_value()) return;
+    const LibraryPollStep step = decide_library_poll(
+        mode_, r.ok, r.movie.has_value(), r.movie.has_value() && r.movie->has_file);
+    if (step == LibraryPollStep::Ignore) return;
 
-    if (r.movie->has_file) {
+    if (step == LibraryPollStep::FileLanded) {
         // The file landed. Swap in the FRESH record (its now-populated
         // file_container_path is required by get_play_target/do_play) and
         // flip to the Play state. Toast so the user knows it's ready even
@@ -609,53 +548,15 @@ DetailScreen::~DetailScreen() {
 }
 
 void DetailScreen::rebuild_buttons() {
-    buttons_.clear();
-    switch (mode_) {
-        case Mode::Loading:
-        case Mode::NoTmdb:
-            // No actions available.
-            break;
-        case Mode::Error:
-            buttons_.push_back({Action::Retry, "Retry"});
-            break;
-        case Mode::NotInLibrary:
-            buttons_.push_back({Action::AddToLibrary, "Add to Library"});
-            buttons_.push_back({Action::MoreInfo, "More Info"});
-            break;
-        case Mode::InLibraryNoFile:
-            buttons_.push_back({Action::SearchAgain, "Search Again"});
-            // "Pick a source" — gated on the movie being in the library
-            // because Radarr's POST /api/v3/release endpoint requires
-            // indexerId, which we only get from
-            // get_releases_for_movie(radarr_movie_id) — see Task 13. With
-            // no radarr_id we have no way to fetch a list of grabbable
-            // releases.
-            buttons_.push_back({Action::PickSource, "Pick a source"});
-            buttons_.push_back(remove_pending_
-                               ? Button{Action::ConfirmRemove, "Confirm Remove"}
-                               : Button{Action::Remove, "Remove"});
-            break;
-        case Mode::InLibraryWithFile:
-            // Only offer Play when the file is TRULY ready — resolvable +
-            // present on the host SSD, not just hasFile=true in Radarr's
-            // cache. During the brief import-copy window (or a mount
-            // hiccup) hasFile can be true before the file is actually
-            // playable; offering Play then lands the user back here with a
-            // "File missing" banner. play_ready() is the same predicate
-            // do_play() enforces, so the button and the action agree.
-            if (play_ready()) {
-                buttons_.push_back({Action::Play, "Play"});
-            }
-            buttons_.push_back({Action::PickSource, "Pick a source"});
-            buttons_.push_back(remove_pending_
-                               ? Button{Action::ConfirmRemove, "Confirm Remove"}
-                               : Button{Action::Remove, "Remove"});
-            break;
-    }
-    if (focus_ < 0) focus_ = 0;
-    if (!buttons_.empty() && focus_ >= static_cast<int>(buttons_.size())) {
-        focus_ = static_cast<int>(buttons_.size()) - 1;
-    }
+    // The row for each mode is decide_detail_buttons (detail_logic.h). Play
+    // is offered only when the file is TRULY ready — resolvable + present
+    // on the host SSD, not just hasFile=true in Radarr's cache — and
+    // play_ready() stats the disk, so it is evaluated only for the one mode
+    // that asks. It is the same predicate do_play() enforces, so the
+    // button and the action agree.
+    const bool ready = mode_ == Mode::InLibraryWithFile && play_ready();
+    buttons_ = decide_detail_buttons(mode_, remove_pending_, ready);
+    focus_ = clamp_detail_focus(focus_, static_cast<int>(buttons_.size()));
 }
 
 uint64_t DetailScreen::redraw_signature() const {
@@ -768,16 +669,19 @@ Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& event
 Screen DetailScreen::on_activate() {
     // While a remove runs, every action is a no-op — acting on a movie
     // that is mid-deletion can only produce inconsistent state.
-    if (remove_in_flight_.load(std::memory_order_acquire)) {
+    const DetailActivateGate gate = decide_detail_activate(
+        remove_in_flight_.load(std::memory_order_acquire),
+        add_in_flight_.load(std::memory_order_acquire),
+        static_cast<int>(buttons_.size()), focus_);
+    if (gate == DetailActivateGate::Removing) {
         show_banner("Removing…");
         return Screen::Detail;
     }
-    if (add_in_flight_.load(std::memory_order_acquire)) {
+    if (gate == DetailActivateGate::Adding) {
         show_banner("Adding…");
         return Screen::Detail;
     }
-    if (buttons_.empty()) return Screen::Detail;
-    if (focus_ < 0 || focus_ >= static_cast<int>(buttons_.size())) return Screen::Detail;
+    if (gate == DetailActivateGate::Nothing) return Screen::Detail;
     const Action act = buttons_[focus_].action;
     switch (act) {
         case Action::AddToLibrary:   return do_add_to_library();
@@ -793,28 +697,9 @@ Screen DetailScreen::on_activate() {
 }
 
 int DetailScreen::pick_quality_profile_id() const {
-    // Default to "Any" — most permissive profile, accepts whatever the
-    // indexer ships. The kiosk has 29 GB of USB storage so disk pressure
-    // matters less than getting the movie at all. Power users can switch
-    // to HD-1080p / Ultra-HD via Radarr's web UI for movies they want at
-    // a specific quality. Without this, popular older / public-domain
-    // titles (only available as Bluray-720p on YTS) silently fail to
-    // grab even after a successful Add.
-    for (const auto& p : profiles_) {
-        if (p.name == "Any") return p.id;
-    }
-    // Fallback search order if "Any" is missing for some reason.
-    for (const auto& p : profiles_) {
-        if (p.name == "HD - 720p/1080p") return p.id;
-    }
-    for (const auto& p : profiles_) {
-        if (p.name == "HD-1080p") return p.id;
-    }
-    for (const auto& p : profiles_) {
-        if (p.name.find("1080p") != std::string::npos) return p.id;
-    }
-    if (!profiles_.empty()) return profiles_.front().id;
-    return 0;
+    // "Any" first — most permissive, accepts whatever the indexer ships;
+    // see pick_movie_quality_profile_id for the fallback order and why.
+    return pick_movie_quality_profile_id(profiles_);
 }
 
 Screen DetailScreen::do_add_to_library() {
@@ -835,17 +720,13 @@ Screen DetailScreen::do_add_to_library() {
     // adding a small WEB-DL release and 10GB is plenty — but we make
     // the situation visible so they can pre-emptively clean up.
     {
-        constexpr int64_t kWarnFreeBytes = 15LL * 1024 * 1024 * 1024;  // 15 GB
+        // The <15 GB rule and its copy are low_space_warning's.
         std::error_code ec;
         auto info = std::filesystem::space("/mnt/ssd/library", ec);
-        if (!ec && info.available > 0) {
-            if (static_cast<int64_t>(info.available) < kWarnFreeBytes) {
-                int gb_free = static_cast<int>(info.available
-                                               / (1024 * 1024 * 1024));
-                ::ui::Toast::show(
-                    "Warning: only " + std::to_string(gb_free)
-                    + " GB free — large releases may fail to import");
-            }
+        if (const auto warn = low_space_warning(
+                ec ? std::nullopt
+                   : std::optional<std::uintmax_t>(info.available))) {
+            ::ui::Toast::show(*warn);
         }
         // ec != 0 (mount missing, perms, etc.) is silently ignored.
         // The kiosk doesn't own the mount lifecycle; surfacing every
@@ -888,7 +769,8 @@ Screen DetailScreen::drain_add_result() {
     if (!add_done_.exchange(false, std::memory_order_acq_rel)) {
         return Screen::Detail;
     }
-    if (!add_ok_) {
+    const AddDrain drain = decide_add_drain(add_ok_, tmdb_id_, add_tmdb_id_);
+    if (drain == AddDrain::Failed) {
         // Keep the in-screen banner and also surface a top-level toast so
         // the failure is visible outside the action button row context.
         show_banner("Add failed — see Radarr logs");
@@ -897,7 +779,7 @@ Screen DetailScreen::drain_add_result() {
     }
     // The user may have opened a different movie while the POST ran —
     // don't register a watch or navigate over the new record.
-    if (tmdb_id_ != add_tmdb_id_) {
+    if (drain == AddDrain::OtherMovie) {
         ::ui::Toast::show("Added to library — downloading");
         return Screen::Detail;
     }
@@ -967,15 +849,11 @@ void DetailScreen::drain_search_result() {
     if (!search_done_.exchange(false, std::memory_order_acq_rel)) return;
     const bool same_movie =
         movie_.has_value() && movie_->radarr_id == search_radarr_id_;
-    if (search_ok_) {
-        if (same_movie) show_banner("Search triggered");
-        return;
-    }
-    // A failure is worth a toast even when the user has moved on: they
-    // asked for a search and none is running.
-    if (same_movie) show_banner("Search failed");
-    ::ui::Toast::show("Search didn't start \xE2\x80\x94 Radarr didn't answer; "
-                      "try again");
+    // A failure is toasted even when the user has moved on: they asked for
+    // a search and none is running (decide_search_drain).
+    const SearchDrainView v = decide_search_drain(search_ok_, same_movie);
+    if (v.banner.has_value()) show_banner(*v.banner);
+    if (v.toast) ::ui::Toast::show(search_failed_toast());
 }
 
 Screen DetailScreen::do_remove_stage1() {
@@ -1026,7 +904,10 @@ Screen DetailScreen::drain_remove_result() {
     if (!remove_done_.exchange(false, std::memory_order_acq_rel)) {
         return Screen::Detail;
     }
-    if (!remove_ok_) {
+    const RemoveDrain drain = decide_remove_drain(
+        remove_ok_, movie_.has_value(),
+        movie_.has_value() ? movie_->radarr_id : 0, remove_radarr_id_);
+    if (drain == RemoveDrain::Failed) {
         show_banner(remove_error_);
         rebuild_buttons();
         return Screen::Detail;
@@ -1034,7 +915,7 @@ Screen DetailScreen::drain_remove_result() {
     // Same-movie guard: the user may have backed out and opened a
     // DIFFERENT movie while the worker ran — never clobber that record's
     // state or yank the user to Library over it.
-    if (movie_.has_value() && movie_->radarr_id != remove_radarr_id_) {
+    if (drain == RemoveDrain::OtherMovie) {
         return Screen::Detail;
     }
     // Invalidate our cached movie record + force a refetch on the next
@@ -1093,11 +974,7 @@ DetailScreen::PlayTarget DetailScreen::get_play_target() const {
 
     pt.host_path = radarr_.resolve_host_path(movie_->file_container_path);
     // Prefer the rich TMDB title if available; fall back to the Radarr title.
-    if (tmdb_detail_.has_value() && !tmdb_detail_->title.empty()) {
-        pt.title = tmdb_detail_->title;
-    } else {
-        pt.title = movie_->title;
-    }
+    pt.title = detail_play_title(tmdb_detail_, *movie_);
 
     // Populate overlay metadata from TMDB detail when available.
     // PlaybackScreen uses this to render the similar-films panel.
@@ -1109,10 +986,7 @@ DetailScreen::PlayTarget DetailScreen::get_play_target() const {
         pt.synopsis    = d.overview;
         pt.poster_url  = d.poster_path;
         // Format up to 3 genre names joined with " · ".
-        for (size_t i = 0; i < d.genres.size() && i < 3; ++i) {
-            if (i > 0) pt.genres += " \xC2\xB7 ";  // UTF-8 middle dot
-            pt.genres += d.genres[i];
-        }
+        pt.genres = join_genres(d.genres, 3);
         // Cast: carry top 5 names (overlay truncates further if needed).
         for (size_t i = 0; i < d.cast_top.size() && i < 5; ++i) {
             pt.cast.push_back(d.cast_top[i]);
@@ -1256,34 +1130,19 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // --- Pull metadata once (Error state may have nullopt detail) ----
-    std::string title, tagline, overview, language;
-    int year = 0, runtime = 0, vote_count = 0;
-    double rating = 0.0;
-    std::vector<std::string> genres, cast_top, directors;
-    std::string poster_url;
-    if (tmdb_detail_.has_value()) {
-        title       = tmdb_detail_->title;
-        tagline     = tmdb_detail_->tagline;
-        overview    = tmdb_detail_->overview;
-        language    = tmdb_detail_->original_language;
-        year        = tmdb_detail_->year;
-        runtime     = tmdb_detail_->runtime_minutes;
-        rating      = tmdb_detail_->rating;
-        vote_count  = tmdb_detail_->vote_count;
-        genres      = tmdb_detail_->genres;
-        cast_top    = tmdb_detail_->cast_top;
-        directors   = tmdb_detail_->directors;
-        poster_url  = tmdb_detail_->poster_path;
-    }
-    if (title.empty() && movie_.has_value()) {
-        title    = movie_->title;
-        year     = movie_->year;
-        rating   = movie_->rating;
-        runtime  = movie_->runtime_minutes;
-        overview = movie_->overview;
-        if (poster_url.empty()) poster_url = movie_->poster_url;
-    }
-    if (title.empty()) title = "Untitled";
+    // TMDB first, the Radarr record as fallback, "Untitled" last
+    // (resolve_detail_display).
+    const DetailDisplay disp = resolve_detail_display(tmdb_detail_, movie_);
+    const std::string& title = disp.title;
+    const std::string& tagline = disp.tagline;
+    const std::string& overview = disp.overview;
+    const std::string& language = disp.language;
+    const int year = disp.year, runtime = disp.runtime, vote_count = disp.vote_count;
+    const double rating = disp.rating;
+    const std::vector<std::string>& genres = disp.genres;
+    const std::vector<std::string>& cast_top = disp.cast_top;
+    const std::vector<std::string>& directors = disp.directors;
+    const std::string& poster_url = disp.poster_url;
 
     // --- Top header bar (Marquee chrome) -----------------------------
     // "Feature Presentation" title (left, ZenDots) + sub-info on the
@@ -1304,14 +1163,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // Build a compact sub-info: "1999 · BTN4 back" (or just back-hint
         // if year is missing). Fits in the right side of the header band
         // in 14 px dim mono — same treatment Queue uses for its sub-info.
-        std::string sub_info;
-        if (year > 0) {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%d  ·  BTN4 back", year);
-            sub_info = buf;
-        } else {
-            sub_info = "BTN4 back";
-        }
+        const std::string sub_info = detail_header_sub_info(year);
         const int header_bottom = chrome::draw_screen_header(
             r, screen_w, "Feature Presentation",
             /*tabs=*/{}, /*focused_tab=*/-1,
@@ -1373,28 +1225,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int meta_size = th.font_medium_size;
         int meta_baseline = r.mb_text_baseline(meta_size);
 
-        std::ostringstream meta_os;
-        bool first = true;
-        if (year > 0) {
-            meta_os << year;
-            first = false;
-        }
-        std::string runtime_str = format_runtime(runtime);
-        if (runtime_str != "N/A") {
-            if (!first) meta_os << "  \xE2\x80\xA2  ";
-            meta_os << runtime_str;
-            first = false;
-        }
-        if (!language.empty()) {
-            if (!first) meta_os << "  \xE2\x80\xA2  ";
-            // Capitalize the 2-letter language code for retro flair (en → EN).
-            std::string lang_upper = language;
-            for (auto& c : lang_upper) {
-                if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
-            }
-            meta_os << lang_upper;
-        }
-        std::string meta = meta_os.str();
+        const std::string meta = detail_meta_line(year, runtime, language);
 
         cursor_y += static_cast<float>(meta_baseline);
         if (!meta.empty()) {
@@ -1418,7 +1249,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             if (vote_count > 0) {
                 int sm = th.font_small_size;
                 int sm_baseline = r.mb_text_baseline(sm);
-                std::string votes = "(" + format_vote_count(vote_count) + " votes)";
+                std::string votes = detail_votes_text(vote_count);
                 int vw = r.mb_text_width(votes, sm);
                 float vx = col_x + col_w - static_cast<float>(vw);
                 float vy = cursor_y - static_cast<float>(meta_baseline)
@@ -1452,51 +1283,21 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                              + 2.0f * ::ui::overlay::kBannerPadY;
 
         std::string label = "AVAILABILITY";
-        ::ui::Color border_col = th.dim;
-        ::ui::Color text_col   = th.dim;
-        std::string body;
-        float text_alpha = 0.85f;
-
-        switch (prowlarr_->state()) {
-            case ProwlarrClient::State::Idle:
-            case ProwlarrClient::State::Searching: {
-                body = availability_searching_message();
-                border_col = th.dim;
-                text_col   = th.dim;
-                break;
-            }
-            case ProwlarrClient::State::Failed: {
-                body = "Sources unavailable: " + prowlarr_->peek_error();
-                border_col = th.highlight2;
-                text_col   = th.highlight2;
-                text_alpha = 0.95f;
-                break;
-            }
-            case ProwlarrClient::State::Ready: {
-                auto sum = prowlarr_->peek_result();
-                if (!sum || sum->total_releases == 0) {
-                    body = "No sources found  \xE2\x80\xA2  "
-                           "Add anyway and Radarr will keep watching";
-                    border_col = th.highlight2;
-                    text_col   = th.highlight2;
-                    text_alpha = 0.95f;
-                } else {
-                    char buf[160];
-                    snprintf(buf, sizeof(buf),
-                             "%d seeders (best)  \xE2\x80\xA2  "
-                             "%d releases  \xE2\x80\xA2  "
-                             "%d total seeders",
-                             sum->best_seeders,
-                             sum->total_releases,
-                             sum->total_seeders);
-                    body = buf;
-                    border_col = th.highlight1;  // green
-                    text_col   = th.highlight1;
-                    text_alpha = 0.95f;
-                }
-                break;
-            }
-        }
+        // Body, tone and alpha per Prowlarr state are availability_view's;
+        // the error string is peeked only for Failed, the summary only for
+        // Ready.
+        const ProwlarrClient::State pstate = prowlarr_->state();
+        const AvailabilityView av = availability_view(
+            pstate,
+            pstate == ProwlarrClient::State::Failed ? prowlarr_->peek_error()
+                                                    : std::string(),
+            pstate == ProwlarrClient::State::Ready
+                ? prowlarr_->peek_result()
+                : std::optional<ReleaseSummary>());
+        const std::string& body = av.body;
+        const ::ui::Color& border_col = tone_color(th, av.tone);
+        const ::ui::Color& text_col = border_col;
+        const float text_alpha = av.alpha;
 
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
                          2.0f, border_col, 0.9f);
@@ -1517,8 +1318,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // can't reach peers, so torrents will sit at 0% indefinitely.
     // Telling the user up front avoids the "I added it 10 minutes ago,
     // why is nothing happening?" puzzle.
-    if (vpn_healthy_provider_ && !vpn_healthy_provider_() &&
-        (mode_ == Mode::NotInLibrary || mode_ == Mode::InLibraryNoFile)) {
+    if (vpn_healthy_provider_ &&
+        vpn_banner_applies(true, vpn_healthy_provider_(), mode_)) {
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         cursor_y += 12.0f;
@@ -1526,9 +1327,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                              + 2.0f * ::ui::overlay::kBannerPadY;
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
                          2.0f, th.highlight2, 0.95f);
-        std::string txt =
-            "VPN TUNNEL DOWN  \xE2\x80\xA2  Adds will queue but torrents "
-            "won't transfer until the tunnel comes back";
+        std::string txt = vpn_down_banner_text();
         std::string drawn = truncate_to_width(r, txt, sz, col_w - 2.0f * ::ui::overlay::kBannerPadX);
         r.mb_draw_text(drawn, col_x + static_cast<float>(::ui::overlay::kBannerPadX),
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
@@ -1565,19 +1364,9 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // interim signal.
         const bool prerelease =
             movie_.has_value() && likely_prerelease_fakes_only(*movie_);
-        ::ui::Color state_col = import_in_progress_ ? th.highlight1
-                              : prerelease          ? th.highlight2
-                                                    : th.dim;
-        std::string txt = import_in_progress_
-            ? std::string("DOWNLOADED  \xE2\x80\xA2  Importing to library — "
-                          "ready to play in a few seconds")
-            : prerelease
-            ? std::string("IN THEATERS  \xE2\x80\xA2  No digital release "
-                          "exists yet — downloads found now are almost "
-                          "always fakes; the real one lands automatically")
-            : std::string("MONITORED  \xE2\x80\xA2  Radarr re-checks indexers "
-                          "every 30 minutes and will auto-download when "
-                          "seeders appear");
+        const BannerView bv = awaiting_file_banner(import_in_progress_, prerelease);
+        const ::ui::Color& state_col = tone_color(th, bv.tone);
+        const std::string& txt = bv.text;
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
                          2.0f, state_col, 0.9f);
         std::string drawn = truncate_to_width(r, txt, sz, col_w - 2.0f * ::ui::overlay::kBannerPadX);
@@ -1599,10 +1388,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         cursor_y += 12.0f;
         const float banner_h = static_cast<float>(sz)
                              + 2.0f * ::ui::overlay::kBannerPadY;
-        std::string txt = "FILE LOOKS WRONG  \xE2\x80\xA2  " +
-            std::to_string(movie_->file_runtime_minutes) + " min file vs " +
-            std::to_string(movie_->runtime_minutes) + " min expected — "
-            "probably not the real movie (use Remove, then re-add)";
+        std::string txt = runtime_mismatch_text(movie_->file_runtime_minutes,
+                                                movie_->runtime_minutes);
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
                          2.0f, th.highlight2, 0.9f);
         std::string drawn = truncate_to_width(r, txt, sz, col_w - 2.0f * ::ui::overlay::kBannerPadX);
@@ -1644,8 +1431,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int tg_size = th.font_medium_size;
         int tg_baseline = r.mb_text_baseline(tg_size);
         cursor_y += 16.0f + static_cast<float>(tg_baseline);
-        std::string tagline_q = std::string("\xE2\x80\x9C")
-                              + tagline + "\xE2\x80\x9D";
+        std::string tagline_q = quoted_tagline(tagline);
         std::string drawn = truncate_to_width(r, tagline_q, tg_size, col_w);
         r.mb_draw_text(drawn, col_x, cursor_y, tg_size, th.dim, 0.95f);
         cursor_y += static_cast<float>(tg_size) * 0.45f;
@@ -1714,12 +1500,9 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Synopsis allocation: total flex space minus reserved minimums for
     // any cast / directors block that has data, minus its own top pad.
     if (mode_ != Mode::Error && !overview.empty()) {
-        float space = content_bottom - cursor_y;
-        if (!cast_top.empty())  space -= min_section_h;
-        if (!directors.empty()) space -= min_section_h;
-        space -= kSectionTopPad;  // synopsis's own top pad
-        int max_lines = std::max(1,
-            static_cast<int>(space / line_h_medium));
+        const int max_lines = synopsis_line_budget(
+            content_bottom - cursor_y, !cast_top.empty(), !directors.empty(),
+            min_section_h, kSectionTopPad, line_h_medium);
         lay_out_block("", overview, th.font_medium_size, th.fg,
                       kSectionTopPad, max_lines);
     } else if (mode_ != Mode::Error) {
@@ -1738,10 +1521,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // fails here because get_movie() is TMDB-direct. "Couldn't
         // fetch" reads as a network or service fault, so name the real
         // cause when there's simply no key.
-        std::string msg = tmdb_.has_api_key()
-            ? "Couldn't fetch movie info from TMDB."
-            : "No TMDB key — add one in the Content Manager, "
-              "Media Browser tab.";
+        std::string msg = detail_error_message(tmdb_.has_api_key());
         cursor_y += kSectionTopPad + static_cast<float>(sz_baseline);
         r.mb_draw_text(msg, col_x, cursor_y,
                        sz, th.highlight2, 0.95f);
@@ -1750,11 +1530,9 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // CAST: take whatever space is left, minus a min reserve for
     // directors if it'll be drawn. Wraps to as many lines as fit.
     if (!cast_top.empty()) {
-        float space = content_bottom - cursor_y;
-        if (!directors.empty()) space -= min_section_h;
-        space -= kSectionTopPad + label_block_h;  // own header overhead
-        int max_lines = std::max(1,
-            static_cast<int>(space / line_h_medium));
+        const int max_lines = cast_line_budget(
+            content_bottom - cursor_y, !directors.empty(), min_section_h,
+            kSectionTopPad, label_block_h, line_h_medium);
         lay_out_block("CAST", join_with_bullet(cast_top),
                       th.font_medium_size, th.fg,
                       kSectionTopPad, max_lines);
@@ -1762,11 +1540,10 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     // DIRECTED BY: claims the final remainder.
     if (!directors.empty()) {
-        std::string label = directors.size() == 1 ? "DIRECTED BY" : "DIRECTORS";
-        float space = content_bottom - cursor_y;
-        space -= kSectionTopPad + label_block_h;
-        int max_lines = std::max(1,
-            static_cast<int>(space / line_h_medium));
+        std::string label = directors_label(directors.size());
+        const int max_lines = directors_line_budget(
+            content_bottom - cursor_y, kSectionTopPad, label_block_h,
+            line_h_medium);
         lay_out_block(label, join_with_bullet(directors),
                       th.font_medium_size, th.fg,
                       kSectionTopPad, max_lines);
@@ -1813,26 +1590,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
         for (size_t i = 0; i < buttons_.size(); ++i) {
             const auto& btn = buttons_[i];
-            chrome::ButtonKind kind = chrome::ButtonKind::Neutral;
-            switch (btn.action) {
-                case Action::Play:
-                case Action::AddToLibrary:
-                    kind = chrome::ButtonKind::Ok;
-                    break;
-                case Action::SearchAgain:
-                case Action::Retry:
-                case Action::PickSource:
-                    kind = chrome::ButtonKind::Action;
-                    break;
-                case Action::Remove:
-                case Action::ConfirmRemove:
-                    kind = chrome::ButtonKind::Warn;
-                    break;
-                case Action::MoreInfo:
-                default:
-                    kind = chrome::ButtonKind::Neutral;
-                    break;
-            }
+            const chrome::ButtonKind kind = detail_button_kind(btn.action);
             const bool focused = (static_cast<int>(i) == focus_);
             chrome::draw_button(r, x_cursor, row_y, btn.label, kind, focused);
             x_cursor += widths[i] + kBtnGap;
@@ -1845,14 +1603,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // footer style. Replaces the previous centered text hint.
     {
         namespace mc = ::media_browser::ui::chrome;
-        mc::draw_footer_hints(r, screen_w, screen_h, {
-            {mc::HintIcon::Btn1Yellow,  "\xE2\x80\x94"},
-            {mc::HintIcon::Btn2Red,     "Exit"},
-            {mc::HintIcon::Btn3Green,   "\xE2\x80\x94"},
-            {mc::HintIcon::Btn4Black,   "Back"},
-            {mc::HintIcon::RotaryNav,   "Action"},
-            {mc::HintIcon::RotaryPress, "Confirm"},
-        });
+        mc::draw_footer_hints(r, screen_w, screen_h, detail_footer_hints());
     }
 
     // --- Transient banner --------------------------------------------
