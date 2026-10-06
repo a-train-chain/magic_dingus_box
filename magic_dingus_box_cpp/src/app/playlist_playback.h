@@ -85,6 +85,8 @@ public:
     // of failures).
     void tick_pipeline_error();
     // Natural end of the current item -> next item / Master Shuffle pick.
+    // A hold at the end (already advanced / playback not confirmed) is
+    // logged once per hold, not once per frame.
     void tick_auto_advance();
     // The playback stall watchdog: restart a pipeline that silently
     // stopped, or give up on the item after repeated restarts. `now_sec` is
@@ -115,6 +117,20 @@ private:
     // Watches for the pipeline stalling while the kiosk thinks it is playing.
     PlaybackStallWatchdog stall_watchdog_;
     uint64_t watchdog_generation_ = 0;
+
+    // The auto-advance hold log ("NOT auto-advancing") prints once per
+    // hold and again only when its reason changes — never per frame.
+    struct HeldReason {
+        int item = -1;
+        int last_advanced = -1;
+        bool playback_started = false;
+        bool operator==(const HeldReason& o) const {
+            return item == o.item && last_advanced == o.last_advanced &&
+                   playback_started == o.playback_started;
+        }
+    };
+    bool held_logged_ = false;
+    HeldReason held_reason_;
 };
 
 }  // namespace app

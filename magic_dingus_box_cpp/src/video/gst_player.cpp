@@ -436,11 +436,16 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
             //     drops accumulate slowly enough to surface; pipeline
             //     rebasing bursts collapse into 1-2 lines instead of
             //     thousands.
-            //   - AND only log at most once per 500 ms wall clock. Belt
+            //   - AND only log at most once per 5 s wall clock. Belt
             //     and suspenders against any other GStreamer behavior
             //     that wants to emit messages at full pipeline tick rate.
+            //     Was 500 ms: content the board cannot decode in time
+            //     (software HEVC on a Pi 4B) drops frames continuously,
+            //     which held this at two journald lines a second for
+            //     the whole film. Nothing is lost by the wider window —
+            //     the line carries the running total AND the delta.
             constexpr guint64 kDropDeltaThreshold = 30;
-            constexpr int kMinIntervalMs = 500;
+            constexpr int kMinIntervalMs = 5000;
             const auto now = std::chrono::steady_clock::now();
             const auto since_last_ms = std::chrono::duration_cast<
                 std::chrono::milliseconds>(

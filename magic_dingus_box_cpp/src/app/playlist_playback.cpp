@@ -332,6 +332,11 @@ void PlaylistPlayback::tick_auto_advance() {
     // Auto-advance to next item in playlist when current video ends.
     // "Ends" honors the item's `end:` trim (decide_auto_advance) — the
     // old full-file comparison played every trimmed item to EOF.
+    //
+    // `holding`: this frame is a logged hold. Any other frame re-arms the
+    // hold log, so the next hold (a later item, or this one again after a
+    // seek back) is logged once more.
+    bool holding = false;
     if (state_.video_active && state_.current_playlist_index >= 0 && state_.current_item_index >= 0) {
         // Snapshot the (position, duration) pair so the whole advance
         // decision sees a consistent view rather than reading the
@@ -371,9 +376,22 @@ void PlaylistPlayback::tick_auto_advance() {
                 break;
             case app::AutoAdvance::Held:
                 if (!state_.master_shuffle_active) {
-                    std::cout << "NOT auto-advancing: item=" << state_.current_item_index
-                              << ", last_advanced=" << state_.last_advanced_item_index
-                              << ", playback_started=" << state_.playback_started_ << std::endl;
+                    // Held lasts for every frame between reaching the end
+                    // and the next item's load landing. This line used to
+                    // print once per FRAME (dozens of journald writes a
+                    // second to the SD card); now it prints on entering the
+                    // hold and whenever the reason changes.
+                    const HeldReason reason{state_.current_item_index,
+                                            state_.last_advanced_item_index,
+                                            static_cast<bool>(state_.playback_started_)};
+                    if (!held_logged_ || !(reason == held_reason_)) {
+                        std::cout << "NOT auto-advancing: item=" << reason.item
+                                  << ", last_advanced=" << reason.last_advanced
+                                  << ", playback_started=" << reason.playback_started
+                                  << std::endl;
+                        held_reason_ = reason;
+                    }
+                    holding = true;
                 }
                 break;
             case app::AutoAdvance::ResetGuard:
@@ -387,6 +405,7 @@ void PlaylistPlayback::tick_auto_advance() {
                 break;
         }
     }
+    held_logged_ = holding;
 }
 
 void PlaylistPlayback::tick_stall_watchdog(double now_sec) {

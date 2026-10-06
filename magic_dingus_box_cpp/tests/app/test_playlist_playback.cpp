@@ -8,6 +8,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <deque>
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -588,5 +590,81 @@ TEST_CASE("a paused video is never treated as stalled", "[playlist_playback]") {
     t.paused = true;
     app::PlaylistPlayback pb(s, t, kDir);
     for (int i = 0; i < 60; ++i) pb.tick_stall_watchdog(1000.0 + i);
+    CHECK(t.calls.empty());
+}
+
+// ── Log volume ───────────────────────────────────────────────────────────
+
+namespace {
+
+// Redirects std::cout for the scope; count() = lines containing `needle`.
+struct CoutCapture {
+    std::ostringstream buf;
+    std::streambuf* old;
+    CoutCapture() : old(std::cout.rdbuf(buf.rdbuf())) {}
+    ~CoutCapture() { std::cout.rdbuf(old); }
+    int count(const std::string& needle) const {
+        int n = 0;
+        std::istringstream in(buf.str());
+        for (std::string line; std::getline(in, line);) {
+            n += line.find(needle) != std::string::npos;
+        }
+        return n;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a hold at the item's end is logged once, not once per frame",
+          "[playlist_playback][log]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.playback_started_ = true;
+    s.last_advanced_item_index = 0;  // this item already advanced
+    s.update_playback_state(99.8, 100.0);
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    CoutCapture cap;
+    for (int i = 0; i < 120; ++i) pb.tick_auto_advance();  // two seconds of frames
+    CHECK(t.calls.empty());
+    CHECK(cap.count("NOT auto-advancing") == 1);
+
+    SECTION("a change of reason logs again, once") {
+        s.playback_started_ = false;
+        for (int i = 0; i < 60; ++i) pb.tick_auto_advance();
+        CHECK(cap.count("NOT auto-advancing") == 2);
+        CHECK(cap.count("playback_started=0") == 1);
+    }
+    SECTION("leaving the hold re-arms the log for the next one") {
+        s.update_playback_state(10.0, 100.0);  // seek back: ResetGuard
+        pb.tick_auto_advance();
+        s.update_playback_state(99.8, 100.0);
+        s.last_advanced_item_index = 0;
+        for (int i = 0; i < 60; ++i) pb.tick_auto_advance();
+        CHECK(cap.count("NOT auto-advancing") == 2);
+    }
+    SECTION("a frame with no active video re-arms it too") {
+        s.video_active = false;
+        pb.tick_auto_advance();
+        s.video_active = true;
+        for (int i = 0; i < 60; ++i) pb.tick_auto_advance();
+        CHECK(cap.count("NOT auto-advancing") == 2);
+    }
+}
+
+TEST_CASE("Master Shuffle holds are silent", "[playlist_playback][log]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.master_shuffle_active = true;
+    s.playback_started_ = false;  // Held in shuffle: playback not confirmed
+    s.update_playback_state(99.8, 100.0);
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    CoutCapture cap;
+    for (int i = 0; i < 60; ++i) pb.tick_auto_advance();
+    CHECK(cap.count("NOT auto-advancing") == 0);
     CHECK(t.calls.empty());
 }
