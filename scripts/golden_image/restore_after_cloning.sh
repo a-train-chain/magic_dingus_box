@@ -92,6 +92,19 @@ fi
 # (idempotent) for the log line.
 systemctl disable magic-first-boot.service &>/dev/null || true
 
+# The clone-source secret fingerprints prepare wrote (Step 2a) belong in the
+# IMAGE, not on the source: remove them here. Only when the file records THIS
+# board — a clone running this script keeps its copy, which is what lets
+# verify_box.sh catch it still using the source's VPN key. Best-effort: the
+# board check in verify_box.sh already makes a leftover copy harmless, and
+# nothing here may stand between the box and its restored secrets.
+FP_LIB="$(dirname "${BASH_SOURCE[0]}")/source_secrets_lib.sh"
+# shellcheck source=source_secrets_lib.sh
+if [[ -f "$FP_LIB" ]] && source "$FP_LIB"; then
+    mdb_fp_remove_on_source "$MDB_SOURCE_FP_FILE" || true
+fi
+unset FP_LIB
+
 # ---------------------------------------------------------------------------
 # Step 0: Application secrets — FIRST, and fatal on failure
 # ---------------------------------------------------------------------------

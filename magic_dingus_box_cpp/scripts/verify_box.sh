@@ -154,6 +154,85 @@ case "$FB_STATE" in
   *) pass "magic-first-boot.service not enabled (${FB_STATE:-not installed})" ;;
 esac
 
+# Clone-source secrets. Two VPN clients on one WireGuard private key knock
+# each other off the tunnel — in bursts, on BOTH boxes, with nothing in
+# either box's logs naming the cause. prepare_for_cloning.sh records salted
+# fingerprints (never values) of the source box's secrets into every image;
+# a unit whose services/.env or any Docker container (running OR stopped:
+# the restart policy revives a stopped one) still holds one of them FAILs.
+# Read-only, and no value is ever printed — scripts/golden_image/
+# source_secrets_lib.sh hashes in-process from stdin.
+#
+# The SOURCE box never flags itself: restore_after_cloning.sh removes the
+# file there, and the file records the source BOARD's hardware serial, so a
+# leftover copy on that board is recognised and not compared.
+FP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../../scripts/golden_image/source_secrets_lib.sh"
+[[ -f "$FP_LIB" ]] || FP_LIB="${BASE}/scripts/golden_image/source_secrets_lib.sh"
+FP_FILE="${MDB_SOURCE_FP_FILE:-/etc/magic-dingus/source_secret_fingerprints}"
+
+# Root reads directly; a plain user goes through sudo -n (never prompts).
+_vb_docker() { if [[ $EUID -eq 0 ]]; then docker "$@"; else sudo -n docker "$@"; fi; }
+_vb_cat() { if [[ -r "$1" ]]; then cat "$1"; else sudo -n cat "$1"; fi; }
+
+# Pure-ish, pinned by tests/local/source_secret_fingerprints.bats: prints one
+# "LABEL<TAB>WHERE" line per recorded source secret found on this box, and
+# "?<TAB>WHERE" for a place it could not look. Never prints a value.
+_vb_tag() { local l; while IFS= read -r l; do [[ -n "$l" ]] && printf '%s\t%s\n' "$l" "$1"; done; return 0; }
+source_secret_hits() {
+  local fp="$1" envf="$2" ids id name l content
+  if [[ -e "$envf" ]]; then
+    if content=$(_vb_cat "$envf" 2>/dev/null); then
+      printf '%s\n' "$content" | mdb_fp_scan_env "$fp" | _vb_tag "services/.env"
+    else
+      printf '?\tservices/.env (unreadable — run with sudo)\n'
+    fi
+  fi
+  for l in "${@:3}"; do   # LABEL=PATH pairs (the Flask secret)
+    [[ -e "${l#*=}" ]] || continue
+    content=$(_vb_cat "${l#*=}" 2>/dev/null) || continue
+    [[ -n "$(mdb_fp_match_value "$fp" "$content")" ]] && printf '%s\t%s\n' "${l%%=*}" "${l#*=}"
+  done
+  command -v docker >/dev/null 2>&1 || return 0
+  if ! ids=$(_vb_docker ps -aq 2>/dev/null); then
+    printf '?\tDocker containers (docker not accessible — run with sudo)\n'
+    return 0
+  fi
+  for id in $ids; do
+    name=$(_vb_docker inspect -f '{{.Name}}' "$id" 2>/dev/null)
+    _vb_docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$id" 2>/dev/null \
+      | mdb_fp_scan_env "$fp" | _vb_tag "container ${name#/}"
+  done
+  return 0
+}
+
+# shellcheck source=/dev/null  # scripts/golden_image/source_secrets_lib.sh
+if [[ ! -f "$FP_FILE" ]]; then
+  pass "no clone-source fingerprints (source/hand-provisioned box, or a unit cloned before 2026-10 — CLONING.md shows how to audit those)"
+elif [[ ! -f "$FP_LIB" ]] || ! source "$FP_LIB" 2>/dev/null; then
+  warn "${FP_FILE} present but source_secrets_lib.sh is missing — source-box secret reuse NOT checked"
+elif mdb_fp_is_source_board "$FP_FILE"; then
+  pass "this board is the clone SOURCE recorded in ${FP_FILE} — its own secrets are not compared (restore_after_cloning.sh normally removes the file)"
+else
+  FP_HITS=$(source_secret_hits "$FP_FILE" "${BASE}/services/.env" \
+    "flask-secret=${DATA}/flask_secret.key" "flask-secret=${APP}/build/data/flask_secret.key")
+  FP_VPN=$(awk -F'\t' -v l="$MDB_FP_VPN_LABEL" '$1 == l { print $2 }' <<<"$FP_HITS" | sort -u | paste -sd, - | sed 's/,/, /g')
+  FP_OTHER=$(awk -F'\t' -v l="$MDB_FP_VPN_LABEL" '$1 != l && $1 != "?" && $1 != "" { print $1 " (" $2 ")" }' <<<"$FP_HITS" | sort -u | paste -sd, - | sed 's/,/, /g')
+  FP_BLIND=$(awk -F'\t' '$1 == "?" { print $2 }' <<<"$FP_HITS" | paste -sd, - | sed 's/,/, /g')
+  if [[ -n "$FP_VPN" ]]; then
+    fail "this unit is using the SOURCE box's WireGuard VPN key (${FP_VPN}) — the two boxes knock each other off the VPN. Generate THIS unit its own WireGuard config in the ProtonVPN dashboard (NAT-PMP on) and upload it in the Content Manager; remove the old containers first: sudo docker rm -f \$(sudo docker ps -aq --filter name=mdb_)"
+  fi
+  if [[ -n "$FP_OTHER" ]]; then
+    fail "this unit carries the SOURCE box's per-box secret(s): ${FP_OTHER} — .env/API keys: Content Manager > Media Browser > Reset Media Browser (movies on the drive are kept), then set it up again with this unit's own WireGuard config; flask-secret: delete the file, restart magic-dingus-web, re-pair phones"
+  fi
+  if [[ -z "$FP_VPN" && -z "$FP_OTHER" ]]; then
+    if [[ -n "$FP_BLIND" ]]; then
+      warn "no clone-source secret found, but NOT checked: ${FP_BLIND}"
+    else
+      pass "no clone-source secrets in use ($(mdb_fp_count "$FP_FILE") source fingerprint(s) checked against services/.env + every container)"
+    fi
+  fi
+fi
+
 # OTA update channel. The owner's own boxes may legitimately sit on beta
 # (early pre-release builds), so this is a WARN, not a FAIL — but a box
 # shipped to a customer must be on stable, and this line is what makes a

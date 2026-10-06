@@ -13,6 +13,9 @@
 #      (device_info.json + hostname) into a backup dir, then remove
 #      them from disk so the cloned image will trigger first_boot.sh
 #      to regenerate fresh ones.
+#   2a. Record salted fingerprints (never values) of this box's secrets
+#      into /etc/magic-dingus/source_secret_fingerprints, so verify_box.sh
+#      on every unit can FAIL one still using this box's VPN key.
 #   3. Re-enable magic-first-boot.service (it self-disabled on this
 #      Pi long ago; we want it to fire on the cloned Pi's first boot)
 #   4. sync; sync; sync (flush dirty pages to SD)
@@ -53,6 +56,9 @@ done
 # restore_after_cloning.sh. Sourcing runs nothing.
 # shellcheck source=clone_stash_lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/clone_stash_lib.sh"
+# Clone-source secret fingerprints (Step 2a). Sourcing runs nothing.
+# shellcheck source=source_secrets_lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/source_secrets_lib.sh"
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -417,6 +423,44 @@ fi
 # The clone no longer inherits them regardless: first_boot.sh Step 1 now
 # rotates unconditionally (it used to skip whenever keys existed, which on a
 # dd clone is always, making it dead code).
+
+# ---------------------------------------------------------------------------
+# Step 2a: Record fingerprints of this box's secrets INTO the image
+# ---------------------------------------------------------------------------
+# Two VPN clients on one WireGuard private key knock each other off the
+# tunnel, so a unit still running the source box's key breaks the SOURCE's
+# VPN too, in daytime bursts, with nothing on either box saying why. The
+# 2026-08-04 image shipped that key to every unit (first_boot.sh died before
+# its .env wipe), and Docker's restart policy can start gluetun from its own
+# container metadata even with .env gone.
+#
+# So the image carries salted fingerprints of every per-box secret this box
+# holds — never a value (source_secrets_lib.sh) — and verify_box.sh FAILs a
+# unit whose .env or any container still holds one of them. This MUST run
+# before Step 2c stashes .env away. The file is on the SD so the dd captures
+# it; restore_after_cloning.sh deletes it from this box afterwards, and the
+# file records this BOARD's hardware serial so even a leftover copy can never
+# make verify_box.sh flag the source itself.
+#
+# Fatal on failure: the marker is armed, so abort + restore is safe, and an
+# image without the record is an image whose units nothing can check.
+log "[2a/5] Recording clone-source secret fingerprints (no values) into the image..."
+if ! mdb_fp_record "$MDB_SOURCE_FP_FILE" "${SERVICES_DIR}/.env" "${MDB_FP_DEFAULT_EXTRAS[@]}"; then
+    log "ERROR: could not write ${MDB_SOURCE_FP_FILE}."
+    log "       Run restore_after_cloning.sh to put the Pi back, then retry."
+    exit 1
+fi
+_fp_n="$(mdb_fp_count "$MDB_SOURCE_FP_FILE")"
+if grep -q "^fp ${MDB_FP_VPN_LABEL} " "$MDB_SOURCE_FP_FILE"; then
+    log "[2a/5] ${_fp_n} fingerprint(s) recorded at ${MDB_SOURCE_FP_FILE}, the WireGuard key included"
+else
+    log "[2a/5] ${_fp_n} fingerprint(s) recorded at ${MDB_SOURCE_FP_FILE} (this box has no WireGuard key)"
+fi
+if [[ -z "$(mdb_fp_field "$MDB_SOURCE_FP_FILE" source_board)" ]]; then
+    log "[2a/5] WARNING: no board serial readable at ${MDB_BOARD_SERIAL_FILE} — verify_box.sh on"
+    log "       THIS box will rely on restore_after_cloning.sh removing the file."
+fi
+unset _fp_n
 
 # ---------------------------------------------------------------------------
 # Step 2b: Strip operator credentials from the FAT boot partition
@@ -1222,6 +1266,10 @@ leak_checks=(
     '/root/.ssh|id_*'
     '/home/magic/.config/gh|hosts.yml'
     '/root/.config/gh|hosts.yml'
+    # Docker's container metadata embeds every container's environment —
+    # gluetun's WIREGUARD_PRIVATE_KEY included — and the restart policy
+    # starts gluetun from it on the clone whether or not .env exists.
+    '/var/lib/docker/containers|config.v2.json'
 )
 for chk in "${leak_checks[@]}"; do
     dir="${chk%%|*}"
