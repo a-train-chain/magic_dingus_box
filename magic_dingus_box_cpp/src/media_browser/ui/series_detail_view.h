@@ -24,6 +24,7 @@
 #include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_chrome.h"
 #include "media_browser/ui/mb_tone.h"
+#include "media_browser/ui/mb_ui_utils.h"  // join_genres
 #include "media_browser/ui/series_detail_logic.h"
 
 namespace media_browser::ui {
@@ -235,16 +236,6 @@ inline std::string series_episode_display_title(const std::string& series_title,
                                                 const EpisodeInfo& ep) {
     return series_title + " \xE2\x80\x94 S" + std::to_string(ep.season_number) +
            "E" + std::to_string(ep.episode_number) + " \xC2\xB7 " + ep.title;
-}
-
-// Up to `max` genre names joined with " · " (DetailScreen's precedent).
-inline std::string join_genres(const std::vector<std::string>& genres, size_t max = 3) {
-    std::string out;
-    for (size_t i = 0; i < genres.size() && i < max; ++i) {
-        if (i > 0) out += " \xC2\xB7 ";
-        out += genres[i];
-    }
-    return out;
 }
 
 // ---------- Paged lists ----------
