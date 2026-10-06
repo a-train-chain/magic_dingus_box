@@ -15,6 +15,7 @@
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_logic.h"
+#include "media_browser/ui/browse_view.h"
 #include "media_browser/ui/mb_filter_overlay.h"
 #include "media_browser/ui/mb_filter_state.h"
 #include "media_browser/ui/mb_screen.h"
@@ -91,26 +92,16 @@ public:
     int selected_tmdb_id() const { return selected_tmdb_id_; }
 
 private:
-    // Top-strip chip order. Content chips load a grid; nav chips transition.
-    enum class Category {
-        Popular = 0,
-        NowPlaying = 1,
-        TopRated = 2,
-        Upcoming = 3,
-        Filter = 4,
-        ForYou = 5,
-        Search = 6,
-        Library = 7,
-        Queue = 8,
-        Settings = 9,
-    };
+    // Top-strip chip order (content chips load a grid; nav chips
+    // transition) — the vocabulary lives in browse_view.h so the decisions
+    // built on it are Mac-testable; this alias keeps the screen's spelling.
+    using Category = BrowseCategory;
     enum class Focus {
         CategoryStrip,
         FilterPanel,   // Phase B — only reachable when Category::Filter is active.
         PosterGrid,
     };
 
-    static constexpr int kNumContentCategories = 6;  // Popular..ForYou
     // 9-column grid: at 1280×720 this fits TWO full rows of 2:3 posters
     // (~119×178 px each) inside the available grid height of 532 px, with
     // 45 px breathing room before the bottom bar. 18 posters visible per
@@ -119,24 +110,11 @@ private:
     // available width, so this is the only knob that needs to change.
     static constexpr int kGridCols = 9;
 
-    static bool is_nav_chip(Category cat) {
-        return static_cast<int>(cat) >= kNumContentCategories;
-    }
+    static bool is_nav_chip(Category cat) { return browse_is_nav_chip(cat); }
 
-    // Single source of truth for the Marquee strip — consumed by BOTH
-    // handle_input() and render(). Was duplicated in the two functions
-    // with a "keep in sync" comment.
-    static constexpr Category kVisibleTabs[] = {
-        Category::Popular,
-        Category::TopRated,
-        Category::ForYou,
-        Category::Search,
-        Category::Library,
-        Category::Queue,
-        Category::Settings,
-    };
-    static constexpr int kNumVisibleTabs =
-        static_cast<int>(sizeof(kVisibleTabs) / sizeof(kVisibleTabs[0]));
+    // The Marquee strip (kBrowseVisibleTabs, browse_view.h) is the single
+    // source of truth for both handle_input() and render().
+    static constexpr int kNumVisibleTabs = kBrowseNumVisibleTabs;
 
     // Public load entry point. Spawns a background thread that does
     // the (slow, ~6s) TMDB fetch off the render thread; render() can
@@ -205,7 +183,9 @@ private:
     // Lazily fetches /genre/movie/list on first entry to the Filter category.
     void ensure_genres_loaded();
 
-    static const char* label_for_category(Category cat);
+    static const char* label_for_category(Category cat) {
+        return browse_category_label(cat);
+    }
 
     RadarrClient& radarr_;
     SonarrClient& sonarr_;

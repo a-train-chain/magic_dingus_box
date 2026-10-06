@@ -131,22 +131,29 @@ BrowseScreen::BrowseScreen(RadarrClient& radarr, SonarrClient& sonarr,
 
 void BrowseScreen::enter() {
     want_search_screen_ = false;
-    if (!loaded_) {
-        load_category(category_);
-        loaded_ = true;
-    } else if (category_ == Category::ForYou) {
-        if (tmdb_grid_stale(foryou().loaded_at, std::chrono::steady_clock::now()) &&
-            !foryou().hits.empty()) {
+    const auto now = std::chrono::steady_clock::now();
+    switch (decide_browse_enter(loaded_, category_,
+                                tmdb_grid_stale(foryou().loaded_at, now),
+                                foryou().hits.empty(),
+                                tmdb_grid_stale(chart_loaded_at_, now))) {
+        case BrowseEnter::LoadCategory:
+            load_category(category_);
+            loaded_ = true;
+            break;
+        case BrowseEnter::ForYouRevalidate:
             start_foryou_sample(/*background=*/true);   // spec 1a SWR for For You
-        } else if (foryou().hits.empty()) {
+            break;
+        case BrowseEnter::ForYouActivate:
             activate_foryou();                          // never loaded — entry rule
-        }
-    } else if (!is_nav_chip(category_) && category_ != Category::Filter &&
-               tmdb_grid_stale(chart_loaded_at_, std::chrono::steady_clock::now())) {
-        // Spec 1a: 6h TTL, evaluated on enter() only (tab switches already
-        // refetch unconditionally). Stale-while-revalidate — the old grid
-        // stays on screen until a fresh page 1 lands.
-        revalidate_active_chart();
+            break;
+        case BrowseEnter::ChartRevalidate:
+            // Spec 1a: 6h TTL, evaluated on enter() only (tab switches
+            // already refetch unconditionally). Stale-while-revalidate — the
+            // old grid stays on screen until a fresh page 1 lands.
+            revalidate_active_chart();
+            break;
+        case BrowseEnter::None:
+            break;
     }
     // Kick off the Radarr health-check + library/queue fetch on a worker
     // thread instead of blocking the render thread on 3-4 HTTP round-trips.
@@ -209,11 +216,7 @@ void BrowseScreen::run_library_refresh() {
     try {
         sonarr_worker = std::thread([this, &tv_refs, &tv_ok]() {
             if (auto tv_lib = sonarr_.get_library_checked()) {
-                for (const auto& srs : *tv_lib) {
-                    if (srs.tmdb_id > 0) {
-                        tv_refs.insert(MediaRef{MediaKind::Tv, srs.tmdb_id});
-                    }
-                }
+                tv_refs = collect_tv_library_refs(*tv_lib);
                 tv_ok.store(true);
             }
         });
@@ -247,21 +250,12 @@ void BrowseScreen::run_library_refresh() {
         // false branch makes the whole expression a prvalue).
         static const std::vector<Movie> kEmptyLibrary;
         const auto& lib = lib_checked ? *lib_checked : kEmptyLibrary;
-        // Build radarr_id → tmdb_id map for queue cross-reference below.
-        std::unordered_map<int, int> radarr_to_tmdb;
-        for (const auto& m : lib) {
-            if (m.tmdb_id > 0) {
-                r.movie_refs.insert(MediaRef{MediaKind::Movie, m.tmdb_id});
-                radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
-            }
-        }
-        // Populate the downloading set from the current Radarr queue.
-        for (const auto& qi : radarr_.get_queue()) {
-            auto it = radarr_to_tmdb.find(qi.movie_id);
-            if (it != radarr_to_tmdb.end()) {
-                r.downloading_refs.insert(MediaRef{MediaKind::Movie, it->second});
-            }
-        }
+        // Library refs + the DOWNLOADING set from the current Radarr queue
+        // (radarr_id → tmdb_id cross-reference): collect_movie_library_refs.
+        MovieLibraryRefs refs =
+            collect_movie_library_refs(lib, radarr_.get_queue());
+        r.movie_refs = std::move(refs.movie_refs);
+        r.downloading_refs = std::move(refs.downloading_refs);
     }
     // tv_refs is written only by the worker and read only after this join, so
     // the plain (non-atomic) container needs no further synchronisation.
@@ -372,18 +366,9 @@ void BrowseScreen::apply_library_pending() {
         // and Queue are movie-only, and there is no TV search). The chart
         // poster, wearing its IN LIBRARY badge, IS the way back to the
         // series detail page. Revisit when 2c-3 lands the TV Library.
-        auto owned = [this](const TmdbSearchHit& m) {
-            return m.kind == MediaKind::Movie &&
-                   library_refs_.count(media_ref_of(m)) > 0;
-        };
-        const size_t before = movies_.size();
-        movies_.erase(std::remove_if(movies_.begin(), movies_.end(), owned),
-                      movies_.end());
-        for (auto& cache : foryou_) {
-            cache.hits.erase(std::remove_if(cache.hits.begin(), cache.hits.end(), owned),
-                             cache.hits.end());
-        }
-        if (movies_.size() != before) {
+        const size_t hidden = erase_owned_movies(movies_, library_refs_);
+        for (auto& cache : foryou_) erase_owned_movies(cache.hits, library_refs_);
+        if (hidden != 0) {
             if (grid_cursor_ >= static_cast<int>(movies_.size())) {
                 grid_cursor_ = movies_.empty()
                     ? 0 : static_cast<int>(movies_.size()) - 1;
@@ -391,7 +376,7 @@ void BrowseScreen::apply_library_pending() {
             const int cursor_row = movies_.empty() ? 0 : grid_cursor_ / kGridCols;
             scroll_row_ = (cursor_row / 2) * 2;
             spdlog::info("[BrowseScreen] hid {} in-library title(s) from the grid",
-                         before - movies_.size());
+                         hidden);
         }
     }
     // For You deferred-sample hook (spec 1c entry rule case b).
@@ -610,22 +595,6 @@ void BrowseScreen::apply_foryou_pending() {
     }
 }
 
-const char* BrowseScreen::label_for_category(Category cat) {
-    switch (cat) {
-        case Category::Popular:    return "Popular";
-        case Category::NowPlaying: return "Now Playing";
-        case Category::TopRated:   return "Top Rated";
-        case Category::Upcoming:   return "Upcoming";
-        case Category::Filter:     return "Filter";
-        case Category::ForYou:     return "For You";
-        case Category::Search:     return "Search";
-        case Category::Library:    return "Library";
-        case Category::Queue:      return "Queue";
-        case Category::Settings:   return "Settings";
-    }
-    return "";
-}
-
 void BrowseScreen::ensure_genres_loaded() {
     // Kick-off only — the fetch itself runs on a worker (see the note on
     // genres_fetching_ in the header). The Filter picker renders an
@@ -736,9 +705,8 @@ void BrowseScreen::load_shuffle_discover(int base_page) {
 }
 
 bool BrowseScreen::active_chart_filters_active() const {
-    if (category_ != Category::Popular && category_ != Category::TopRated) return false;
-    const FilterTabKind tab = (category_ == Category::Popular)
-                              ? FilterTabKind::Popular : FilterTabKind::TopRated;
+    if (!is_chart_category(category_)) return false;
+    const FilterTabKind tab = chart_filter_tab(category_);
     return any_filter_active(read_filter_state(state_.display_settings, mode(), tab), tab);
 }
 
@@ -770,8 +738,7 @@ void BrowseScreen::revalidate_active_chart() {
     if (movies_.empty()) {
         loading_ = true;
     }
-    const FilterTabKind rev_tab = (category_ == Category::Popular)
-                                  ? FilterTabKind::Popular : FilterTabKind::TopRated;
+    const FilterTabKind rev_tab = chart_filter_tab(category_);
     const MbMode m = mode();
     if (active_chart_filters_active()) {
         window_is_discover_ = true;
@@ -900,10 +867,8 @@ void BrowseScreen::reload_for_category() {
     // Hybrid endpoint switching: when any filter is active use /discover/movie;
     // otherwise fall back to the canonical /popular or /top_rated endpoint so
     // the user sees TMDB's curated ranking when nothing is filtered.
-    if (category_ == Category::Popular || category_ == Category::TopRated) {
-        FilterTabKind tab = (category_ == Category::Popular)
-                            ? FilterTabKind::Popular
-                            : FilterTabKind::TopRated;
+    if (is_chart_category(category_)) {
+        FilterTabKind tab = chart_filter_tab(category_);
         FilterState fs = read_filter_state(state_.display_settings, mode(), tab);
         if (any_filter_active(fs, tab)) {
             // Filter active → route through /discover/movie or /discover/tv.
@@ -956,10 +921,9 @@ void BrowseScreen::apply_mode_change() {
 
 void BrowseScreen::do_shuffle() {
     static thread_local std::mt19937 rng{std::random_device{}()};
-    if (category_ == Category::Popular || category_ == Category::TopRated) {
+    if (is_chart_category(category_)) {
         if (active_chart_filters_active()) {
-            const FilterTabKind tab = (category_ == Category::Popular)
-                                      ? FilterTabKind::Popular : FilterTabKind::TopRated;
+            const FilterTabKind tab = chart_filter_tab(category_);
             const FilterState fs = read_filter_state(state_.display_settings, mode(), tab);
             std::string sig;
             if (tv_mode()) {
@@ -976,8 +940,7 @@ void BrowseScreen::do_shuffle() {
             load_shuffle_discover(
                 pick_shuffle_base(page_window_base_, max_base, rng()));
         } else {
-            const int max_base = (category_ == Category::Popular)
-                                 ? kShuffleMaxBasePopular : kShuffleMaxBaseTopRated;
+            const int max_base = chart_shuffle_max_base(category_);
             load_shuffle(category_,
                          pick_shuffle_base(page_window_base_, max_base, rng()));
         }
@@ -1072,7 +1035,10 @@ void BrowseScreen::apply_pending() {
         if (!pp.discover_sig.empty() && pp.total_pages > 0) {
             discover_total_pages_[pp.discover_sig] = pp.total_pages;
         }
-        if (pp.gen != tmdb_current_gen_.load()) {
+        const PageDrain drain = decide_page_drain(
+            pp.gen == tmdb_current_gen_.load(), pp.is_revalidate, pp.ok,
+            pp.movies.empty(), pp.page, page_window_base_);
+        if (drain == PageDrain::Stale) {
             spdlog::info("[BrowseScreen] page={} gen={} stale at drain (current={}); discarding",
                          pp.page, pp.gen, tmdb_current_gen_.load());
             continue;
@@ -1081,7 +1047,7 @@ void BrowseScreen::apply_pending() {
         // Background revalidate that failed or came back empty: skip the swap
         // entirely — the old grid survives (spec 1a). Freeze pagination for
         // the stale grid: its window state no longer matches its content.
-        if (pp.is_revalidate && (!pp.ok || pp.movies.empty())) {
+        if (drain == PageDrain::KeepStaleGrid) {
             spdlog::warn("[BrowseScreen] TTL revalidate failed (ok={}, hits={}); keeping stale grid",
                          pp.ok, pp.movies.size());
             fetching_more_ = false;
@@ -1090,14 +1056,12 @@ void BrowseScreen::apply_pending() {
         }
         // A shuffled base page that is genuinely empty (ok, 0 hits — possible
         // on narrow /discover filters): fall back to page 1 (spec 1b).
-        if (!pp.is_revalidate && pp.page == page_window_base_ &&
-            page_window_base_ != 1 && pp.ok && pp.movies.empty()) {
+        if (drain == PageDrain::ShuffleFallback) {
             spdlog::info("[BrowseScreen] shuffled base {} empty; falling back to page 1",
                          page_window_base_);
             shuffle_retry_base1_ = true;
             continue;
         }
-        size_t added = 0, dups = 0, owned = 0;
         // MOVIE titles already in (or being fetched into) the owner's
         // library are hidden from the chart grids — the owner asked for
         // discovery surfaces to show only what they DON'T have, and the
@@ -1109,26 +1073,16 @@ void BrowseScreen::apply_pending() {
         // excludes the library for BOTH kinds at merge time — a
         // recommendation row shouldn't recommend what you have; the badge
         // belongs on the charts. Hidden ids still enter loaded_refs_ so a
-        // later append page can't resurrect a hidden movie.
-        auto owned_by_library = [this](const TmdbSearchHit& m) {
-            return m.kind == MediaKind::Movie &&
-                   library_refs_.count(media_ref_of(m)) > 0;
-        };
-        if (pp.page == page_window_base_) {
-            // Window-base page — canonical replacement (was hardcoded page 1).
-            movies_.clear();
-            loaded_refs_.clear();
-            movies_.reserve(pp.movies.size());
-            for (auto& m : pp.movies) {
-                if (!loaded_refs_.insert(media_ref_of(m)).second) {
-                    ++dups;
-                } else if (owned_by_library(m)) {
-                    ++owned;
-                } else {
-                    movies_.push_back(std::move(m));
-                    ++added;
-                }
-            }
+        // later append page can't resurrect a hidden movie. (merge_page_hits
+        // / is_hidden_owned_movie, browse_view.h.)
+        //
+        // The window-base page is the canonical replacement (was hardcoded
+        // page 1); every other page appends.
+        const bool base_page = pp.page == page_window_base_;
+        const PageMergeCounts counts = merge_page_hits(
+            movies_, loaded_refs_, library_refs_, pp.movies, base_page);
+        const size_t added = counts.added, dups = counts.dups, owned = counts.owned;
+        if (base_page) {
             grid_cursor_ = 0;
             scroll_row_ = 0;
             // A successful base-page swap (normal load, shuffle, or a
@@ -1138,28 +1092,20 @@ void BrowseScreen::apply_pending() {
             more_available_ = true;
             // Timestamp rule (spec 1a/1b): the grid is fresh whenever its
             // base page lands ok and non-empty — normal load, shuffle, or
-            // revalidate alike.
-            if (pp.ok && !movies_.empty()) {
-                chart_loaded_at_ = std::chrono::steady_clock::now();
-            } else if (!pp.ok) {
-                // A failed base page (network failure during a normal load
-                // or shuffle) must not leave the PREVIOUS grid's timestamp
-                // in place — that would read as fresh and block any retry
-                // for up to the full TTL. Clear it so the next enter() sees
-                // a stale grid and revalidates.
-                chart_loaded_at_ = std::chrono::steady_clock::time_point{};
-            }
-        } else {
-            movies_.reserve(movies_.size() + pp.movies.size());
-            for (auto& m : pp.movies) {
-                if (!loaded_refs_.insert(media_ref_of(m)).second) {
-                    ++dups;
-                } else if (owned_by_library(m)) {
-                    ++owned;
-                } else {
-                    movies_.push_back(std::move(m));
-                    ++added;
-                }
+            // revalidate alike. A failed base page (network failure during a
+            // normal load or shuffle) must not leave the PREVIOUS grid's
+            // timestamp in place — that would read as fresh and block any
+            // retry for up to the full TTL — so it is cleared and the next
+            // enter() sees a stale grid and revalidates.
+            switch (chart_stamp_after_base_page(pp.ok, movies_.empty())) {
+                case ChartStamp::Fresh:
+                    chart_loaded_at_ = std::chrono::steady_clock::now();
+                    break;
+                case ChartStamp::Clear:
+                    chart_loaded_at_ = std::chrono::steady_clock::time_point{};
+                    break;
+                case ChartStamp::Keep:
+                    break;
             }
         }
         if (pp.no_more) more_available_ = false;
@@ -1184,20 +1130,21 @@ void BrowseScreen::maybe_load_more_pages() {
     // Don't fetch while another fetch is in flight, or after we've
     // confirmed end-of-list, or for nav chips, or while still in the
     // initial loading state. Hard-cap at kMaxLoadedPages.
-    if (fetching_more_ || loading_) return;
-    if (!more_available_) return;
-    if (is_nav_chip(category_)) return;
-    if (category_ == Category::ForYou) return;
-    // Base-relative window (spec 1b): load [base, base+kMaxLoadedPages-1].
-    if (next_page_to_fetch_ > window_last_page(page_window_base_, kMaxLoadedPages)) return;
-
-    const int rows_loaded = movies_.empty()
-        ? 0
-        : (static_cast<int>(movies_.size()) + kGridCols - 1) / kGridCols;
-    const int cursor_row = grid_cursor_ / kGridCols;
-    const bool prefetch_second = (next_page_to_fetch_ == page_window_base_ + 1);
-    const bool near_end = (rows_loaded > 0) && (cursor_row >= rows_loaded - 1);
-    if (!prefetch_second && !near_end) return;
+    LoadMoreInputs lm;
+    lm.fetching_more = fetching_more_;
+    lm.loading = loading_;
+    lm.more_available = more_available_;
+    lm.nav_chip = is_nav_chip(category_);
+    lm.for_you = category_ == Category::ForYou;
+    lm.next_page = next_page_to_fetch_;
+    lm.window_base = page_window_base_;
+    lm.max_loaded_pages = kMaxLoadedPages;
+    lm.grid_count = static_cast<int>(movies_.size());
+    lm.cursor = grid_cursor_;
+    lm.cols = kGridCols;
+    const LoadMore more = decide_load_more(lm);
+    if (more == LoadMore::None) return;
+    const bool prefetch_second = more == LoadMore::PrefetchSecond;
 
     spdlog::info("[BrowseScreen] auto-fetching page {} ({})",
                  next_page_to_fetch_,
@@ -1280,10 +1227,7 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
     // 0 (Popular) if category_ holds a value that isn't a Marquee tab
     // (e.g. legacy persistence from the pre-Marquee 9-chip layout, or
     // NowPlaying from before v1.6.x).
-    int strip_pos = 0;
-    for (int i = 0; i < kNumVisibleTabs; ++i) {
-        if (kVisibleTabs[i] == category_) { strip_pos = i; break; }
-    }
+    int strip_pos = browse_strip_position(category_);
 
     for (const auto& e : events) {
         // ================================================================
@@ -1323,13 +1267,8 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
             if (filter_overlay_.is_visible()) {
                 filter_overlay_.on_btn4_close();
-            } else if (category_ == Category::Popular ||
-                       category_ == Category::TopRated ||
-                       category_ == Category::ForYou) {
-                FilterTabKind tk =
-                    (category_ == Category::Popular)  ? FilterTabKind::Popular :
-                    (category_ == Category::TopRated) ? FilterTabKind::TopRated :
-                                                        FilterTabKind::ForYou;
+            } else if (const auto overlay_tab = overlay_tab_for(category_)) {
+                FilterTabKind tk = *overlay_tab;
                 filter_overlay_.open(tk, mode(),
                                      read_filter_state(state_.display_settings,
                                                        mode(), tk));
@@ -1367,16 +1306,14 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
         }
 
         // BTN1 (PREV, yellow) — previous tab.
+        // Stops at the ends (no wrap); a transition tab returns its screen
+        // (browse_tab_step).
         if (e.action == platform::InputAction::PREV && e.pressed) {
-            if (strip_pos == 0) continue;
-            const int new_pos = strip_pos - 1;
-            const Category new_cat = kVisibleTabs[new_pos];
-            if (new_cat == Category::Library)  return Screen::Library;
-            if (new_cat == Category::Search)   return Screen::Search;
-            if (new_cat == Category::Queue)    return Screen::Queue;
-            if (new_cat == Category::Settings) return Screen::MovieSettings;
-            category_ = new_cat;
-            strip_pos = new_pos;
+            const BrowseTabStep step = browse_tab_step(strip_pos, -1);
+            if (step.kind == BrowseTabStep::Kind::None) continue;
+            if (step.kind == BrowseTabStep::Kind::Navigate) return step.screen;
+            category_ = step.category;
+            strip_pos = step.strip_pos;
             load_category(category_);
             focus_ = Focus::PosterGrid;
             continue;
@@ -1384,15 +1321,11 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
 
         // BTN3 (NEXT, green) — next tab.
         if (e.action == platform::InputAction::NEXT && e.pressed) {
-            if (strip_pos >= kNumVisibleTabs - 1) continue;
-            const int new_pos = strip_pos + 1;
-            const Category new_cat = kVisibleTabs[new_pos];
-            if (new_cat == Category::Library)  return Screen::Library;
-            if (new_cat == Category::Search)   return Screen::Search;
-            if (new_cat == Category::Queue)    return Screen::Queue;
-            if (new_cat == Category::Settings) return Screen::MovieSettings;
-            category_ = new_cat;
-            strip_pos = new_pos;
+            const BrowseTabStep step = browse_tab_step(strip_pos, +1);
+            if (step.kind == BrowseTabStep::Kind::None) continue;
+            if (step.kind == BrowseTabStep::Kind::Navigate) return step.screen;
+            category_ = step.category;
+            strip_pos = step.strip_pos;
             load_category(category_);
             focus_ = Focus::PosterGrid;
             continue;
@@ -1402,24 +1335,16 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
         // cell at a time, row-major. Stays inside the loaded grid.
         if (e.action == platform::InputAction::ROTATE) {
             if (movies_.empty()) continue;
-            const int n = static_cast<int>(movies_.size());
-            grid_cursor_ = std::clamp(grid_cursor_ + e.delta, 0, n - 1);
+            grid_cursor_ = grid_cursor_after_rotate(
+                grid_cursor_, e.delta, static_cast<int>(movies_.size()));
             continue;
         }
 
         // ROTATE_VERTICAL (D-pad UP/DOWN) — walk posters one row at a time.
         if (e.action == platform::InputAction::ROTATE_VERTICAL) {
             if (movies_.empty()) continue;
-            const int row = grid_cursor_ / kGridCols;
-            const int col = grid_cursor_ % kGridCols;
-            const int max_row = (static_cast<int>(movies_.size()) - 1) / kGridCols;
-            const int new_row = std::clamp(row + e.delta, 0, max_row);
-            const int new_idx = new_row * kGridCols + col;
-            if (new_idx < static_cast<int>(movies_.size())) {
-                grid_cursor_ = new_idx;
-            } else if (!movies_.empty()) {
-                grid_cursor_ = static_cast<int>(movies_.size()) - 1;
-            }
+            grid_cursor_ = grid_cursor_after_vertical(
+                grid_cursor_, e.delta, static_cast<int>(movies_.size()), kGridCols);
             continue;
         }
 
@@ -1434,8 +1359,7 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
                 // choice is carried in the returned Screen value — the
                 // dispatcher needs no second accessor to re-derive it.
                 selected_tmdb_id_ = hit.tmdb_id;
-                return hit.kind == MediaKind::Tv ? Screen::SeriesDetail
-                                                 : Screen::Detail;
+                return browse_select_destination(hit.kind);
             }
         }
     }
@@ -1444,8 +1368,7 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
     // page (a multiple of kPageRows=2). It snaps when cursor crosses a page
     // boundary, not on every row step.
     if (!movies_.empty()) {
-        const int cursor_row = grid_cursor_ / kGridCols;
-        scroll_row_ = (cursor_row / 2) * 2;
+        scroll_row_ = grid_page_first_row(grid_cursor_, kGridCols);
     }
 
     return Screen::Browse;
@@ -1468,8 +1391,8 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     tabs.reserve(kNumVisibleTabs);
     for (int i = 0; i < kNumVisibleTabs; ++i) {
         chrome::TabSpec t;
-        t.label = label_for_category(kVisibleTabs[i]);
-        t.state = (kVisibleTabs[i] == category_)
+        t.label = label_for_category(kBrowseVisibleTabs[i]);
+        t.state = (kBrowseVisibleTabs[i] == category_)
                       ? chrome::TabState::Active
                       : chrome::TabState::Inactive;
         tabs.push_back(t);
@@ -1489,8 +1412,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         return;
     }
 
-    const bool filter_available = (category_ == Category::Popular ||
-                                   category_ == Category::TopRated);
+    const bool filter_available = is_chart_category(category_);
     const bool shuffle_only = (category_ == Category::ForYou);
     const MediaKind kind = tv_mode() ? MediaKind::Tv : MediaKind::Movie;
     const bool lib_ok = lib_fetch_ok_[static_cast<int>(mode())];
@@ -1517,42 +1439,20 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // answer a boolean, which is a per-frame malloc/free on the Pi 4B's
     // tight 1.5 GB envelope. any_of walks library_refs_ without allocating;
     // seeds_empty is true when NO ref of `kind` exists, i.e. !any_of.
-    si.seeds_empty            = !std::any_of(
-        library_refs_.begin(), library_refs_.end(),
-        [kind](const MediaRef& ref) { return ref.kind == kind; });
+    si.seeds_empty            = !has_ref_of_kind(library_refs_, kind);
     si.foryou_failed          = foryou_failed_;
     si.has_api_key            = tmdb_.has_api_key();
     const BrowseGridState grid_state = decide_browse_grid_state(si);
 
-    // Message text itself is decided by the pure, Mac-testable
-    // browse_grid_state_message() (browse_logic.h) — this switch only
-    // assigns the COLOR per state, since ::ui::Color/Theme can't live in
-    // that Renderer-free header.
+    // Message text AND its color are decided by the pure, Mac-testable
+    // browse_grid_state_message() (browse_logic.h) and
+    // browse_grid_state_tone() (browse_view.h). LibraryUnavailable is the
+    // blocking one because For You genuinely REQUIRES its library — the seed
+    // sample has no other source; the chart tabs are TMDB-sourced and get
+    // the non-blocking line below instead.
     const char* state_msg =
         browse_grid_state_message(grid_state, tv_mode(), sonarr_configured_);
-    ::ui::Color state_color = th.dim;
-    switch (grid_state) {
-        case BrowseGridState::Grid:
-            break;
-        case BrowseGridState::Loading:
-            break;
-        case BrowseGridState::LibraryUnavailable:
-            // Blocking, because For You genuinely REQUIRES its library — the
-            // seed sample has no other source. The chart tabs are TMDB-sourced
-            // and get the non-blocking line below instead.
-            state_color = th.highlight2;
-            break;
-        case BrowseGridState::RecommendationsFailed:
-            state_color = th.highlight2;
-            break;
-        case BrowseGridState::EmptyLibrary:
-            break;
-        case BrowseGridState::NoApiKey:
-            state_color = th.highlight2;
-            break;
-        case BrowseGridState::EmptyCategory:
-            break;
-    }
+    const ::ui::Color state_color = tone_color(th, browse_grid_state_tone(grid_state));
 
     // Non-blocking service line. Popular and Top Rated need only TMDB; a dead
     // Radarr (or Sonarr) degrades the in-library hide but must not blank a
@@ -1581,19 +1481,8 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // never had Sonarr set up must not be told Sonarr is "offline" every time
     // it lands on a chart tab in TV mode. sonarr_configured_ is irrelevant in
     // Movies mode — Radarr is never mocked in a way that reaches this path.
-    const char* service_warning = nullptr;
-    if (lib_refresh_done_once_ && !lib_ok &&
-        grid_state != BrowseGridState::LibraryUnavailable) {
-        if (tv_mode()) {
-            service_warning = sonarr_configured_
-                ? "Sonarr offline \xE2\x80\x94 in-library hiding may be stale"
-                : "TV library not set up \xE2\x80\x94 in-library hiding "
-                  "unavailable";
-        } else {
-            service_warning =
-                "Radarr offline \xE2\x80\x94 in-library hiding may be stale";
-        }
-    }
+    const char* service_warning = browse_service_warning(
+        lib_refresh_done_once_, lib_ok, grid_state, tv_mode(), sonarr_configured_);
     constexpr int kWarnFontPx = 14;
     constexpr int kWarnLineH  = 20;
     if (service_warning) {
@@ -1680,29 +1569,20 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 const std::string& title = movie.title;
                 const float max_w_f = static_cast<float>(cell_w);
                 std::string line1, line2;
-                if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
+                // Word-boundary split (split_poster_title); the truncations
+                // stay here so they keep the Renderer overload's memo.
+                const PosterTitleSplit ts = split_poster_title(
+                    title, max_w_f, [&r](const std::string& t) {
+                        return static_cast<float>(r.mb_text_width(t, kMetaFontPx));
+                    });
+                if (ts.fits) {
                     line1 = title;
+                } else if (ts.split == std::string::npos) {
+                    line1 = truncate_to_width(r, title, kMetaFontPx, max_w_f);
                 } else {
-                    // Walk forward through whitespace, keep the longest
-                    // prefix that still fits in one line. Fallback: bisect
-                    // by character if the title has no spaces.
-                    size_t split = std::string::npos;
-                    size_t pos = 0;
-                    while (true) {
-                        size_t next = title.find(' ', pos + 1);
-                        if (next == std::string::npos) break;
-                        if (r.mb_text_width(title.substr(0, next), kMetaFontPx)
-                                > max_w_f) break;
-                        split = next;
-                        pos = next;
-                    }
-                    if (split == std::string::npos) {
-                        line1 = truncate_to_width(r, title, kMetaFontPx, max_w_f);
-                    } else {
-                        line1 = title.substr(0, split);
-                        std::string remainder = title.substr(split + 1);
-                        line2 = truncate_to_width(r, remainder, kMetaFontPx, max_w_f);
-                    }
+                    line1 = title.substr(0, ts.split);
+                    std::string remainder = title.substr(ts.split + 1);
+                    line2 = truncate_to_width(r, remainder, kMetaFontPx, max_w_f);
                 }
                 const int meta_top = y + poster_h + kMetaGap;
                 r.mb_draw_text(line1,
@@ -1728,15 +1608,8 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     // --- Footer hints (ONE call — the old draw_baseline_footer lambda and
     // its duplicate hint list are gone with the early returns) ---
-    chrome::draw_footer_hints(r, screen_w, screen_h, {
-        {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-        {chrome::HintIcon::Btn2Red,     "Exit"},
-        {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-        {chrome::HintIcon::Btn4Black,
-         filter_available ? "Filters" : (shuffle_only ? "Mode/Shuffle" : "\xE2\x80\x94")},
-        {chrome::HintIcon::RotaryNav,   "Browse"},
-        {chrome::HintIcon::RotaryPress, "Detail"},
-    });
+    chrome::draw_footer_hints(r, screen_w, screen_h,
+                              browse_footer_hints(filter_available, shuffle_only));
 
     // ALWAYS LAST, ALWAYS REACHED. See the state-resolution comment above.
     filter_overlay_.render(r, screen_w, screen_h);
