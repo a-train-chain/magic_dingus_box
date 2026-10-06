@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 import admin
+import admin_security  # owns the CSRF token store (patch it there, not on admin)
 from admin import create_app
 
 XSITE_FETCH = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors",
@@ -146,16 +147,16 @@ def test_direct_pair_link_with_sec_fetch_none_pairs(pair_app, tmp_path):
 # ---- CSRF token store ------------------------------------------------------
 
 def test_csrf_token_store_is_capped(monkeypatch):
-    monkeypatch.setattr(admin, "_csrf_tokens", {})
+    monkeypatch.setattr(admin_security, "_csrf_tokens", {})
     for _ in range(admin._CSRF_TOKEN_MAX + 50):
         admin._generate_csrf_token()
-    assert len(admin._csrf_tokens) <= admin._CSRF_TOKEN_MAX
+    assert len(admin_security._csrf_tokens) <= admin._CSRF_TOKEN_MAX
     newest = admin._generate_csrf_token()
     assert admin._validate_csrf_token(newest)
 
 
 def test_csrf_token_store_is_thread_safe(monkeypatch):
-    monkeypatch.setattr(admin, "_csrf_tokens", {})
+    monkeypatch.setattr(admin_security, "_csrf_tokens", {})
     errors = []
 
     def worker():
