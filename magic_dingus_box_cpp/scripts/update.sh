@@ -64,7 +64,7 @@ CHANNEL_FILE="${MAGIC_CHANNEL_FILE:-${INSTALL_DIR}/config/update_channel}"
 GITHUB_RELEASES_API="${MAGIC_GITHUB_RELEASES_API:-https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20}"
 
 # The ONE version grammar the OTA path accepts: X.Y.Z, optionally followed
-# by a SemVer prerelease of exactly the form -beta.N. admin.py's
+# by a SemVer prerelease of exactly the form -beta.N. admin_updates.py's
 # _OTA_VERSION_RE and release.yml's tag check carry the same rule. [0-9],
 # not [[:digit:]], so the locale cannot widen it.
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$'
@@ -1645,7 +1645,7 @@ install_update() {
     # api.github.com/repos/<repo>/releases/tags/v${version}, and curl
     # normalizes dot-segments — so "1.0.8/../../../../attacker/evil/..."
     # fetched ANOTHER repo's release metadata and installed its binary. It
-    # is also written verbatim into VERSION. admin.py enforces the same
+    # is also written verbatim into VERSION. admin_updates.py enforces the same
     # X.Y.Z[-beta.N] rule; this is the independent second check (defense in
     # depth — the script is also runnable by hand). VERSION_RE uses [0-9],
     # not [[:digit:]], so the locale cannot widen it.
@@ -1658,7 +1658,7 @@ install_update() {
     # let a crafted request install an attacker-owned repo's tarball, and a
     # repo-prefix match alone is defeated by a /../ segment (curl -L
     # normalizes it away before the request), so dot-segments are refused
-    # outright. admin.py additionally pins the exact release-asset shape.
+    # outright. admin_updates.py additionally pins the exact release-asset shape.
     local repo_re="${GITHUB_REPO//./\\.}"
     if [[ "$download_url" == *"/./"* ]] || [[ "$download_url" == *"/../"* ]] \
         || [[ "$download_url" == *"/.." ]] || [[ "$download_url" == *"%"* ]] \

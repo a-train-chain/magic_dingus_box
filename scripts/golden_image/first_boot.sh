@@ -736,7 +736,7 @@ done
 # their own key through the Content Manager, so on a fresh box NO file in this
 # family should exist; deleting the whole set is the correct, safe behaviour.
 shopt -s nullglob
-# Leading-star glob, matching prepare_for_cloning.sh: admin.py stages atomic
+# Leading-star glob, matching prepare_for_cloning.sh: admin_common.py stages atomic
 # writes as `.tmdb_api_key.<rand>.tmp`, and the leading dot defeats a glob
 # that starts at the literal name — the one .tmp form this codebase actually
 # produces was the one the old pattern missed.

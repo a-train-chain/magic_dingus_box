@@ -38,7 +38,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 CASCADE = SCRIPTS_DIR / "gluetun_cascade_restart.sh"
 PAUSE = SCRIPTS_DIR / "playback_services_pause.sh"
 
-# Must match both scripts and admin.py PLAYBACK_PAUSE_MARKER.
+# Must match both scripts and admin_media_browser.py PLAYBACK_PAUSE_MARKER.
 MARKER = Path("/tmp/mdb_playback_services_paused")
 
 DOCKER_STUB = """#!/bin/bash

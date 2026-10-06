@@ -241,8 +241,53 @@ This guarantees correct compositing without X11/compositor overhead.
 
 ### Web Admin (`magic_dingus_box/web/`)
 
-- `admin.py` - Flask routes for device discovery, playlist CRUD, content uploads, game ROM management
-- `static/manager.js` - Frontend: device discovery, drag-and-drop playlist builder, file uploads
+- **Module map** (split out of one 6,800-line `admin.py` in 2026-10, no
+  behavior change). `admin.py` keeps `create_app()` — the once-per-process
+  startup work (secret key, status broadcaster, uinput gamepad,
+  upload_temp + `.part` sweeps), the storage/reload helpers, the shared
+  maintenance-job launcher (`detached`, `_launch_maintenance_job`), the
+  Media Browser unlock gate (`_media_browser_unlocked`) — and calls each
+  area's `register(app, ctx)` in the order the routes were once defined
+  inline, so the URL map, hook order and endpoint names are unchanged
+  (vpn_settings.py was the precedent). Route modules:
+  `admin_security` (Host/Sec-Fetch-Site/token hooks, `require_csrf`, CSRF
+  store, `_is_within` — registered FIRST so its hooks run first),
+  `admin_system` (device info/name, health, backup/restore),
+  `admin_playlists` (CRUD + `format_playlist_yaml`, emulator_core checks),
+  `admin_playlist_import` (YAML + package import), `admin_media` (video
+  library, uploads, transcode pipeline + per-board policy), `admin_roms`,
+  `admin_support` (Network Doctor, Box health, diagnostics bundle),
+  `admin_updates` (`/admin/update/*`, `_OTA_VERSION_RE`),
+  `admin_media_browser` (visibility, Prepare Drive, setup, status,
+  credentials; calls `vpn_settings.register`), `admin_media_browser_ops`
+  (health summary, TMDB key, restarts, reset), `admin_remote` (`/`,
+  `/connect`, manifests, `/admin/remote*` incl. the WebSocket, `/static`).
+  Pure helpers: `admin_common` (response envelopes, sysinfo, atomic/staged
+  writes, capped ZIP reads, `_sanitize_filename`), `admin_vpn_config`
+  (WireGuard/provider/`.env` rules), `admin_tmdb`. Rules: route modules
+  never import `admin` (cycle) — `ctx` (a SimpleNamespace) carries
+  create_app state in and publishes shared closures out (`require_csrf`,
+  `get_device_info`, `_prune_terminal_jobs`, ...); a new route goes in its
+  area's module, never a lazy import inside a request (an OTA rsyncs the
+  tree under a running process). **Test seams:** tests monkeypatch names
+  on `admin`; names listed in `admin._ROUTE_SEAMS` reach the route modules
+  as late-binding shims, so `monkeypatch.setattr(admin, "get_free_bytes",
+  ...)` still works. Module STATE cannot be shimmed — patch it on its
+  owner (`admin_security._csrf_tokens`,
+  `admin_media_browser.PLAYBACK_PAUSE_MARKER`; deliberately not
+  re-exported, so a stale `admin.` patch fails loudly).
+- `static/` front end — plain classic scripts, no bundler, loaded by
+  `index.html` in a fixed order sharing one global scope: `manager.js`
+  (core: AppState, CSRF/API helpers, config, init, `escapeHtml`/`escapeJs`,
+  modals — `test_escape_js.py` runs the real `escapeJs` from it),
+  `manager_devices.js`, `manager_media.js`, `manager_roms.js`,
+  `manager_playlists.js`, `manager_import.js`, `manager_settings.js`
+  (backup, health, OTA, Network Doctor, Box health),
+  `manager_media_browser.js`, then `vpn_settings.js`. Inline `onclick=`
+  handlers call global functions from any of them. Hoisting does NOT cross
+  files: code that runs while a file loads (a top-level `const`
+  initialiser, a top-level call) may only use names from that file or an
+  earlier one. Bump a file's `?v=` in `index.html` whenever it changes.
 - Features: video transcoding, playlist package import/export (ZIP), system monitoring
 - **Transcode presets are MASTERS, not display formats** (retuned 2026-07-26).
   The kiosk scales stored content to whichever display mode is active, so
@@ -409,7 +454,7 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
   `OTA_UPDATE_GUARANTEES.md` "The TV stays on while a source build
   compiles".
 - Triggered via web admin `/admin/update/*` endpoints (`version`, `check`, `install`, `status/<job_id>`, `rollback`, `channel`) — NOT `/api/update/*`
-- **Update channels: `stable` (default) / `beta`** — one word in `<install>/config/update_channel` (absent = stable; `/config/*` is excluded from every OTA rsync). Stable queries `releases/latest` (GitHub never returns prereleases there — the request is byte-identical to pre-channel updaters, which is why boxes on ≤1.10.0 can never see a beta). Beta queries `releases?per_page=20`, ignores drafts, takes the highest version across stable + beta. Versions are `X.Y.Z` or `X.Y.Z-beta.N` ONLY (`VERSION_RE` in update.sh, `_OTA_VERSION_RE` in admin.py, the tag check in release.yml — change all three together), ordered by update.sh's pure-bash SemVer `version_cmp` (never `sort -V`: it ranks `1.10.1` below `1.10.1-beta.1`). No channel ever offers a downgrade. Set via `update.sh channel [stable|beta]` or the Content Manager's Advanced toggle. Tag `vX.Y.Z-beta.N` → release.yml publishes a GitHub prerelease; betas reuse `## [Unreleased]` (no beta changelog headings). Clones: `prepare_for_cloning.sh` refuses a beta box, `first_boot.sh` deletes the flag, `verify_box.sh` WARNs. Operator workflow: `magic_dingus_box_cpp/docs/RELEASING.md`. Never mention betas in `OWNER_GUIDE.md` (customer-facing).
+- **Update channels: `stable` (default) / `beta`** — one word in `<install>/config/update_channel` (absent = stable; `/config/*` is excluded from every OTA rsync). Stable queries `releases/latest` (GitHub never returns prereleases there — the request is byte-identical to pre-channel updaters, which is why boxes on ≤1.10.0 can never see a beta). Beta queries `releases?per_page=20`, ignores drafts, takes the highest version across stable + beta. Versions are `X.Y.Z` or `X.Y.Z-beta.N` ONLY (`VERSION_RE` in update.sh, `_OTA_VERSION_RE` in admin_updates.py, the tag check in release.yml — change all three together), ordered by update.sh's pure-bash SemVer `version_cmp` (never `sort -V`: it ranks `1.10.1` below `1.10.1-beta.1`). No channel ever offers a downgrade. Set via `update.sh channel [stable|beta]` or the Content Manager's Advanced toggle. Tag `vX.Y.Z-beta.N` → release.yml publishes a GitHub prerelease; betas reuse `## [Unreleased]` (no beta changelog headings). Clones: `prepare_for_cloning.sh` refuses a beta box, `first_boot.sh` deletes the flag, `verify_box.sh` WARNs. Operator workflow: `magic_dingus_box_cpp/docs/RELEASING.md`. Never mention betas in `OWNER_GUIDE.md` (customer-facing).
 - **Rehearsing an OTA before a release** (`tests/ota_rehearsal/README.md`): `tests/ota_rehearsal/run.sh` replays OLD→NEW→rollback in arm64 containers (no Pi); `PI_HOST=magic@<ip> tests/ota_rehearsal/hw_rehearsal.sh --yes` does it on ONE real box — downgrade to OLD from real GitHub, strip the system state a field box lacks (`field_state_<old>.txt` + git-derived units/drop-ins), install NEW through the OLD web admin against an on-box fake GitHub, verify, roll back, then restore this checkout and diff against the pre-run snapshot. `--dry-run` prints every command and touches nothing; an aborted run prints its remaining steps and `--restore-only <logdir>` finishes them. A new OLD baseline needs its own `field_state_<X.Y.Z>.txt`.
 
 ## Media Browser (Movie Playback + Downloads)
@@ -680,7 +725,7 @@ series, which would have destroyed already-watched seasons too.
 
 - **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged. Also hosts the **drive-absent guard** (runs before the port fetch, every tick): while `/mnt/ssd` is not a mountpoint — or is mounted but qBit cannot read a token written on the drive through its `/downloads` bind (stale bind awaiting storage-attach) — it stops every *active* torrent on EVERY tick (the kiosk's `resume_all` at game/movie exit and boot recovery, and newly added downloads, would otherwise write into the SD card until full), records the hashes it stopped in `/var/lib/magic-dingus/drive_guard/stopped_hashes` (persistent — the old tmpfs marker was lost on reboot, stranding torrents stopped), and turns on qBit's add-stopped pref (`add_stopped_enabled` / 4.x `start_paused_enabled`, original saved alongside). Release starts exactly the recorded hashes and restores the pref; operator-stopped torrents are never started. The legacy `/tmp/mdb_drive_guard_paused` marker is folded in as an "ALL" sentinel.
 - **Gluetun pin: v3.41.3** (`@sha256:fa19cc76…e027`, the multi-arch index digest; `tests/local/compose_image_pins.bats`). Bumped from v3.41.1 on 2026-10-05 after a live capture (18:00–20:15) showed every one of 9 consecutive full-stack restarts was PORT FORWARDING, not the tunnel: Proton's NAT-PMP gateway refused a renewal minutes after granting a port (`[port forwarding] adding port mapping: ... read udp 10.2.0.2:x->10.2.0.1:5351: recvfrom: connection refused`, once `external port changed: 60551 changed to 35802`), v3.41.1's loop logged `[port forwarding] starting` and never obtained a port again, the healthcheck's port clause (`/tmp/.pf_seen`) went unhealthy ~5 min later and the cascade watcher restarted gluetun + 5 dependents ~5 min after that — while in-tunnel traffic (ping 1.1.1.1 ~170 ms, WireGuard handshakes) worked throughout. v3.41.2 "no longer stuck after failed port forwarding" + v3.41.3's deadlock fix let gluetun re-acquire the port itself; the healthcheck's port requirement stays as the backstop. The watcher now records which kind each unhealthy was (`portfwd` = the healthcheck's DNS+TCP+TLS probe still passes inside the tunnel, `tunnel` = it does not) in the VPN event log (Box health above). `WIREGUARD_PERSISTENT_KEEPALIVE_INTERVAL=25s` (Go duration; Proton configs ask for 25, gluetun's default is 0 and it ignores the .conf line).
-- **VPN server country** (2026-10): `VPN_COUNTRIES` in `services/.env` → `SERVER_COUNTRIES=${VPN_COUNTRIES-}` (`-` not `:-`: `custom` needs it empty). Content Manager → Media Browser → Advanced (`web/vpn_settings.py`, `static/vpn_settings.js`, one `register()` call in admin.py): `GET|POST /admin/media-browser/vpn-country`, curated list of `protonvpn` country names with >= 6 port-forwarding WireGuard servers in gluetun v3.41.x's list (Netherlands default). POST rewrites ONLY that line (atomic, mode kept), then runs `scripts/recreate_gluetun.sh` as a detached root job in the shared maintenance slot (kind `vpn-country`, single-flight with OTA/setup): `compose up -d --no-deps gluetun` under the compose lock, lock released before waiting for healthy so the cascade can re-link dependents. A failed launch restores the old line. Read-only for `custom` providers. The setup route keeps the current country on Reconfigure (it used to reset to Netherlands). Existing boxes are unchanged until someone picks a country.
+- **VPN server country** (2026-10): `VPN_COUNTRIES` in `services/.env` → `SERVER_COUNTRIES=${VPN_COUNTRIES-}` (`-` not `:-`: `custom` needs it empty). Content Manager → Media Browser → Advanced (`web/vpn_settings.py`, `static/vpn_settings.js`, one `register()` call in admin_media_browser.py): `GET|POST /admin/media-browser/vpn-country`, curated list of `protonvpn` country names with >= 6 port-forwarding WireGuard servers in gluetun v3.41.x's list (Netherlands default). POST rewrites ONLY that line (atomic, mode kept), then runs `scripts/recreate_gluetun.sh` as a detached root job in the shared maintenance slot (kind `vpn-country`, single-flight with OTA/setup): `compose up -d --no-deps gluetun` under the compose lock, lock released before waiting for healthy so the cascade can re-link dependents. A failed launch restores the old line. Read-only for `custom` providers. The setup route keeps the current country on Reconfigure (it used to reset to Netherlands). Existing boxes are unchanged until someone picks a country.
 - **Required Gluetun setup**: WireGuard config from ProtonVPN dashboard MUST have NAT-PMP toggle ON when generated. `FIREWALL_OUTBOUND_SUBNETS` MUST NOT include `10.0.0.0/8` (would block NAT-PMP routing to the VPN gateway at 10.2.0.1).
 - **Active indexers** (Prowlarr → Radarr): TPB, YTS, LimeTorrents, TorrentDownload, Knaben (the latter two with `cloudflare` tag → Byparr, which replaces FlareSolverr for current Cloudflare challenge formats). Plus 5 pre-configured but disabled (Demonoid, EZTV, Internet Archive, Magnetz, Torrent Downloads) for future enable.
 - **qBittorrent auth hardening** (Step 7.5 of `setup_services.sh`): the docker image's "bypass authentication for clients on localhost" preference is disabled programmatically and the WebUI password is set to a random value from `services/.env`. Without this, anything connecting from 127.0.0.1 (Radarr, the kiosk binary, anyone with shell) bypasses auth entirely. Step 7.6 mirrors the password to `MDB_QBIT_PASS=` in `.env` so the kiosk's QbittorrentClient (which reads that var via systemd EnvironmentFile=) keeps authenticating. It restarts the kiosk ONLY when the running kiosk's `MDB_QBIT_PASS` (from `/proc/<MainPID>/environ`; fallback: did this run change the line) is missing or stale — it used to restart on every run, killing a movie/game in progress on each Content Manager Reconfigure.

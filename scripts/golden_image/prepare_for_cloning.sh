@@ -775,7 +775,7 @@ for _d in data build/data; do
 done
 unset _d
 
-# Dot-prefixed staging siblings. admin.py:545 stages atomic writes with
+# Dot-prefixed staging siblings. admin_common._atomic_write_text stages with
 # `prefix=f".{path.name}."`, so an interrupted save leaves
 # `.tmdb_api_key.<rand>.tmp` / `.flask_secret.key.<rand>.tmp` — and a leading
 # dot defeats both the `tmdb_api_key*` glob and the two literal

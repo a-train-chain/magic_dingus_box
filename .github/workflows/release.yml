@@ -27,7 +27,7 @@ jobs:
         id: version
         # vX.Y.Z = stable; vX.Y.Z-beta.N = prerelease (beta channel only).
         # Release-blocking: any other shape would publish a release no box
-        # can install (update.sh VERSION_RE / admin.py _OTA_VERSION_RE accept
+        # can install (update.sh VERSION_RE / admin_updates.py _OTA_VERSION_RE accept
         # exactly these two), and VERSION gets the full string verbatim.
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -125,7 +125,7 @@ jobs:
         id: version
         # vX.Y.Z = stable; vX.Y.Z-beta.N = prerelease (beta channel only).
         # Release-blocking: any other shape would publish a release no box
-        # can install (update.sh VERSION_RE / admin.py _OTA_VERSION_RE accept
+        # can install (update.sh VERSION_RE / admin_updates.py _OTA_VERSION_RE accept
         # exactly these two), and VERSION gets the full string verbatim.
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -246,7 +246,7 @@ jobs:
         id: version
         # vX.Y.Z = stable; vX.Y.Z-beta.N = prerelease (beta channel only).
         # Release-blocking: any other shape would publish a release no box
-        # can install (update.sh VERSION_RE / admin.py _OTA_VERSION_RE accept
+        # can install (update.sh VERSION_RE / admin_updates.py _OTA_VERSION_RE accept
         # exactly these two), and VERSION gets the full string verbatim.
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
