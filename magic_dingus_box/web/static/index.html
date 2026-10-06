@@ -603,6 +603,34 @@
                         </div>
                     </details>
 
+                    <!-- Advanced: VPN server country. Lazy-loaded the first
+                         time it is opened; all behaviour is in
+                         static/vpn_settings.js (backend: vpn_settings.py). -->
+                    <details id="mbVpnAdvanced" style="margin-top: 1rem;">
+                        <summary style="cursor: pointer; color: var(--accent2); font-weight: 600; padding: 0.5rem 0;">
+                            <svg class="ic" aria-hidden="true"><use href="#ic-settings"/></svg> Advanced
+                        </summary>
+                        <div style="padding: 0.75rem 0;">
+                            <label for="mbVpnCountrySelect" class="settings-description"
+                                   style="display: block; margin-bottom: 0.35rem;">
+                                VPN server country
+                            </label>
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                                <select id="mbVpnCountrySelect" disabled
+                                    style="flex: 1 1 12rem; padding: 0.5rem; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;">
+                                    <option>Loading…</option>
+                                </select>
+                                <button class="btn-secondary small" id="mbVpnCountryApply" disabled>Apply</button>
+                            </div>
+                            <p class="settings-description" id="mbVpnCountryNote" style="margin-top: 0.5rem; font-size: 0.85rem;">
+                                If downloads keep stalling because the VPN drops, a different
+                                country often helps. Applying reconnects the VPN — downloads
+                                pause for about a minute.
+                            </p>
+                            <div id="mbVpnCountryStatus" class="restore-status" style="display: none; margin-top: 0.5rem;"></div>
+                        </div>
+                    </details>
+
                     <!-- Restart + Reset destructive actions -->
                     <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color); display: flex; gap: 0.5rem; flex-wrap: wrap;">
                         <button class="btn-secondary small" id="mbRestartBtn" onclick="restartMediaBrowserServices()">
@@ -986,7 +1014,8 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=122"></script>
+    <script src="/static/manager.js?v=123"></script>
+    <script src="/static/vpn_settings.js?v=1"></script>
 
 </body>
 
