@@ -1,4 +1,5 @@
 #include "media_browser/ui/playback_screen.h"
+#include "media_browser/ui/playback_view.h"
 
 #include <algorithm>
 #include <cstdlib>  // std::system — used to call playback_services_pause.sh
@@ -105,11 +106,13 @@ void PlaybackScreen::bump_hud_visibility() {
 float PlaybackScreen::hud_alpha(bool paused) const {
     if (paused) return 1.0f;
     auto now = std::chrono::steady_clock::now();
-    if (now >= hud_visible_until_) return 0.0f;
-    auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        hud_visible_until_ - now).count();
-    if (remaining_ms > kHudFadeMs) return 1.0f;
-    return static_cast<float>(remaining_ms) / static_cast<float>(kHudFadeMs);
+    const bool expired = now >= hud_visible_until_;
+    const long long remaining_ms =
+        expired ? 0
+                : static_cast<long long>(
+                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                          hud_visible_until_ - now).count());
+    return hud_alpha_for(paused, expired, remaining_ms, kHudFadeMs);
 }
 
 void PlaybackScreen::set_movie(std::string host_path, std::string title) {
@@ -129,31 +132,17 @@ void PlaybackScreen::publish_now_playing_status() {
     // identity-less TV file (shouldn't happen via SeriesDetail, which
     // always sets both) degrades to the movie shape below — movie_title_
     // is the full display_title there, so nothing is lost.
-    const bool tv = watch_identity_.has_value() &&
-                    watch_identity_->ref.kind == MediaKind::Tv &&
-                    !series_title_.empty();
-    if (tv) {
-        state_.now_playing_kind  = "tv";
-        state_.now_playing_title = series_title_;
-        // Episode title looked up from the session's episode vector; an
-        // absent match still yields the bare "SxEy" code.
-        std::string ep_title;
-        for (const auto& e : episodes_) {
-            if (e.season_number == watch_identity_->season &&
-                e.episode_number == watch_identity_->episode) {
-                ep_title = e.title;
-                break;
-            }
-        }
-        state_.now_playing_subtitle = format_now_playing_episode(
-            watch_identity_->season, watch_identity_->episode, ep_title);
-    } else {
-        state_.now_playing_kind  = "movie";
-        state_.now_playing_title = movie_title_;
-        state_.now_playing_subtitle =
-            overlay_meta_.year > 0 ? std::to_string(overlay_meta_.year)
-                                   : std::string{};
-    }
+    // Episode title looked up from the session's episode vector; an absent
+    // match still yields the bare "SxEy" code (now_playing_status).
+    const bool tv_identity = watch_identity_.has_value() &&
+                             watch_identity_->ref.kind == MediaKind::Tv;
+    NowPlayingStatus np = now_playing_status(
+        tv_identity, tv_identity ? watch_identity_->season : 0,
+        tv_identity ? watch_identity_->episode : 0, episodes_, series_title_,
+        movie_title_, overlay_meta_.year);
+    state_.now_playing_kind     = std::move(np.kind);
+    state_.now_playing_title    = std::move(np.title);
+    state_.now_playing_subtitle = std::move(np.subtitle);
     // MB playback has no playlist context; a stale name/count from the
     // last main-menu playlist would otherwise ride along in the JSON.
     // (current_item_index is already -1 — main.cpp resets it at MB entry —
@@ -480,7 +469,9 @@ Screen PlaybackScreen::handle_input(
             // card primary -> fire the Start-Season intent; plain "Done"
             // card -> dismiss back to where we came from.
             if (e.action == platform::InputAction::SELECT) {
-                if (end_overlay_.kind == EndOverlayKind::Countdown) {
+                const EndOverlaySelect pick = decide_end_overlay_select(
+                    end_overlay_.kind, end_overlay_.has_primary);
+                if (pick == EndOverlaySelect::PlayNext) {
                     // "Play now" is a PRESS, not a countdown expiry — the
                     // user just proved presence, so the still-watching
                     // streak restarts (only the silent expiry in update()
@@ -491,7 +482,7 @@ Screen PlaybackScreen::handle_input(
                     // toast; the fast-return above exits next frame.
                     return Screen::Playback;
                 }
-                if (end_overlay_.kind == EndOverlayKind::StillWatching) {
+                if (pick == EndOverlaySelect::Continue) {
                     // "Continue" — they're awake. Streak restarts at zero
                     // and the stored next_index plays, exactly what the
                     // countdown's expiry would have started. MUST be
@@ -503,7 +494,7 @@ Screen PlaybackScreen::handle_input(
                     advance_to_next_episode();
                     return Screen::Playback;
                 }
-                if (end_overlay_.has_primary) {
+                if (pick == EndOverlaySelect::StartSeason) {
                     // "Start Season N" — the dispatcher consumes the intent
                     // on the Playback->SeriesDetail transition (Task 6).
                     pending_next_season_ = end_overlay_.card.next_season;
@@ -696,8 +687,8 @@ Screen PlaybackScreen::handle_input(
                 overlay_.on_rotate(e.delta);
                 continue;
             }
-            double velocity = static_cast<double>(e.velocity);
-            double seek_seconds = 5.0 + 115.0 * (velocity * velocity);
+            double seek_seconds =
+                rotary_seek_seconds(static_cast<double>(e.velocity));
             controller_.seek(seek_seconds * e.delta);
             state_.show_seek_bar = true;
             state_.seek_bar_timer = kSeekBarVisibleSec;
@@ -831,21 +822,8 @@ void PlaybackScreen::begin_end_overlay() {
     // Locate the finished episode: trust current_index_ only after
     // re-validating it against the identity; otherwise linear-search for
     // (season, episode). No match -> movie-style exit.
-    int idx = -1;
-    if (current_index_ >= 0 &&
-        current_index_ < static_cast<int>(episodes_.size()) &&
-        episodes_[current_index_].season_number == id.season &&
-        episodes_[current_index_].episode_number == id.episode) {
-        idx = current_index_;
-    } else {
-        for (size_t i = 0; i < episodes_.size(); ++i) {
-            if (episodes_[i].season_number == id.season &&
-                episodes_[i].episode_number == id.episode) {
-                idx = static_cast<int>(i);
-                break;
-            }
-        }
-    }
+    const int idx =
+        finished_episode_index(episodes_, current_index_, id.season, id.episode);
     if (idx < 0) {
         exit_pending_ = true;
         return;
@@ -919,10 +897,7 @@ void PlaybackScreen::advance_to_next_episode() {
     controller_.stop();
 
     // "<series> — S<season>E<episode> · <title>" (em dash / middle dot).
-    const std::string new_title =
-        series_title_ + " \xE2\x80\x94 S" +
-        std::to_string(next.season_number) + "E" +
-        std::to_string(next.episode_number) + " \xC2\xB7 " + next.title;
+    const std::string new_title = series_episode_display_title(series_title_, next);
 
     // set_movie() RESETS overlay_meta_ (see its definition) — save the
     // series meta across the call and restore it with the new title so
@@ -994,14 +969,9 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     if (now < title_marquee_until_) {
         auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             title_marquee_until_ - now).count();
-        float alpha = 1.0f;
-        if (remaining_ms < 500) {
-            alpha = static_cast<float>(remaining_ms) / 500.0f;
-        }
-        std::string heading = "NOW PLAYING";
-        if (!movie_title_.empty()) {
-            heading += " — " + movie_title_;
-        }
+        const float alpha =
+            title_marquee_alpha(static_cast<long long>(remaining_ms));
+        const std::string heading = now_playing_heading(movie_title_);
         const float kPaddingX  = 60.0f;   // matches chrome::kSafeInset_px
         const float kBaselineY = 70.0f;   // below the 40 px wood top band
         r.mb_draw_title_text(heading, kPaddingX, kBaselineY,
@@ -1062,14 +1032,8 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // bezel-inset bottom — their position is already correct.
             if (alpha > 0.05f) {
                 namespace mc = ::media_browser::ui::chrome;
-                mc::draw_footer_hints(r, screen_w, screen_h, {
-                    {mc::HintIcon::Btn1Yellow,  "\xE2\x88\x92" "10s"},  // −10s
-                    {mc::HintIcon::Btn2Red,     "Pause/Play"},
-                    {mc::HintIcon::Btn3Green,   "+10s"},
-                    {mc::HintIcon::Btn4Black,   "Back"},
-                    {mc::HintIcon::RotaryNav,   "Scrub"},
-                    {mc::HintIcon::RotaryPress, "Open Menu"},
-                });
+                mc::draw_footer_hints(r, screen_w, screen_h,
+                                      playback_footer_hints());
             }
         }
     }
@@ -1101,8 +1065,6 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
 
     // Centered card — same chrome as the exit modal / overlay panels:
     // bg_lift fill, 2 px gold border on all four sides.
-    const bool is_card = (end_overlay_.kind == EndOverlayKind::Card);
-    const bool is_prompt = (end_overlay_.kind == EndOverlayKind::StillWatching);
     const bool has_body = !end_overlay_.body_line.empty();
     // Interior insets come from the shared overlay contract (theme.h) —
     // these were the card's own 32/26 magic numbers, now named. The
@@ -1117,14 +1079,7 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
     // area (button ~44 for cards, hint row ~24 for the countdown). The
     // still-watching prompt stacks body ("Next: …"), its own "Stopping
     // in N…" line, AND the Continue button.
-    int card_h;
-    if (is_card) {
-        card_h = kPadY + 30 + (has_body ? 28 : 0) + 16 + 44 + kPadY;
-    } else if (is_prompt) {
-        card_h = kPadY + 30 + (has_body ? 28 : 0) + 28 + 16 + 44 + kPadY;
-    } else {
-        card_h = kPadY + 30 + 28 + 16 + 24 + kPadY;
-    }
+    const int card_h = end_card_height(end_overlay_.kind, has_body, kPadY);
     const int cx = (screen_w - card_w) / 2;
     const int cy = (screen_h - card_h) / 2;
     const float fcx = static_cast<float>(cx);
@@ -1154,9 +1109,9 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - countdown_started_at_)
                 .count();
-        int remaining = kNextUpCountdownSeconds
-                      - static_cast<int>(elapsed_ms / 1000);
-        if (remaining < 1) remaining = 1;  // update() advances at expiry
+        // update() advances at expiry, so never below 1.
+        const int remaining = countdown_remaining_seconds(
+            kNextUpCountdownSeconds, static_cast<long long>(elapsed_ms));
         y += 28.0f + 16.0f;
         r.mb_draw_text("Starting in " + std::to_string(remaining)
                            + "\xE2\x80\xA6",
@@ -1197,9 +1152,9 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - countdown_started_at_)
                 .count();
-        int remaining = kStillWatchingTimeoutSeconds
-                      - static_cast<int>(elapsed_ms / 1000);
-        if (remaining < 1) remaining = 1;  // update() stops at expiry
+        // update() stops at expiry, so never below 1.
+        const int remaining = countdown_remaining_seconds(
+            kStillWatchingTimeoutSeconds, static_cast<long long>(elapsed_ms));
         y += 28.0f + 8.0f;
         r.mb_draw_text("Stopping in " + std::to_string(remaining)
                            + "\xE2\x80\xA6",
@@ -1244,17 +1199,7 @@ std::string PlaybackScreen::run_quick_add(int tmdb_id) {
     // WORKER thread. Profile pick mirrors detail_screen.cpp's
     // pick_quality_profile_id heuristic: prefer "Any" so we don't block on
     // a profile mismatch.
-    int qp = 0;
-    auto profiles = radarr_.get_quality_profiles();
-    for (const auto& p : profiles) {
-        if (p.name == "Any") { qp = p.id; break; }
-    }
-    if (qp == 0) {
-        for (const auto& p : profiles) {
-            if (p.name == "HD - 720p/1080p") { qp = p.id; break; }
-        }
-    }
-    if (qp == 0 && !profiles.empty()) qp = profiles.front().id;
+    const int qp = pick_quick_add_profile_id(radarr_.get_quality_profiles());
 
     if (qp == 0) return "No quality profile";
     // Cancellable: add_movie's metadata lookup may retry for up to 45 s
@@ -1265,15 +1210,10 @@ std::string PlaybackScreen::run_quick_add(int tmdb_id) {
         })) {
         return "Added \xe2\x80\x94 searching";
     }
-    const std::string err = radarr_.last_error();
     // Radarr returns HTTP 400 with "This movie has already been added" in
     // the body when the title is already in the library; the error string
-    // is "HTTP 400: <json body>".
-    if (err.find("already") != std::string::npos ||
-        err.find("Already") != std::string::npos) {
-        return "Already in library";
-    }
-    return "Couldn\xe2\x80\x99t add \xe2\x80\x94 try again";
+    // is "HTTP 400: <json body>" (quick_add_failure_toast).
+    return quick_add_failure_toast(radarr_.last_error());
 }
 
 void PlaybackScreen::start_deferred_adds() {

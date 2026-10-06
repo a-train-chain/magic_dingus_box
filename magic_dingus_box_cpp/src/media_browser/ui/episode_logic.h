@@ -134,6 +134,16 @@ inline std::string format_now_playing_episode(int season, int episode,
     return s;
 }
 
+// "<series> — S<s>E<e> · <episode title>" — the playback display title,
+// built by SeriesDetail for the first episode and by Playback's in-place
+// advance for every later one (one builder, so the two cannot drift).
+template <class Ep>
+std::string series_episode_display_title(const std::string& series_title,
+                                         const Ep& ep) {
+    return series_title + " \xE2\x80\x94 S" + std::to_string(ep.season_number) +
+           "E" + std::to_string(ep.episode_number) + " \xC2\xB7 " + ep.title;
+}
+
 // ---------- Next up ----------
 
 // What plays after `current` — or, with current == nullptr, what a fresh

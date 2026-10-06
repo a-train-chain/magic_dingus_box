@@ -231,13 +231,6 @@ inline std::string episode_row_text(const EpisodeInfo& ep, int series_runtime_mi
     return text;
 }
 
-// "<series> — S<s>E<e> · <episode title>" — the playback display title.
-inline std::string series_episode_display_title(const std::string& series_title,
-                                                const EpisodeInfo& ep) {
-    return series_title + " \xE2\x80\x94 S" + std::to_string(ep.season_number) +
-           "E" + std::to_string(ep.episode_number) + " \xC2\xB7 " + ep.title;
-}
-
 // ---------- Paged lists ----------
 
 // One frame's page geometry for a list of `total` navigable rows with
