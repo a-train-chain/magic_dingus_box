@@ -188,6 +188,10 @@ set(APP_SOURCES
     src/app/game_handoff.cpp
     # GL/DRM half of the game hand-off: kiosk-only, in no test target.
     src/app/game_handoff_kiosk.cpp
+    # Boot intro video: pure decisions (unit-tested) + the GL/GStreamer/LED
+    # half (kiosk-only, in no test target).
+    src/app/intro_sequence.cpp
+    src/app/intro_sequence_kiosk.cpp
 )
 
 set(UTILS_SOURCES
@@ -807,6 +811,9 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # transport, and the web-admin playlist reload's re-anchoring.
         src/app/playlist_playback.cpp
         src/app/playlist_reload.cpp
+        # main.cpp's boot intro decisions (end detection, fade volume, the
+        # hand-off to the menu, the render-video decision).
+        src/app/intro_sequence.cpp
         # settings.json load/save against real temp files (round-trip,
         # wrong-typed quarantine). Pulls jsoncpp + spdlog, linked below.
         src/app/settings_persistence.cpp
