@@ -3,10 +3,13 @@
 // switch must stop, wait, then load), which calls happen at all on each
 // branch, and the AppState each branch leaves behind — the things a
 // refactor of this code can silently change. Runs against a recording fake
-// transport; the kiosk adapter (app/controller_transport.h) forwards 1:1.
+// transport with a hand-advanced clock (no sleeps: the switch's waits are
+// per-frame ticks); the kiosk adapter (app/controller_transport.h)
+// forwards 1:1.
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <deque>
 #include <iostream>
 #include <sstream>
@@ -14,6 +17,7 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "app/playback_reset.h"
 #include "app/playlist_playback.h"
 
 namespace {
@@ -23,11 +27,23 @@ struct FakeTransport : app::PlaylistTransport {
     // is_playing() answers, front first; `playing_default` once exhausted.
     std::deque<bool> playing_answers;
     bool playing_default = false;
+    int playing_queries = 0;
     bool paused = false;
     bool load_ok = true;
     uint64_t generation = 1;
     bool error = false;
     double position = 0.0;
+    // The hand-advanced clock behind now(). Starts well past the epoch so
+    // "now - 3 s" is still a valid time point.
+    std::chrono::steady_clock::time_point clock{std::chrono::hours(1000)};
+    // Milliseconds since `t0` at which each load-type call happened.
+    std::chrono::steady_clock::time_point t0 = clock;
+    std::vector<long long> load_at_ms;
+
+    void advance(std::chrono::milliseconds d) { clock += d; }
+    long long elapsed_ms() const {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(clock - t0).count();
+    }
 
     void stop() override { calls.push_back("stop"); }
     void play() override { calls.push_back("play"); }
@@ -35,6 +51,7 @@ struct FakeTransport : app::PlaylistTransport {
     void seek(double s) override { calls.push_back("seek " + std::to_string(static_cast<int>(s))); }
     bool is_playing() const override {
         auto* self = const_cast<FakeTransport*>(this);
+        ++self->playing_queries;
         if (!self->playing_answers.empty()) {
             const bool v = self->playing_answers.front();
             self->playing_answers.pop_front();
@@ -46,12 +63,14 @@ struct FakeTransport : app::PlaylistTransport {
     utils::Result<> load_playlist_item(app::AppState&, const app::Playlist& pl, int idx,
                                        const std::string& dir) override {
         calls.push_back("load " + pl.title + " " + std::to_string(idx) + " " + dir);
+        load_at_ms.push_back(elapsed_ms());
         return load_ok ? utils::Result<>::ok() : utils::Result<>::fail("boom");
     }
     void load_next_item(app::AppState&, const std::string&) override { calls.push_back("next_item"); }
     void load_previous_item(app::AppState&, const std::string&) override { calls.push_back("prev_item"); }
     void play_random_global_video(app::AppState&, const std::string&) override {
         calls.push_back("random_global");
+        load_at_ms.push_back(elapsed_ms());
     }
     void master_shuffle_advance(app::AppState&, const std::string&) override {
         calls.push_back("shuffle_advance");
@@ -62,10 +81,37 @@ struct FakeTransport : app::PlaylistTransport {
     uint64_t stream_generation() const override { return generation; }
     bool has_error() const override { return error; }
     double player_position() const override { return position; }
-    void sleep_for(std::chrono::milliseconds d) override {
-        calls.push_back("sleep " + std::to_string(d.count()));
+    std::chrono::steady_clock::time_point now() const override { return clock; }
+};
+
+// Redirects a stream for the scope; count() = lines containing `needle`.
+struct StreamCapture {
+    std::ostream& stream;
+    std::ostringstream buf;
+    std::streambuf* old;
+    explicit StreamCapture(std::ostream& s) : stream(s), old(s.rdbuf(buf.rdbuf())) {}
+    ~StreamCapture() { stream.rdbuf(old); }
+    int count(const std::string& needle) const {
+        int n = 0;
+        std::istringstream in(buf.str());
+        for (std::string line; std::getline(in, line);) {
+            n += line.find(needle) != std::string::npos;
+        }
+        return n;
     }
 };
+
+// Drives the main loop's per-frame switch tick: one tick every `frame`
+// until `total` has passed (the kiosk ticks at vsync, ~16 ms).
+void run_frames(app::PlaylistPlayback& pb, FakeTransport& t,
+                std::chrono::milliseconds total,
+                std::chrono::milliseconds frame = std::chrono::milliseconds(16)) {
+    const auto end = t.clock + total;
+    while (t.clock < end) {
+        t.advance(frame);
+        pb.tick_switch_timeout();
+    }
+}
 
 app::PlaylistItem video_item(const std::string& title) {
     app::PlaylistItem it;
@@ -173,8 +219,15 @@ TEST_CASE("SELECT on the playing playlist toggles the UI with a fade",
     }
 }
 
-TEST_CASE("switching playlists mid-playback stops, waits, then loads item 0",
-          "[playlist_playback]") {
+// ── Mid-playback switch: stop, cooperative wait, load ────────────────────
+// The old code slept 200 ms + up to 10 x 50 ms inside on_select (on the
+// render thread). The same waits now elapse across tick_switch_timeout()
+// calls; these pin that the calls, their order, the poll count, the load
+// time and the end states are the old ones.
+
+TEST_CASE("a mid-playback switch stops at once and loads after the 200 ms settle",
+          "[playlist_playback][switch]") {
+    using std::chrono::milliseconds;
     app::AppState s;
     put_menu(s);
     put_playing(s, 1, 2);
@@ -183,24 +236,59 @@ TEST_CASE("switching playlists mid-playback stops, waits, then loads item 0",
     s.last_advanced_item_index = 2;
     s.last_advanced_duration = 10.0;
     FakeTransport t;
-    // Still playing on the first poll after the 200 ms wait, stopped after.
+    // Still playing on the first poll after the settle, stopped after.
     t.playing_answers = {true, false, false};
     app::PlaylistPlayback pb(s, t, kDir);
+
     pb.on_select();
-    CHECK(t.calls == std::vector<std::string>{
-                         "stop", "sleep 200", "sleep 50",
-                         "load Movies 0 " + kDir});
+    // on_select returned without waiting: only the stop, and the state
+    // writes that precede it, have happened.
+    CHECK(t.calls == std::vector<std::string>{"stop"});
+    CHECK(pb.switch_pending());
+    CHECK(t.playing_queries == 0);
     CHECK(s.is_switching_playlist);
+    CHECK(s.playlist_switch_start_time == t.clock);
     CHECK(s.current_playlist_index == 2);
     CHECK(s.current_item_index == 0);
     CHECK(s.last_advanced_item_index == -1);
     CHECK(s.last_advanced_duration == 0.0);
+    CHECK(s.ui_visible_when_playing);  // still the menu until the load
+
+    t.advance(milliseconds(199));
+    pb.tick_switch_timeout();
+    CHECK(t.calls.size() == 1);
+    CHECK(t.playing_queries == 0);  // settling: the player is not even asked
+
+    t.advance(milliseconds(1));  // 200 ms: first poll — still playing
+    pb.tick_switch_timeout();
+    CHECK(t.calls.size() == 1);
+    CHECK(t.playing_queries == 1);
+    CHECK(pb.switch_pending());
+
+    t.advance(milliseconds(49));  // the 50 ms re-poll is not due yet
+    pb.tick_switch_timeout();
+    CHECK(t.playing_queries == 1);
+
+    t.advance(milliseconds(1));  // 250 ms: stopped -> warning check -> load
+    pb.tick_switch_timeout();
+    CHECK(t.calls == std::vector<std::string>{"stop", "load Movies 0 " + kDir});
+    CHECK(t.load_at_ms == std::vector<long long>{250});
+    // The old loop's queries exactly: poll (true), poll (false), warn check.
+    CHECK(t.playing_queries == 3);
+    CHECK_FALSE(pb.switch_pending());
+    CHECK(s.is_switching_playlist);  // released later, as before
+    CHECK(s.current_playlist_index == 2);
     CHECK_FALSE(s.master_shuffle_active);
     CHECK_FALSE(s.ui_visible_when_playing);
+
+    // Nothing more happens on later frames (until the 2 s timeout).
+    run_frames(pb, t, milliseconds(500));
+    CHECK(t.calls.size() == 2);
 }
 
-TEST_CASE("a pipeline that never stops is waited on at most 10 x 50 ms",
-          "[playlist_playback]") {
+TEST_CASE("a pipeline that never stops is re-polled 10 x 50 ms, then loaded anyway",
+          "[playlist_playback][switch]") {
+    using std::chrono::milliseconds;
     app::AppState s;
     put_menu(s);
     put_playing(s, 1, 0);
@@ -209,15 +297,36 @@ TEST_CASE("a pipeline that never stops is waited on at most 10 x 50 ms",
     FakeTransport t;
     t.playing_default = true;
     app::PlaylistPlayback pb(s, t, kDir);
+    StreamCapture err(std::cerr);
     pb.on_select();
-    int short_sleeps = 0;
-    for (const auto& c : t.calls) short_sleeps += (c == "sleep 50");
-    CHECK(short_sleeps == 10);
-    CHECK(t.calls.back() == "load Movies 0 " + kDir);
+    run_frames(pb, t, milliseconds(1000), milliseconds(1));
+    CHECK(t.calls == std::vector<std::string>{"stop", "load Movies 0 " + kDir});
+    CHECK(t.load_at_ms == std::vector<long long>{700});  // 200 + 10 x 50
+    // 11 loop checks (10 re-polls, then the bound) + the warning check.
+    CHECK(t.playing_queries == 12);
+    CHECK(err.count("did not stop cleanly after 500ms") == 1);
+}
+
+TEST_CASE("at frame rate the load lands on the first frame after the settle",
+          "[playlist_playback][switch]") {
+    using std::chrono::milliseconds;
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;  // stopped as soon as asked
+    app::PlaylistPlayback pb(s, t, kDir);
+    pb.on_select();
+    run_frames(pb, t, milliseconds(400));  // 16 ms frames
+    REQUIRE(t.load_at_ms.size() == 1);
+    CHECK(t.load_at_ms[0] >= 200);
+    CHECK(t.load_at_ms[0] < 216);
+    CHECK(t.playing_queries == 2);  // one poll + the warning check
 }
 
 TEST_CASE("switching to Master Shuffle mid-playback picks a random video",
-          "[playlist_playback]") {
+          "[playlist_playback][switch]") {
     app::AppState s;
     put_menu(s);
     put_playing(s, 1, 0);
@@ -226,14 +335,17 @@ TEST_CASE("switching to Master Shuffle mid-playback picks a random video",
     FakeTransport t;
     app::PlaylistPlayback pb(s, t, kDir);
     pb.on_select();
-    CHECK(t.calls == std::vector<std::string>{"stop", "sleep 200", "random_global"});
+    CHECK(t.calls == std::vector<std::string>{"stop"});
+    CHECK_FALSE(s.master_shuffle_active);  // set with the load, as before
+    run_frames(pb, t, std::chrono::milliseconds(300));
+    CHECK(t.calls == std::vector<std::string>{"stop", "random_global"});
     CHECK(s.master_shuffle_active);
     CHECK_FALSE(s.ui_visible_when_playing);
     CHECK(s.is_switching_playlist);
 }
 
 TEST_CASE("a failed mid-playback switch lands on a drawable menu",
-          "[playlist_playback]") {
+          "[playlist_playback][switch]") {
     app::AppState s;
     put_menu(s);
     put_playing(s, 1, 0);
@@ -245,26 +357,155 @@ TEST_CASE("a failed mid-playback switch lands on a drawable menu",
         t.load_ok = false;
         app::PlaylistPlayback pb(s, t, kDir);
         pb.on_select();
+        run_frames(pb, t, std::chrono::milliseconds(300));
         CHECK(s.error_message == "Could not load: Movies");
     }
     SECTION("game-only playlist") {
         s.selected_index = 3;
         app::PlaylistPlayback pb(s, t, kDir);
         pb.on_select();
+        run_frames(pb, t, std::chrono::milliseconds(300));
         CHECK(s.error_message == "Use Settings to launch games");
     }
     SECTION("empty playlist") {
         s.selected_index = 4;
         app::PlaylistPlayback pb(s, t, kDir);
         pb.on_select();
+        run_frames(pb, t, std::chrono::milliseconds(300));
         CHECK(s.error_message == "No content in playlist");
     }
     // stop_to_menu: indexes cleared (the renderer's blank-menu early-out),
     // switch flag released for a retry.
+    CHECK(t.calls.front() == "stop");
     CHECK(s.current_playlist_index == -1);
     CHECK(s.current_item_index == -1);
     CHECK_FALSE(s.is_switching_playlist);
     CHECK_FALSE(s.video_active);
+}
+
+// ── Re-entrancy while a switch is pending ────────────────────────────────
+
+TEST_CASE("inputs during a pending switch are dropped; the SELECTED playlist loads",
+          "[playlist_playback][switch]") {
+    using std::chrono::milliseconds;
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    pb.on_select();
+    t.advance(milliseconds(50));
+    pb.tick_switch_timeout();
+
+    // The cursor moves on (rotary), then every playback input arrives.
+    s.selected_index = 1;
+    pb.on_select();      // would have been "same playlist? no -> switch again"
+    s.selected_index = 2;
+    pb.on_select();      // would have been "same playlist -> fade the menu out"
+    pb.on_next();
+    pb.on_prev();
+    pb.on_play_pause();  // would toggle the STOPPED pipeline
+    CHECK(t.calls == std::vector<std::string>{"stop"});
+    CHECK(s.ui_visible_when_playing);
+    CHECK_FALSE(s.is_fading);
+
+    s.selected_index = 3;  // cursor parked elsewhere when the load runs
+    run_frames(pb, t, milliseconds(300));
+    CHECK(t.calls == std::vector<std::string>{"stop", "load Movies 0 " + kDir});
+    CHECK(s.current_playlist_index == 2);
+
+    // Once loaded, input works again.
+    pb.on_play_pause();
+    CHECK(t.calls.back() == "toggle_pause");
+}
+
+TEST_CASE("auto-advance never acts on the stopped stream of a pending switch",
+          "[playlist_playback][switch]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.playback_started_ = true;
+    s.update_playback_state(99.9, 100.0);  // the old item was at its end
+    s.selected_index = 2;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    pb.on_select();
+    for (int i = 0; i < 10; ++i) pb.tick_auto_advance();
+    CHECK(t.calls == std::vector<std::string>{"stop"});
+}
+
+TEST_CASE("Media Browser entry abandons a pending switch",
+          "[playlist_playback][switch]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    pb.on_select();
+    app::reset_main_ui_for_media_browser(s);  // what MB entry does
+    run_frames(pb, t, std::chrono::milliseconds(3000));
+    CHECK(t.calls == std::vector<std::string>{"stop"});  // never loaded
+    CHECK_FALSE(pb.switch_pending());
+    CHECK_FALSE(s.is_switching_playlist);
+    CHECK(s.current_playlist_index == -1);
+}
+
+TEST_CASE("a game session abandons a pending switch; the timeout recovers as before",
+          "[playlist_playback][switch]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    pb.on_select();
+    // A game launched inside the wait; the session blocked the main loop
+    // and its return reset the kiosk (prepare_kiosk_state_after_game).
+    t.advance(std::chrono::seconds(30));
+    s.current_playlist_index = -1;
+    s.current_item_index = -1;
+    s.video_active = false;
+    pb.tick_switch_timeout();
+    // No load into the returned-from-game kiosk; the stuck-switch timeout
+    // releases the flag with its recovery stop(), exactly as it did when
+    // the old switch's flag outlived a game.
+    CHECK(t.calls == std::vector<std::string>{"stop", "stop"});
+    CHECK_FALSE(pb.switch_pending());
+    CHECK_FALSE(s.is_switching_playlist);
+}
+
+TEST_CASE("the stuck-switch timeout never cuts a pending switch short",
+          "[playlist_playback][switch]") {
+    using std::chrono::milliseconds;
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    pb.on_select();
+    // As if stop() itself had blocked for 3 s: the switch is already
+    // "older" than the timeout while its own settle is still running.
+    s.playlist_switch_start_time = t.clock - std::chrono::seconds(3);
+    t.advance(milliseconds(100));
+    pb.tick_switch_timeout();
+    CHECK(s.is_switching_playlist);
+    CHECK(t.calls == std::vector<std::string>{"stop"});
+
+    // Due: the load runs first, then the timeout check in the same tick
+    // (the old order) — the old video was still flagged active, so only
+    // the flag clears.
+    t.advance(milliseconds(100));
+    pb.tick_switch_timeout();
+    CHECK(t.calls == std::vector<std::string>{"stop", "load Movies 0 " + kDir});
+    CHECK_FALSE(s.is_switching_playlist);
 }
 
 TEST_CASE("SELECT from the stopped menu starts the playlist", "[playlist_playback]") {
@@ -398,25 +639,40 @@ TEST_CASE("a switch stuck for over 2 s is released", "[playlist_playback]") {
     app::PlaylistPlayback pb(s, t, kDir);
 
     SECTION("young switch is left alone") {
-        s.playlist_switch_start_time = std::chrono::steady_clock::now();
+        s.playlist_switch_start_time = t.clock;
+        t.advance(std::chrono::milliseconds(2000));  // not OVER 2 s yet
         pb.tick_switch_timeout();
         CHECK(s.is_switching_playlist);
         CHECK(t.calls.empty());
     }
-    SECTION("stuck with nothing playing: stop and settle") {
-        s.playlist_switch_start_time =
-            std::chrono::steady_clock::now() - std::chrono::seconds(3);
+    SECTION("stuck with nothing playing: stop, then a 200 ms settle") {
+        s.playlist_switch_start_time = t.clock - std::chrono::seconds(3);
         pb.tick_switch_timeout();
         CHECK_FALSE(s.is_switching_playlist);
-        CHECK(t.calls == std::vector<std::string>{"stop", "sleep 200"});
+        // The stop, and no sleep: the call returned at once.
+        CHECK(t.calls == std::vector<std::string>{"stop"});
+
+        // The old 200 ms settle sleep is now a window in which SELECT
+        // cannot start a load right behind the recovery stop.
+        s.selected_index = 1;
+        pb.on_select();
+        t.advance(std::chrono::milliseconds(199));
+        pb.on_select();
+        CHECK(t.calls == std::vector<std::string>{"stop"});
+        t.advance(std::chrono::milliseconds(1));
+        pb.on_select();
+        CHECK(t.calls == std::vector<std::string>{"stop", "load Cartoons 0 " + kDir});
     }
     SECTION("stuck but playing: only the flag clears") {
-        s.playlist_switch_start_time =
-            std::chrono::steady_clock::now() - std::chrono::seconds(3);
+        s.playlist_switch_start_time = t.clock - std::chrono::seconds(3);
         t.playing_default = true;
         pb.tick_switch_timeout();
         CHECK_FALSE(s.is_switching_playlist);
         CHECK(t.calls.empty());
+        // No settle window either: SELECT works at once.
+        s.selected_index = 1;
+        pb.on_select();
+        CHECK(t.calls == std::vector<std::string>{"load Cartoons 0 " + kDir});
     }
 }
 
@@ -597,20 +853,8 @@ TEST_CASE("a paused video is never treated as stalled", "[playlist_playback]") {
 
 namespace {
 
-// Redirects std::cout for the scope; count() = lines containing `needle`.
-struct CoutCapture {
-    std::ostringstream buf;
-    std::streambuf* old;
-    CoutCapture() : old(std::cout.rdbuf(buf.rdbuf())) {}
-    ~CoutCapture() { std::cout.rdbuf(old); }
-    int count(const std::string& needle) const {
-        int n = 0;
-        std::istringstream in(buf.str());
-        for (std::string line; std::getline(in, line);) {
-            n += line.find(needle) != std::string::npos;
-        }
-        return n;
-    }
+struct CoutCapture : StreamCapture {
+    CoutCapture() : StreamCapture(std::cout) {}
 };
 
 }  // namespace

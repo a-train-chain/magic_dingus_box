@@ -12,6 +12,47 @@
 // so the whole thing runs on the Mac against a recording fake
 // (tests/app/test_playlist_playback.cpp). The kiosk adapter is
 // app/controller_transport.h.
+//
+// ── The playlist switch never blocks the render thread ───────────────────
+// Switching playlists mid-playback used to stop the pipeline and then SLEEP
+// on the render thread — 200 ms to let the old stream's buffers go, then up
+// to 10 x 50 ms re-polls while the player still reported playing — so the
+// picture, the menu and the phone remote froze for up to ~0.7 s per switch
+// (and the stuck-switch timeout slept another 200 ms after its stop). The
+// same waits now run as a per-frame state machine:
+//
+//   on_select(): ...state writes... -> stop() -> [pending: Settling]
+//   tick_switch_timeout(), each frame:
+//     Settling  until 200 ms after the stop
+//     Polling   is_playing() && polls < 10 ? wait 50 ms more : finish
+//     finish    "did not stop cleanly" warning if still playing -> load
+//
+// Side effects, their order, the poll count and the end states are the old
+// blocking code's exactly; only the waiting is cooperative. The load runs
+// from tick_switch_timeout() — the per-frame tick main.cpp already calls
+// after controller.update_state — immediately before the stuck-switch
+// timeout check, the same order as before (load, then the timeout check, in
+// one main-loop iteration). The redraw gate keeps drawing throughout: it
+// treats is_switching_playlist as video activity.
+//
+// RE-ENTRANCY while a switch is pending (the old code queued these inputs
+// behind the freeze; there is nothing sensible to do with them against a
+// stopped pipeline, so they are dropped, matching how NEXT/PREV were
+// already ignored for the whole switch):
+//   - SELECT, NEXT, PREV, PLAY/PAUSE: ignored until the load has run.
+//   - Rotating the menu cursor: allowed; the switch loads the playlist that
+//     was SELECTED (captured at the press), never the one now highlighted.
+//   - Anything that takes the pipeline away first — Media Browser entry
+//     (clears is_switching_playlist), a game session (resets
+//     current_playlist_index on return), the intro — ABANDONS the pending
+//     load: it never runs, the state is left to whoever took over, and the
+//     stuck-switch timeout releases the flag exactly as it did before.
+//   - Shutdown: the pending load is simply never run.
+//   - The stuck-switch timeout never fires while the switch's own bounded
+//     wait is in progress.
+// After the stuck-switch timeout's recovery stop(), the old 200 ms settle
+// sleep is a 200 ms window in which SELECT is ignored, so no new load can
+// follow that stop sooner than it could before.
 
 #include <chrono>
 #include <cstdint>
@@ -55,8 +96,9 @@ public:
     virtual bool has_error() const = 0;
     virtual double player_position() const = 0;
 
-    // std::this_thread::sleep_for in the kiosk; the fake records it.
-    virtual void sleep_for(std::chrono::milliseconds d) = 0;
+    // steady_clock::now() in the kiosk; a hand-advanced clock in the tests.
+    // Every switch deadline and the stuck-switch timeout read this.
+    virtual std::chrono::steady_clock::time_point now() const = 0;
 };
 
 class PlaylistPlayback {
@@ -78,8 +120,10 @@ public:
     void on_prev();
 
     // ── Per-frame ticks, in main-loop order ──────────────────────────────
-    // After controller.update_state: clear is_switching_playlist if a
-    // switch has been stuck for more than 2 s.
+    // After controller.update_state: advance a pending playlist switch
+    // (load the new playlist once the old stream has settled — see the
+    // header comment), then clear is_switching_playlist if a switch has
+    // been stuck for more than 2 s.
     void tick_switch_timeout();
     // Pipeline error on a playlist item -> skip it (or give up after a run
     // of failures).
@@ -93,6 +137,17 @@ public:
     // steady_clock seconds.
     void tick_stall_watchdog(double now_sec);
 
+    // ── Playlist switch state ────────────────────────────────────────────
+    // True from a mid-playback switch's stop() until its load has run (or
+    // the switch was abandoned).
+    bool switch_pending() const { return pending_.phase != SwitchPhase::Idle; }
+    // The waits, unchanged from the old blocking code.
+    static constexpr std::chrono::milliseconds kSwitchSettle{200};
+    static constexpr std::chrono::milliseconds kSwitchRepoll{50};
+    static constexpr int kSwitchMaxRepolls = 10;
+    static constexpr std::chrono::milliseconds kSwitchTimeout{2000};
+    static constexpr std::chrono::milliseconds kTimeoutSettle{200};
+
     // ── Failed-item handling (exposed for the tests) ─────────────────────
     // True while a main-menu playlist item owns the shared pipeline (not
     // the intro, a switch, a game launch, or Media Browser playback).
@@ -104,6 +159,26 @@ private:
     AppState& state_;
     PlaylistTransport& transport_;
     const std::string& playlist_directory_;
+
+    // A mid-playback switch between its stop() and its load.
+    enum class SwitchPhase { Idle, Settling, Polling };
+    struct PendingSwitch {
+        SwitchPhase phase = SwitchPhase::Idle;
+        int target = -1;  // the selected_index SELECT was pressed on
+        std::chrono::steady_clock::time_point next_check{};
+        int repolls = 0;  // 50 ms re-polls used so far
+    };
+    PendingSwitch pending_;
+    // Ends the 200 ms settle after the stuck-switch timeout's stop();
+    // SELECT is ignored until then. Default (epoch) = no settle.
+    std::chrono::steady_clock::time_point timeout_settle_until_{};
+
+    // One step of the pending switch's wait; runs the load when it is due.
+    void advance_pending_switch();
+    // Why a pending switch can no longer load (nullptr = it still can).
+    const char* pending_switch_obsolete_reason() const;
+    // The tail of the old blocking switch: warning + load + failure path.
+    void finish_switch(int target);
 
     // A GStreamer error (corrupt/truncated file, unsupported codec) or a
     // stall the watchdog could not revive used to strand an unattended

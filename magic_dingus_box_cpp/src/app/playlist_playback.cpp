@@ -69,6 +69,15 @@ void PlaylistPlayback::on_select() {
         return;  // Ignore input during intro
     }
 
+    // A switch is waiting for the old stream to settle: the pipeline is
+    // stopped, and the old code froze through this window. Any SELECT
+    // here would act on a stale picture (e.g. "same playlist" would fade
+    // the menu out over the stopped video), so it is dropped. Likewise for
+    // the settle after the stuck-switch timeout's recovery stop().
+    if (switch_pending() || transport_.now() < timeout_settle_until_) {
+        return;
+    }
+
     // If video is playing and UI is hidden, just show UI
     if (state_.video_active && !state_.ui_visible_when_playing) {
         state_.ui_visible_when_playing = true;
@@ -100,7 +109,7 @@ void PlaylistPlayback::on_select() {
             }
 
             state_.is_switching_playlist = true;  // Set flag to prevent overlapping operations
-            state_.playlist_switch_start_time = std::chrono::steady_clock::now();  // Track when switch started
+            state_.playlist_switch_start_time = transport_.now();  // Track when switch started
 
             // First, update the playlist index BEFORE stopping to prevent reset
             state_.current_playlist_index = state_.selected_index;
@@ -115,75 +124,18 @@ void PlaylistPlayback::on_select() {
             // user's volume to the new stream.
 
             transport_.stop();
-            // Wait longer to ensure stop completes and buffers are released
-            // Increased delay to prevent race conditions and buffer export errors
-            // The DRM driver needs time to release GEM buffers from previous video
-            transport_.sleep_for(std::chrono::milliseconds(200));
-
-            // Verify that mpv actually stopped before proceeding
-            // This prevents race conditions when loading new videos
-            int retry_count = 0;
-            const int max_retries = 10;
-            while (transport_.is_playing() && retry_count < max_retries) {
-                transport_.sleep_for(std::chrono::milliseconds(50));
-                retry_count++;
-            }
-
-            if (transport_.is_playing()) {
-                std::cerr << "Warning: Video did not stop cleanly after " << (max_retries * 50) << "ms, proceeding anyway" << std::endl;
-            }
-
-            // Then start the new playlist
-            bool load_success = false;
-
-            // Check for Master Shuffle (index 0)
-            if (state_.selected_index == 0) {
-                std::cout << "Master Shuffle selected!" << std::endl;
-                state_.master_shuffle_active = true;
-                transport_.play_random_global_video(state_, playlist_directory_);
-                load_success = true; // Assume success for now (play_random_global_video handles retries)
-
-                // When starting video, hide UI completely so video shows through fully
-                state_.ui_visible_when_playing = false;
-            } else if (!state_.playlists.empty() && state_.selected_index < static_cast<int>(state_.playlists.size())) {
-                state_.master_shuffle_active = false; // Disable master shuffle for normal playlists
-                const auto& pl = state_.playlists[state_.selected_index];
-                if (!pl.items.empty() && pl.is_video_playlist()) {
-                    // Load first item of new playlist
-                    auto load_result = transport_.load_playlist_item(state_, pl, 0, playlist_directory_);
-                    load_success = static_cast<bool>(load_result);
-                    if (!load_result) {
-                        std::cerr << "Failed to load playlist item: " << load_result.error() << std::endl;
-                        state_.set_error("Could not load: " + pl.title);
-                    }
-                    if (load_success) {
-                        // Only hide UI when video actually loaded
-                        state_.ui_visible_when_playing = false;
-                    }
-                } else if (!pl.items.empty() && pl.is_game_playlist()) {
-                    // Game playlists are launched from Settings > Video Games
-                    state_.set_error("Use Settings to launch games");
-                    load_success = false;
-                } else {
-                    state_.set_error("No content in playlist");
-                    load_success = false;
-                }
-            }
-
-            // If load failed, the old video is already stopped:
-            // land on the menu. stop_to_menu, not the three flags
-            // this used to clear — current_playlist_index /
-            // current_item_index were set to the NEW playlist above,
-            // and indexes set with no video is the Renderer's
-            // "between items" early-out, so the menu AND the error
-            // banner just raised stayed blank until another press.
-            // (An empty message leaves that banner in place.)
-            if (!load_success) {
-                app::stop_to_menu(state_);
-                std::cerr << "Playlist switch failed - flag cleared, ready for retry" << std::endl;
-            }
-            // Otherwise, the flag will be cleared when the new video becomes active
-            // If video doesn't become active within timeout, flag will be cleared by timeout mechanism
+            // Let the stop complete and the old stream's buffers be released
+            // before loading (the DRM driver needs time to release GEM
+            // buffers from the previous video), then verify the player
+            // really stopped. Both waits used to be sleeps right here, on
+            // the render thread; they now run frame by frame from
+            // tick_switch_timeout() -> advance_pending_switch(), which ends
+            // in finish_switch(). The playlist to load is captured NOW: the
+            // menu cursor may move while the switch waits.
+            pending_.phase = SwitchPhase::Settling;
+            pending_.target = state_.selected_index;
+            pending_.next_check = transport_.now() + kSwitchSettle;
+            pending_.repolls = 0;
         }
     } else {
         // No video playing: start the selected playlist
@@ -196,7 +148,7 @@ void PlaylistPlayback::on_select() {
         if (state_.selected_index == 0) {
             std::cout << "Master Shuffle selected (from stopped)!" << std::endl;
             state_.is_switching_playlist = true;
-            state_.playlist_switch_start_time = std::chrono::steady_clock::now();
+            state_.playlist_switch_start_time = transport_.now();
             state_.master_shuffle_active = true;
 
             transport_.play_random_global_video(state_, playlist_directory_);
@@ -211,7 +163,7 @@ void PlaylistPlayback::on_select() {
             const auto& pl = state_.playlists[state_.selected_index];
             if (!pl.items.empty() && pl.is_video_playlist()) {
                 state_.is_switching_playlist = true;  // Set flag
-                state_.playlist_switch_start_time = std::chrono::steady_clock::now();
+                state_.playlist_switch_start_time = transport_.now();
 
                 // Load first item of playlist
                 auto load_result = transport_.load_playlist_item(state_, pl, 0, playlist_directory_);
@@ -238,7 +190,9 @@ void PlaylistPlayback::on_select() {
 
 void PlaylistPlayback::on_play_pause() {
     // Only allow play/pause if intro is complete and we have an active video
-    if (state_.intro_complete && state_.video_active) {
+    // (not a pending switch's stopped one: toggling the stopped pipeline
+    // could restart the stream the switch just stopped).
+    if (state_.intro_complete && state_.video_active && !switch_pending()) {
         transport_.toggle_pause();
     }
 }
@@ -247,7 +201,9 @@ void PlaylistPlayback::on_next() {
     // If video is playing, advance to next playlist item
     // In Master Shuffle mode, pick another random video
     // Otherwise, seek forward in current video
-    // Don't allow if we're switching playlists
+    // Don't allow if we're switching playlists (a pending switch always
+    // has is_switching_playlist set; checked on its own for clarity).
+    if (switch_pending()) return;
     if (!state_.is_switching_playlist && state_.video_active && state_.current_playlist_index >= 0) {
         if (state_.master_shuffle_active) {
             // In Master Shuffle, NEXT triggers another random video,
@@ -274,6 +230,7 @@ void PlaylistPlayback::on_prev() {
     // In Master Shuffle mode, pick another random video
     // Otherwise, seek backward in current video
     // Don't allow if we're switching playlists
+    if (switch_pending()) return;
     if (!state_.is_switching_playlist && state_.video_active && state_.current_playlist_index >= 0) {
         if (state_.master_shuffle_active) {
             // In Master Shuffle, PREV goes back through shuffle
@@ -290,13 +247,133 @@ void PlaylistPlayback::on_prev() {
 
 // ── Per-frame ticks ──────────────────────────────────────────────────────
 
+const char* PlaylistPlayback::pending_switch_obsolete_reason() const {
+    // Something else took the pipeline while the switch waited. In the old
+    // blocking code none of these could happen before the load; now they
+    // can, and loading a playlist video into them would be wrong.
+    if (!state_.is_switching_playlist) {
+        // Media Browser entry (reset_main_ui_for_media_browser) or a
+        // stop_to_menu: whoever cleared the flag owns the state now.
+        return "switch flag cleared";
+    }
+    if (state_.current_playlist_index != pending_.target) {
+        // A game session returned (prepare_kiosk_state_after_game resets
+        // the indexes), or something else re-pointed playback.
+        return "playback re-pointed";
+    }
+    if (state_.is_loading_game) return "game launching";
+    if (state_.showing_intro_video) return "intro playing";
+#ifdef MEDIA_BROWSER_ENABLED
+    if (state_.current_screen == app::AppScreen::MediaBrowser) {
+        return "Media Browser open";
+    }
+#endif
+    return nullptr;
+}
+
+void PlaylistPlayback::advance_pending_switch() {
+    if (!switch_pending()) return;
+
+    if (const char* why = pending_switch_obsolete_reason()) {
+        std::cerr << "Playlist switch to row " << pending_.target
+                  << " abandoned before its load (" << why << ")" << std::endl;
+        pending_ = PendingSwitch{};
+        return;
+    }
+
+    const auto now = transport_.now();
+    if (now < pending_.next_check) return;  // still settling / between polls
+
+    // The old loop, one iteration per due tick:
+    //   while (is_playing() && retry_count < max_retries) { sleep 50; ++retry; }
+    // Same queries in the same order, so the same poll count and outcome.
+    if (transport_.is_playing() && pending_.repolls < kSwitchMaxRepolls) {
+        pending_.phase = SwitchPhase::Polling;
+        ++pending_.repolls;
+        pending_.next_check = now + kSwitchRepoll;
+        return;
+    }
+
+    const int target = pending_.target;
+    pending_ = PendingSwitch{};
+    finish_switch(target);
+}
+
+void PlaylistPlayback::finish_switch(int target) {
+    if (transport_.is_playing()) {
+        std::cerr << "Warning: Video did not stop cleanly after "
+                  << (kSwitchMaxRepolls * kSwitchRepoll.count())
+                  << "ms, proceeding anyway" << std::endl;
+    }
+
+    // Then start the new playlist
+    bool load_success = false;
+
+    // Check for Master Shuffle (index 0)
+    if (target == 0) {
+        std::cout << "Master Shuffle selected!" << std::endl;
+        state_.master_shuffle_active = true;
+        transport_.play_random_global_video(state_, playlist_directory_);
+        load_success = true; // Assume success for now (play_random_global_video handles retries)
+
+        // When starting video, hide UI completely so video shows through fully
+        state_.ui_visible_when_playing = false;
+    } else if (!state_.playlists.empty() && target < static_cast<int>(state_.playlists.size())) {
+        state_.master_shuffle_active = false; // Disable master shuffle for normal playlists
+        const auto& pl = state_.playlists[target];
+        if (!pl.items.empty() && pl.is_video_playlist()) {
+            // Load first item of new playlist
+            auto load_result = transport_.load_playlist_item(state_, pl, 0, playlist_directory_);
+            load_success = static_cast<bool>(load_result);
+            if (!load_result) {
+                std::cerr << "Failed to load playlist item: " << load_result.error() << std::endl;
+                state_.set_error("Could not load: " + pl.title);
+            }
+            if (load_success) {
+                // Only hide UI when video actually loaded
+                state_.ui_visible_when_playing = false;
+            }
+        } else if (!pl.items.empty() && pl.is_game_playlist()) {
+            // Game playlists are launched from Settings > Video Games
+            state_.set_error("Use Settings to launch games");
+            load_success = false;
+        } else {
+            state_.set_error("No content in playlist");
+            load_success = false;
+        }
+    }
+
+    // If load failed, the old video is already stopped:
+    // land on the menu. stop_to_menu, not the three flags
+    // this used to clear — current_playlist_index /
+    // current_item_index were set to the NEW playlist above,
+    // and indexes set with no video is the Renderer's
+    // "between items" early-out, so the menu AND the error
+    // banner just raised stayed blank until another press.
+    // (An empty message leaves that banner in place.)
+    if (!load_success) {
+        app::stop_to_menu(state_);
+        std::cerr << "Playlist switch failed - flag cleared, ready for retry" << std::endl;
+    }
+    // Otherwise, the flag will be cleared when the new video becomes active
+    // If video doesn't become active within timeout, flag will be cleared by timeout mechanism
+}
+
 void PlaylistPlayback::tick_switch_timeout() {
+    // A pending switch's load runs here, BEFORE the timeout check — the
+    // old order (load inside on_select, timeout check later in the same
+    // iteration). While it is still waiting, the timeout stands down: that
+    // wait is bounded on its own (200 ms + 10 x 50 ms), and a slow frame
+    // must not cut a switch short that the old code would have completed.
+    advance_pending_switch();
+    if (switch_pending()) return;
+
     // Clear playlist switching flag if it's been stuck for too long (timeout safety)
     // This prevents the flag from getting stuck if video fails to load or gets into bad state
     if (state_.is_switching_playlist) {
-        auto now = std::chrono::steady_clock::now();
+        auto now = transport_.now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state_.playlist_switch_start_time);
-        if (elapsed.count() > 2000) {  // 2 second timeout
+        if (elapsed > kSwitchTimeout) {  // 2 second timeout
             std::cerr << "CRITICAL: Playlist switch timeout after " << elapsed.count() << "ms - clearing flag and resetting state" << std::endl;
             std::cerr << "  Debug info: video_active=" << state_.video_active
                       << ", is_playing=" << transport_.is_playing()
@@ -308,7 +385,9 @@ void PlaylistPlayback::tick_switch_timeout() {
             if (!transport_.is_playing() && !state_.video_active) {
                 std::cerr << "MPV appears stuck - attempting recovery by stopping and clearing state" << std::endl;
                 transport_.stop();
-                transport_.sleep_for(std::chrono::milliseconds(200));
+                // Was a 200 ms sleep on the render thread; now a window in
+                // which SELECT cannot start a load (see on_select).
+                timeout_settle_until_ = now + kTimeoutSettle;
             }
         }
     }
@@ -337,7 +416,11 @@ void PlaylistPlayback::tick_auto_advance() {
     // hold log, so the next hold (a later item, or this one again after a
     // seek back) is logged once more.
     bool holding = false;
-    if (state_.video_active && state_.current_playlist_index >= 0 && state_.current_item_index >= 0) {
+    // A pending switch has stopped the old stream and already points the
+    // indexes at the new playlist: there is no item to advance (and the old
+    // code never ran this inside the switch's wait).
+    if (!switch_pending() && state_.video_active && state_.current_playlist_index >= 0 &&
+        state_.current_item_index >= 0) {
         // Snapshot the (position, duration) pair so the whole advance
         // decision sees a consistent view rather than reading the
         // mutex-protected fields multiple times.
