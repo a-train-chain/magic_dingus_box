@@ -597,16 +597,25 @@ inline std::string awaiting_row_label(const Movie& m, bool searching) {
     return label.str();
 }
 
-// The footer. (Identical whether or not a cancel is armed — the armed state
-// shows on the row itself.)
-inline std::vector<chrome::Hint> queue_footer_hints() {
+// The footer. The rotary press is the two-stage cancel (decide_queue_select):
+// on a focused row it reads "Cancel" (first press arms), and while that row
+// is armed it reads "Confirm" (second press cancels) — the footer half of
+// the row's CONFIRM CANCEL box. With no row to act on it is the "—" no-op.
+// (v1.6.4's hint pass set it to "—" in both branches, which dimmed the one
+// control that actually does something on this screen and left the
+// armed/unarmed branches byte-identical.)
+inline std::vector<chrome::Hint> queue_footer_hints(bool has_focused_row,
+                                                    bool focused_row_armed) {
+    const char* press = !has_focused_row   ? "\xE2\x80\x94"
+                        : focused_row_armed ? "Confirm"
+                                            : "Cancel";
     return {
         {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
         {chrome::HintIcon::Btn2Red,     "Exit"},
         {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
         {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
         {chrome::HintIcon::RotaryNav,   "Browse"},
-        {chrome::HintIcon::RotaryPress, "\xE2\x80\x94"},
+        {chrome::HintIcon::RotaryPress, press},
     };
 }
 

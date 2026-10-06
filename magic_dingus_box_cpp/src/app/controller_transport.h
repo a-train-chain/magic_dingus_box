@@ -4,7 +4,7 @@
 // Controller and GstPlayer. Kiosk-only (needs GStreamer); the Mac tests use
 // a recording fake instead. See app/playlist_playback.h.
 
-#include <thread>
+#include <chrono>
 
 #include "controller.h"
 #include "playlist_playback.h"
@@ -49,8 +49,8 @@ public:
     bool has_error() const override { return player_.has_error(); }
     double player_position() const override { return player_.get_position(); }
 
-    void sleep_for(std::chrono::milliseconds d) override {
-        std::this_thread::sleep_for(d);
+    std::chrono::steady_clock::time_point now() const override {
+        return std::chrono::steady_clock::now();
     }
 
 private:

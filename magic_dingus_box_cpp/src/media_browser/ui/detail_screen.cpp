@@ -1101,14 +1101,6 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float w = static_cast<float>(screen_w);
     const float h = static_cast<float>(screen_h);
 
-    // 500ms blink cycle, sourced from epoch time so it stays in lockstep
-    // with the home-menu's playlist cursor — both blinks visually breathe
-    // together when transitioning between screens.
-    auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count();
-    const bool blink_on = (epoch_ms / 500) % 2 == 0;
-
     // --- Centered single-message states ------------------------------
     if (mode_ == Mode::Loading) {
         int sz = th.font_large_size;

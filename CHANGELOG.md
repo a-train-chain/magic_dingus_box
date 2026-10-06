@@ -66,6 +66,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The VPN connection is kept alive while idle.** The box now sends a
   WireGuard keepalive every 25 seconds, as ProtonVPN's own config files
   ask for; before, gluetun ignored that setting and sent none.
+- **Switching playlists no longer freezes the screen.** Picking a
+  different playlist while a video was playing froze the picture, the
+  menu and the phone remote for up to about two-thirds of a second while
+  the box waited for the old video to let go. The box still waits exactly
+  as long before starting the new playlist, but the menu stays live while
+  it does. Button presses made during that moment (another select,
+  next/previous, play/pause) are ignored rather than acted on late, and
+  turning the knob no longer changes which playlist starts.
+- **Less log writing to the SD card.** At the end of each video, while
+  the next one was loading, the box wrote the same "NOT auto-advancing"
+  line to its log every frame — dozens of times a second. It is now
+  written once. A dropped-frames warning that could repeat twice a second
+  through a whole film is now written at most every 5 seconds.
+- **Movies queue: the knob press is labelled again.** The on-screen hint
+  for pressing the knob on the download queue showed "—" (does nothing),
+  although it cancels a download. It now reads "Cancel", and "Confirm"
+  once a cancel is armed.
 
 ### Security
 - **A box cloned from another can no longer quietly share its VPN
@@ -141,6 +158,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `app/settings_input` + `app/settings_input_logic` (pure). New Mac unit
   tests cover the API-key chains and mock fallbacks, the intro's end/fade
   decisions, and the BTN4 hold and game-browser row decisions.
+- The mid-playback playlist switch's waits (200 ms settle, up to 10 x 50 ms
+  "still playing?" re-polls, and the stuck-switch timeout's 200 ms settle)
+  are no longer `sleep_for` calls on the render thread: `PlaylistPlayback`
+  runs them as a per-frame state machine advanced from
+  `tick_switch_timeout()`, against an injected clock
+  (`PlaylistTransport::now()` replaces `sleep_for`). Same calls, order,
+  poll count and end states; re-entrancy rules in `playlist_playback.h`;
+  Mac tests drive it with a fake clock.
+- Removed dead code in the Media Browser screens (`BrowseScreen::
+  category_cursor_`, `DetailScreen::render`'s unused `blink_on`,
+  QueueScreen's unused text-hint locals).
+- `test_serve.py`'s phone-remote WebSocket storm test no longer flakes on
+  a loaded machine (the test client could strand the server's `hello_ack`
+  in its handshake buffer; the roundtrip now sends first and asserts
+  order, with condition-based 30 s deadlines).
 - Media Browser screens split into "decide" and "paint": the decision logic
   of the TV series page, movie detail, Browse, Queue and Playback screens
   (button rows, input mapping, paging, worker-result handling, every
