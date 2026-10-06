@@ -1465,8 +1465,9 @@ int main(int /* argc */, char* /* argv */[]) {
                // GStreamer remains alive after intro, just ensure proper state management
         sample_mode.update_state(state);
         
-        // Clear playlist switching flag if it's been stuck for too long
-        // (2 s timeout safety). See PlaylistPlayback::tick_switch_timeout.
+        // Advances a pending mid-playback playlist switch (settle wait →
+        // load, without blocking this thread) and clears a switching flag
+        // stuck for over 2 s. See PlaylistPlayback::tick_switch_timeout.
         playlist_playback.tick_switch_timeout();
         
         // Intro video: LED dance + end detection, the 300 ms audio
