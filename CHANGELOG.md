@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one that delivers it, because a box always updates using the updater it
   already has.
 
+### Internal
+- Media Browser screens split into "decide" and "paint": the decision logic
+  of the TV series page, movie detail, Browse, Queue and Playback screens
+  (button rows, input mapping, paging, worker-result handling, every
+  composed label and toast) moved into Renderer-free units —
+  `series_mutations.{h,cpp}`, `series_detail_view.h`, `detail_logic.h`,
+  `browse_view.h`, `queue_view.h`, `playback_view.h` — with ~100 new Mac
+  unit tests. No behaviour change.
+
 ## [1.10.0] - 2026-10-04
 
 ### Security
