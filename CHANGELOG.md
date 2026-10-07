@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
+- **The phone remote no longer shows a finished game as "now playing".**
+  After you quit a game and came back to the menu, the remote kept
+  showing that game's title until something else played. It now clears
+  the moment the game ends.
 - **Box health no longer reports "1 error" on a box with none.** When the
   kiosk had logged no errors at all, the check counted the system's
   "no entries" notice as an error and showed a warning for nothing.
