@@ -174,12 +174,15 @@ lrun() {
     if dry; then printf '  [dry-run] Mac — %s: %s%s\n' "$desc" "$(printf '%q ' "$@")" "${log:+> $log}" >&2; return 0; fi
     if [[ -n "$log" ]]; then "$@" > "$log" 2>&1; else "$@"; fi
 }
-# fetch <remote path> <local path> — box -> Mac, as root. NOT rsync: macOS
-# ships openrsync as /usr/bin/rsync, and as the RECEIVER of a pull it
-# deadlocked mid-transfer (both ends asleep in poll for 23 min, 978 of 1416
-# snapshot files copied, magicpi5 2026-10-06). A directory (trailing /)
-# streams as a tar — GNU tar skips sockets on its own (a qBittorrent ipc
-# socket in services/config broke plain rsync on 2026-10-04); a file is cat.
+# fetch <remote path> <local path> — box -> Mac, as root. A directory
+# (trailing /) streams as a tar — GNU tar skips sockets on its own (a
+# qBittorrent ipc socket in services/config broke plain rsync on
+# 2026-10-04); a file is cat. Not rsync: macOS ships openrsync as
+# /usr/bin/rsync, and one less implementation in the pull path is one less
+# thing to suspect. NOTE the snapshot is ~600 MB and step 3 copies it over
+# the box's Wi-Fi UPLINK: on magicpi5 (2026-10-06) that ran at ~250 KB/s
+# (box -> LAN; the box downloads at 3 MB/s, the Mac at 23 MB/s), so step 3
+# alone took ~40 min and looked hung. A wired box is much faster.
 fetch() {
     if [[ "$1" == */ ]]; then
         lrun "fetch $1" fetch_dir "$1" "$2"
