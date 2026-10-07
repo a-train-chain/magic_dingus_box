@@ -36,7 +36,7 @@ update_sh_reads() {
 
 @test "beta is a WARN with the fix command, never a FAIL" {
     grep -q 'warn "update channel is BETA' "$CPP_DIR/scripts/verify_box.sh"
-    ! grep -q 'fail "update channel' "$CPP_DIR/scripts/verify_box.sh"
+    ! grep -q 'fail "update channel' "$CPP_DIR/scripts/verify_box.sh" || false
     grep -q 'update.sh channel stable' "$CPP_DIR/scripts/verify_box.sh"
 }
 

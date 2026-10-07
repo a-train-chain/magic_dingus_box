@@ -31,13 +31,13 @@ setup() {
 @test "pkill pattern never matches an ssh/bash wrapper or its own pkill command line" {
     pat="$(hw_pkill_pattern /home/magic/fakegh/)"
     # the 2026-10-04 failure: the ssh session's own command line contained the path
-    ! echo "bash -c sudo pkill -f /home/magic/fakegh/fake_github.py; rm -rf /home/magic/fakegh" | grep -qE "$pat"
-    ! echo "sudo -n pkill -f $pat" | grep -qE "$pat"
-    ! echo "pkill -f ^python3 /home/magic/fakegh/fake_[g]ithub\\.py" | grep -qE "$pat"
-    ! echo "sudo setsid env FAKE_GH_LOG=x python3 /home/magic/fakegh/fake_github.py a b" | grep -qE "$pat"
+    ! echo "bash -c sudo pkill -f /home/magic/fakegh/fake_github.py; rm -rf /home/magic/fakegh" | grep -qE "$pat" || false
+    ! echo "sudo -n pkill -f $pat" | grep -qE "$pat" || false
+    ! echo "pkill -f ^python3 /home/magic/fakegh/fake_[g]ithub\\.py" | grep -qE "$pat" || false
+    ! echo "sudo setsid env FAKE_GH_LOG=x python3 /home/magic/fakegh/fake_github.py a b" | grep -qE "$pat" || false
     # a dot in the dir is literal, not "any character"
     pat2="$(hw_pkill_pattern /home/magic/fake.gh)"
-    ! echo "python3 /home/magic/fakeXgh/fake_github.py" | grep -qE "$pat2"
+    ! echo "python3 /home/magic/fakeXgh/fake_github.py" | grep -qE "$pat2" || false
     echo "python3 /home/magic/fake.gh/fake_github.py" | grep -qE "$pat2"
 }
 

@@ -190,8 +190,8 @@ VERSION_CMP_CASES='
 
 @test "version_lt: never offers a garbage target, always offers a repair to a garbage current" {
     load_update_functions
-    ! version_lt 1.0.0 "1.0.1-rc1"
-    ! version_lt 1.0.0 ""
+    ! version_lt 1.0.0 "1.0.1-rc1" || false
+    ! version_lt 1.0.0 "" || false
     version_lt "junk" 1.0.0
     version_lt "0.0.0" 1.0.0
 }
@@ -557,7 +557,7 @@ VERSION_CMP_CASES='
 @test "the compile never runs wider than -j2 (Pi 4B memory safety)" {
     # -j is chosen by build_memory_plan; every plan maps to 1 or 2.
     grep -q 'make -j"\$jobs"' "$UPDATE_SCRIPT"
-    ! grep -nE 'BUILD_JOBS=[3-9]' "$UPDATE_SCRIPT"
+    ! grep -nE 'BUILD_JOBS=[3-9]' "$UPDATE_SCRIPT" || false
     ! grep -nE 'make -j[3-9]' "$UPDATE_SCRIPT"
 }
 
@@ -1196,8 +1196,8 @@ set_phase() {
     load_update_functions
     rsync_exit_ok 0
     rsync_exit_ok 24
-    ! rsync_exit_ok 23
-    ! rsync_exit_ok 11
+    ! rsync_exit_ok 23 || false
+    ! rsync_exit_ok 11 || false
     ! rsync_exit_ok 12
 }
 
@@ -1253,7 +1253,7 @@ set_phase() {
 # =============================================================================
 
 @test "OTA never runs setup_services.sh" {
-    ! grep -nE '^[^#]*bash[^#]*setup_services\.sh' "$UPDATE_SCRIPT"
+    ! grep -nE '^[^#]*bash[^#]*setup_services\.sh' "$UPDATE_SCRIPT" || false
     grep -q 'setup_phone_remote_uinput.sh' "$UPDATE_SCRIPT"
 }
 

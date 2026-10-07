@@ -122,9 +122,9 @@ report_json() { ls "$HOME"/hw_validate_*.json 2>/dev/null | head -1; }
     run bash "$HWV"
     [[ "$output" == *"Re-run with --yes"* ]]
     [[ "$output" == *"[PASS] board: Raspberry Pi 4 Model B Rev 1.5"* ]]
-    ! grep -qE "systemctl (stop|start|restart)" "$CALLS" 2>/dev/null
+    ! grep -qE "systemctl (stop|start|restart)" "$CALLS" 2>/dev/null || false
     [ "$(cat "$MAGIC_BASE_DIR/config/settings.json")" == "$before" ]
-    ! ls -d "$HOME"/hw_validate_backup_* 2>/dev/null
+    ! ls -d "$HOME"/hw_validate_backup_* 2>/dev/null || false
     json="$(report_json)"
     [ -n "$json" ]
     python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['board']=='pi4' and r['results'] and r['manual_checklist']" "$json"
@@ -142,7 +142,7 @@ report_json() { ls "$HOME"/hw_validate_*.json 2>/dev/null | head -1; }
     [[ "$output" == *"DRY-RUN would run: sudo -n systemctl stop magic-dingus-box-cpp.service"* ]]
     [[ "$output" == *"set-audio-output"*"headphone"* ]]
     [[ "$output" == *"DRY-RUN would run: rsync -a --delete"* ]]
-    ! grep -qE "systemctl (stop|start|restart)" "$CALLS" 2>/dev/null
+    ! grep -qE "systemctl (stop|start|restart)" "$CALLS" 2>/dev/null || false
     [ "$(md5sum "$MAGIC_BASE_DIR/config/settings.json" | cut -d' ' -f1)" == "$before" ]
     ! ls -d "$HOME"/hw_validate_backup_* 2>/dev/null
 }
@@ -151,7 +151,7 @@ report_json() { ls "$HOME"/hw_validate_*.json 2>/dev/null | head -1; }
     printf 'Raspberry Pi 5 Model B Rev 1.0\0' > "$HWV_MODEL_FILE"
     run bash "$HWV" --dry-run --yes
     [[ "$output" == *"for output in auto hdmi:"* ]]
-    ! grep -q "set-audio-output.*headphone" <<<"$output"
+    ! grep -q "set-audio-output.*headphone" <<<"$output" || false
     grep -q "set-audio-output.* hdmi$" <<<"$output"
 }
 
@@ -191,7 +191,7 @@ EOF
       == "$(stat -c %Y "$T/orig_saves/PCSX-ReARMed/game.srm" 2>/dev/null \
          || stat -f %m "$T/orig_saves/PCSX-ReARMed/game.srm")" ]
     # backup removed only after the verified restore
-    ! ls -d "$HOME"/hw_validate_backup_* 2>/dev/null
+    ! ls -d "$HOME"/hw_validate_backup_* 2>/dev/null || false
     # a directory that did not exist before the run is gone again
     [ ! -d "$MAGIC_DATA_DIR/screenshots" ]
 }
