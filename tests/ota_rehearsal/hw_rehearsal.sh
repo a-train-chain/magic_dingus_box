@@ -174,10 +174,29 @@ lrun() {
     if dry; then printf '  [dry-run] Mac — %s: %s%s\n' "$desc" "$(printf '%q ' "$@")" "${log:+> $log}" >&2; return 0; fi
     if [[ -n "$log" ]]; then "$@" > "$log" 2>&1; else "$@"; fi
 }
-# fetch <remote path> <local path> — sockets/devices skipped (a qBittorrent
-# ipc socket in services/config broke plain rsync on 2026-10-04)
+# fetch <remote path> <local path> — box -> Mac, as root. NOT rsync: macOS
+# ships openrsync as /usr/bin/rsync, and as the RECEIVER of a pull it
+# deadlocked mid-transfer (both ends asleep in poll for 23 min, 978 of 1416
+# snapshot files copied, magicpi5 2026-10-06). A directory (trailing /)
+# streams as a tar — GNU tar skips sockets on its own (a qBittorrent ipc
+# socket in services/config broke plain rsync on 2026-10-04); a file is cat.
 fetch() {
-    lrun "fetch $1" rsync -a --no-specials --no-devices --rsync-path="sudo -n rsync" "${PI_HOST}:$1" "$2"
+    if [[ "$1" == */ ]]; then
+        lrun "fetch $1" fetch_dir "$1" "$2"
+    else
+        lrun "fetch $1" fetch_file "$1" "$2"
+    fi
+}
+fetch_dir() {
+    mkdir -p "$2"
+    ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+        "sudo -n tar -C $(printf '%q' "$1") --warning=no-file-ignored -cf - ." < /dev/null \
+        | tar -C "$2" -xf -
+}
+fetch_file() {
+    mkdir -p "$(dirname "$2")"
+    ssh "${SSH_OPTS[@]}" "$PI_HOST" "sudo -n cat $(printf '%q' "$1")" < /dev/null > "$2.part" \
+        && mv -f "$2.part" "$2" || { rm -f "$2.part"; return 1; }
 }
 push() {  # push <remote dir/> <local paths...>
     local dest="$1"; shift
