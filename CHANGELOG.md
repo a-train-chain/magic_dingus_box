@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
+- **Box health no longer reports "1 error" on a box with none.** When the
+  kiosk had logged no errors at all, the check counted the system's
+  "no entries" notice as an error and showed a warning for nothing.
 - **Switching playlists while a video plays no longer locks the remote's
   next/previous for two seconds.** Every switch made mid-video used to be
   "stuck" until a 2-second safety timer released it (logging a CRITICAL

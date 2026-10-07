@@ -558,7 +558,9 @@ if [[ "${NP%% *}" == "1" ]]; then
                       || fail "media playing but now_playing.title empty (phone remote shows '-')"
 fi
 
-ERRS=$(journalctl -u "$UNIT" -b --no-pager -p err 2>/dev/null \
+# -q: with no matching entries journalctl prints "-- No entries --",
+# which wc counted as an error — a clean box read "1 non-ALSA error line".
+ERRS=$(journalctl -q -u "$UNIT" -b --no-pager -p err 2>/dev/null \
         | grep -viE "alsa|pulseaudio|module-stream-restore" | wc -l | tr -d ' ')
 [[ "$ERRS" == 0 ]] && pass "no unexpected errors this boot" \
   || warn "${ERRS} non-ALSA error line(s) — review: journalctl -u ${UNIT} -b -p err"
