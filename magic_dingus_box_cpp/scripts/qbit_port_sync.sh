@@ -35,7 +35,7 @@
 # path below is env-overridable and main only runs when executed.
 
 ENV_FILE="${ENV_FILE:-/opt/magic_dingus_box/services/.env}"
-GLUETUN_API='http://localhost:8000/v1/openvpn/portforwarded'
+GLUETUN_API='http://localhost:8000/v1/portforward'
 QBIT_API="${QBIT_API:-http://localhost:8080}"
 QBIT_USER='admin'
 
@@ -314,8 +314,9 @@ main() {
 
     # Pull the forwarded port from Gluetun's control endpoint. We hit it
     # via `docker exec` because Gluetun's 8000 isn't host-published —
-    # publishing it would expose the unprotected control API on the LAN,
-    # which we explicitly avoid.
+    # publishing it would expose the control API on the LAN, which we
+    # explicitly avoid. The route must stay listed in
+    # ensure_gluetun_auth.sh or a gluetun bump makes it 401.
     PORT=$(docker exec mdb_gluetun wget -qO- "${GLUETUN_API}" 2>/dev/null \
             | python3 -c 'import sys,json; print(json.load(sys.stdin)["port"])' 2>/dev/null \
             || echo 0)

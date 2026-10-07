@@ -373,7 +373,12 @@ services:
       #
       # Net effect: a lease that DIES is caught and auto-recovered (the case
       # that actually bit us); a lease that never existed is left alone.
-      test: ["CMD-SHELL", "wget -qO- --tries=1 --timeout=5 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip=' && { wget -qO- --tries=1 --timeout=3 http://localhost:8000/v1/openvpn/portforwarded 2>/dev/null | grep -qE '\"port\":[1-9]' && touch /tmp/.pf_seen || [ ! -f /tmp/.pf_seen ]; }"]
+      #
+      # GET /v1/portforward must stay listed in ensure_gluetun_auth.sh's
+      # access file: current gluetun makes control-server routes private by
+      # default, and a 401 here after /tmp/.pf_seen exists = unhealthy
+      # forever = a full-stack restart every ~10 minutes.
+      test: ["CMD-SHELL", "wget -qO- --tries=1 --timeout=5 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip=' && { wget -qO- --tries=1 --timeout=3 http://localhost:8000/v1/portforward 2>/dev/null | grep -qE '\"port\":[1-9]' && touch /tmp/.pf_seen || [ ! -f /tmp/.pf_seen ]; }"]
       interval: 60s
       timeout: 10s
       # 5 consecutive failures (~5 min) before unhealthy, not 3. A NAT-PMP

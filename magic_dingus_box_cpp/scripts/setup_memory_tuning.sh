@@ -24,6 +24,9 @@
 #   1e. restart gluetun-cascade-restart.service when it runs an older copy
 #        of its script than /usr/local/bin holds, via
 #        restart_stale_cascade_watcher.sh — same OTA delivery path as 1b
+#   1f. services/config/gluetun/auth/config.toml via ensure_gluetun_auth.sh
+#        (the control-server routes the stack reads stay public after a
+#        gluetun bump) — same OTA delivery path as 1b
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -171,6 +174,21 @@ elif [[ -f "$CASCADE_HELPER" ]]; then
     bash "$CASCADE_HELPER" 2>&1 | sed 's/^/  /' || true
 else
     log "restart_stale_cascade_watcher.sh not found; skipping cascade watcher check"
+fi
+
+# --- 1f. Gluetun control-server access file ---------------------------------
+# Same delivery reasoning as 1d: the routes the stack reads (forwarded port,
+# exit IP) must be explicitly public before any gluetun bump that makes
+# them private by default. Writes a file under services/config/gluetun only
+# (Media Browser boxes); restarts nothing. Never fails.
+GLUETUN_AUTH_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ensure_gluetun_auth.sh"
+if [[ -n "$TUNING_ROOT" ]]; then
+    log "SKIP: gluetun access file (test mode)"
+elif [[ -f "$GLUETUN_AUTH_HELPER" ]]; then
+    bash "$GLUETUN_AUTH_HELPER" "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/services" 2>&1 \
+        | sed 's/^/  /' || true
+else
+    log "ensure_gluetun_auth.sh not found; skipping gluetun access file"
 fi
 
 # --- 2. system.slice companion ----------------------------------------------

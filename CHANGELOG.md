@@ -102,6 +102,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with plain instructions, on any box still using another box's VPN key or
   passwords; the original box itself is never flagged. No secret is ever
   shown or stored to do this — only one-way fingerprints of it.
+- **The VPN's control panel now only answers the two questions the box
+  asks: which port is forwarded, and which address the VPN shows the
+  world.** Everything else — including "turn the VPN off" — now needs a
+  password the box never sets, so the web-scraping helper in the movie
+  services can no longer reach it. This also keeps Movies working
+  through future VPN-software updates: newer versions lock that panel
+  completely by default. A box locked out would have read "no forwarded
+  port" and restarted all the movie services every ten minutes. Takes
+  effect the next time the VPN service starts.
 
 ### Tooling
 - **Blocking ShellCheck gate over every shell script.** New

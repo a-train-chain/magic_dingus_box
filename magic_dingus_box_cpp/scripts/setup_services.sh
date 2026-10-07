@@ -348,6 +348,14 @@ if [ ! -f "${COMPOSE_FILE}" ]; then
 fi
 
 cd "${SERVICES_DIR}"
+
+# Gluetun's control-server access file, before the first gluetun start:
+# keeps the forwarded-port and exit-IP routes this stack reads public on
+# any gluetun version (see ensure_gluetun_auth.sh). Never fatal.
+if [ -f "${SCRIPT_DIR}/ensure_gluetun_auth.sh" ]; then
+    sudo bash "${SCRIPT_DIR}/ensure_gluetun_auth.sh" --provision "${SERVICES_DIR}" || true
+fi
+
 echo "Starting Docker stack..."
 #
 # --remove-orphans tears down containers that used to be in compose but

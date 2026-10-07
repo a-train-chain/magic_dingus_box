@@ -172,16 +172,17 @@ def register(app, ctx) -> None:
         try:
             result = subprocess.run(
                 ["docker", "exec", "mdb_gluetun", "wget", "-qO-",
-                 "http://localhost:8000/v1/openvpn/portforwarded"],
+                 "http://localhost:8000/v1/portforward"],
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode != 0 or not result.stdout.strip():
-                # /v1/openvpn/portforwarded is the canonical endpoint; older
-                # gluetun builds expose /v1/portforward instead. Try that as
-                # a fallback before giving up.
+                # /v1/portforward is the canonical route (the legacy
+                # /v1/openvpn/portforwarded alias 301s to it). Try the alias
+                # as a fallback before giving up. Both must stay listed in
+                # ensure_gluetun_auth.sh's access file.
                 fallback = subprocess.run(
                     ["docker", "exec", "mdb_gluetun", "wget", "-qO-",
-                     "http://localhost:8000/v1/portforward"],
+                     "http://localhost:8000/v1/openvpn/portforwarded"],
                     capture_output=True, text=True, timeout=5,
                 )
                 if fallback.returncode != 0 or not fallback.stdout.strip():
