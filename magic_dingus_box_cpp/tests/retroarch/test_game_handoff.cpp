@@ -121,6 +121,12 @@ TEST_CASE("the session bracket runs begin and end side effects in order",
 
     state.loading_progress.store(0.7f);
     state.loading_phase = "Starting core";
+    // What Controller::load_playlist_item published for the game.
+    state.now_playing_title = "Super Mario World";
+    state.now_playing_subtitle = "SNES";
+    state.now_playing_kind = "game";
+    state.current_playlist_name = "SNES Games";
+    state.current_item_count = 20;
     bracket.end();
 
     CHECK(log.get() == std::vector<std::string>{
@@ -135,6 +141,13 @@ TEST_CASE("the session bracket runs begin and end side effects in order",
     CHECK_FALSE(gate.accepts_input());
     // The ROM fields are cleared at the ready edge, not here.
     CHECK(state.retroarch_rom_name == "Super Mario World");
+    // But the game is no longer "now playing" for the phone remote
+    // (magicpi5, 2026-10-06: Chrono Trigger stayed published on the menu).
+    CHECK(state.now_playing_title.empty());
+    CHECK(state.now_playing_subtitle.empty());
+    CHECK(state.now_playing_kind.empty());
+    CHECK(state.current_playlist_name.empty());
+    CHECK(state.current_item_count == 0);
 
     // The GPIO thread is joined: no polls after end().
     const int polls_after_end = gpio_polls.load();

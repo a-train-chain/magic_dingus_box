@@ -1,6 +1,7 @@
 #include "game_handoff.h"
 
 #include "game_launch_recovery.h"
+#include "playback_reset.h"
 #include "torrent_pause_marker.h"
 
 #include <chrono>
@@ -88,6 +89,13 @@ void GameSessionBracket::end() {
     state_.is_loading_game = false;
     state_.loading_progress.store(0.0f);
     state_.loading_phase.clear();
+    // The game is over: stop publishing it as now-playing. A game item
+    // has no video, so Controller::update_state's stop-clear (which fires
+    // on a video_active true->false edge) never sees it end — the phone
+    // remote kept showing the last game on the menu until something else
+    // played. Every route back from a game runs this hook; a playlist
+    // that continues to its next item republishes on that item's load.
+    app::clear_now_playing(state_);
     // Media Browser: artwork resume, then the quiet-mode resume.
     if (ops_.restore_media_stack) ops_.restore_media_stack();
     // Do NOT publish the menu from here. This hook runs while the

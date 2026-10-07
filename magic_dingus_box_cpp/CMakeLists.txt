@@ -725,6 +725,7 @@ if(RETROARCH_TEST_SOURCES)
         # main.cpp's game-session bracketing, quiet-mode actions and
         # torrent resume recovery (app/game_handoff.h).
         src/app/game_handoff.cpp
+        src/app/playback_reset.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/utils/config.cpp
     )
