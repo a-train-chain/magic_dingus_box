@@ -214,3 +214,136 @@ refute() {
     [ "$status" -eq 0 ]
     cmp -s "$SCRIPT_DIR/../../systemd/magic-dingus-box-cpp.service" "$SD/magic-dingus-box-cpp.service"
 }
+
+# --- retirement + drop-in cleanup ----------------------------------------
+
+# A systemctl stand-in: logs every call to $CALLS. `is-enabled U` succeeds
+# when U is listed in $STUB_DIR/enabled; `show ... U` prints
+# $STUB_DIR/substate.U (default "waiting"); everything else exits 0.
+stub_systemctl() {
+    export MAGIC_SKIP_SYSTEMCTL=false
+    STUB_DIR="$TEST_TEMP_DIR/stubs"
+    mkdir -p "$STUB_DIR"
+    : > "$STUB_DIR/enabled"
+    CALLS="$TEST_TEMP_DIR/systemctl.log"
+    : > "$CALLS"
+    cat > "$STUB_DIR/systemctl" <<STUB
+#!/bin/bash
+echo "systemctl \$*" >> "$CALLS"
+for last; do :; done
+case "\$1" in
+    is-enabled) grep -qxF -- "\$last" "$STUB_DIR/enabled" ;;
+    show)       cat "$STUB_DIR/substate.\$last" 2>/dev/null || echo waiting ;;
+    *)          exit 0 ;;
+esac
+STUB
+    chmod +x "$STUB_DIR/systemctl"
+    export PATH="$STUB_DIR:$PATH"
+}
+# The calls that change something (queries filtered out).
+mutations() { grep -vE '^systemctl (is-enabled|show) ' "$CALLS" || true; }
+
+# old_dropin <unit> <file> <setting> — a drop-in as setup_memory_tuning.sh wrote it
+old_dropin() {
+    mkdir -p "$SD/$1.d"
+    printf '# Magic Dingus Box (setup_memory_tuning.sh): fix drop-in\n[Service]\n%s\n' "$3" > "$SD/$1.d/$2"
+}
+
+@test "a state-file unit the tree no longer ships is disabled and removed" {
+    stub_systemctl
+    installed old-feature.timer "from the rolled-back release"
+    mkdir -p "$(dirname "$STATE")"
+    printf '%s\n' magic-dingus-box-cpp.service old-feature.timer > "$STATE"
+    converge
+    [ "$status" -eq 0 ]
+    [ ! -e "$SD/old-feature.timer" ]
+    grep -qx "systemctl disable --now --no-block old-feature.timer" "$CALLS"
+    [[ "$output" == *"retired old-feature.timer"* ]]
+    refute grep -qx old-feature.timer "$STATE"
+}
+
+@test "the update machinery is never retired" {
+    installed magic-dingus-web.service "web"
+    installed magic-dingus-ota-recovery.service "recovery"
+    mkdir -p "$(dirname "$STATE")"
+    printf '%s\n' magic-dingus-web.service magic-dingus-ota-recovery.service > "$STATE"
+    converge
+    [ "$status" -eq 0 ]
+    [ -f "$SD/magic-dingus-web.service" ]
+    [ -f "$SD/magic-dingus-ota-recovery.service" ]
+}
+
+@test "garbage state lines are never acted on" {
+    echo "keep me" > "$MAGIC_TUNING_ROOT/etc/passwd"
+    installed "a b.service" "spaces"
+    mkdir -p "$(dirname "$STATE")"
+    printf '%s\n' '../../passwd' 'a b.service' '/etc/x.service' '' > "$STATE"
+    converge
+    [ "$status" -eq 0 ]
+    [ -f "$MAGIC_TUNING_ROOT/etc/passwd" ]
+    [ -f "$SD/a b.service" ]
+}
+
+@test "a masked stale unit is left alone" {
+    ln -s /dev/null "$SD/old-feature.timer"
+    mkdir -p "$(dirname "$STATE")"
+    echo old-feature.timer > "$STATE"
+    converge
+    [ "$status" -eq 0 ]
+    [ -L "$SD/old-feature.timer" ]
+}
+
+@test "--check reports STALE without touching it" {
+    installed old-feature.timer "stale"
+    mkdir -p "$(dirname "$STATE")"
+    echo old-feature.timer > "$STATE"
+    converge --check
+    [ "$status" -eq 1 ]
+    [ "$output" = "STALE old-feature.timer" ]
+    [ -f "$SD/old-feature.timer" ]
+}
+
+@test "a redundant fix drop-in is removed once its unit matches the tree" {
+    tree_unit magic_dingus_box_cpp/systemd/magic-dingus-storage-attach.service "attach 600"
+    installed magic-dingus-storage-attach.service "attach 180"
+    old_dropin magic-dingus-storage-attach.service mdb-timeout.conf "TimeoutStartSec=600"
+    converge
+    [ "$status" -eq 0 ]
+    [ ! -e "$SD/magic-dingus-storage-attach.service.d/mdb-timeout.conf" ]
+    [ ! -d "$SD/magic-dingus-storage-attach.service.d" ]
+    [[ "$output" == *"removed redundant drop-in magic-dingus-storage-attach.service.d/mdb-timeout.conf"* ]]
+}
+
+@test "a fix drop-in stays while its unit is not converged" {
+    tree_unit magic_dingus_box_cpp/systemd/magic-dingus-storage-attach.service "attach 600"
+    ln -s /dev/null "$SD/magic-dingus-storage-attach.service"
+    old_dropin magic-dingus-storage-attach.service mdb-timeout.conf "TimeoutStartSec=600"
+    converge
+    [ -f "$SD/magic-dingus-storage-attach.service.d/mdb-timeout.conf" ]
+}
+
+@test "a drop-in without our marker is never removed" {
+    installed magic-dingus-box-cpp.service "kiosk v2"
+    mkdir -p "$SD/magic-dingus-box-cpp.service.d"
+    printf '[Service]\nTimeoutStopSec=20\n' > "$SD/magic-dingus-box-cpp.service.d/stop-timeout.conf"
+    converge
+    [ "$status" -eq 0 ]
+    [ -f "$SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
+}
+
+@test "other drop-ins of a converged unit stay" {
+    old_dropin magic-dingus-box-cpp.service stop-timeout.conf "TimeoutStopSec=20"
+    old_dropin magic-dingus-box-cpp.service memory-protect.conf "MemoryLow=512M"
+    converge
+    [ "$status" -eq 0 ]
+    [ ! -e "$SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
+    [ -f "$SD/magic-dingus-box-cpp.service.d/memory-protect.conf" ]
+}
+
+@test "--check reports DROPIN for a leftover drop-in on a converged unit" {
+    old_dropin magic-dingus-box-cpp.service stop-timeout.conf "TimeoutStopSec=20"
+    converge --check
+    [ "$status" -eq 1 ]
+    [ "$output" = "DROPIN $SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
+    [ -f "$SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
+}

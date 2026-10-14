@@ -103,9 +103,7 @@ magic-ui-x11.service                    ignore -           -            -
 PROTECTED="magic-dingus-box-cpp.service magic-dingus-web.service magic-dingus-ota-recovery.service"
 UNIT_DIRS="systemd magic_dingus_box_cpp/systemd magic_dingus_box_cpp/scripts/missing_search magic_dingus_box_cpp/scripts/episode_priority"
 # The comment line every drop-in setup_memory_tuning.sh wrote carries.
-# shellcheck disable=SC2034  # used by the drop-in cleanup step (a later task)
 DROPIN_MARKER="(setup_memory_tuning.sh)"
-# shellcheck disable=SC2034  # used by the retirement step (a later task)
 UNIT_NAME_RE='^[A-Za-z0-9@._-]+\.(service|timer)$'
 
 log() { echo "[units] $1"; }
@@ -134,6 +132,8 @@ tree_units() {
 is_protected() { case " $PROTECTED " in *" $1 "*) return 0 ;; esac; return 1; }
 
 in_list() { printf '%s' "$1" | grep -qxF -- "$2"; }
+
+sc() { [[ "$SKIP_SYSTEMCTL" == "true" ]] && return 0; systemctl "$@"; }
 
 # write_unit <src> <dest>: temp file in the same directory, then rename, so
 # systemd never reads a half-written unit (the temp name is not a unit name).
@@ -220,6 +220,59 @@ write_state() {
         || log "WARNING: could not write $STATE; retirement waits for the next run"
 }
 
+# Step 3: a unit an earlier run saw installed that this tree does not ship —
+# a rollback to a release without it, or a release that dropped it — is
+# disabled, stopped and removed. Only well-formed names from the state file,
+# never the update machinery (PROTECTED), never a symlink.
+retire_stale_units() {
+    local name dest
+    [[ -f "$STATE" ]] || return 0
+    while IFS= read -r name; do
+        [[ "$name" =~ $UNIT_NAME_RE ]] || continue
+        printf '%s\n' "$LIST" | cut -f1 | grep -qxF -- "$name" && continue
+        is_protected "$name" && continue
+        dest="$SD/$name"
+        [[ -f "$dest" && ! -L "$dest" ]] || continue
+        if [[ "$CHECK" == true ]]; then
+            echo "STALE $name"; FINDINGS=$((FINDINGS + 1)); continue
+        fi
+        sc disable --now --no-block "$name" >/dev/null 2>&1 \
+            || log "WARNING: could not disable $name"
+        if rm -f "$dest"; then
+            log "retired $name (no longer in the tree)"; RELOAD=true
+        else
+            log "ERROR: could not remove $dest"; FAILURES=$((FAILURES + 1))
+        fi
+    done < "$STATE"
+}
+
+# Step 4: the drop-ins setup_memory_tuning.sh wrote while OTA could not
+# replace units. Removed only once the unit matches the tree (a unit whose
+# write failed keeps its fix) and only if the file carries our marker.
+retire_redundant_dropins() {
+    local name src dropin path
+    while IFS=$'\t' read -r name src; do
+        [[ -n "$name" ]] || continue
+        read -r _ _ _ dropin <<< "$(unit_policy "$name")"
+        [[ "$dropin" != "-" ]] || continue
+        path="$SD/$name.d/$dropin"
+        [[ -f "$path" ]] || continue
+        if ! { [[ -f "$SD/$name" && ! -L "$SD/$name" ]] && cmp -s "$src" "$SD/$name"; }; then
+            continue
+        fi
+        grep -qF -- "$DROPIN_MARKER" "$path" || continue
+        if [[ "$CHECK" == true ]]; then
+            echo "DROPIN $path"; FINDINGS=$((FINDINGS + 1)); continue
+        fi
+        if rm -f "$path"; then
+            rmdir "$SD/$name.d" 2>/dev/null || true
+            log "removed redundant drop-in $name.d/$dropin (the unit carries it now)"; RELOAD=true
+        else
+            log "ERROR: could not remove $path"; FAILURES=$((FAILURES + 1))
+        fi
+    done <<< "$LIST"
+}
+
 main() {
     CHECK=false
     TREE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -239,7 +292,6 @@ main() {
     done
 
     local root="${MAGIC_TUNING_ROOT:-}"
-    # shellcheck disable=SC2034  # read by the systemctl steps (a later task)
     SKIP_SYSTEMCTL="${MAGIC_SKIP_SYSTEMCTL:-false}"
     SD="${root}/etc/systemd/system"
     STATE="${root}/var/lib/magic-dingus/system_units"
@@ -271,6 +323,8 @@ main() {
     FINDINGS=0 FAILURES=0 RELOAD=false WRITTEN="" INSTALLED=""
 
     converge_files
+    retire_stale_units
+    retire_redundant_dropins
     write_state
 
     if [[ "$CHECK" == true ]]; then
