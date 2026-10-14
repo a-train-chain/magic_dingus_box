@@ -131,7 +131,11 @@ tree_units() {
 
 is_protected() { case " $PROTECTED " in *" $1 "*) return 0 ;; esac; return 1; }
 
-in_list() { printf '%s' "$1" | grep -qxF -- "$2"; }
+# in_list <newline-separated list> <name>: whole-line, literal match. Pure
+# bash on purpose: `printf | grep -q` under pipefail reports failure whenever
+# grep exits early and the writer dies of SIGPIPE, and callers act on "not in
+# the list" by retiring a unit.
+in_list() { case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac; return 1; }
 
 sc() { [[ "$SKIP_SYSTEMCTL" == "true" ]] && return 0; systemctl "$@"; }
 
@@ -229,7 +233,7 @@ retire_stale_units() {
     [[ -f "$STATE" ]] || return 0
     while IFS= read -r name; do
         [[ "$name" =~ $UNIT_NAME_RE ]] || continue
-        printf '%s\n' "$LIST" | cut -f1 | grep -qxF -- "$name" && continue
+        in_list "$TREE_NAMES" "$name" && continue
         is_protected "$name" && continue
         dest="$SD/$name"
         [[ -f "$dest" && ! -L "$dest" ]] || continue
@@ -301,13 +305,14 @@ main() {
     fi
 
     LIST="$(tree_units)"
+    TREE_NAMES="$(printf '%s\n' "$LIST" | cut -f1)"
     # A wrong or half-restored tree must never look like "the tree ships
     # nothing": that would retire every installed unit.
-    if ! printf '%s\n' "$LIST" | cut -f1 | grep -qxF magic-dingus-box-cpp.service; then
+    if ! in_list "$TREE_NAMES" magic-dingus-box-cpp.service; then
         echo "[units] ERROR: $TREE has no magic-dingus-box-cpp.service; not a Magic Dingus Box tree, nothing changed" >&2
         exit 2
     fi
-    DUPS="$(printf '%s\n' "$LIST" | cut -f1 | uniq -d)"
+    DUPS="$(printf '%s\n' "$TREE_NAMES" | uniq -d)"
 
     # Serialize writers (deploy and an OTA hook can overlap on a dev box).
     # macOS (the test suites) has no flock; the box always does.

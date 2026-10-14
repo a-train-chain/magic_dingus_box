@@ -347,3 +347,64 @@ old_dropin() {
     [ "$output" = "DROPIN $SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
     [ -f "$SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
 }
+
+# --- guards the retirement/cleanup steps must keep (deleting any of these
+# --- checks used to leave the suite green) ----------------------------------
+
+@test "a unit the tree still ships is never retired, even when the state file lists it" {
+    stub_systemctl
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    installed usb-gadget-network.service "gadget"
+    mkdir -p "$(dirname "$STATE")"
+    printf '%s\n' magic-dingus-box-cpp.service usb-gadget-network.service > "$STATE"
+    converge
+    [ "$status" -eq 0 ]
+    [ -f "$SD/usb-gadget-network.service" ]
+    refute grep -q disable "$CALLS"
+}
+
+@test "--check: a fix drop-in on a drifted unit is not reported as redundant" {
+    tree_unit magic_dingus_box_cpp/systemd/magic-dingus-storage-attach.service "attach 600"
+    installed magic-dingus-storage-attach.service "attach 180"
+    old_dropin magic-dingus-storage-attach.service mdb-timeout.conf "TimeoutStartSec=600"
+    converge --check
+    [ "$status" -eq 1 ]
+    [ "$output" = "DRIFT magic-dingus-storage-attach.service" ]
+}
+
+@test "a fix drop-in stays when its unit could not be brought to the tree's copy" {
+    tree_unit magic_dingus_box_cpp/systemd/magic-dingus-storage-attach.service "attach 600"
+    installed magic-dingus-storage-attach.service "attach 180"
+    old_dropin magic-dingus-storage-attach.service mdb-timeout.conf "TimeoutStartSec=600"
+    # The rename onto the unit cannot succeed (a directory sits on the temp
+    # name), so the unit keeps its old text and the fix must keep carrying it.
+    mkdir "$SD/.magic-dingus-storage-attach.service.mdb-tmp"
+    converge
+    [ "$status" -eq 2 ]
+    grep -qx "Description=attach 180" "$SD/magic-dingus-storage-attach.service"
+    [ -f "$SD/magic-dingus-storage-attach.service.d/mdb-timeout.conf" ]
+}
+
+# in_list <newline-separated list> <name>: a whole-line, literal match with no
+# pipe (a `| grep -q` under pipefail reports failure when the reader exits
+# early and the writer dies of SIGPIPE).
+in_list_t() { bash -c 'source "$1"; shift; in_list "$@"' _ "$CONVERGE" "$@"; }
+
+@test "in_list matches whole lines only and takes the name literally" {
+    list=$'a.service\nb.timer\nc.service'
+    in_list_t "$list" a.service
+    in_list_t "$list" b.timer
+    in_list_t "$list" c.service
+    refute in_list_t "$list" aa.service
+    refute in_list_t "$list" a.service.d
+    refute in_list_t "$list" a
+    refute in_list_t "$list" .service
+    refute in_list_t "$list" 'a.servic?'
+    refute in_list_t "$list" '*.service'
+    refute in_list_t "$list" '[ab].service'
+}
+
+@test "in_list on an empty list matches nothing" {
+    refute in_list_t "" a.service
+    refute in_list_t $'\n' a.service
+}
