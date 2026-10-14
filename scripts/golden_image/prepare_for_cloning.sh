@@ -1303,32 +1303,21 @@ log "[3/5] Re-enabling magic-first-boot.service (so cloned Pi runs it)..."
 # (only prepare_golden_image.sh historically installed it; deploy_cpp.sh
 # Step 1.65 now does too, but older deployments predate that). Without
 # the unit file, `systemctl enable` fails and set -euo pipefail aborts
-# the clone. Install from the repo copy synced to ${INSTALL_DIR}/systemd/.
-UNIT_INSTALLED="/etc/systemd/system/magic-first-boot.service"
-UNIT_SRC="${INSTALL_DIR}/systemd/magic-first-boot.service"
-# "Present" is not "correct": a unit installed by an older deploy keeps its
-# old ordering forever if we only install when missing (the same trap the
-# LABEL=MOVIES fstab guard fell into). The image must carry the repo's
-# CURRENT unit — its Before= list is what keeps a clone's Docker stack from
-# dialling the VPN on the source's key before first_boot wipes it — so
-# replace it whenever it differs.
-if [[ -f "$UNIT_INSTALLED" && -f "$UNIT_SRC" ]] && ! cmp -s "$UNIT_SRC" "$UNIT_INSTALLED"; then
-    install -m 0644 "$UNIT_SRC" "$UNIT_INSTALLED"
-    systemctl daemon-reload
-    log "[3/5] Replaced stale magic-first-boot.service unit with ${UNIT_SRC}"
-fi
-if [[ ! -f "$UNIT_INSTALLED" ]]; then
-    if [[ -f "$UNIT_SRC" ]]; then
-        install -m 0644 "$UNIT_SRC" "$UNIT_INSTALLED"
-        systemctl daemon-reload
-        log "[3/5] Installed missing magic-first-boot.service unit from ${UNIT_SRC}"
-    else
-        log "ERROR: magic-first-boot.service unit not installed and no copy at ${UNIT_SRC}"
-        log "       Run deploy_cpp.sh from the dev machine first (it syncs systemd/ units),"
-        log "       then retry the clone. Without this unit the cloned image would never"
-        log "       run first_boot.sh (no identity reset, no WiFi/VPN credential wipe)."
-        exit 1
-    fi
+# the clone. "Present" is not "correct" either: a unit installed by an older
+# deploy keeps its old ordering forever if we only install when missing (the
+# same trap the LABEL=MOVIES fstab guard fell into). The image must carry the
+# repo's CURRENT unit — its Before= list is what keeps a clone's Docker stack
+# from dialling the VPN on the source's key before first_boot wipes it.
+# converge_system_units.sh --only, the one writer of unit files, installs the
+# box tree's copy when it is absent or differs and daemon-reloads.
+CONVERGE_UNITS="${INSTALL_DIR}/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+if ! bash "$CONVERGE_UNITS" --only magic-first-boot.service 2>&1 | sed 's/^/    /'; then
+    log "ERROR: could not install magic-first-boot.service from the box tree"
+    log "       (${INSTALL_DIR}/systemd/magic-first-boot.service). Run deploy_cpp.sh"
+    log "       from the dev machine first (it syncs systemd/ units), then retry the"
+    log "       clone. Without this unit the cloned image would never run"
+    log "       first_boot.sh (no identity reset, no WiFi/VPN credential wipe)."
+    exit 1
 fi
 
 if systemctl is-enabled magic-first-boot.service &>/dev/null; then

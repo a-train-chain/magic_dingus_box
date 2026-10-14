@@ -41,21 +41,11 @@ setup() {
     while read -r name gate absent change dropin extra; do
         [ -n "$name" ] || continue
         [ -z "$extra" ] || { echo "too many columns: $name"; return 1; }
-        case "$gate" in
-            ignore) [ "$absent $change $dropin" = "- - -" ] || { echo "ignore row with policy: $name"; return 1; } ;;
-            base|mb)
-                [[ "$absent" =~ ^(skip|install|enable|enable-now)$ ]] || { echo "bad if-absent: $name"; return 1; }
-                [[ "$change" =~ ^(none|try-restart|rearm)$ ]] || { echo "bad on-change: $name"; return 1; }
-                [[ "$dropin" == "-" || "$dropin" == *.conf ]] || { echo "bad drop-in: $name"; return 1; } ;;
-            *) echo "bad gate: $name"; return 1 ;;
-        esac
+        [[ "$gate" =~ ^(base|mb)$ ]] || { echo "bad gate: $name"; return 1; }
+        [[ "$absent" =~ ^(skip|install|enable|enable-now)$ ]] || { echo "bad if-absent: $name"; return 1; }
+        [[ "$change" =~ ^(none|try-restart|rearm)$ ]] || { echo "bad on-change: $name"; return 1; }
+        [[ "$dropin" == "-" || "$dropin" == *.conf ]] || { echo "bad drop-in: $name"; return 1; }
     done <<< "$POLICY"
-}
-
-@test "only the six legacy units are ignored" {
-    [ "$(printf '%s\n' "$POLICY" | awk '$2 == "ignore" { print $1 }' | sort)" = "$(printf '%s\n' \
-        magic-mpv-x11.service magic-mpv.hardened.service magic-mpv.service \
-        magic-ui-x11.service magic-ui.hardened.service magic-ui.service | sort)" ]
 }
 
 @test "every timer re-arms and only timers re-arm" {
@@ -84,8 +74,7 @@ setup() {
     # Only setup_services.sh creates those helpers (update.sh refreshes but
     # never creates them): installing the unit alone arms a unit that fails.
     while IFS=$'\t' read -r name path; do
-        read -r gate absent _ <<< "$(unit_policy "$name")"
-        [ "$gate" = ignore ] && continue
+        read -r _ absent _ <<< "$(unit_policy "$name")"
         if grep -qE '^ExecStart=(-)?/usr/local/bin/' "$path"; then
             [ "$absent" = skip ] || { echo "$name installs without its helper"; return 1; }
         fi
@@ -139,4 +128,71 @@ setup() {
     f="$TESTS_REPO_ROOT/scripts/golden_image/sync_source_box.sh"
     grep -qF "git ls-files '*.service' '*.timer'" "$f"
     grep -qF 'while IFS= read -r unit_file; do' "$f"
+}
+
+@test "every tracked unit file's name is one the converge accepts (UNIT_NAME_RE)" {
+    # tree_units skips a name that fails UNIT_NAME_RE with only a stderr
+    # note, so a unit named e.g. '-foo.service' would ship and never install.
+    n=0
+    while IFS= read -r f; do
+        n=$((n + 1))
+        [[ "${f##*/}" =~ $UNIT_NAME_RE ]] || { echo "not a well-formed unit name: $f"; return 1; }
+    done < <(cd "$TESTS_REPO_ROOT" && git ls-files '*.service' '*.timer')
+    [ "$n" -gt 20 ] || { echo "only $n unit files found"; return 1; }
+}
+
+# unit_file_writes <file>: its logical lines (backslash continuations joined,
+# comment lines dropped, drop-in paths removed) that write a unit FILE into
+# /etc/systemd/system — with cp/install/mv/ln/tee/rsync or a redirect on the
+# line, or by assigning such a path to a variable (the setup_*.sh scripts
+# used to `install "$SRC" "$DEST"`).
+unit_file_writes() {
+    awk '
+        { line = (pending == "" ? $0 : pending " " $0) }
+        /\\$/ { sub(/\\$/, "", line); pending = line; next }
+        { pending = ""; if (line !~ /^[[:space:]]*#/) print FNR ": " line }
+    ' "$1" \
+    | sed -E "s#etc/systemd/system/[^ \"']*\\.d([/\"' ]|\$)[^ \"']*##g" \
+    | grep -E 'etc/systemd/system(/[^ "'"'"'}]|/?([ "'"'"']|$))' \
+    | grep -E '(^|[;&|( [:space:]])(cp|install|mv|ln|tee|rsync)[[:space:]]|>[[:space:]]*"?[^ ]*etc/systemd/system|[A-Za-z_][A-Za-z0-9_]*="?[^ ]*etc/systemd/system/' \
+    || true
+}
+
+@test "converge_system_units.sh is the only script that writes unit files" {
+    # Nine scripts used to copy units into /etc/systemd/system, each for its
+    # own subset and only when it happened to run; they now call
+    # `converge_system_units.sh --only <unit>` and keep their own
+    # enable/start. Drop-ins (<unit>.d/) and `rm` are not unit-file writes.
+    # Read-only: init_audio.sh's AUDIO_UNIT_FILE (it only tests the file).
+    local found="" f hits
+    while IFS= read -r f; do
+        case "$f" in
+            magic_dingus_box_cpp/scripts/converge_system_units.sh) continue ;;
+            tests/*|*/tests/*) continue ;;
+        esac
+        hits="$(unit_file_writes "$TESTS_REPO_ROOT/$f")"
+        if [[ "$f" == magic_dingus_box_cpp/scripts/init_audio.sh ]]; then
+            hits="$(printf '%s\n' "$hits" | grep -v 'AUDIO_UNIT_FILE=' || true)"
+        fi
+        [[ -z "$hits" ]] || found="${found}${f}:"$'\n'"${hits}"$'\n'
+    done < <(cd "$TESTS_REPO_ROOT" && git ls-files '*.sh')
+    [ -z "$found" ] || { printf 'unit files written outside the converge:\n%s' "$found"; return 1; }
+}
+
+@test "the unit-file write detector catches the forms it claims to" {
+    f="$BATS_TEST_TMPDIR/w.sh"
+    printf '%s\n' \
+        'sudo cp a.service /etc/systemd/system/' \
+        'sudo install -m 0644 \' '    "$S/x.timer" \' '    /etc/systemd/system/x.timer' \
+        'DEST="${ROOT}/etc/systemd/system/${UNIT}"' \
+        'echo "[Unit]" > /etc/systemd/system/y.service' \
+        '# cp a.service /etc/systemd/system/ (a comment)' \
+        'install -m 0644 "$t" /etc/systemd/system/k.service.d/a.conf' \
+        'DROPIN_DIR="${ROOT}/etc/systemd/system/${KIOSK_UNIT}.d"' \
+        'rm -f /etc/systemd/system/old.service' \
+        'if [ -f /etc/systemd/system/z.service ]; then :; fi' \
+        'local sd_dir="${MAGIC_SYSTEMD_DIR:-/etc/systemd/system}"' > "$f"
+    hits="$(unit_file_writes "$f")"
+    [ "$(printf '%s\n' "$hits" | cut -d: -f1 | tr '\n' ' ')" = "1 4 5 6 " ] \
+        || { printf 'detector hits:\n%s\n' "$hits"; return 1; }
 }

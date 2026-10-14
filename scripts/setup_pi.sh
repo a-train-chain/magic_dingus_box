@@ -31,14 +31,13 @@ echo -e "${YELLOW}Project directory: ${PROJECT_DIR}${NC}"
 # === 1. Install systemd service files ===
 echo -e "\n${GREEN}[1/6] Installing systemd service files...${NC}"
 
-# The kiosk unit's single source of truth is the copy in
-# magic_dingus_box_cpp/systemd/ — the one deploy_cpp.sh installs. A stale
-# root-level systemd/ copy used to be installed here instead: Type=simple
-# (no sd_notify readiness), NO Restart= (a crash meant a dead box until
-# power-cycle), no WatchdogSec, and no EnvironmentFile (Media Browser API
-# keys never reached the binary).
-cp "$PROJECT_DIR/magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service" /etc/systemd/system/
-cp "$PROJECT_DIR/systemd/magic-dingus-web.service" /etc/systemd/system/ 2>/dev/null || echo "Web service file not found, skipping"
+# Through converge_system_units.sh --only, the one writer of unit files: it
+# installs the tree's copy of each (the kiosk unit from
+# magic_dingus_box_cpp/systemd/, never a stale root-level copy — one used to
+# be installed here: Type=simple, NO Restart=, no WatchdogSec, no
+# EnvironmentFile) and daemon-reloads when it wrote.
+bash "$PROJECT_DIR/magic_dingus_box_cpp/scripts/converge_system_units.sh" \
+    --only magic-dingus-box-cpp.service --only magic-dingus-web.service
 
 echo "Service files installed"
 

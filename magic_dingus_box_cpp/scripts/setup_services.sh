@@ -486,15 +486,17 @@ fi
 # mdb_gluetun --filter event=start` and runs `compose restart` on the
 # dependents so they reattach cleanly.
 SYSTEMD_DIR="${SCRIPT_DIR}/../systemd"
+# Every unit file below is written by converge_system_units.sh --only, the
+# one writer of unit files: it writes a unit that is absent or differs from
+# the tree and daemon-reloads when it wrote. Each block keeps its own
+# helper install and enable/start.
+CONVERGE_UNITS="${SCRIPT_DIR}/converge_system_units.sh"
 if [ -f "${SCRIPT_DIR}/gluetun_cascade_restart.sh" ] && \
    [ -f "${SYSTEMD_DIR}/gluetun-cascade-restart.service" ]; then
     sudo install -m 0755 \
         "${SCRIPT_DIR}/gluetun_cascade_restart.sh" \
         /usr/local/bin/gluetun_cascade_restart.sh
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/gluetun-cascade-restart.service" \
-        /etc/systemd/system/gluetun-cascade-restart.service
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only gluetun-cascade-restart.service
     sudo systemctl enable --now gluetun-cascade-restart.service
     echo "Gluetun cascade-restart watcher installed + active."
 else
@@ -510,13 +512,7 @@ fi
 # drift within 7 days; failures land in the journal.
 if [ -f "${SYSTEMD_DIR}/magic-dingus-smoke-test.service" ] && \
    [ -f "${SYSTEMD_DIR}/magic-dingus-smoke-test.timer" ]; then
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-smoke-test.service" \
-        /etc/systemd/system/magic-dingus-smoke-test.service
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-smoke-test.timer" \
-        /etc/systemd/system/magic-dingus-smoke-test.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-smoke-test.service --only magic-dingus-smoke-test.timer
     sudo systemctl enable --now magic-dingus-smoke-test.timer
     echo "Weekly smoke-test timer installed + active."
 else
@@ -542,10 +538,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-clear-cooldowns.service" ] && \
     sudo install -m 0755 \
         "${SCRIPT_DIR}/clear_radarr_cooldowns.py" \
         /usr/local/bin/clear_radarr_cooldowns.py
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-clear-cooldowns.service" \
-        /etc/systemd/system/magic-dingus-clear-cooldowns.service
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-clear-cooldowns.service
     sudo systemctl enable magic-dingus-clear-cooldowns.service
     echo "Boot-time cooldown reset installed + enabled."
 else
@@ -564,10 +557,7 @@ fi
 # script no-ops unless the containers are genuinely stale.
 if [ -f "${SYSTEMD_DIR}/magic-dingus-storage-attach.service" ] && \
    [ -f "${SCRIPT_DIR}/storage_attach.sh" ]; then
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-storage-attach.service" \
-        /etc/systemd/system/magic-dingus-storage-attach.service
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-storage-attach.service
     sudo systemctl enable magic-dingus-storage-attach.service
     echo "Movie-drive hot-plug re-link installed + enabled."
 else
@@ -593,10 +583,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-sync-qbit-password.service" ] && \
     sudo install -m 0755 \
         "${SCRIPT_DIR}/sync_qbit_password.sh" \
         /usr/local/bin/sync_qbit_password.sh
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-sync-qbit-password.service" \
-        /etc/systemd/system/magic-dingus-sync-qbit-password.service
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-sync-qbit-password.service
     sudo systemctl enable magic-dingus-sync-qbit-password.service
     echo "Boot-time qBit password resync installed + enabled."
 else
@@ -624,13 +611,7 @@ if [ -f "${SYSTEMD_DIR}/qbit-port-sync.service" ] && \
     sudo install -m 0755 \
         "${SCRIPT_DIR}/qbit_port_sync.sh" \
         /usr/local/bin/qbit-port-sync.sh
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/qbit-port-sync.service" \
-        /etc/systemd/system/qbit-port-sync.service
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/qbit-port-sync.timer" \
-        /etc/systemd/system/qbit-port-sync.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only qbit-port-sync.service --only qbit-port-sync.timer
     sudo systemctl enable --now qbit-port-sync.timer
     echo "qBit-port-sync timer (every 60s) installed + active."
 else
@@ -657,13 +638,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     sudo install -m 0755 \
         "${SCRIPT_DIR}/auto_blocklist_stuck_warnings.py" \
         /usr/local/bin/auto_blocklist_stuck_warnings.py
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" \
-        /etc/systemd/system/magic-dingus-auto-blocklist.service
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.timer" \
-        /etc/systemd/system/magic-dingus-auto-blocklist.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-auto-blocklist.service --only magic-dingus-auto-blocklist.timer
     sudo systemctl enable --now magic-dingus-auto-blocklist.timer
     echo "Auto-blocklist timer (every 15 min) installed + active."
 
@@ -673,9 +648,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     # SDs, and swapped drives all self-heal. Requires the noauto,nofail
     # fstab entry (LABEL=MOVIES → /mnt/ssd) plus the udev mount rule, both
     # added below.
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-library-import.service" \
-        /etc/systemd/system/magic-dingus-library-import.service
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-library-import.service
     # Match on the FULL line, not just "LABEL=MOVIES". The old guard skipped
     # whenever ANY MOVIES line existed, so a box provisioned before nofail and
     # x-systemd.automount were added kept its blocking entry forever — and the
@@ -716,7 +689,6 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     else
         echo "WARNING: udev/99-magic-movies-mount.rules missing — the movie drive will NOT auto-mount." >&2
     fi
-    sudo systemctl daemon-reload
     sudo systemctl enable magic-dingus-library-import.service
     echo "Library-import-on-mount service installed + enabled."
 
@@ -782,13 +754,7 @@ if [ -f "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.service" ] && \
     # this unit's ExecStart points at the deployed repo path
     # (/opt/magic_dingus_box/.../scripts/missing_search/missing_search.py), so a
     # /usr/local/bin copy would never be executed and would silently go stale.
-    sudo install -m 0644 \
-        "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.service" \
-        /etc/systemd/system/magic-dingus-missing-search.service
-    sudo install -m 0644 \
-        "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.timer" \
-        /etc/systemd/system/magic-dingus-missing-search.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-missing-search.service --only magic-dingus-missing-search.timer
     sudo systemctl enable --now magic-dingus-missing-search.timer
     echo "Missing-movies-search timer (every 4h) installed + active."
 else
@@ -813,13 +779,7 @@ if [ -f "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.service" ] && \
     # NOTE: no copy to /usr/local/bin — same rule as missing-search above:
     # this unit's ExecStart points at the deployed repo path, so a
     # /usr/local/bin copy would never be executed and would silently go stale.
-    sudo install -m 0644 \
-        "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.service" \
-        /etc/systemd/system/magic-dingus-episode-priority.service
-    sudo install -m 0644 \
-        "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.timer" \
-        /etc/systemd/system/magic-dingus-episode-priority.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-episode-priority.service --only magic-dingus-episode-priority.timer
     sudo systemctl enable --now magic-dingus-episode-priority.timer
     echo "Episode-priority timer (every 2min) installed + active."
 else

@@ -20,16 +20,29 @@
 # rollbacks (converge_units_after_restore). Idempotent: a converged box
 # gets no writes and no systemctl changes. Never restarts the kiosk.
 #
+# It is also the ONLY writer of unit files: every script that installs a
+# unit (setup_services.sh, deploy_cpp.sh, setup_ota_recovery.sh, the clone
+# tooling, ...) does it through --only and keeps its own enable/start
+# logic. tests/local/converge_units_table.bats fails on any other script
+# that writes a .service/.timer into /etc/systemd/system.
+#
 #   converge_system_units.sh              converge the tree this script is in
 #   converge_system_units.sh --tree DIR   converge DIR's units (a rollback to
 #                                         a tree that predates this script)
 #   converge_system_units.sh --check      read-only, no root: one line per
 #                                         finding (DRIFT|MISSING|STALE <unit>,
 #                                         DROPIN <path>). verify_box.sh runs it.
+#   converge_system_units.sh --only UNIT  write just UNIT (repeatable) from the
+#                                         tree, whatever its policy row says,
+#                                         and daemon-reload if it changed.
+#                                         Never enables, starts, restarts or
+#                                         retires anything: the caller asked
+#                                         for the unit and owns the rest.
 #
 # Exit: 0 converged (--check: clean), 1 --check findings or bad usage,
-# 2 something could not be converged or the tree was refused (logged;
-# callers warn and carry on).
+# 2 something could not be converged, an --only unit is not in the tree, or
+# the tree was refused (logged; the hook warns and carries on, --only
+# callers treat it as their own install failing).
 #
 # Test seams (same conventions as setup_memory_tuning.sh):
 #   MAGIC_TUNING_ROOT    - prefix for /etc, /var/lib and /run/lock (BATS fake
@@ -45,7 +58,6 @@ set -uo pipefail
 #              when <tree>/services/.env exists (an installed mb unit is
 #              still kept current without it; refreshing a file starts
 #              nothing, and every mb unit has ConditionPathExists=.env).
-#              ignore: legacy, never touched.
 #   if-absent  skip | install (file only) | enable | enable-now. Applied
 #              ONLY to a unit that is not installed. An installed unit's
 #              enablement is never changed (disabled stays disabled).
@@ -88,12 +100,6 @@ magic-dingus-missing-search.service     mb     install     none         -
 magic-dingus-missing-search.timer       mb     enable-now  rearm        mdb-boot-delay.conf
 magic-dingus-episode-priority.service   mb     install     none         -
 magic-dingus-episode-priority.timer     mb     enable-now  rearm        -
-magic-mpv.service                       ignore -           -            -
-magic-mpv.hardened.service              ignore -           -            -
-magic-mpv-x11.service                   ignore -           -            -
-magic-ui.service                        ignore -           -            -
-magic-ui.hardened.service               ignore -           -            -
-magic-ui-x11.service                    ignore -           -            -
 '
 
 # Never restarted, stopped or retired here, whatever the table says: the
@@ -103,7 +109,8 @@ magic-ui-x11.service                    ignore -           -            -
 PROTECTED="magic-dingus-box-cpp.service magic-dingus-web.service magic-dingus-ota-recovery.service"
 # Precedence order: a unit name found in more than one of these resolves to the
 # FIRST (see tree_units). The root systemd/ is last on purpose — it is where
-# deploy_cpp.sh stages its copies of units that live in magic_dingus_box_cpp/systemd/.
+# deploys before 2026-10 staged copies of units that live in
+# magic_dingus_box_cpp/systemd/.
 UNIT_DIRS="magic_dingus_box_cpp/systemd magic_dingus_box_cpp/scripts/missing_search magic_dingus_box_cpp/scripts/episode_priority systemd"
 # The comment line every drop-in setup_memory_tuning.sh wrote carries.
 DROPIN_MARKER="(setup_memory_tuning.sh)"
@@ -126,10 +133,12 @@ unit_policy() {
 
 # tree_units -> "<name><TAB><path>", one row per unit name, sorted by name.
 # A name found in several UNIT_DIRS directories resolves to the first one in
-# that order. Deployed boxes have such shadows: deploy_cpp.sh stages copies of
-# magic-dingus-box-cpp.service and magic-cpu-performance.service into the
-# box's root systemd/ (untracked), so refusing a duplicate would refuse the
-# kiosk unit on every deployed box. A shadow whose content differs from the
+# that order. Boxes deployed before 2026-10 have such shadows: deploy_cpp.sh
+# staged copies of magic-dingus-box-cpp.service and
+# magic-cpu-performance.service in the box's root systemd/ (untracked). A
+# deploy now deletes them and an OTA's rsync --delete drops them, but an image
+# cut from such a box still carries them, so refusing a duplicate would refuse
+# the kiosk unit there. A shadow whose content differs from the
 # winner gets one note on STDERR (never stdout: --check stdout is findings
 # only); an identical shadow is silent. A file whose name is not a well-formed
 # unit name (UNIT_NAME_RE — e.g. a leading '-', which systemctl would take for
@@ -188,7 +197,12 @@ converge_files() {
     while IFS=$'\t' read -r name src; do
         [[ -n "$name" ]] || continue
         read -r gate absent _ <<< "$(unit_policy "$name")"
-        [[ "$gate" == ignore ]] && continue
+        if [[ -n "$ONLY" ]]; then
+            # --only: the caller asked for this unit by name and owns its
+            # enablement, so neither the gate nor if-absent applies.
+            in_list "$ONLY" "$name" || continue
+            gate=base absent=requested
+        fi
         dest="$SD/$name"
         if [[ -L "$dest" ]]; then
             [[ "$CHECK" == true ]] || log "skip $name: $dest is a symlink (masked or linked), never written"
@@ -196,6 +210,7 @@ converge_files() {
         fi
         if [[ -e "$dest" ]]; then
             if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+                [[ -z "$ONLY" ]] || log "$name already current"
                 continue
             fi
             if [[ "$CHECK" == true ]]; then
@@ -232,20 +247,24 @@ converge_files() {
 # restored tree's, after a rollback) can retire one its tree does not ship.
 # Losing this file only pauses retirement until the next run.
 write_state() {
-    local name gate
+    local name
     [[ "$CHECK" == true ]] && return 0
     if ! mkdir -p "$(dirname "$STATE")"; then
         log "WARNING: cannot create $(dirname "$STATE"); retirement waits for the next run"
         return 0
     fi
-    while IFS=$'\t' read -r name _; do
-        [[ -n "$name" ]] || continue
-        read -r gate _ <<< "$(unit_policy "$name")"
-        [[ "$gate" == ignore ]] && continue
-        if [[ -f "$SD/$name" && ! -L "$SD/$name" ]]; then
-            echo "$name"
-        fi
-    done <<< "$LIST" > "${STATE}.tmp" && mv -f "${STATE}.tmp" "$STATE" \
+    {
+        # --only only ever adds: a recorded unit this tree does not ship (a
+        # rollback restored an older tree) is what lets the next full run
+        # retire it.
+        [[ -n "$ONLY" && -f "$STATE" ]] && cat "$STATE"
+        while IFS=$'\t' read -r name _; do
+            [[ -n "$name" ]] || continue
+            if [[ -f "$SD/$name" && ! -L "$SD/$name" ]]; then
+                echo "$name"
+            fi
+        done <<< "$LIST"
+    } | awk 'NF' | sort -u > "${STATE}.tmp" && mv -f "${STATE}.tmp" "$STATE" \
         || log "WARNING: could not write $STATE; retirement waits for the next run"
 }
 
@@ -302,8 +321,16 @@ retire_redundant_dropins() {
     done <<< "$LIST"
 }
 
-# Steps 5-6: one daemon-reload, then each policy's effect. Every start, stop
-# and restart is --no-block: this also runs at boot (first boot, the OTA
+# Step 5: one daemon-reload, when anything was written, retired or removed.
+reload_units() {
+    [[ "$RELOAD" == true && "$SKIP_SYSTEMCTL" != "true" ]] || return 0
+    if ! systemctl daemon-reload; then
+        log "ERROR: daemon-reload failed"; FAILURES=$((FAILURES + 1))
+    fi
+}
+
+# Steps 5-6: the reload, then each policy's effect. Every start, stop and
+# restart is --no-block: this also runs at boot (first boot, the OTA
 # power-cut recovery), where waiting on a job can deadlock the boot.
 apply_policies() {
     local name gate absent change
@@ -311,13 +338,10 @@ apply_policies() {
         log "SKIP: daemon-reload and unit policies (test mode)"
         return 0
     fi
-    if [[ "$RELOAD" == true ]] && ! systemctl daemon-reload; then
-        log "ERROR: daemon-reload failed"; FAILURES=$((FAILURES + 1))
-    fi
+    reload_units
     while IFS=$'\t' read -r name _; do
         [[ -n "$name" ]] || continue
         read -r gate absent change _ <<< "$(unit_policy "$name")"
-        [[ "$gate" == ignore ]] && continue
         if in_list "$INSTALLED" "$name"; then
             case "$absent" in
                 enable)
@@ -347,7 +371,7 @@ apply_policies() {
 }
 
 main() {
-    CHECK=false
+    CHECK=false ONLY=""
     TREE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -359,10 +383,21 @@ main() {
                 fi
                 TREE="$(cd "$2" && pwd)"
                 shift ;;
-            *) echo "usage: $(basename "$0") [--check] [--tree DIR]" >&2; exit 1 ;;
+            --only)
+                if [[ ! "${2:-}" =~ $UNIT_NAME_RE ]]; then
+                    echo "[units] ERROR: --only needs a unit name (got '${2:-}')" >&2
+                    exit 1
+                fi
+                ONLY="${ONLY}$2"$'\n'
+                shift ;;
+            *) echo "usage: $(basename "$0") [--check | --only UNIT ...] [--tree DIR]" >&2; exit 1 ;;
         esac
         shift
     done
+    if [[ "$CHECK" == true && -n "$ONLY" ]]; then
+        echo "[units] ERROR: --check and --only cannot be combined" >&2
+        exit 1
+    fi
 
     local root="${MAGIC_TUNING_ROOT:-}"
     SKIP_SYSTEMCTL="${MAGIC_SKIP_SYSTEMCTL:-false}"
@@ -394,10 +429,22 @@ main() {
     [[ -f "$TREE/services/.env" ]] && MB=true
     FINDINGS=0 FAILURES=0 RELOAD=false WRITTEN="" INSTALLED=""
 
+    local name
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        in_list "$TREE_NAMES" "$name" && continue
+        log "ERROR: $name is not a unit this tree ships"
+        FAILURES=$((FAILURES + 1))
+    done <<< "$ONLY"
+
     converge_files
-    retire_stale_units
-    retire_redundant_dropins
-    [[ "$CHECK" == true ]] || apply_policies
+    if [[ -n "$ONLY" ]]; then
+        reload_units
+    else
+        retire_stale_units
+        retire_redundant_dropins
+        [[ "$CHECK" == true ]] || apply_policies
+    fi
     write_state
 
     if [[ "$CHECK" == true ]]; then

@@ -139,16 +139,6 @@ refute() {
         "$SD/magic-dingus-storage-attach.service"
 }
 
-@test "legacy (ignore) units are never touched" {
-    tree_unit systemd/magic-ui.service "legacy v2"
-    tree_unit systemd/magic-mpv.service "legacy"
-    installed magic-ui.service "legacy v1"
-    converge
-    [ "$status" -eq 0 ]
-    grep -qx "Description=legacy v1" "$SD/magic-ui.service"
-    [ ! -e "$SD/magic-mpv.service" ]
-}
-
 @test "a unit with no policy row is kept current but never installed" {
     tree_unit systemd/brand-new.service "new"
     tree_unit systemd/other-new.timer "new v2"
@@ -170,9 +160,10 @@ refute() {
 }
 
 # --- a name in several tree directories: the first directory wins ----------
-# Origin: deploy_cpp.sh stages copies of magic-dingus-box-cpp.service and
-# magic-cpu-performance.service into the box's root systemd/ (untracked), so
-# on every deployed box those names exist in two tree dirs. They used to be
+# Origin: deploy_cpp.sh staged copies of magic-dingus-box-cpp.service and
+# magic-cpu-performance.service in the box's root systemd/ (untracked) until
+# 2026-10, so on every box deployed before then — and every image cut from
+# one — those names exist in two tree dirs. They used to be
 # refused as "ships in two tree directories", which left the kiosk unit
 # unconverged and made --check exit 2.
 
@@ -248,8 +239,7 @@ refute() {
 @test "the state file lists exactly the installed tree units" {
     tree_unit systemd/usb-gadget-network.service "gadget"
     tree_unit magic_dingus_box_cpp/systemd/wifi-powersave-off.service "wifi"
-    tree_unit systemd/magic-ui.service "legacy"
-    installed magic-ui.service "legacy"
+    installed not-in-tree.service "operator's own"
     converge
     [ "$status" -eq 0 ]
     [ "$(cat "$STATE")" = "$(printf '%s\n' magic-dingus-box-cpp.service usb-gadget-network.service)" ]
@@ -658,4 +648,139 @@ in_list_t() { bash -c 'source "$1"; shift; in_list "$@"' _ "$CONVERGE" "$@"; }
     converge
     [ "$status" -eq 0 ]
     [ ! -s "$CALLS" ]
+}
+
+# --- --only: one caller's units ---------------------------------------------
+# Every other script that installs a unit (setup_services.sh, deploy_cpp.sh,
+# the clone tooling, ...) writes it through --only, so the converge is the one
+# writer of unit files. The caller asked for the unit by name and keeps its
+# own enable/start logic: --only writes files and reloads, nothing else.
+
+@test "--only installs a named unit whatever its if-absent policy and gate say" {
+    tree_unit magic_dingus_box_cpp/systemd/wifi-powersave-off.service "wifi"
+    tree_unit magic_dingus_box_cpp/systemd/magic-dingus-services.service "stack"
+    converge --only wifi-powersave-off.service --only magic-dingus-services.service
+    [ "$status" -eq 0 ]
+    cmp -s "$TREE/magic_dingus_box_cpp/systemd/wifi-powersave-off.service" "$SD/wifi-powersave-off.service"
+    cmp -s "$TREE/magic_dingus_box_cpp/systemd/magic-dingus-services.service" "$SD/magic-dingus-services.service"
+    [[ "$output" == *"installed wifi-powersave-off.service"* ]]
+    [[ "$output" == *"done: 0 updated, 2 installed, 0 failed"* ]]
+    grep -qx wifi-powersave-off.service "$STATE"
+    grep -qx magic-dingus-services.service "$STATE"
+}
+
+@test "--only writes the named unit and leaves every other drifted or absent unit alone" {
+    tree_unit systemd/usb-gadget-network.service "gadget v2"
+    installed usb-gadget-network.service "gadget v1"
+    tree_unit systemd/magic-first-boot.service "first boot v2"
+    installed magic-first-boot.service "first boot v1"
+    tree_unit systemd/magic-dingus-web.service "web"
+    converge --only magic-first-boot.service
+    [ "$status" -eq 0 ]
+    grep -qx "Description=first boot v2" "$SD/magic-first-boot.service"
+    grep -qx "Description=gadget v1" "$SD/usb-gadget-network.service"
+    [ ! -e "$SD/magic-dingus-web.service" ]
+    [[ "$output" == *"done: 1 updated, 0 installed, 0 failed"* ]]
+}
+
+@test "--only resolves a name by the same directory precedence as a full run" {
+    tree_unit systemd/magic-cpu-performance.service "cpu staged by an old deploy"
+    tree_unit magic_dingus_box_cpp/systemd/magic-cpu-performance.service "cpu fresh"
+    converge --only magic-cpu-performance.service
+    [ "$status" -eq 0 ]
+    grep -qx "Description=cpu fresh" "$SD/magic-cpu-performance.service"
+}
+
+@test "--only never writes over a masked unit" {
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    ln -s /dev/null "$SD/usb-gadget-network.service"
+    converge --only usb-gadget-network.service
+    [ "$status" -eq 0 ]
+    [ "$(readlink "$SD/usb-gadget-network.service")" = "/dev/null" ]
+    [[ "$output" == *"skip usb-gadget-network.service"* ]]
+}
+
+@test "--only a current unit is not rewritten" {
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    installed usb-gadget-network.service "gadget"
+    before="$(ino "$SD/usb-gadget-network.service")"
+    converge --only usb-gadget-network.service
+    [ "$status" -eq 0 ]
+    [ "$(ino "$SD/usb-gadget-network.service")" = "$before" ]
+    [[ "$output" == *"usb-gadget-network.service already current"* ]]
+    [[ "$output" == *"done: 0 updated, 0 installed, 0 failed"* ]]
+}
+
+@test "--only a name the tree does not ship fails, and still writes the others" {
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    converge --only usb-gadget-network.service --only no-such-unit.service
+    [ "$status" -eq 2 ]
+    [ -f "$SD/usb-gadget-network.service" ]
+    [ ! -e "$SD/no-such-unit.service" ]
+    [[ "$output" == *"ERROR: no-such-unit.service is not a unit this tree ships"* ]]
+}
+
+@test "--only refuses a malformed name, an empty one and --check" {
+    converge --only -x.service
+    [ "$status" -eq 1 ]
+    converge --only
+    [ "$status" -eq 1 ]
+    converge --only ../../passwd
+    [ "$status" -eq 1 ]
+    converge --check --only magic-dingus-box-cpp.service
+    [ "$status" -eq 1 ]
+    [ ! -e "$STATE" ]
+}
+
+@test "--only never retires, never removes drop-ins" {
+    stub_systemctl
+    installed old-feature.timer "from the rolled-back release"
+    mkdir -p "$(dirname "$STATE")"
+    printf '%s\n' magic-dingus-box-cpp.service old-feature.timer > "$STATE"
+    old_dropin magic-dingus-box-cpp.service stop-timeout.conf "TimeoutStopSec=20"
+    converge --only magic-dingus-box-cpp.service
+    [ "$status" -eq 0 ]
+    [ -f "$SD/old-feature.timer" ]
+    [ -f "$SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
+    refute grep -q disable "$CALLS"
+}
+
+@test "--only: one daemon-reload when it wrote, and no enable, start or restart" {
+    stub_systemctl
+    mkdir -p "$TREE/services" && touch "$TREE/services/.env"
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    tree_unit magic_dingus_box_cpp/scripts/missing_search/magic-dingus-missing-search.timer "timer"
+    tree_unit magic_dingus_box_cpp/systemd/kiosk-standby-watcher.service "watcher v2"
+    installed kiosk-standby-watcher.service "watcher v1"
+    tree_unit magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service "kiosk v3"
+    echo magic-dingus-missing-search.timer > "$STUB_DIR/enabled"
+    echo elapsed > "$STUB_DIR/substate.magic-dingus-missing-search.timer"
+    converge --only usb-gadget-network.service --only magic-dingus-missing-search.timer \
+        --only kiosk-standby-watcher.service --only magic-dingus-box-cpp.service
+    [ "$status" -eq 0 ]
+    [ "$(mutations)" = "systemctl daemon-reload" ]
+}
+
+@test "--only on current units makes no systemctl calls at all" {
+    stub_systemctl
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    installed usb-gadget-network.service "gadget"
+    converge --only usb-gadget-network.service
+    [ "$status" -eq 0 ]
+    [ ! -s "$CALLS" ]
+}
+
+@test "--only never drops a recorded unit, so the next full run still retires it" {
+    stub_systemctl
+    installed old-feature.timer "from the rolled-back release"
+    mkdir -p "$(dirname "$STATE")"
+    printf '%s\n' magic-dingus-box-cpp.service old-feature.timer > "$STATE"
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    converge --only usb-gadget-network.service
+    [ "$status" -eq 0 ]
+    [ "$(cat "$STATE")" = "$(printf '%s\n' magic-dingus-box-cpp.service old-feature.timer usb-gadget-network.service)" ]
+    converge
+    [ "$status" -eq 0 ]
+    [ ! -e "$SD/old-feature.timer" ]
+    refute grep -qx old-feature.timer "$STATE"
 }
