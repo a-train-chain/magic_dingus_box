@@ -481,6 +481,21 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
     `/usr/local/bin`-helper MB units) is never reinstalled at all. So keep
     a deleted unit's file for one release, or accept that a rollback won't
     bring it back.
+  - **It is the only writer of unit files.** Every other script that
+    installs a unit — `setup_services.sh`, `deploy_cpp.sh`,
+    `setup_ota_recovery.sh` (still run by `update.sh` before it writes the
+    in-progress marker), `setup_audio_service.sh`,
+    `setup_harness_services.sh`, `install_deps.sh`, the clone tooling,
+    `scripts/setup_pi.sh` — calls `converge_system_units.sh --only <unit>`
+    (writes that unit from the tree whatever its row says, daemon-reloads
+    if it wrote; never enables, starts, retires or touches drop-ins) and
+    keeps its own enable/start. `converge_units_table.bats` fails on any
+    other script writing a `.service`/`.timer` into `/etc/systemd/system`,
+    and on a tracked unit whose name fails `UNIT_NAME_RE`. `deploy_cpp.sh`
+    syncs the git-tracked root `systemd/` into the box tree and deletes the
+    copies of `magic_dingus_box_cpp/systemd/` units that deploys before
+    2026-10 staged there (the converge's directory precedence still
+    resolves such a shadow to the `magic_dingus_box_cpp/systemd/` file).
   - `verify_box.sh` FAILs drift (`--check`: DRIFT/MISSING/STALE; a leftover
     fix drop-in is a WARN); `sync_source_box.sh` pushes every repo unit
     file into the source box's tree and refuses an image without converged

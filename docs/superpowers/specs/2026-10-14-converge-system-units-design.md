@@ -386,10 +386,62 @@ now a unit-file edit; the new rule is "pick its policy row").
 
 ## Out of scope (follow-ups)
 
-- Route the other eight writers' file copies through
-  `converge_system_units.sh --only <unit>`, leaving one writer.
-- Delete the legacy units and scripts (`magic-mpv*`, `magic-ui*`,
+- ~~Route the other eight writers' file copies through
+  `converge_system_units.sh --only <unit>`, leaving one writer.~~ Done —
+  see the addendum below.
+- ~~Delete the legacy units and scripts (`magic-mpv*`, `magic-ui*`,
   `setup_boot_service.sh`, `migrate_to_cpp.sh`, `scripts/setup_pi.sh`'s
-  unit copy).
+  unit copy).~~ Done — see the addendum below.
 - C+1: correct the stale "OTA never replaces units" comments inside unit
   files; consider folding `memory-protect.conf` into the kiosk unit.
+
+## Addendum (2026-10-14): one writer of unit files
+
+Approved by the owner as a short in-chat design; implemented on top of the
+converge.
+
+**`--only <unit>`** (repeatable). Writes just the named units from the tree
+— same directory precedence, same same-directory rename, never over a
+symlinked (masked) unit — whatever their policy row says (the caller asked
+for the unit by name), daemon-reloads once if it wrote, and adds to the
+state file — never drops a name from it, so a unit an older (rolled-back)
+tree no longer ships stays recorded until a full run retires it. It never enables, starts, restarts or retires anything and
+never removes drop-ins: the caller keeps its own enable/start logic. A name
+the tree does not ship exits 2 (the others are still written); a malformed
+name, or `--only` with `--check`, exits 1. Same lock as a full run.
+
+**Writers routed through it**: `setup_services.sh` (10 blocks, 15 units),
+`setup_harness_services.sh`, `install_deps.sh`, `setup_audio_service.sh`
+(its kiosk drop-in stays its own), `setup_ota_recovery.sh` (still called by
+`update.sh` before the in-progress marker — same call site, so the ordering
+is unchanged), `prepare_for_cloning.sh` step 3 and `prepare_golden_image.sh`
+step 12 (`magic-first-boot`), `scripts/setup_pi.sh`, and `deploy_cpp.sh`.
+`tests/local/converge_units_table.bats` now fails on any other tracked
+script that writes a `.service`/`.timer` into `/etc/systemd/system`
+(directly, or through a variable naming one; drop-ins and `rm` excepted),
+and on a tracked unit whose name fails `UNIT_NAME_RE`.
+
+**`deploy_cpp.sh`** no longer stages units in the install root's
+`systemd/`. Step 1.56 syncs the git-tracked root `systemd/` into the box
+tree (explicit file arguments: macOS ships openrsync) and deletes every
+`${PI_DIR}/systemd/<name>` that is a `magic_dingus_box_cpp/systemd/` unit
+not tracked under the root `systemd/` — the kiosk and cpu-performance copies
+earlier deploys left there. Steps 1.6–1.7c install through `--only`; the
+`/tmp` staging of first-boot and usb-gadget is gone (Step 0.9's `chown`
+already fixed the root-owned directory it worked around), and the Media
+Browser hint points at the in-tree `setup_services.sh` instead of a `/tmp`
+copy that could not find its fixtures. The converge keeps its directory
+precedence: an image cut from a box deployed before this still carries the
+shadows (an OTA's `rsync --delete` removes them).
+
+**Legacy deleted** (owner's choice): `systemd/magic-mpv*.service`,
+`systemd/magic-ui*.service`, `setup_boot_service.sh`, `migrate_to_cpp.sh`
+and `cleanup_old_system.sh`, with the `ignore` gate and rows. None was ever
+recorded in the state file (ignored units never were), so no box retires
+anything; a rollback that converges an older tree with `--tree` sees them
+as row-less units (base, skip, none) — never installed when absent.
+
+**Compatibility.** No installed unit changes (the deleted legacy units were
+never installed anywhere), so the pre-converge-tree rule
+holds. After a rollback to an older tree, that tree's scripts copy units
+themselves again — from the same tree, so they agree with it.

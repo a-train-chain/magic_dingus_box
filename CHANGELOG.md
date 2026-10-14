@@ -170,6 +170,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owns that state.
 
 ### Internal
+- One script now writes every systemd unit file:
+  `converge_system_units.sh --only <unit>` is how `setup_services.sh`,
+  `deploy_cpp.sh`, `setup_ota_recovery.sh`, `setup_audio_service.sh`,
+  `setup_harness_services.sh`, `install_deps.sh`, the clone tooling and
+  `setup_pi.sh` install their units (each keeps its own enable/start), and
+  a test fails on any other script that writes one. `deploy_cpp.sh` no
+  longer stages unit copies in the install root's `systemd/` and deletes
+  the ones earlier deploys left there. Removed the legacy X11-era units
+  (`magic-mpv*`, `magic-ui*`) and their scripts (`setup_boot_service.sh`,
+  `migrate_to_cpp.sh`, `cleanup_old_system.sh`); none was installed on
+  any box.
 - `main.cpp` slimmed further (4,123 → ~3,300 lines), with no behavior
   change: main-menu playlist playback control moved to
   `app/playlist_playback` (behind a `PlaylistTransport` interface), the
