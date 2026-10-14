@@ -36,6 +36,14 @@ has() { if grep -qE -- "$2" "$3" 2>/dev/null; then pass "$1"; else fail "$1 — 
 hasnt() { if grep -qE -- "$2" "$3" 2>/dev/null; then fail "$1 — /$2/ found in $(basename "$3"): $(grep -m1 -E -- "$2" "$3")"; else pass "$1"; fi; }
 sha() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 ver() { tr -d '[:space:]' < "$INSTALL/VERSION"; }
+# units_match <label> <tree> [converge script] — the installed units are
+# <tree>'s (converge_system_units.sh --check; default: <tree>'s own script).
+units_match() {
+    local script="${3:-$2/magic_dingus_box_cpp/scripts/converge_system_units.sh}" out rc=0
+    out=$(bash "$script" --check --tree "$2" 2>&1) || rc=$?
+    if [[ $rc -eq 0 ]]; then pass "$1: installed units match the tree"
+    else fail "$1: installed units differ from the tree (rc=$rc): $(echo "$out" | tr '\n' ' ' | cut -c1-300)"; fi
+}
 
 # ---------------------------------------------------------------------------
 # The update.sh process environment. Through the OLD web admin it is the web
@@ -302,7 +310,11 @@ check_hooks_ran_old() {  # <stderr> — the hooks the OLD update.sh runs from th
     has "Custom Format convergence hook ran" 'Converging Radarr/Sonarr Custom Formats' "$1"
     hasnt "Custom Format convergence did not fail" 'Custom Format convergence failed' "$1"
     check "memory-protect drop-in installed" test -f /etc/systemd/system/magic-dingus-box-cpp.service.d/memory-protect.conf
-    check "stop-timeout drop-in installed" test -f /etc/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf
+    check "no stop-timeout fix drop-in (the converged kiosk unit carries TimeoutStopSec=20)" \
+        test ! -e /etc/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf
+    check "the converged kiosk unit is the tree's" \
+        cmp -s "$INSTALL/magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service" /etc/systemd/system/magic-dingus-box-cpp.service
+    units_match "after the OLD updater's install" "$INSTALL"
     check "system.slice companion installed" test -f /etc/systemd/system/system.slice.d/mdb-memory.conf
     check "zram sysctl installed" test -f /etc/sysctl.d/99-mdb-zram.conf
     check "magic-dingus-audio.service installed (setup_audio_service.sh via memory tuning)" test -f /etc/systemd/system/magic-dingus-audio.service
@@ -318,8 +330,8 @@ check_hooks_ran_old() {  # <stderr> — the hooks the OLD update.sh runs from th
     pass "out-of-tree helpers refreshed to the new tree ($n)"
     eq "qbit-port-sync.sh refreshed" "$(sha /usr/local/bin/qbit-port-sync.sh)" "$(sha "$SCRIPTS/qbit_port_sync.sh")"
     eq "usb0 dnsmasq conf refreshed" "$(sha /etc/dnsmasq.d/usb0.conf)" "$(sha "$SCRIPTS/data/dnsmasq-usb0.conf")"
-    check "OLD updater does not install magic-dingus-ota-recovery.service (arrives with the NEXT update)" \
-        test ! -e /etc/systemd/system/magic-dingus-ota-recovery.service
+    check "the NEW tree's unit converge installs magic-dingus-ota-recovery.service on the OLD updater's hop" \
+        test -f /etc/systemd/system/magic-dingus-ota-recovery.service
     grep -E 'cf-converge' "$1" | head -4 | sed 's/^/        /'
 }
 
@@ -435,6 +447,9 @@ EOF
         || note "OLD rollback leaves /usr/local/bin helpers at ${NEW_VER} (refresh-on-rollback only exists from ${NEW_VER} on)"
     [[ -f /etc/systemd/system/magic-dingus-box-cpp.service.d/audio-service.conf ]] && \
         note "after rollback the ${NEW_VER} audio drop-in (Wants=magic-dingus-audio.service, ExecStopPost= cleared) stays; the audio unit is ConditionPathExists=scripts/audio_service.sh, which the rollback removed$( [[ -e $SCRIPTS/audio_service.sh ]] && echo ' — BUT IT IS STILL THERE')"
+    extract_release "$NEW_VER"
+    local uo; uo=$(bash "/tmp/rel_${NEW_VER}/magic_dingus_box_cpp/scripts/converge_system_units.sh" --check --tree "$INSTALL" 2>&1 | tr '\n' ' ')
+    note "after the OLD updater's rollback the ${NEW_VER} units stay (it predates converge-back; the release changed no unit): ${uo:-none differ}"
 
     step "OLD update.sh install with NO TV connected (kiosk exits 69) — expect the documented one-time rollback"
     echo nodisplay > "$SHIM/kiosk_mode"
@@ -524,6 +539,9 @@ scenario_old_web() {
     # deletes them. Benign for build/_deps; reported, not failed.
     EXTRA_ALLOW=('magic_dingus_box_cpp/build/_deps/spdlog-src/VERSION')
     assert_rolled_back_to s0 s2 "after NEW-admin rollback" "$OLD_VER" "$STUB_SHA"
+    extract_release "$NEW_VER"
+    units_match "after the NEW admin's rollback (converged back to ${OLD_VER}'s tree by the stashed script)" \
+        "$INSTALL" "/tmp/rel_${NEW_VER}/magic_dingus_box_cpp/scripts/converge_system_units.sh"
     EXTRA_ALLOW=()
     [[ -e "$INSTALL/magic_dingus_box_cpp/build/_deps/spdlog-src/VERSION" ]] \
         || note "rollback from an OLD-updater backup deleted build/_deps/spdlog-src/VERSION (never backed up: ${OLD_VER}'s unanchored 'VERSION' exclude)"
@@ -591,6 +609,7 @@ scenario_new_path() {
     check "build.new/ and build.old/ gone after promote" bash -c "test ! -e $INSTALL/magic_dingus_box_cpp/build.new -a ! -e $INSTALL/magic_dingus_box_cpp/build.old"
     check "magic-dingus-ota-recovery.service installed by the NEW update.sh" test -f /etc/systemd/system/magic-dingus-ota-recovery.service
     check "...and enabled" grep -qx magic-dingus-ota-recovery.service "$SHIM/enabled"
+    units_match "after the ${V1} install" "$INSTALL"
     has "verify_kiosk_started ran (no 'SKIP: kiosk start verification')" 'VERSION updated to' "$OUT/install_${V1}.log"
     hasnt "kiosk start verification did not fail" 'Kiosk did not start|did not stay up' "$OUT/install_${V1}.log"
     grep -E 'gunicorn' "$OUT/install_${V1}.log" | head -3 | while read -r l; do note "ensure_web_server_dep: $l"; done
@@ -600,6 +619,7 @@ scenario_new_path() {
 
     step "NEW update.sh rollback ${V1} -> ${NEW_VER}"
     run_updater rollback_new "$SCRIPTS/update.sh" rollback && pass "NEW rollback exit 0" || fail "NEW rollback failed"
+    units_match "after the NEW rollback to ${NEW_VER}" "$INSTALL"
     snap n2
     assert_rolled_back_to n0 n2 "after NEW rollback" "$NEW_VER" "$CI_SHA"
     check "sentinel gone" test ! -e "$INSTALL/magic_dingus_box_cpp/REHEARSAL_RELEASE"
