@@ -480,7 +480,10 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
     installed, newer updater) always can. So the release that ships the
     converge must change no unit file: its units stay identical to the
     previous tree's, which makes "kept the new units" equal "converged to
-    the restored tree".
+    the restored tree". The same holds for any unit-changing release a box
+    on ≤ v1.10.0 can reach in one hop (boxes skip releases): until no such
+    box remains, a release that changes a unit must also be safe with a
+    pre-converge tree.
 - **The kiosk is stopped once, only for the swap + restart** — not before
   the rsync. A source build (no usable pre-compiled binary) compiles in
   `build.new/` while the OLD kiosk keeps the TV on, when the box can

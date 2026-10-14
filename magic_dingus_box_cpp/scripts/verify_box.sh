@@ -655,8 +655,9 @@ done
 # ---------------------------------------------------------------------
 # System units: the installed units must be the tree's. Every delivery
 # path converges them (setup_memory_tuning.sh -> converge_system_units.sh,
-# and every rollback), so a mismatch means the converge is failing on this
-# box or /etc/systemd/system was edited by hand — the class that silenced
+# and every rollback run by an updater that has the converge), so a
+# mismatch means the converge is failing on this box or
+# /etc/systemd/system was edited by hand — the class that silenced
 # missing-search for 10 days (2026-10) while this script said SHIPPABLE.
 # Hence FAIL. A leftover fix drop-in on a converged unit only restates the
 # unit's own value: WARN. Customizations belong in other drop-ins, which

@@ -285,7 +285,14 @@ with C−1's tree. That is safe because of a rollout rule:
 > **C ships with zero unit-file edits.** Its units are byte-identical to
 > v1.10.0's, so "kept C's units" IS "converged to the restored tree". Unit
 > comments that now say "OTA never replaces installed units" are corrected
-> in C+1, when every rollback runner understands convergence.
+> in C+1, on boxes that have already passed through C (only there does every
+> rollback runner understand convergence).
+>
+> The rule persists beyond C: boxes skip releases, so a box on ≤ v1.10.0 can
+> reach any later unit-changing release in one hop, with its failed-install
+> rollback / power-cut recovery run by its pre-converge updater. While such
+> boxes are in the field, a release that changes a unit must be safe with a
+> pre-converge tree.
 
 A box on v1.9.x jumping straight to C and failing its start keeps C's (=
 1.10.0's) units on the 1.9.14 tree. Checked: the 1.10.0 kiosk unit only
