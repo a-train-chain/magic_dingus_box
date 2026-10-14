@@ -446,9 +446,10 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
 - **System units converge** (2026-10, `scripts/converge_system_units.sh`):
   every delivery path makes `/etc/systemd/system` equal to the tree's unit
   files — `setup_memory_tuning.sh` step 1a runs it (deploy, OTA incl. the
-  OLD updater's first hop, first boot, source-box sync) and every rollback
-  runs the RESTORED tree's copy (or a stashed copy with `--tree`; the
-  internal rollback only after a complete restore). Rules:
+  OLD updater's first hop, first boot, source-box sync), and a rollback
+  run by an updater that has the converge runs the RESTORED tree's copy
+  (or a stashed copy with `--tree` when that tree predates it;
+  `rollback_internal` only after a complete restore). Rules:
   - **A unit fix is a unit-file edit, never a drop-in.** Drop-ins are only
     for per-box values (`audio-service.conf`'s real uid) and posture tied
     to other state (`memory-protect.conf` + the slice companion). An
@@ -472,10 +473,14 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
     fix drop-in is a WARN); `sync_source_box.sh` pushes every repo unit
     file into the source box's tree and refuses an image without converged
     units.
-  - A failed-install or power-cut rollback is run by the OLDER updater, so
-    on the hop into a release it cannot converge back: a release that
-    changes a unit must be safe with the previous tree (the release that
-    shipped the converge changed no unit at all).
+  - A failed-install rollback and the power-cut recovery (which runs the
+    backup's `update.sh`) are run by the OLDER updater, so on the hop INTO
+    the release that ships the converge, or from any release ≤ v1.10.0,
+    they cannot converge back; only the user-initiated rollback (the
+    installed, newer updater) always can. So the release that ships the
+    converge must change no unit file: its units stay identical to the
+    previous tree's, which makes "kept the new units" equal "converged to
+    the restored tree".
 - **The kiosk is stopped once, only for the swap + restart** — not before
   the rsync. A source build (no usable pre-compiled binary) compiles in
   `build.new/` while the OLD kiosk keeps the TV on, when the box can
