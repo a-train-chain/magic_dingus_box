@@ -2548,8 +2548,18 @@ rollback_internal() {
     # release it had just rolled back.
     refresh_out_of_tree_files
 
-    # Units back to the restored tree's (see converge_units_after_restore).
-    converge_units_after_restore
+    # Units back to the restored tree's (see converge_units_after_restore) —
+    # only from a complete restore: a partial tree would retire the units it
+    # is missing, and the boot recovery retries the whole restore anyway.
+    if rsync_exit_ok "$restore_exit"; then
+        converge_units_after_restore
+    else
+        if [ -n "$CONVERGE_STASH" ]; then
+            rm -f "$CONVERGE_STASH"
+        fi
+        CONVERGE_STASH=""
+        log_warn "restore incomplete; systemd units left as they are until the retry"
+    fi
 
     # Restart C++ service (web service will be restarted at end of main
     # function). At boot the kiosk starts by itself right after us.

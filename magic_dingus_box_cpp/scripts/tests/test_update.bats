@@ -1553,6 +1553,30 @@ converge_sudo_stub() {
     [ "$(grep -c '^restored-has-script=no$' "$TEST_TEMP_DIR/converge.log")" -eq 2 ]
 }
 
+# The converge runs only from a COMPLETE restore: a partial tree can be
+# missing unit files, and the converge would retire the units it is missing
+# (units whose policy is "skip when absent" are never reinstalled by a later
+# converge). The success path is covered by the test above, which runs both
+# rollbacks against a clean restore and sees converge_units_after_restore
+# called by each.
+@test "units after restore: an incomplete restore (rsync 23) skips the converge, cleans the stash and still fails" {
+    seed_audio_rollback with
+    make_fake_release 1.0.8     # the rsync shim: copies, then exits 23 for FAKE_RSYNC_23_SRC
+    export FAKE_RSYNC_23_SRC="$MAGIC_BACKUP_DIR"
+    converge_fixture "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+    export TMPDIR="$TEST_TEMP_DIR/tmp"; mkdir -p "$TMPDIR"
+    load_update_functions
+    converge_units_after_restore() { echo called >> "$TEST_TEMP_DIR/converge.log"; }
+    rc=0
+    rollback_internal 2>"$TEST_TEMP_DIR/err.log" || rc=$?
+    [ "$rc" -ne 0 ]
+    [ ! -e "$TEST_TEMP_DIR/converge.log" ]
+    [ -z "$CONVERGE_STASH" ]
+    [ -z "$(ls "$TMPDIR")" ]
+    grep -q 'restore incomplete; systemd units left as they are' "$TEST_TEMP_DIR/err.log"
+    grep -q 'rsync exit code: 23' "$TEST_TEMP_DIR/err.log"
+}
+
 # =============================================================================
 # Source builds keep the TV on (build_memory_plan / build_from_source)
 # =============================================================================
