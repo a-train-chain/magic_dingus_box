@@ -1466,6 +1466,94 @@ seed_audio_rollback() {
 }
 
 # =============================================================================
+# Rollback converges the systemd units back to the RESTORED tree
+# =============================================================================
+
+converge_fixture() {  # <path> — a converge script that records how it was run
+    mkdir -p "$(dirname "$1")"
+    printf '#!/bin/bash\necho "converge-ran $*"\n' > "$1"
+}
+
+converge_sudo_stub() {
+    SUDO_LOG="$TEST_TEMP_DIR/sudo.log"
+    : > "$SUDO_LOG"
+    sudo() { echo "$*" >> "$SUDO_LOG"; echo "noise on stdout"; return "${SUDO_RC:-0}"; }
+}
+
+@test "units after restore: the restored tree's own converge script is preferred" {
+    load_update_functions
+    SKIP_SYSTEMCTL=false
+    own="$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+    converge_fixture "$own"
+    CONVERGE_STASH="$TEST_TEMP_DIR/stash"; converge_fixture "$CONVERGE_STASH"
+    converge_sudo_stub
+    run converge_units_after_restore
+    [ "$status" -eq 0 ]
+    [ "$(cat "$SUDO_LOG")" = "-n bash $own" ]
+    [ ! -e "$TEST_TEMP_DIR/stash" ]
+}
+
+@test "units after restore: a tree without the script is converged by the stash, with --tree" {
+    load_update_functions
+    SKIP_SYSTEMCTL=false
+    CONVERGE_STASH="$TEST_TEMP_DIR/stash"; converge_fixture "$CONVERGE_STASH"
+    converge_sudo_stub
+    run converge_units_after_restore
+    [ "$status" -eq 0 ]
+    [ "$(cat "$SUDO_LOG")" = "-n bash $TEST_TEMP_DIR/stash --tree $MAGIC_BASE_PATH" ]
+}
+
+@test "units after restore: no script in either tree warns and carries on" {
+    load_update_functions
+    SKIP_SYSTEMCTL=false
+    CONVERGE_STASH=""
+    converge_sudo_stub
+    run converge_units_after_restore
+    [ "$status" -eq 0 ]
+    [ ! -s "$SUDO_LOG" ]
+    [[ "$output" == *"installed units left as they are"* ]]
+}
+
+@test "units after restore: a failing converge never fails the rollback, and stdout stays JSON-clean" {
+    load_update_functions
+    SKIP_SYSTEMCTL=false
+    converge_fixture "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+    converge_sudo_stub
+    SUDO_RC=2
+    stdout="$(converge_units_after_restore 2>/dev/null)"
+    [ -z "$stdout" ]
+    run converge_units_after_restore
+    [ "$status" -eq 0 ]
+}
+
+@test "units after restore: test mode skips it" {
+    load_update_functions
+    converge_fixture "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+    converge_sudo_stub
+    run converge_units_after_restore
+    [ "$status" -eq 0 ]
+    [ ! -s "$SUDO_LOG" ]
+}
+
+@test "both rollback paths stash the rolled-back-from script BEFORE the restore and converge after it" {
+    seed_audio_rollback with
+    converge_fixture "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+    echo "# the rolled-back-from release" >> "$MAGIC_BASE_PATH/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+    load_update_functions
+    converge_units_after_restore() {
+        { [ -n "$CONVERGE_STASH" ] && cat "$CONVERGE_STASH"
+          echo "restored-has-script=$([ -f "$INSTALL_DIR/magic_dingus_box_cpp/scripts/converge_system_units.sh" ] && echo yes || echo no)"; } \
+            >> "$TEST_TEMP_DIR/converge.log"
+        [ -n "$CONVERGE_STASH" ] && rm -f "$CONVERGE_STASH"
+        CONVERGE_STASH=""
+    }
+    rollback_internal 2>/dev/null
+    rollback >/dev/null 2>&1
+    [ "$(grep -c 'the rolled-back-from release' "$TEST_TEMP_DIR/converge.log")" -eq 1 ]
+    [ "$(grep -c '^restored-has-script=no$' "$TEST_TEMP_DIR/converge.log")" -eq 2 ]
+}
+
+# =============================================================================
 # Source builds keep the TV on (build_memory_plan / build_from_source)
 # =============================================================================
 # The kiosk used to be stopped BEFORE the backup/rsync/compile, so an update
