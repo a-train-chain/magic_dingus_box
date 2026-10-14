@@ -12,21 +12,20 @@
 #           latency-tolerant arr stack, never the video pipeline.
 #        -> OOMScoreAdjust=-500: if memory still runs out, the OOM killer
 #           takes a (self-restarting) container, not the kiosk.
-#   1b. /etc/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf
-#        -> TimeoutStopSec=20 so a mid-game stop lets RetroArch auto-save
-#           (the OTA delivery path for a unit-file change; see step 1b)
-#   1c. Media Browser unit timing drop-ins (storage-attach TimeoutStartSec,
-#        smoke-test TimeoutStartSec, missing-search timer OnBootSec) — same
-#        OTA delivery path as 1b
+#   1a. the tree's systemd units, via converge_system_units.sh: installs
+#        the units that differ from the tree, removes the drop-ins that used
+#        to carry unit fixes (stop-timeout.conf + the three Media Browser
+#        timing drop-ins, until 2026-10), re-arms elapsed timers. Unit fixes
+#        ship as unit-file edits now, never as drop-ins written here.
 #   1d. magic-dingus-audio.service + its kiosk drop-in, via
 #        setup_audio_service.sh (PulseAudio out of the kiosk's cgroup) —
-#        same OTA delivery path as 1b
+#        same delivery reasoning as 1a
 #   1e. restart gluetun-cascade-restart.service when it runs an older copy
 #        of its script than /usr/local/bin holds, via
-#        restart_stale_cascade_watcher.sh — same OTA delivery path as 1b
+#        restart_stale_cascade_watcher.sh — same delivery reasoning as 1a
 #   1f. services/config/gluetun/auth/config.toml via ensure_gluetun_auth.sh
 #        (the control-server routes the stack reads stay public after a
-#        gluetun bump) — same OTA delivery path as 1b
+#        gluetun bump) — same delivery reasoning as 1a
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -91,64 +90,21 @@ OOMScoreAdjust=-500
 EOF
 log "kiosk MemoryLow + OOMScoreAdjust drop-in installed"
 
-# --- 1b. kiosk stop timeout drop-in -----------------------------------------
-# Not memory posture, but this script is the root-run hook every delivery
-# path (deploy, OTA, first boot, source-box sync) already executes, and a
-# drop-in overrides whatever TimeoutStopSec the installed unit carries.
-# The in-tree unit already says 20, but OTA never installs unit files into
-# /etc/systemd/system — field boxes keep the unit they were imaged with
-# (5 s). See OTA_UPDATE_GUARANTEES.md "Reaching field boxes".
-cat > "${ETC}/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf" << 'EOF'
-# Magic Dingus Box kiosk stop timeout (setup_memory_tuning.sh).
-# A stop mid-game forwards SIGTERM to RetroArch, which writes its
-# auto-save state before the kiosk re-acquires DRM and exits. The old
-# 5 s value SIGKILLed that save. Overrides the installed unit, which
-# OTA never replaces.
-[Service]
-TimeoutStopSec=20
-EOF
-log "kiosk TimeoutStopSec=20 drop-in installed"
-
-# --- 1c. Media Browser service unit timing drop-ins -------------------------
-# Same delivery reasoning as 1b: these unit files were fixed in-tree, but
-# OTA never re-installs units, so fielded boxes only get the fix as a
-# drop-in from this root-run hook. Drop-ins for a unit that is not
-# installed (unprovisioned box) are inert.
-#   storage-attach: its script can legitimately run lock wait (120) + rm
-#     (120) + up (300); the old 180 s killed it mid-`up`, leaving the
-#     storage-bound containers removed and not re-created.
-#   smoke-test: no start timeout at all — a wedged *arr hung it forever.
-#   missing-search timer: OnBootSec must clear missing_search.py's 10 min
-#     boot deferral, or the first run is always a no-op and the next comes
-#     4 h later. The empty assignment resets EVERY trigger in the unit, not
-#     just OnBootSec (systemd.timer(5)), so the 4 h repeat must be restated
-#     here — without it the timer swept once per boot, then never again
-#     (hardware, 2026-10-14: 10 days with no retry on the owner's box).
-install -d -m 0755 "${ETC}/systemd/system/magic-dingus-storage-attach.service.d"
-cat > "${ETC}/systemd/system/magic-dingus-storage-attach.service.d/mdb-timeout.conf" << 'EOF'
-# Magic Dingus Box (setup_memory_tuning.sh): cover storage_attach.sh's
-# lock wait + compose rm + compose up worst case.
-[Service]
-TimeoutStartSec=600
-EOF
-install -d -m 0755 "${ETC}/systemd/system/magic-dingus-smoke-test.service.d"
-cat > "${ETC}/systemd/system/magic-dingus-smoke-test.service.d/mdb-timeout.conf" << 'EOF'
-# Magic Dingus Box (setup_memory_tuning.sh): a hung smoke test must fail,
-# not run forever.
-[Service]
-TimeoutStartSec=300
-EOF
-install -d -m 0755 "${ETC}/systemd/system/magic-dingus-missing-search.timer.d"
-cat > "${ETC}/systemd/system/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf" << 'EOF'
-# Magic Dingus Box (setup_memory_tuning.sh): first run after the script's
-# own 10-minute boot deferral, not inside it. The empty line resets ALL
-# triggers, so the 4 h repeat is restated with it.
-[Timer]
-OnBootSec=
-OnBootSec=11min
-OnUnitActiveSec=4h
-EOF
-log "service timing drop-ins installed (storage-attach, smoke-test, missing-search)"
+# --- 1a. the tree's systemd units --------------------------------------------
+# This script is the root-run hook every delivery path executes (deploy,
+# OTA — including the OLD update.sh on the first OTA that ships a change —
+# first boot, source-box sync), so it is where the installed units converge
+# to the tree's. Until 2026-10 OTA never installed unit files and unit fixes
+# rode drop-ins written here; an empty OnBootSec= in one of them stopped
+# the missing-search timer for 10 days. The converge removes those drop-ins
+# once each unit matches the tree. Never fails this script.
+CONVERGE_UNITS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/converge_system_units.sh"
+if [[ -f "$CONVERGE_UNITS" ]]; then
+    bash "$CONVERGE_UNITS" 2>&1 | sed 's/^/  /' \
+        || log "WARNING: unit convergence reported failures (verify_box.sh names them)"
+else
+    log "converge_system_units.sh not found; skipping unit convergence"
+fi
 
 # --- 1d. PulseAudio as its own unit -----------------------------------------
 # Not memory posture either (though it does take PulseAudio out from under
@@ -256,18 +212,6 @@ else
         || log "WARNING: daemon-reload failed (drop-ins apply on next reload)"
     sysctl -p "${ETC}/sysctl.d/99-mdb-zram.conf" >/dev/null 2>&1 \
         || log "WARNING: sysctl apply failed (applies on next boot)"
-    # A missing-search timer that went 'elapsed' under the old drop-in (no
-    # repeat trigger) stays dormant through daemon-reload until the next
-    # boot; a restart re-arms the 4 h repeat. A 'waiting' timer is never
-    # touched. --no-block: the restart also pulls in one sweep (the timer
-    # Requires= its service), which no caller should wait on.
-    if [[ "$(systemctl show -p SubState --value magic-dingus-missing-search.timer 2>/dev/null)" == "elapsed" ]]; then
-        if systemctl --no-block restart magic-dingus-missing-search.timer 2>/dev/null; then
-            log "re-armed magic-dingus-missing-search.timer (was elapsed)"
-        else
-            log "WARNING: could not re-arm magic-dingus-missing-search.timer (re-arms on next boot)"
-        fi
-    fi
 fi
 
 if [[ "$REBOOT_NEEDED" == "true" ]]; then
