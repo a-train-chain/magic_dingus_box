@@ -615,11 +615,12 @@ cd "${PI_DIR}/magic_dingus_box_cpp"
 echo "  Checking dependencies..."
 MISSING_DEPS=()
 
-# Map pkg-config names to apt package names
+# Map pkg-config names to apt package names (must match install_deps.sh —
+# tests/local/system_deps_parity.bats checks it)
 declare -A PKG_MAP=(
     ["libdrm"]="libdrm-dev"
     ["gbm"]="libgbm-dev"
-    ["egl"]="libegl1-mesa-dev"
+    ["egl"]="libegl-dev"
     ["glesv2"]="libgles2-mesa-dev"
     ["libevdev"]="libevdev-dev"
     ["libgpiod"]="libgpiod-dev"
