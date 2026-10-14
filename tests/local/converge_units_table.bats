@@ -69,6 +69,11 @@ setup() {
 }
 
 @test "the update machinery never restarts on change" {
+    # Pin the set itself: the loop below walks the script's own PROTECTED, so
+    # an emptied or shrunken list would pass it vacuously.
+    [ "$(printf '%s\n' $PROTECTED | sort | tr '\n' ' ')" = \
+      "magic-dingus-box-cpp.service magic-dingus-ota-recovery.service magic-dingus-web.service " ] \
+        || { echo "PROTECTED is: $PROTECTED"; return 1; }
     for u in $PROTECTED; do
         read -r _ _ change _ <<< "$(unit_policy "$u")"
         [ "$change" = none ] || { echo "$u: $change"; return 1; }

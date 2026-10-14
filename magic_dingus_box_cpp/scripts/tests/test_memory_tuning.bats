@@ -124,9 +124,24 @@ field_dropin() {
 }
 
 @test "the unit converge call is guarded: its failure never fails the posture" {
-    # The converge is run by path, not via PATH, so a failing stub cannot be
-    # injected; pin the guard instead (the converge's own suite covers exit 2).
-    grep -A3 'converge_system_units.sh"$' "$TUNING_SCRIPT" | grep -q '|| log "WARNING'
+    # The script finds its helpers beside itself, so a copy of it next to a
+    # converge stub that exits 2 (the "something could not be converged"
+    # code) injects the failure. Sibling helpers are deliberately absent:
+    # each has a "not found" / test-mode branch.
+    mkdir -p "$TEST_TEMP_DIR/scripts"
+    cp "$TUNING_SCRIPT" "$TEST_TEMP_DIR/scripts/setup_memory_tuning.sh"
+    cat > "$TEST_TEMP_DIR/scripts/converge_system_units.sh" <<'STUB'
+#!/bin/bash
+echo "[units] stub: pretending a unit could not be converged"
+exit 2
+STUB
+    run bash "$TEST_TEMP_DIR/scripts/setup_memory_tuning.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"stub: pretending a unit could not be converged"* ]]
+    [[ "$output" == *"WARNING: unit convergence reported failures"* ]]
+    # The rest of the posture still ran after the failed converge.
+    [[ "$output" == *"memory posture converged"* ]]
+    grep -q "vm.page-cluster = 0" "$MAGIC_TUNING_ROOT/etc/sysctl.d/99-mdb-zram.conf"
 }
 
 @test "appends cgroup flags to cmdline.txt exactly once, keeping it single-line" {
