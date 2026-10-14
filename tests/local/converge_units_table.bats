@@ -105,3 +105,14 @@ setup() {
     grep -q 'scripts/setup_memory_tuning.sh' "$TESTS_REPO_ROOT/scripts/golden_image/first_boot.sh"
     grep -q 'scripts/setup_memory_tuning.sh' "$TESTS_REPO_ROOT/scripts/golden_image/sync_source_box.sh"
 }
+
+@test "sync_source_box pushes the converge script and the units, and gates the image on --check" {
+    f="$TESTS_REPO_ROOT/scripts/golden_image/sync_source_box.sh"
+    grep -q 'push magic_dingus_box_cpp/scripts/converge_system_units.sh' "$f"
+    grep -q 'converge_system_units.sh --check' "$f"
+    push_line="$(grep -n 'push magic_dingus_box_cpp/scripts/converge_system_units.sh' "$f" | cut -d: -f1)"
+    run_line="$(grep -n '"sudo /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh"' "$f" | head -1 | cut -d: -f1)"
+    check_line="$(grep -n 'converge_system_units.sh --check' "$f" | cut -d: -f1)"
+    [ "$push_line" -lt "$run_line" ]
+    [ "$run_line" -lt "$check_line" ]
+}
