@@ -63,11 +63,24 @@ git_archive() {
     while IFS= read -r f; do
         [ -f "${REPO}/${f}" ] && cp "${REPO}/${f}" "${tmp}/${f}"
     done < <(git -C "${REPO}" lfs ls-files -n "$1" 2>/dev/null || true)
+    # Members are named like `git archive` names them ("VERSION", not
+    # "./VERSION"): GNU tar in the box matches member names literally, so
+    # box/scenario.sh's `tar -xOf old.tar magic_dingus_box_cpp/...` found
+    # nothing in a "./"-prefixed archive — silently, which left an EMPTY
+    # /boot/firmware/cmdline.txt fixture (setup_memory_tuning.sh then
+    # "failed") and an empty-input sha as the backup update.sh reference.
+    # Archiving "." also wrote a "./" entry carrying mktemp's 0700, which
+    # every extraction applied to its target directory (/tmp/ci, and from
+    # there the release tarball's root).
+    local -a top=()
+    local p
+    while IFS= read -r -d '' p; do top+=("${p##*/}"); done \
+        < <(find "${tmp}" -mindepth 1 -maxdepth 1 -print0)
     # COPYFILE_DISABLE: macOS bsdtar otherwise adds an AppleDouble "._*"
     # file for every entry with extended attributes — 848 of them landed in
     # a real Pi's tree during the 2026-10-04 hardware rehearsal. CI builds on
     # Linux and never produces them.
-    COPYFILE_DISABLE=1 tar -C "${tmp}" -cf "$2" .
+    COPYFILE_DISABLE=1 tar -C "${tmp}" -cf "$2" -- "${top[@]}"
     rm -rf "${tmp}"
 }
 

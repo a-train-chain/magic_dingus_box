@@ -115,6 +115,14 @@ setup_system() {
     tar -xOf /w/old.tar magic_dingus_box_cpp/scripts/data/boot-cmdline.reference.txt \
         | sed 's/ cgroup_enable=memory cgroup_memory=1//' > /boot/firmware/cmdline.txt
     tar -xOf /w/old.tar magic_dingus_box_cpp/scripts/data/boot-config.reference.txt > /boot/firmware/config.txt
+    # A failed member lookup yields an empty file, not an error here; the
+    # cmdline step would then "fail" for the fixture's sake, not the box's.
+    eq "Pi-like cmdline.txt fixture is one line" "$(wc -l < /boot/firmware/cmdline.txt)" "1"
+    check "Pi-like config.txt fixture is not empty" test -s /boot/firmware/config.txt
+}
+
+old_tree_sha() {  # sha256 of <path> in the OLD release's tree, or a marker that cannot match
+    tar -xOf /w/old.tar "$1" > /tmp/old_tree_file 2>/dev/null && sha /tmp/old_tree_file || echo "missing-from-old.tar:$1"
 }
 
 set_control() {  # set_control <latest> <asset_order> <minify>
@@ -418,7 +426,7 @@ EOF
 
     step "rollback with the OLD update.sh (the backup's copy = ${OLD_VER}'s)"
     eq "backup's update.sh is byte-identical to ${OLD_VER}'s" "$(sha "$BACKUP/magic_dingus_box_cpp/scripts/update.sh")" \
-        "$(tar -xOf /w/old.tar magic_dingus_box_cpp/scripts/update.sh | sha256sum | cut -d' ' -f1)"
+        "$(old_tree_sha magic_dingus_box_cpp/scripts/update.sh)"
     snap s1b
     if run_updater rollback_old "$BACKUP/magic_dingus_box_cpp/scripts/update.sh" rollback; then pass "OLD rollback exited 0"; else fail "OLD rollback exited non-zero"; fi
     local rj; rj=$(last_json "$OUT/rollback_old.stdout")
