@@ -28,6 +28,23 @@ teardown() {
     [ -n "$TEST_TEMP_DIR" ] && [ -d "$TEST_TEMP_DIR" ] && rm -rf "$TEST_TEMP_DIR"
 }
 
+# The trigger list systemd builds from a timer unit plus its drop-ins, in
+# load order, sorted. systemd.timer(5): an empty assignment to ANY trigger
+# setting resets the WHOLE list (OnCalendar= and every On*Sec=), not just
+# the key it names.
+effective_timer_triggers() {
+    awk '
+        /^\[/ { sect = $0; next }
+        sect != "[Timer]" { next }
+        /^(OnActiveSec|OnBootSec|OnStartupSec|OnUnitActiveSec|OnUnitInactiveSec|OnCalendar)=/ {
+            v = $0; sub(/^[^=]*=/, "", v)
+            if (v == "") { n = 0; next }
+            t[++n] = $0
+        }
+        END { for (i = 1; i <= n; i++) print t[i] }
+    ' "$@" | sort
+}
+
 @test "installs kiosk MemoryLow drop-in, slice companion, and zram sysctl" {
     run bash "$TUNING_SCRIPT"
     [ "$status" -eq 0 ]
@@ -60,6 +77,65 @@ teardown() {
     # Empty assignment first (resets the unit's 3min), then the new value.
     [ "$(grep -n '^OnBootSec=' "$timer" | head -1)" = "$(grep -n '^OnBootSec=$' "$timer")" ]
     grep -qx "OnBootSec=11min" "$timer"
+}
+
+@test "missing-search drop-in keeps the 4 h repeat (an empty OnBootSec= resets EVERY trigger)" {
+    # Hardware, 2026-10-14: the drop-in carried only OnBootSec=, so the
+    # timer loaded with OnBootSec=11min alone — one sweep per boot, then
+    # 'elapsed' forever. The owner's box went 10 days without a retry.
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    dropin="$MAGIC_TUNING_ROOT/etc/systemd/system/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf"
+    # The unit field boxes actually carry (OTA never replaces installed units).
+    printf '[Timer]\nOnBootSec=3min\nOnUnitActiveSec=4h\nPersistent=true\n' > "$TEST_TEMP_DIR/field.timer"
+    [ "$(effective_timer_triggers "$TEST_TEMP_DIR/field.timer" "$dropin")" = \
+      "$(printf 'OnBootSec=11min\nOnUnitActiveSec=4h')" ]
+    # A box carrying the in-tree unit ends up with that unit's own triggers.
+    intree="$SCRIPT_DIR/../missing_search/magic-dingus-missing-search.timer"
+    [ "$(effective_timer_triggers "$intree" "$dropin")" = "$(effective_timer_triggers "$intree")" ]
+}
+
+# Step 5 for real (MAGIC_SKIP_SYSTEMCTL=false) against stubbed systemctl and
+# sysctl. The stub logs every call and reports the missing-search timer's
+# SubState from $STUB_DIR/timer_substate.
+reload_stubs() {
+    STUB_DIR="$TEST_TEMP_DIR/stubs"
+    mkdir -p "$STUB_DIR"
+    CALLS="$TEST_TEMP_DIR/systemctl.log"
+    : > "$CALLS"
+    cat > "$STUB_DIR/systemctl" <<STUB
+#!/bin/bash
+echo "systemctl \$*" >> "$CALLS"
+[[ "\$*" == *SubState*magic-dingus-missing-search.timer* ]] && cat "$STUB_DIR/timer_substate"
+exit 0
+STUB
+    printf '#!/bin/bash\nexit 0\n' > "$STUB_DIR/sysctl"
+    chmod +x "$STUB_DIR/systemctl" "$STUB_DIR/sysctl"
+    export PATH="$STUB_DIR:$PATH"
+    export MAGIC_SKIP_SYSTEMCTL=false
+}
+
+@test "an elapsed missing-search timer is re-armed after the reload, without blocking" {
+    # daemon-reload alone leaves an 'elapsed' timer dormant until reboot
+    # (hardware, 2026-10-14) — a fielded box would not get the fix.
+    reload_stubs
+    echo elapsed > "$STUB_DIR/timer_substate"
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    restart="$(grep -nx "systemctl --no-block restart magic-dingus-missing-search.timer" "$CALLS" | cut -d: -f1)"
+    reload="$(grep -nx "systemctl daemon-reload" "$CALLS" | tail -1 | cut -d: -f1)"
+    [ -n "$restart" ]
+    [ -n "$reload" ]
+    [ "$restart" -gt "$reload" ]
+}
+
+@test "a waiting missing-search timer is never restarted" {
+    reload_stubs
+    echo waiting > "$STUB_DIR/timer_substate"
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    grep -qx "systemctl daemon-reload" "$CALLS"
+    [ "$(grep -c "restart magic-dingus-missing-search" "$CALLS")" -eq 0 ]
 }
 
 @test "timing drop-ins agree with the in-tree units" {

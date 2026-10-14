@@ -120,7 +120,10 @@ log "kiosk TimeoutStopSec=20 drop-in installed"
 #   smoke-test: no start timeout at all — a wedged *arr hung it forever.
 #   missing-search timer: OnBootSec must clear missing_search.py's 10 min
 #     boot deferral, or the first run is always a no-op and the next comes
-#     4 h later. The empty assignment resets the unit's own OnBootSec list.
+#     4 h later. The empty assignment resets EVERY trigger in the unit, not
+#     just OnBootSec (systemd.timer(5)), so the 4 h repeat must be restated
+#     here — without it the timer swept once per boot, then never again
+#     (hardware, 2026-10-14: 10 days with no retry on the owner's box).
 install -d -m 0755 "${ETC}/systemd/system/magic-dingus-storage-attach.service.d"
 cat > "${ETC}/systemd/system/magic-dingus-storage-attach.service.d/mdb-timeout.conf" << 'EOF'
 # Magic Dingus Box (setup_memory_tuning.sh): cover storage_attach.sh's
@@ -138,10 +141,12 @@ EOF
 install -d -m 0755 "${ETC}/systemd/system/magic-dingus-missing-search.timer.d"
 cat > "${ETC}/systemd/system/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf" << 'EOF'
 # Magic Dingus Box (setup_memory_tuning.sh): first run after the script's
-# own 10-minute boot deferral, not inside it.
+# own 10-minute boot deferral, not inside it. The empty line resets ALL
+# triggers, so the 4 h repeat is restated with it.
 [Timer]
 OnBootSec=
 OnBootSec=11min
+OnUnitActiveSec=4h
 EOF
 log "service timing drop-ins installed (storage-attach, smoke-test, missing-search)"
 
@@ -251,6 +256,18 @@ else
         || log "WARNING: daemon-reload failed (drop-ins apply on next reload)"
     sysctl -p "${ETC}/sysctl.d/99-mdb-zram.conf" >/dev/null 2>&1 \
         || log "WARNING: sysctl apply failed (applies on next boot)"
+    # A missing-search timer that went 'elapsed' under the old drop-in (no
+    # repeat trigger) stays dormant through daemon-reload until the next
+    # boot; a restart re-arms the 4 h repeat. A 'waiting' timer is never
+    # touched. --no-block: the restart also pulls in one sweep (the timer
+    # Requires= its service), which no caller should wait on.
+    if [[ "$(systemctl show -p SubState --value magic-dingus-missing-search.timer 2>/dev/null)" == "elapsed" ]]; then
+        if systemctl --no-block restart magic-dingus-missing-search.timer 2>/dev/null; then
+            log "re-armed magic-dingus-missing-search.timer (was elapsed)"
+        else
+            log "WARNING: could not re-arm magic-dingus-missing-search.timer (re-arms on next boot)"
+        fi
+    fi
 fi
 
 if [[ "$REBOOT_NEEDED" == "true" ]]; then

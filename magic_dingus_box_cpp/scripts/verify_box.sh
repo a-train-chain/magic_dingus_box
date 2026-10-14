@@ -611,6 +611,47 @@ else
   pass "no interrupted auto-redownload-guard marker"
 fi
 
+# The stack's self-healing runs on repeating timers (setup_services.sh
+# enables all five; nothing stops them on purpose). One that is 'elapsed'
+# has no future trigger and stays that way until reboot — hardware,
+# 2026-10-14: a drop-in's empty OnBootSec= wiped missing-search's 4 h
+# repeat, so it swept once per boot and the owner's box went 10 days with
+# no retry of missing movies while this script said SHIPPABLE. The list is
+# explicit because the broken timer's OWN config looked one-shot; every
+# in-tree .timer must be on it (tests/local/verify_box_timers.bats).
+#
+# Pure, pinned by that suite: classifies `systemctl show -p LoadState
+# -p ActiveState -p SubState` output as skip (not installed: games-only
+# box), armed, dormant (elapsed), stopped (inactive/failed/masked) or
+# unknown.
+timer_health_of() {
+  local load="" active="" sub="" line
+  while IFS= read -r line; do
+    case "$line" in
+      LoadState=*)   load=${line#*=} ;;
+      ActiveState=*) active=${line#*=} ;;
+      SubState=*)    sub=${line#*=} ;;
+    esac
+  done <<<"${1:-}"
+  if [[ -z "$load" || "$load" == not-found ]]; then echo skip
+  elif [[ "$load" == masked || "$active" == inactive || "$active" == failed ]]; then echo stopped
+  elif [[ "$active" == active && ( "$sub" == waiting || "$sub" == running ) ]]; then echo armed
+  elif [[ "$active" == active && "$sub" == elapsed ]]; then echo dormant
+  else echo unknown
+  fi
+}
+REPEATING_TIMERS=(qbit-port-sync.timer magic-dingus-auto-blocklist.timer magic-dingus-missing-search.timer magic-dingus-episode-priority.timer magic-dingus-smoke-test.timer)
+ARMED=0
+for _t in "${REPEATING_TIMERS[@]}"; do
+  case "$(timer_health_of "$(systemctl show -p LoadState -p ActiveState -p SubState "$_t" 2>/dev/null)")" in
+    armed)   ARMED=$((ARMED+1)) ;;
+    dormant) fail "${_t} is dormant: no future run scheduled (sudo systemctl restart ${_t}; if it goes dormant again its triggers are wrong: systemctl cat ${_t})" ;;
+    stopped) fail "${_t} is installed but not running (sudo systemctl enable --now ${_t})" ;;
+    unknown) warn "${_t} state unclear: $(systemctl show -p ActiveState -p SubState --value "$_t" 2>/dev/null | tr '\n' ' ')" ;;
+  esac
+done
+(( ARMED )) && pass "${ARMED} repeating timer(s) armed (next run scheduled)"
+
 # ---------------------------------------------------------------------
 # VPN tunnel reliability (Media Browser boxes only — nothing to report
 # without a tunnel, so an unprovisioned box gets no section at all).
