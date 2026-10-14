@@ -44,6 +44,10 @@ NOT_USER_DATA = [D + "thumbnails/systems/*",   # shipped, updated by OTA
 # Present on a box, legitimately absent from a release tarball.
 RUNTIME = [
     "magic_dingus_box_cpp/build/*", "tmp/*", "*/__pycache__/*", "*/__pycache__",
+    # update.sh's compile log: written beside build/ by every source build
+    # (compile_build) so it outlives build.new's cleanup; the next install's
+    # --delete or a rollback removes it.
+    "magic_dingus_box_cpp/build.log",
     D + "kiosk_status.json", D + "text_input_queue.jsonl", D + "seek_request.json",
     D + "upload_temp/*", D + "pending_revocations.txt", D + "screenshots/*",
     "config/magic_dingus_box.log*",
