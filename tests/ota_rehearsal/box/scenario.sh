@@ -285,7 +285,19 @@ ROLLBACK_ALLOW=('*/__pycache__*' 'tmp' 'tmp/*' 'magic_dingus_box_cpp/data/kiosk_
                 'magic_dingus_box_cpp/data/upload_temp' 'magic_dingus_box_cpp/data/upload_temp/*'
                 'magic_dingus_box_cpp/data/pending_revocations.txt'
                 'magic_dingus_box_cpp/data/playlists/games_atari7800.yaml'
-                'magic_dingus_box_cpp/data/screenshots*' 'config/magic_dingus_box.log*')
+                'magic_dingus_box_cpp/data/screenshots*' 'config/magic_dingus_box.log*'
+                # The NEW tree's setup_memory_tuning.sh (step 1f) runs
+                # ensure_gluetun_auth.sh: it writes gluetun's control-server
+                # access file and chowns the root-owned gluetun dir to the
+                # services dir's owner. services/config/* is excluded from
+                # every OTA rsync by contract, so no rollback reverts it —
+                # deliberately: the file keeps the legacy route a rolled-back
+                # tree calls, and every route it names is valid in the
+                # gluetun an older tree's floating :v3 tag can run (>= v3.41.0,
+                # older than every Media Browser box). Exactly these paths;
+                # the directory's owner only — never its mode, never a removal.
+                'services/config/gluetun::uid,gid' 'services/config/gluetun/auth'
+                'services/config/gluetun/auth/config.toml')
 assert_rolled_back_to() {  # <snap-before-install> <snap-now> <label> <want-version> <want-bin-sha>
     eq "$3: VERSION restored" "$(ver)" "$4"
     eq "$3: kiosk binary restored (sha256)" "$(sha "$BIN")" "$5"

@@ -8,9 +8,13 @@
       the "What's PRESERVED" table of OTA_UPDATE_GUARANTEES.md, written out
       here independently of update.sh's rsync excludes — so the check can
       catch an exclude list that drifts from the contract.
-  manifest.py same <before.json> <after.json> [allow-glob ...]
+  manifest.py same <before.json> <after.json> [allow ...]
       whole-tree equality (rollback): every difference must match an
-      allow-glob; prints each difference with its classification.
+      allow entry; prints each difference with its classification. An
+      entry is a glob (any difference at a matching path), or
+      "glob::key,key" — only those keys of a path present on BOTH sides
+      may differ ("services/config/gluetun::uid,gid": its owner, never
+      its mode, and never an add or a removal).
   manifest.py release <release_root> <install_root>
       the installed tree matches the release tree: every release file is
       installed with identical bytes and exec bit (default playlists aside
@@ -105,6 +109,19 @@ def cmd_user(before, after):
     return 1 if bad else 0
 
 
+def allowed(path, eb, ea, allow):
+    """Is the difference between eb and ea at path covered by an allow entry?"""
+    changed = None if eb is None or ea is None else \
+        {k for k in set(eb) | set(ea) if eb.get(k) != ea.get(k)}
+    for entry in allow:
+        glob, sep, keys = entry.partition("::")
+        if not match(path, [glob]):
+            continue
+        if not sep or (changed is not None and changed <= set(keys.split(","))):
+            return True
+    return False
+
+
 def cmd_same(before, after, allow):
     b, a = load(before), load(after)
     bad = 0
@@ -117,7 +134,7 @@ def cmd_same(before, after, allow):
                 continue   # dir mtimes are not tracked; mode/owner equal
         what = "added" if eb is None else "removed" if ea is None else \
             "changed(" + ",".join(k for k in eb if ea.get(k) != eb[k]) + ")"
-        if match(path, allow):
+        if allowed(path, eb, ea, allow):
             print(f"allowed {what}: {path}")
         else:
             print(f"VIOLATION {what}: {path}"); bad += 1
