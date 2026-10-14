@@ -1628,12 +1628,15 @@ retire_audio_service_if_absent() {
 # A rollback run by an updater older than this cannot converge back — see
 # docs/superpowers/specs/2026-10-14-converge-system-units-design.md
 # "Rollback" for why the release that ships it changes no unit file.
+# The stash lives in /tmp, never under TMPDIR: a TMPDIR inside the install tree
+# would let the restore's --delete remove it. MAGIC_CONVERGE_STASH_DIR is the
+# test seam.
 CONVERGE_STASH=""
 stash_converge_script() {
     CONVERGE_STASH=""
     local src="${INSTALL_DIR}/magic_dingus_box_cpp/scripts/converge_system_units.sh"
     [ -f "$src" ] || return 0
-    CONVERGE_STASH="$(mktemp "${TMPDIR:-/tmp}/mdb-converge.XXXXXX" 2>/dev/null)" || { CONVERGE_STASH=""; return 0; }
+    CONVERGE_STASH="$(mktemp "${MAGIC_CONVERGE_STASH_DIR:-/tmp}/mdb-converge.XXXXXX" 2>/dev/null)" || { CONVERGE_STASH=""; return 0; }
     cp "$src" "$CONVERGE_STASH" 2>/dev/null || { rm -f "$CONVERGE_STASH"; CONVERGE_STASH=""; }
     return 0
 }
@@ -2688,7 +2691,10 @@ rollback() {
         "$BACKUP_DIR/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
 
     if ! rsync_exit_ok "$rsync_exit"; then
-        rm -f "$CONVERGE_STASH"; CONVERGE_STASH=""
+        if [ -n "$CONVERGE_STASH" ]; then
+            rm -f "$CONVERGE_STASH"
+        fi
+        CONVERGE_STASH=""
         json_response "false" "Failed to restore backup (rsync exit code: $rsync_exit)"
         return 1
     fi
