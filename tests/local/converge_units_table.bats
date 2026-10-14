@@ -27,9 +27,13 @@ setup() {
     done < <(tree_units)
 }
 
-@test "every policy row names exactly one in-tree unit file" {
+@test "every policy row names exactly one unit file in git" {
+    # Counted from git, not tree_units: tree_units resolves a name shipped in
+    # two directories to one row (deploy staging copies on a real box), but two
+    # tracked files with one name are still a bug.
+    names="$(cd "$TESTS_REPO_ROOT" && git ls-files '*.service' '*.timer' | sed 's#.*/##')"
     while IFS= read -r name; do
-        [ "$(tree_units | cut -f1 | grep -cxF "$name")" -eq 1 ] || { echo "row without exactly one file: $name"; return 1; }
+        [ "$(printf '%s\n' "$names" | grep -cxF "$name")" -eq 1 ] || { echo "row without exactly one file in git: $name"; return 1; }
     done < <(policy_names)
 }
 

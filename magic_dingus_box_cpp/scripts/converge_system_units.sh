@@ -101,7 +101,10 @@ magic-ui-x11.service                    ignore -           -            -
 # which restarts it last) and the OTA power-cut recovery (it may be the
 # unit running this script).
 PROTECTED="magic-dingus-box-cpp.service magic-dingus-web.service magic-dingus-ota-recovery.service"
-UNIT_DIRS="systemd magic_dingus_box_cpp/systemd magic_dingus_box_cpp/scripts/missing_search magic_dingus_box_cpp/scripts/episode_priority"
+# Precedence order: a unit name found in more than one of these resolves to the
+# FIRST (see tree_units). The root systemd/ is last on purpose — it is where
+# deploy_cpp.sh stages its copies of units that live in magic_dingus_box_cpp/systemd/.
+UNIT_DIRS="magic_dingus_box_cpp/systemd magic_dingus_box_cpp/scripts/missing_search magic_dingus_box_cpp/scripts/episode_priority systemd"
 # The comment line every drop-in setup_memory_tuning.sh wrote carries.
 DROPIN_MARKER="(setup_memory_tuning.sh)"
 UNIT_NAME_RE='^[A-Za-z0-9@._-]+\.(service|timer)$'
@@ -119,14 +122,33 @@ unit_policy() {
     echo "${row:-base skip none -}"
 }
 
-# tree_units -> "<name><TAB><path>" for every unit file in the tree, by name.
+# tree_units -> "<name><TAB><path>", one row per unit name, sorted by name.
+# A name found in several UNIT_DIRS directories resolves to the first one in
+# that order. Deployed boxes have such shadows: deploy_cpp.sh stages copies of
+# magic-dingus-box-cpp.service and magic-cpu-performance.service into the
+# box's root systemd/ (untracked), so refusing a duplicate would refuse the
+# kiosk unit on every deployed box. A shadow whose content differs from the
+# winner gets one note on STDERR (never stdout: --check stdout is findings
+# only); an identical shadow is silent. Membership uses in_list, not a pipe.
 tree_units() {
-    local d f
-    for d in $UNIT_DIRS; do
-        for f in "$TREE/$d"/*.service "$TREE/$d"/*.timer; do
-            [[ -f "$f" ]] && printf '%s\t%s\n' "$(basename "$f")" "$f"
+    local d f name winner seen="" rows=""
+    {
+        for d in $UNIT_DIRS; do
+            for f in "$TREE/$d"/*.service "$TREE/$d"/*.timer; do
+                [[ -f "$f" ]] || continue
+                name="${f##*/}"
+                if in_list "$seen" "$name"; then
+                    winner="$(awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' <<< "$rows")"
+                    cmp -s "$f" "$winner" \
+                        || echo "[units] note: $f differs from $winner; using the latter" >&2
+                    continue
+                fi
+                seen="${seen}${name}"$'\n'
+                rows="${rows}${name}"$'\t'"${f}"$'\n'
+                printf '%s\t%s\n' "$name" "$f"
+            done
         done
-    done | sort
+    } | sort
 }
 
 is_protected() { case " $PROTECTED " in *" $1 "*) return 0 ;; esac; return 1; }
@@ -157,11 +179,6 @@ converge_files() {
     local name src gate absent dest
     while IFS=$'\t' read -r name src; do
         [[ -n "$name" ]] || continue
-        if in_list "$DUPS" "$name"; then
-            log "ERROR: $name ships in two tree directories; not converged"
-            FAILURES=$((FAILURES + 1))
-            continue
-        fi
         read -r gate absent _ <<< "$(unit_policy "$name")"
         [[ "$gate" == ignore ]] && continue
         dest="$SD/$name"
@@ -356,7 +373,6 @@ main() {
         echo "[units] ERROR: $TREE has no magic-dingus-box-cpp.service; not a Magic Dingus Box tree, nothing changed" >&2
         exit 2
     fi
-    DUPS="$(printf '%s\n' "$TREE_NAMES" | uniq -d)"
 
     # Serialize writers (deploy and an OTA hook can overlap on a dev box).
     # macOS (the test suites) has no flock; the box always does.

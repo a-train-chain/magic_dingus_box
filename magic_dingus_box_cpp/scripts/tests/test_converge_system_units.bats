@@ -38,6 +38,14 @@ tree_unit() { printf '[Unit]\nDescription=%s\n' "$2" > "$TREE/$1"; }
 # installed <name> <description> — the box's installed copy, same format
 installed() { printf '[Unit]\nDescription=%s\n' "$2" > "$SD/$1"; }
 converge() { run bash "$CONVERGE" --tree "$TREE" "$@"; }
+# converge_split [args] — like converge, but stdout and stderr kept apart:
+# $status, $output (stdout only) and $errout (stderr only). Not `run
+# --separate-stderr`, which older bats (apt's on some CI images) lacks.
+converge_split() {
+    status=0
+    output="$(bash "$CONVERGE" --tree "$TREE" "$@" 2>"$TEST_TEMP_DIR/stderr")" || status=$?
+    errout="$(cat "$TEST_TEMP_DIR/stderr")"
+}
 ino() { ls -i "$1" | awk '{ print $1 }'; }
 # `! cmd` mid-test never fails a bats test (set -e ignores negations).
 refute() {
@@ -161,12 +169,80 @@ refute() {
     [ ! -e "$STATE" ]
 }
 
-@test "a unit name shipped in two tree directories is not converged" {
-    tree_unit systemd/usb-gadget-network.service "gadget A"
-    tree_unit magic_dingus_box_cpp/systemd/usb-gadget-network.service "gadget B"
-    converge
-    [ "$status" -eq 2 ]
-    [ ! -e "$SD/usb-gadget-network.service" ]
+# --- a name in several tree directories: the first directory wins ----------
+# Origin: deploy_cpp.sh stages copies of magic-dingus-box-cpp.service and
+# magic-cpu-performance.service into the box's root systemd/ (untracked), so
+# on every deployed box those names exist in two tree dirs. They used to be
+# refused as "ships in two tree directories", which left the kiosk unit
+# unconverged and made --check exit 2.
+
+@test "a name in the root systemd/ and magic_dingus_box_cpp/systemd/ converges to the latter" {
+    tree_unit systemd/magic-cpu-performance.service "cpu staged by an old deploy"
+    tree_unit magic_dingus_box_cpp/systemd/magic-cpu-performance.service "cpu fresh"
+    installed magic-cpu-performance.service "cpu old"
+    tree_unit systemd/magic-dingus-box-cpp.service "kiosk staged by an old deploy"
+    converge_split
+    [ "$status" -eq 0 ]
+    cmp -s "$TREE/magic_dingus_box_cpp/systemd/magic-cpu-performance.service" "$SD/magic-cpu-performance.service"
+    cmp -s "$TREE/magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service" "$SD/magic-dingus-box-cpp.service"
+    [[ "$output" == *"updated magic-cpu-performance.service"* ]]
+    [[ "$output" == *"done: 1 updated, 0 installed, 0 failed"* ]]
+    [[ "$output" != *"note:"* ]]
+    [[ "$output" != *"ERROR"* ]]
+    [ "$(grep -cx 'magic-cpu-performance.service' "$STATE")" -eq 1 ]
+    [ "$(grep -cx 'magic-dingus-box-cpp.service' "$STATE")" -eq 1 ]
+}
+
+@test "directory precedence is magic_dingus_box_cpp/systemd, missing_search, episode_priority, then systemd" {
+    installed other-new.timer "old"
+    tree_unit systemd/other-new.timer "D root"
+    tree_unit magic_dingus_box_cpp/scripts/episode_priority/other-new.timer "C episode_priority"
+    tree_unit magic_dingus_box_cpp/scripts/missing_search/other-new.timer "B missing_search"
+    converge_split
+    [ "$status" -eq 0 ]
+    grep -qx "Description=B missing_search" "$SD/other-new.timer"
+    tree_unit magic_dingus_box_cpp/systemd/other-new.timer "A cpp systemd"
+    converge_split
+    [ "$status" -eq 0 ]
+    grep -qx "Description=A cpp systemd" "$SD/other-new.timer"
+}
+
+@test "a shadow copy that differs from the winner is noted on stderr, never stdout" {
+    tree_unit systemd/usb-gadget-network.service "gadget staged"
+    tree_unit magic_dingus_box_cpp/systemd/usb-gadget-network.service "gadget real"
+    installed usb-gadget-network.service "gadget real"
+    converge_split
+    [ "$status" -eq 0 ]
+    [ "$errout" = "[units] note: $TREE/systemd/usb-gadget-network.service differs from $TREE/magic_dingus_box_cpp/systemd/usb-gadget-network.service; using the latter" ]
+    [[ "$output" != *"note:"* ]]
+    [ "$(grep -cx 'usb-gadget-network.service' "$STATE")" -eq 1 ]
+}
+
+@test "--check: a differing shadow copy leaves stdout as findings only, each printed once" {
+    tree_unit systemd/usb-gadget-network.service "gadget staged"
+    tree_unit magic_dingus_box_cpp/systemd/usb-gadget-network.service "gadget real"
+    installed usb-gadget-network.service "gadget old"
+    tree_unit systemd/magic-first-boot.service "first boot staged"
+    tree_unit magic_dingus_box_cpp/systemd/magic-first-boot.service "first boot real"
+    converge_split --check
+    [ "$status" -eq 1 ]
+    [ "$output" = "$(printf '%s\n' 'MISSING magic-first-boot.service' 'DRIFT usb-gadget-network.service')" ]
+    [ "$(printf '%s\n' "$errout" | grep -c '^\[units\] note: ')" -eq 2 ]
+    [ ! -e "$STATE" ]
+}
+
+@test "an identical shadow copy is silent on both streams" {
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    tree_unit magic_dingus_box_cpp/systemd/usb-gadget-network.service "gadget"
+    installed usb-gadget-network.service "gadget"
+    converge_split --check
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ -z "$errout" ]
+    converge_split
+    [ "$status" -eq 0 ]
+    [ -z "$errout" ]
+    [[ "$output" == *"done: 0 updated, 0 installed, 0 failed"* ]]
 }
 
 @test "the state file lists exactly the installed tree units" {
@@ -346,6 +422,14 @@ old_dropin() {
     [ "$status" -eq 1 ]
     [ "$output" = "DROPIN $SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
     [ -f "$SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
+}
+
+@test "--check prints a leftover DROPIN once even when a shadow copy of its unit exists" {
+    tree_unit systemd/magic-dingus-box-cpp.service "kiosk staged by an old deploy"
+    old_dropin magic-dingus-box-cpp.service stop-timeout.conf "TimeoutStopSec=20"
+    converge_split --check
+    [ "$status" -eq 1 ]
+    [ "$output" = "DROPIN $SD/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
 }
 
 # --- guards the retirement/cleanup steps must keep (deleting any of these
