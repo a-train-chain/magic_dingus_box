@@ -11,7 +11,8 @@
 #
 # Idempotent; safe to re-run any time. Callers:
 #   - update.sh, at the start of every install, BEFORE it writes the marker
-#     (unit files are otherwise never refreshed by an OTA, so the update.sh
+#     (it must exist before the install writes its marker — earlier than
+#     the unit converge in setup_memory_tuning.sh — so the update.sh
 #     that relies on the unit is the one that delivers it)
 #   - deploy_cpp.sh (provisioning / developer deploys)
 #   - scripts/golden_image/sync_source_box.sh (so a golden image carries it)

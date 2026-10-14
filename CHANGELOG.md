@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
+- **Updates now keep the box's background jobs exactly as designed.**
+  Improvements to how the box schedules its background work (like the
+  automatic retry for movies that found nothing to download) used to need
+  special patches to reach boxes that were already set up, and one of
+  those patches stopped that retry from running at all. Updates now put
+  the jobs' own settings in place directly, undo them with the rest of an
+  update if it is rolled back, and the Box Health check flags a box whose
+  jobs don't match.
 - **The phone remote no longer shows a finished game as "now playing".**
   After you quit a game and came back to the menu, the remote kept
   showing that game's title until something else played. It now clears

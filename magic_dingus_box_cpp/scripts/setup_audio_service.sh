@@ -9,10 +9,10 @@
 #     already answering and the default sink set;
 #   - clears ExecStopPost= — kiosk units installed before 2026-10 carry
 #     `ExecStopPost=/usr/bin/pulseaudio --kill`, which would otherwise
-#     kill the audio unit's PulseAudio on every kiosk stop. OTA never
-#     replaces the kiosk unit file itself (OTA_UPDATE_GUARANTEES.md
-#     "Reaching field boxes"), so the drop-in is the fix's only route to
-#     fielded boxes;
+#     kill the audio unit's PulseAudio on every kiosk stop. Since the
+#     2026-10 unit converge the kiosk unit itself carries both, so this
+#     part is redundant on converged boxes; it stays for boxes whose kiosk
+#     unit is masked or not yet converged;
 #   - sets XDG_RUNTIME_DIR from the magic user's REAL uid, replacing the
 #     unit's hardcoded /run/user/1000 so the kiosk's GStreamer pulsesink
 #     and apply_output()'s pactl reach the audio unit's socket on a box
