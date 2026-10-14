@@ -686,6 +686,7 @@ else
   elif [[ $UNITS_RC -eq 1 ]]; then
     while IFS= read -r _line; do
       [[ -n "$_line" ]] || continue
+      [[ "$_line" == "[units] note:"* ]] && continue  # stderr (2>&1 above), not a finding
       IFS=$'\t' read -r _verdict _msg <<<"$(unit_finding_verdict "$_line")"
       if [[ "$_verdict" == fail ]]; then
         fail "${_msg} (fix: sudo bash ${CONVERGE_UNITS})"

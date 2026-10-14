@@ -58,6 +58,15 @@ run_section() {
     [[ "${lines[1]}" == "[WARN] /x/y.conf"* ]]
 }
 
+@test "the converge's stderr notes (a shadow copy differs) are not findings" {
+    # tree_units notes a differing shadow copy on stderr; the section merges
+    # stderr (2>&1) because the exit-2 path needs its message, so the rc-1 loop
+    # must skip the note instead of reporting "unexpected converge output".
+    run_section 'echo "[units] note: /x/systemd/a.service differs from /x/magic_dingus_box_cpp/systemd/a.service; using the latter" >&2; echo "DRIFT a.timer"; exit 1'
+    [ "${#lines[@]}" -eq 1 ]
+    [[ "${lines[0]}" == "[FAIL] a.timer"*"converge_system_units.sh"* ]]
+}
+
 @test "a converge that cannot check (exit 2) is a WARN, not a pass" {
     run_section 'echo "[units] ERROR: not a Magic Dingus Box tree" >&2; exit 2'
     [[ "$output" == "[WARN] could not compare installed units"* ]]
