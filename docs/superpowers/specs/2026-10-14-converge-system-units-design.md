@@ -312,7 +312,8 @@ so it is a WARN. See Decision 3.
 
 ### 7. What the owner's box would see
 
-`--check` today: `DRIFT` × 3 (the three units above). One run: those three
+`--check` today: `DRIFT` × 3 (the three units above) and `DROPIN` for the
+kiosk's `stop-timeout.conf` (its unit already matches). One run: those three
 rewritten, four drop-ins removed (`stop-timeout.conf`, the two
 `mdb-timeout.conf`, `mdb-boot-delay.conf`), one `daemon-reload`, nothing
 restarted (the missing-search timer is `waiting`), state file written.
@@ -344,9 +345,10 @@ thing.
   NEW web admin's rollback, units equal OLD's tree; after `old_cli`'s
   OLD-updater rollback, kiosk and web still start.
 - Hardware rehearsal (`hw_rehearsal.sh`) **only with the owner's go-ahead**,
-  from v1.10.0 on magicpi5. Needs a `field_state_1.10.0.txt` whose
-  `old-unit` lines reproduce the three pre-fix installed units and their
-  drop-ins (the git-derived plan finds none, since the tree did not change).
+  from v1.9.14 on magicpi5: the existing `field_state_1.9.14.txt` plus the
+  git-derived `old-unit` copies reproduce a field box's stale units (the
+  harness's unit dirs gain `scripts/missing_search/` and
+  `scripts/episode_priority/`, which the converge now owns).
 
 Docs: CLAUDE.md's "Because OTA never re-installs unit files, this script is
 also the delivery path for in-tree unit fixes..." passage and the other
