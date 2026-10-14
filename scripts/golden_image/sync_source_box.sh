@@ -61,11 +61,12 @@ push() {
     fi
     local base; base=$(basename "$dest")
     scp "${SSH_OPTS[@]}" -q "${REPO}/${src}" "${PI_HOST}:/tmp/${base}" 2>/dev/null
-    ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    # -n: a caller may be looping over stdin, and ssh would drain it.
+    ssh "${SSH_OPTS[@]}" -n "$PI_HOST" \
         "sudo install -D -m ${mode} -o root -g root /tmp/${base} '${dest}' && rm -f /tmp/${base}" 2>/dev/null
     local l r
     l=$(shasum -a 256 "${REPO}/${src}" | cut -c1-16)
-    r=$(ssh "${SSH_OPTS[@]}" "$PI_HOST" "sha256sum '${dest}' | cut -c1-16" 2>/dev/null)
+    r=$(ssh "${SSH_OPTS[@]}" -n "$PI_HOST" "sha256sum '${dest}' | cut -c1-16" 2>/dev/null)
     if [[ "$l" == "$r" ]]; then
         echo -e "  ${GREEN}OK${NC}      ${label}"
     else

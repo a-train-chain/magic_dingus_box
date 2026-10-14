@@ -116,3 +116,18 @@ setup() {
     [ "$push_line" -lt "$run_line" ]
     [ "$run_line" -lt "$check_line" ]
 }
+
+@test "push() passes -n to every ssh, so a caller looping over stdin is not drained" {
+    f="$TESTS_REPO_ROOT/scripts/golden_image/sync_source_box.sh"
+    body="$(sed -n '/^push() {/,/^}/p' "$f")"
+    ssh_lines="$(printf '%s\n' "$body" | grep -F 'ssh "${SSH_OPTS[@]}"')"
+    [ "$(printf '%s\n' "$ssh_lines" | grep -c .)" -ge 2 ] || { echo "no ssh calls found in push()"; return 1; }
+    bad="$(printf '%s\n' "$ssh_lines" | grep -vE ' -n( |$)' || true)"
+    [ -z "$bad" ] || { echo "ssh without -n in push(): $bad"; return 1; }
+}
+
+@test "sync_source_box loops the repo's units through push()" {
+    f="$TESTS_REPO_ROOT/scripts/golden_image/sync_source_box.sh"
+    grep -qF "git ls-files '*.service' '*.timer'" "$f"
+    grep -qF 'while IFS= read -r unit_file; do' "$f"
+}
