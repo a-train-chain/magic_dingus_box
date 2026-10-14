@@ -557,7 +557,10 @@ catch-up).
   for in-tree unit fixes on fielded boxes: it writes drop-ins for the
   storage-attach `TimeoutStartSec=600`, the smoke-test
   `TimeoutStartSec=300` and the missing-search timer's `OnBootSec=11min`
-  — change one, change both. No container `mem_limit`s, deliberately:
+  — change one, change both. A timer drop-in's empty `OnBootSec=` resets
+  EVERY trigger in the unit, so that drop-in restates `OnUnitActiveSec=4h`
+  (until 2026-10-14 it didn't, and every box swept once per boot, then
+  never again). No container `mem_limit`s, deliberately:
   measured on a 2 GB Pi 5 (2026-10-03) Byparr idles at ~10 MB but peaks
   at 762 MB inside a Cloudflare challenge (a cap breaks the indexers
   behind it), and qBittorrent's ~1 GB peak is reclaimable page cache.
@@ -783,8 +786,11 @@ series, which would have destroyed already-watched seasons too.
   mis-scaled at 1080p), refresh rate (a 24/30Hz timing clamps the whole
   kiosk), playlist + ROM path resolution (both resolution bases),
   libretro cores actually dlopen-ing at API v1, BIOS presence, kiosk
-  service/status freshness, `now_playing` population, storage, and
-  container count. `--with-services` chains the service smoke test for a
+  service/status freshness, `now_playing` population, storage,
+  container count, and the stack's repeating timers still armed (an
+  `elapsed` or stopped one is a FAIL; `REPEATING_TIMERS` must list every
+  in-tree `.timer` — `tests/local/verify_box_timers.bats` enforces it, so
+  a new timer gets added there). `--with-services` chains the service smoke test for a
   full sweep. Every check in it corresponds to a bug that was once found
   by hand.
 - **Smoke test**: `magic_dingus_box_cpp/scripts/verify_services.sh` is the hard-assertion health check for the entire stack (indexers, qBit download client wired, quality profile state, Custom Formats including the scam-rejection ones, qBit auth, MDB_QBIT_PASS in .env, Radarr AND Sonarr root folders, no active indexer cooldowns, live indexer search ≥10 results — 15 assertions on a fully provisioned box; the Sonarr checks skip on pre-Sonarr boxes). Runs once at the end of `setup_services.sh` and weekly thereafter via `magic-dingus-smoke-test.timer` (Mon 03:14 with Persistent=true). Failures land in `journalctl -u magic-dingus-smoke-test`. Re-runnable standalone: exits 0/1 for CI/manual debugging. Every curl carries `--max-time` (15 s; 120 s for the live Prowlarr search, which waits on its slowest indexer/Byparr solve) and the unit has `TimeoutStartSec=300` — a wedged *arr accepts the socket and never answers, which used to hang the run (and `setup_services.sh`'s final step) forever. `tests/local/curl_time_bounds.bats` enforces the bound.
