@@ -360,6 +360,32 @@ old_dropin() {
     [ -f "$SD/a b.service" ]
 }
 
+@test "a state-file name with a leading dash is never acted on (systemctl would read it as an option)" {
+    stub_systemctl
+    installed "-x.service" "dash"
+    mkdir -p "$(dirname "$STATE")"
+    printf '%s\n' -x.service > "$STATE"
+    converge
+    [ "$status" -eq 0 ]
+    [ -f "$SD/-x.service" ]
+    refute grep -qF -- '-x.service' "$CALLS"
+    [[ "$output" != *"-x.service"* ]]
+}
+
+@test "a tree file with a leading dash is ignored, with a note on stderr only" {
+    stub_systemctl
+    tree_unit systemd/-bad.service "bad v2"
+    installed "-bad.service" "bad v1"
+    converge_split
+    [ "$status" -eq 0 ]
+    # Not kept current, not recorded, never handed to systemctl.
+    [ "$(cat "$SD/-bad.service")" = "$(printf '[Unit]\nDescription=bad v1')" ]
+    refute grep -qxF -- '-bad.service' "$STATE"
+    [ -z "$(mutations)" ]
+    [[ "$errout" == *"ignoring"*"-bad.service"* ]]
+    [[ "$output" != *"-bad.service"* ]]
+}
+
 @test "a masked stale unit is left alone" {
     ln -s /dev/null "$SD/old-feature.timer"
     mkdir -p "$(dirname "$STATE")"

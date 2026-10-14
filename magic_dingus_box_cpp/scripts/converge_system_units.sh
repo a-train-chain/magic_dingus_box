@@ -107,7 +107,9 @@ PROTECTED="magic-dingus-box-cpp.service magic-dingus-web.service magic-dingus-ot
 UNIT_DIRS="magic_dingus_box_cpp/systemd magic_dingus_box_cpp/scripts/missing_search magic_dingus_box_cpp/scripts/episode_priority systemd"
 # The comment line every drop-in setup_memory_tuning.sh wrote carries.
 DROPIN_MARKER="(setup_memory_tuning.sh)"
-UNIT_NAME_RE='^[A-Za-z0-9@._-]+\.(service|timer)$'
+# No leading '-': a name is handed to systemctl as an argument, where a
+# leading dash would be read as an option.
+UNIT_NAME_RE='^[A-Za-z0-9@_][A-Za-z0-9@._-]*\.(service|timer)$'
 
 log() { echo "[units] $1"; }
 
@@ -129,7 +131,9 @@ unit_policy() {
 # box's root systemd/ (untracked), so refusing a duplicate would refuse the
 # kiosk unit on every deployed box. A shadow whose content differs from the
 # winner gets one note on STDERR (never stdout: --check stdout is findings
-# only); an identical shadow is silent. Membership uses in_list, not a pipe.
+# only); an identical shadow is silent. A file whose name is not a well-formed
+# unit name (UNIT_NAME_RE — e.g. a leading '-', which systemctl would take for
+# an option) is skipped with a stderr note. Membership uses in_list, not a pipe.
 tree_units() {
     local d f name winner seen="" rows=""
     {
@@ -137,6 +141,10 @@ tree_units() {
             for f in "$TREE/$d"/*.service "$TREE/$d"/*.timer; do
                 [[ -f "$f" ]] || continue
                 name="${f##*/}"
+                if [[ ! "$name" =~ $UNIT_NAME_RE ]]; then
+                    echo "[units] note: ignoring $f (not a well-formed unit name)" >&2
+                    continue
+                fi
                 if in_list "$seen" "$name"; then
                     winner="$(awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' <<< "$rows")"
                     cmp -s "$f" "$winner" \
@@ -257,7 +265,7 @@ retire_stale_units() {
         if [[ "$CHECK" == true ]]; then
             echo "STALE $name"; FINDINGS=$((FINDINGS + 1)); continue
         fi
-        sc disable --now --no-block "$name" >/dev/null 2>&1 \
+        sc disable --now --no-block "$name" >/dev/null 2>&1 </dev/null \
             || log "WARNING: could not disable $name"
         if rm -f "$dest"; then
             log "retired $name (no longer in the tree)"; RELOAD=true
