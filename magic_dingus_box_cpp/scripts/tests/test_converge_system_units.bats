@@ -408,3 +408,144 @@ in_list_t() { bash -c 'source "$1"; shift; in_list "$@"' _ "$CONVERGE" "$@"; }
     refute in_list_t "" a.service
     refute in_list_t $'\n' a.service
 }
+
+# --- apply phase -----------------------------------------------------------
+
+@test "a converged box makes no systemctl changes" {
+    stub_systemctl
+    converge
+    [ "$status" -eq 0 ]
+    [ -z "$(mutations)" ]
+}
+
+@test "any write triggers exactly one daemon-reload, before every enable and restart" {
+    stub_systemctl
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    tree_unit magic_dingus_box_cpp/systemd/kiosk-standby-watcher.service "watcher v2"
+    installed kiosk-standby-watcher.service "watcher v1"
+    converge
+    [ "$status" -eq 0 ]
+    [ "$(grep -cx 'systemctl daemon-reload' "$CALLS")" -eq 1 ]
+    [ "$(mutations | head -1)" = "systemctl daemon-reload" ]
+}
+
+@test "fresh installs: enable, enable-now and install policies" {
+    stub_systemctl
+    mkdir -p "$TREE/services" && touch "$TREE/services/.env"
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    tree_unit systemd/magic-first-boot.service "first boot"
+    tree_unit magic_dingus_box_cpp/scripts/missing_search/magic-dingus-missing-search.timer "timer"
+    tree_unit magic_dingus_box_cpp/scripts/missing_search/magic-dingus-missing-search.service "sweep"
+    converge
+    [ "$status" -eq 0 ]
+    grep -qx "systemctl enable usb-gadget-network.service" "$CALLS"
+    grep -qx "systemctl enable --now --no-block magic-dingus-missing-search.timer" "$CALLS"
+    refute grep -q "enable.*magic-first-boot.service" "$CALLS"
+    refute grep -q "enable.*magic-dingus-missing-search.service" "$CALLS"
+}
+
+@test "an installed but disabled unit is never enabled" {
+    stub_systemctl
+    tree_unit systemd/usb-gadget-network.service "gadget v2"
+    installed usb-gadget-network.service "gadget v1"
+    converge
+    [ "$status" -eq 0 ]
+    refute grep -qE "^systemctl enable" "$CALLS"
+}
+
+@test "the kiosk is never restarted, stopped or try-restarted, even when its unit changes" {
+    stub_systemctl
+    tree_unit magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service "kiosk v3"
+    echo magic-dingus-box-cpp.service > "$STUB_DIR/enabled"
+    converge
+    [ "$status" -eq 0 ]
+    [ -z "$(mutations | grep -E '(restart|stop|disable|--now).*magic-dingus-box-cpp' || true)" ]
+}
+
+@test "try-restart only for a changed try-restart unit" {
+    stub_systemctl
+    tree_unit magic_dingus_box_cpp/systemd/kiosk-standby-watcher.service "watcher v2"
+    installed kiosk-standby-watcher.service "watcher v1"
+    tree_unit magic_dingus_box_cpp/systemd/content-manager-redirect.service "redirect"
+    installed content-manager-redirect.service "redirect"
+    converge
+    [ "$status" -eq 0 ]
+    grep -qx "systemctl --no-block try-restart kiosk-standby-watcher.service" "$CALLS"
+    refute grep -q "content-manager-redirect" "$CALLS"
+}
+
+@test "a Media Browser try-restart unit is left alone without services/.env" {
+    stub_systemctl
+    tree_unit magic_dingus_box_cpp/systemd/gluetun-cascade-restart.service "watcher v2"
+    installed gluetun-cascade-restart.service "watcher v1"
+    converge
+    [ "$status" -eq 0 ]
+    cmp -s "$TREE/magic_dingus_box_cpp/systemd/gluetun-cascade-restart.service" "$SD/gluetun-cascade-restart.service"
+    refute grep -q "try-restart gluetun-cascade-restart" "$CALLS"
+}
+
+@test "an enabled elapsed timer is re-armed; waiting or disabled ones are not" {
+    stub_systemctl
+    mkdir -p "$TREE/services" && touch "$TREE/services/.env"
+    tree_unit magic_dingus_box_cpp/scripts/missing_search/magic-dingus-missing-search.timer "ms"
+    installed magic-dingus-missing-search.timer "ms"
+    tree_unit magic_dingus_box_cpp/scripts/episode_priority/magic-dingus-episode-priority.timer "ep"
+    installed magic-dingus-episode-priority.timer "ep"
+    tree_unit magic_dingus_box_cpp/systemd/magic-dingus-smoke-test.timer "smoke"
+    installed magic-dingus-smoke-test.timer "smoke"
+    printf '%s\n' magic-dingus-missing-search.timer magic-dingus-episode-priority.timer > "$STUB_DIR/enabled"
+    echo elapsed > "$STUB_DIR/substate.magic-dingus-missing-search.timer"
+    echo elapsed > "$STUB_DIR/substate.magic-dingus-smoke-test.timer"
+    converge
+    [ "$status" -eq 0 ]
+    grep -qx "systemctl --no-block restart magic-dingus-missing-search.timer" "$CALLS"
+    refute grep -q "restart magic-dingus-episode-priority.timer" "$CALLS"
+    refute grep -q "restart magic-dingus-smoke-test.timer" "$CALLS"
+}
+
+@test "an elapsed Media Browser timer is not re-armed without services/.env" {
+    stub_systemctl
+    tree_unit magic_dingus_box_cpp/scripts/missing_search/magic-dingus-missing-search.timer "t"
+    installed magic-dingus-missing-search.timer "t"
+    echo magic-dingus-missing-search.timer > "$STUB_DIR/enabled"
+    echo elapsed > "$STUB_DIR/substate.magic-dingus-missing-search.timer"
+    converge
+    [ "$status" -eq 0 ]
+    refute grep -q "restart magic-dingus-missing-search.timer" "$CALLS"
+}
+
+@test "every start, stop and restart is --no-block (safe at boot)" {
+    stub_systemctl
+    mkdir -p "$TREE/services" && touch "$TREE/services/.env"
+    tree_unit magic_dingus_box_cpp/scripts/missing_search/magic-dingus-missing-search.timer "t"
+    tree_unit magic_dingus_box_cpp/systemd/kiosk-standby-watcher.service "watcher v2"
+    installed kiosk-standby-watcher.service "watcher v1"
+    tree_unit magic_dingus_box_cpp/scripts/episode_priority/magic-dingus-episode-priority.timer "e"
+    installed magic-dingus-episode-priority.timer "e"
+    echo magic-dingus-episode-priority.timer > "$STUB_DIR/enabled"
+    echo elapsed > "$STUB_DIR/substate.magic-dingus-episode-priority.timer"
+    installed old-feature.timer "stale"
+    mkdir -p "$(dirname "$STATE")" && echo old-feature.timer > "$STATE"
+    converge
+    [ "$status" -eq 0 ]
+    [ "$(mutations | grep -cE ' (start|stop|restart|try-restart) |--now')" -eq 4 ]
+    [ -z "$(mutations | grep -E ' (start|stop|restart|try-restart) |--now' | grep -v -- '--no-block')" ]
+}
+
+@test "retirement alone triggers the daemon-reload" {
+    stub_systemctl
+    installed old-feature.timer "stale"
+    mkdir -p "$(dirname "$STATE")" && echo old-feature.timer > "$STATE"
+    converge
+    [ "$status" -eq 0 ]
+    grep -qx "systemctl daemon-reload" "$CALLS"
+}
+
+@test "test mode never calls systemctl" {
+    stub_systemctl
+    export MAGIC_SKIP_SYSTEMCTL=true
+    tree_unit systemd/usb-gadget-network.service "gadget"
+    converge
+    [ "$status" -eq 0 ]
+    [ ! -s "$CALLS" ]
+}

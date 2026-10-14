@@ -277,6 +277,50 @@ retire_redundant_dropins() {
     done <<< "$LIST"
 }
 
+# Steps 5-6: one daemon-reload, then each policy's effect. Every start, stop
+# and restart is --no-block: this also runs at boot (first boot, the OTA
+# power-cut recovery), where waiting on a job can deadlock the boot.
+apply_policies() {
+    local name gate absent change
+    if [[ "$SKIP_SYSTEMCTL" == "true" ]]; then
+        log "SKIP: daemon-reload and unit policies (test mode)"
+        return 0
+    fi
+    if [[ "$RELOAD" == true ]] && ! systemctl daemon-reload; then
+        log "ERROR: daemon-reload failed"; FAILURES=$((FAILURES + 1))
+    fi
+    while IFS=$'\t' read -r name _; do
+        [[ -n "$name" ]] || continue
+        read -r gate absent change _ <<< "$(unit_policy "$name")"
+        [[ "$gate" == ignore ]] && continue
+        if in_list "$INSTALLED" "$name"; then
+            case "$absent" in
+                enable)
+                    if systemctl enable "$name" >/dev/null 2>&1; then log "enabled $name"
+                    else log "ERROR: could not enable $name"; FAILURES=$((FAILURES + 1)); fi ;;
+                enable-now)
+                    if systemctl enable --now --no-block "$name" >/dev/null 2>&1; then log "enabled and started $name"
+                    else log "ERROR: could not enable $name"; FAILURES=$((FAILURES + 1)); fi ;;
+            esac
+            continue
+        fi
+        is_protected "$name" && continue
+        [[ "$gate" == mb && "$MB" != true ]] && continue
+        [[ -f "$SD/$name" && ! -L "$SD/$name" ]] || continue
+        case "$change" in
+            try-restart)
+                in_list "$WRITTEN" "$name" || continue
+                if systemctl --no-block try-restart "$name"; then log "try-restarted $name (its unit changed)"
+                else log "WARNING: could not restart $name (the new unit applies at its next start)"; fi ;;
+            rearm)
+                systemctl is-enabled --quiet "$name" 2>/dev/null || continue
+                [[ "$(systemctl show -p SubState --value "$name" 2>/dev/null)" == elapsed ]] || continue
+                if systemctl --no-block restart "$name"; then log "re-armed $name (was elapsed)"
+                else log "WARNING: could not re-arm $name (re-arms at the next boot)"; fi ;;
+        esac
+    done <<< "$LIST"
+}
+
 main() {
     CHECK=false
     TREE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -324,12 +368,12 @@ main() {
 
     MB=false
     [[ -f "$TREE/services/.env" ]] && MB=true
-    # shellcheck disable=SC2034  # RELOAD is read by the systemctl steps (a later task)
     FINDINGS=0 FAILURES=0 RELOAD=false WRITTEN="" INSTALLED=""
 
     converge_files
     retire_stale_units
     retire_redundant_dropins
+    [[ "$CHECK" == true ]] || apply_policies
     write_state
 
     if [[ "$CHECK" == true ]]; then
