@@ -16,6 +16,13 @@ done
 
 echo "Installing C++ Kiosk Engine dependencies..."
 
+# The -dev packages here (and in the Media Browser block below) must match
+# release.yml's apt list and what CMakeLists.txt asks for —
+# tests/local/system_deps_parity.bats fails on any difference. libegl-dev,
+# not libegl1-mesa-dev: on Trixie egl.pc ships in libegl-dev, and the Mesa
+# package only adds two extension headers nothing includes.
+# libgstreamer-plugins-bad1.0-dev was dropped the same way: no CMake module
+# or header uses it (the runtime plugins are gstreamer1.0-plugins-bad).
 sudo apt update
 sudo apt install -y \
   build-essential \
@@ -24,7 +31,7 @@ sudo apt install -y \
   pkg-config \
   libdrm-dev \
   libgbm-dev \
-  libegl1-mesa-dev \
+  libegl-dev \
   libgles2-mesa-dev \
   libevdev-dev \
   libgpiod-dev \
@@ -35,7 +42,6 @@ sudo apt install -y \
   libjsoncpp-dev \
   libgstreamer1.0-dev \
   libgstreamer-plugins-base1.0-dev \
-  libgstreamer-plugins-bad1.0-dev \
   gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad \
