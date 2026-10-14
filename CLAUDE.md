@@ -505,8 +505,10 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
     the release that ships the converge, or from any release ≤ v1.10.0,
     they cannot converge back; only the user-initiated rollback (the
     installed, newer updater) always can. So the release that ships the
-    converge must change no unit file: its units stay identical to the
-    previous tree's, which makes "kept the new units" equal "converged to
+    converge must change no installable unit: every unit an install path
+    can put on a box stays byte-identical to the previous tree's (it only
+    deletes the six legacy `magic-mpv*`/`magic-ui*` files, which nothing
+    ever installed), which makes "kept the new units" equal "converged to
     the restored tree". The same holds for any unit-changing release a box
     on ≤ v1.10.0 can reach in one hop (boxes skip releases): until no such
     box remains, a release that changes a unit must also be safe with a

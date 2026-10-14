@@ -284,8 +284,9 @@ release added: the state file lists it, the restored tree does not ship it.
 OLDER updater, so on the hop INTO C they cannot: the box keeps C's units
 with C−1's tree. That is safe because of a rollout rule:
 
-> **C ships with zero unit-file edits.** Its units are byte-identical to
-> v1.10.0's, so "kept C's units" IS "converged to the restored tree". Unit
+> **C ships with zero edits to installable units.** Every unit an install
+> path can put on a box is byte-identical to v1.10.0's (C deletes only the
+> six legacy `magic-mpv*`/`magic-ui*` files, which nothing ever installed), so "kept C's units" IS "converged to the restored tree". Unit
 > comments that now say "OTA never replaces installed units" are corrected
 > in C+1, on boxes that have already passed through C (only there does every
 > rollback runner understand convergence).
