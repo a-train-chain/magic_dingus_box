@@ -46,6 +46,15 @@ rules, each earned by a real bug:
    assertion to the workflow next to the existing ones (aarch64,
    READY=1, prowlarr, HAVE_GPIOD, /connect?code=). The same checks run
    on every push in test-local.yml's `kiosk-build` job.
+   `tests/local/system_deps_parity.bats` enforces this for build-time
+   (`-dev`) packages: install_deps.sh, release.yml, the `kiosk-build`
+   job and `dev/pisim/Dockerfile` must install the same set; every
+   `pkg_check_modules`/`find_package` in CMakeLists.txt (optional ones
+   included) needs a row in its `MODULE_MAP` (module → Trixie `-dev`
+   package → README name), and a `-dev` package nothing in CMake asks
+   for fails it. `deploy_cpp.sh`'s `PKG_MAP` must agree with the map.
+   Deliberate differences go in its commented `DRIFT_ALLOWLIST`.
+   Runtime packages (`gstreamer1.0-plugins-*`, ...) are not compared.
 5. **`config.txt` model-specific settings live under `[pi4]` / `[pi5]`
    conditional sections, never `[all]`.** Current split: `[pi5]` has
    `v3d_freq=1000` + `kernel=kernel8.img` (4 KB pages — flycast dies
