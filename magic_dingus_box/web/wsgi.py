@@ -1,10 +1,13 @@
 """WSGI entry point for the Content Manager.
 
 `python3 -m magic_dingus_box.web.wsgi` is what magic-dingus-web.service
-runs on every box — and because an OTA never rewrites unit files, that
-command line is effectively frozen in the field. So the __main__ path here
-is the launcher: it hands over to serve.main(), which runs gunicorn when
-installed and falls back to the Werkzeug server otherwise.
+runs on every box — and that command line must keep working forever: the
+unit converge (converge_system_units.sh) keeps installed units current,
+but an updater older than it never rewrites unit files, and a rollback run
+by such an updater can leave ANY previously installed unit behind. So the
+__main__ path here is the launcher: it hands over to serve.main(), which
+runs gunicorn when installed and falls back to the Werkzeug server
+otherwise.
 
 The app object is built ONLY on import (e.g. `gunicorn ...wsgi:app` by
 hand). Under __main__ it must not be: create_app() opens /dev/uinput and

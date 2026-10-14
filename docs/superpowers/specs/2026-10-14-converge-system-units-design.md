@@ -204,7 +204,9 @@ root, idempotent, serialized by `flock -w 60 /run/lock/mdb-units.lock`.
      → `systemctl --no-block restart`. A `waiting` timer is never restarted
      (a restart can fire it immediately); `daemon-reload` hands it its new
      triggers — to be confirmed on hardware during validation (if not, the
-     policy becomes "restart a changed waiting timer").
+     policy becomes "restart a changed waiting timer"). **NOT yet confirmed
+     on hardware**: that confirmation is owed before the first release that
+     changes a timer's triggers.
      This replaces `setup_memory_tuning.sh`'s one-off missing-search re-arm.
 7. **State.** Write `/var/lib/magic-dingus/system_units` (root, 0644): the
    names of every tree unit installed after this run. Losing the file only

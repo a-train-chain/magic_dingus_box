@@ -563,7 +563,7 @@ while read -r directive arg; do
             n="$(basename "$arg")"
             if [ -e "/etc/systemd/system/$n" ]; then
                 sudo -n install -m 0644 "$SNAP/field/old_units/$n" "/etc/systemd/system/$n"
-                echo "  strip: $n -> the OLD tree's copy (OTA never reinstalls unit files)"
+                echo "  strip: $n -> the OLD tree's copy (an updater older than the converge never reinstalls unit files)"
             else echo "  strip: $n not installed"; fi ;;
         dropin|file)
             if [ -e "$arg" ]; then

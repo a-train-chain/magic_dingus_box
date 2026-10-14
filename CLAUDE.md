@@ -469,6 +469,18 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
     `/var/lib/magic-dingus/system_units`, the installed set of the last
     run) — that is what makes a rollback remove a unit the rolled-back
     release added.
+  - **Deleting a unit from the tree retires it on EVERY box** (the next
+    converge disables and removes it), and nothing brings it back
+    reliably: a rollback to the release that still shipped it reinstalls
+    it only when the RESTORED tree's `POLICY` row installs it when absent
+    (`install`/`enable`/`enable-now`; an `mb`-gated one only with
+    `services/.env`), and never restores its previous enablement — an
+    `enable` row comes back enabled even if the owner had disabled it, an
+    `install` row comes back disabled. A `skip` row (the harness units,
+    the port-80 redirect, cpu-performance, wifi-powersave, the
+    `/usr/local/bin`-helper MB units) is never reinstalled at all. So keep
+    a deleted unit's file for one release, or accept that a rollback won't
+    bring it back.
   - `verify_box.sh` FAILs drift (`--check`: DRIFT/MISSING/STALE; a leftover
     fix drop-in is a WARN); `sync_source_box.sh` pushes every repo unit
     file into the source box's tree and refuses an image without converged

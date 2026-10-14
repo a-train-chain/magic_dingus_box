@@ -148,6 +148,9 @@ push magic_dingus_box_cpp/scripts/restart_stale_cascade_watcher.sh \
 push magic_dingus_box_cpp/scripts/converge_system_units.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/converge_system_units.sh 755 \
      "converge_system_units.sh (installed units = the tree's; setup_memory_tuning step 1a)"
+# The source box must already run THIS checkout's release: this loop pushes
+# every tracked unit into the box tree, and a unit whose script is not on the
+# box would ship broken.
 while IFS= read -r unit_file; do
     push "$unit_file" "/opt/magic_dingus_box/${unit_file}" 644 "${unit_file} (repo copy)"
 done < <(cd "$REPO" && git ls-files '*.service' '*.timer')
