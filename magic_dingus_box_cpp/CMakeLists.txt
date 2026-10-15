@@ -118,6 +118,7 @@ set(PLATFORM_SOURCES
     src/platform/input_manager.cpp
     src/platform/gpio_manager.cpp
     src/platform/platform_profile.cpp
+    src/platform/pi_game_session_hooks.cpp
     src/platform/udev_wake.cpp
     src/platform/input_mapping.cpp
 )
@@ -175,6 +176,7 @@ set(APP_SOURCES
     src/app/settings_persistence.cpp
     src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
+    src/app/status_snapshot.cpp
     src/app/playback_stall_watchdog.cpp
     src/app/playback_reset.cpp
     src/app/auto_advance.cpp
@@ -430,12 +432,15 @@ if(BUILD_KIOSK)
     )
 endif()
 
-# Copy assets to build directory for development
-file(COPY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
+# Copy assets to build directory for development.
+# CMAKE_CURRENT_SOURCE_DIR, not CMAKE_SOURCE_DIR: identical for this project's
+# own top-level build, and still correct when a parent project (the headless
+# engine) add_subdirectory()s this tree.
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
 
 # Copy data directory structure but EXCLUDE large user data (roms, media)
 # These are user files that shouldn't be copied during build
-file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
     PATTERN "roms" EXCLUDE
     PATTERN "media" EXCLUDE
     PATTERN "*.chd" EXCLUDE
@@ -690,6 +695,99 @@ if(ENABLE_MEDIA_BROWSER)
     endif()  # BUILD_TESTS
 endif()
 
+# ---------------------------------------------------------------------------
+# mdb_core — the portable kiosk logic as one library (mdb_headless spec §3).
+# Same source lists the kiosk compiles; nothing here includes a Linux-only
+# header. The Mac engine links this; the Pi kiosk keeps compiling the lists
+# directly until the kiosk-compile CI job has proven the seams (Phase 0).
+# ---------------------------------------------------------------------------
+set(MDB_CORE_SOURCES
+    src/app/controller.cpp
+    src/app/game_launch_recovery.cpp
+    src/app/game_quiet_mode.cpp
+    src/app/playlist_loader.cpp
+    src/app/rom_title.cpp
+    src/app/controller_text_input.cpp
+    src/app/sample_mode.cpp
+    src/app/settings_persistence.cpp
+    src/app/mb_filter_persistence.cpp
+    src/app/status_writer.cpp
+    src/app/status_snapshot.cpp
+    src/app/playback_stall_watchdog.cpp
+    # controller.cpp's pure decisions, split out of it on main (2026-09/10).
+    src/app/game_launch_validation.cpp
+    src/app/playback_reset.cpp
+    src/app/auto_advance.cpp
+    src/app/playlist_cursor.cpp
+    src/app/shuffle_queue.cpp
+    # AudioSettings::apply_output (moved out of app_state.h on main).
+    src/app/audio_router.cpp
+    src/utils/config.cpp
+    src/utils/path_resolver.cpp
+    src/utils/stb_image_impl.cpp
+    src/utils/time_format.cpp
+    src/utils/subprocess.cpp
+    # settings_persistence reads services/.env through it.
+    src/utils/services_env.cpp
+    src/platform/platform_profile.cpp
+    # retroarch_launcher's pad enumeration skips virtual devices with it;
+    # std::filesystem + utils::subprocess only (no libudev).
+    src/platform/udev_wake.cpp
+    src/ui/virtual_keyboard.cpp
+    src/ui/pairing_screen.cpp
+    ${RETROARCH_SOURCES}
+)
+if(ENABLE_MEDIA_BROWSER)
+    list(APPEND MDB_CORE_SOURCES
+        src/platform/sequence_detector.cpp
+        src/media_browser/health/vpn_health_monitor.cpp
+        src/media_browser/movie_drive.cpp
+        src/media_browser/artwork/artwork_cache.cpp
+        ${MEDIA_BROWSER_SOURCES}
+    )
+endif()
+list(REMOVE_DUPLICATES MDB_CORE_SOURCES)
+
+# EXCLUDE_FROM_ALL: mdb_core is consumed by the headless engine (which
+# add_subdirectory()s this tree) and by test_core_unit. A plain `make all`
+# on the Pi must not pay for a second compile of the same sources.
+add_library(mdb_core STATIC EXCLUDE_FROM_ALL ${MDB_CORE_SOURCES})
+target_include_directories(mdb_core PUBLIC src ${JSONCPP_INCLUDE_DIRS} ${YAMLCPP_INCLUDE_DIRS})
+target_link_directories(mdb_core PUBLIC ${JSONCPP_LIBRARY_DIRS} ${YAMLCPP_LIBRARY_DIRS})
+find_package(Threads REQUIRED)
+target_link_libraries(mdb_core PUBLIC ${JSONCPP_LIBRARIES} ${YAMLCPP_LIBRARIES}
+    spdlog::spdlog_header_only Threads::Threads)
+# mdb_core is never the GL consumer of the artwork cache: the kiosk compiles
+# its own copy with the upload path, the engine serves artwork over HTTP.
+target_compile_definitions(mdb_core PRIVATE ARTWORK_CACHE_TEST_MODE)
+target_compile_options(mdb_core PRIVATE -Wall -Wextra -Wpedantic)
+if(ENABLE_MEDIA_BROWSER)
+    target_include_directories(mdb_core PUBLIC
+        ${LIBTORRENT_INCLUDE_DIRS} ${SQLITE3_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})
+    target_link_directories(mdb_core PUBLIC
+        ${LIBTORRENT_LIBRARY_DIRS} ${SQLITE3_LIBRARY_DIRS} ${CURL_LIBRARY_DIRS})
+    target_link_libraries(mdb_core PUBLIC
+        ${LIBTORRENT_LIBRARIES} ${SQLITE3_LIBRARIES} ${CURL_LIBRARIES})
+    # PUBLIC so consumers (the headless engine) compile the same feature set;
+    # the top-level add_compile_definitions() only covers this project's own
+    # targets, not a parent project that add_subdirectory()s this tree.
+    target_compile_definitions(mdb_core PUBLIC MEDIA_BROWSER_ENABLED)
+endif()
+
+if(BUILD_TESTS)
+    if(NOT TARGET Catch2::Catch2WithMain)
+        FetchContent_Declare(Catch2
+            GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+            GIT_TAG v3.5.2)
+        FetchContent_MakeAvailable(Catch2)
+    endif()
+    file(GLOB CORE_TEST_SOURCES "tests/core/*.cpp")
+    add_executable(test_core_unit ${CORE_TEST_SOURCES})
+    target_link_libraries(test_core_unit PRIVATE Catch2::Catch2WithMain mdb_core)
+    target_compile_options(test_core_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME CoreUnit COMMAND test_core_unit)
+endif()
+
 # ============================================================
 # Phone Remote feature tests — no Linux-only deps, runs on Mac.
 # ============================================================
@@ -834,6 +932,11 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # platform_profile backs filter_for_platform (the Pi 4 game-system
         # gate) — pure logic, no Linux-only deps.
         src/platform/platform_profile.cpp
+        # status_snapshot backs build_status_json (test_status_snapshot.cpp);
+        # it needs virtual_keyboard.cpp for the text-input field and jsoncpp
+        # for Json::Value, hence the extra include/link directories below.
+        src/app/status_snapshot.cpp
+        src/ui/virtual_keyboard.cpp
     )
     target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
@@ -922,6 +1025,7 @@ if(PHONE_REMOTE_TEST_SOURCES)
     add_executable(test_phone_remote_unit
         ${PHONE_REMOTE_TEST_SOURCES}
         src/app/status_writer.cpp
+        src/app/status_snapshot.cpp
         src/ui/pairing_screen.cpp
         src/ui/virtual_keyboard.cpp
         src/app/controller_text_input.cpp

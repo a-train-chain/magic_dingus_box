@@ -95,6 +95,16 @@ PlatformProfile profile_for(PiModel model) {
             p.trickle_torrents_during_video = true;
             p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
             break;
+        case PiModel::Mac:
+            p.has_analog_audio = true;         // CoreAudio always has an output
+            p.gpiochip_labels = {};            // no header; the panel is USB HID
+            p.rotary_events_per_detent = 2;
+            p.pause_services_during_movie = false;
+            p.trickle_torrents_during_video = false;
+            // Unread on a Mac: the headless engine serves posters from its
+            // own artwork store and never builds the kiosk's GL cache.
+            p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
+            break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on
             // supported boards), but try every known header-chip label so
@@ -137,6 +147,18 @@ PlatformProfile detect_hardware(const std::string& model_path) {
 PlatformProfile detect_platform(const std::string& model_path) {
     return apply_policy_override(detect_hardware(model_path),
                                  std::getenv(kPolicyOverrideEnv));
+}
+
+PlatformProfile detect_platform() {
+#ifdef __APPLE__
+    // The headless engine's host (mdb_headless): there is no device tree,
+    // and a Mac is never a board. The override is still applied so a stray
+    // MDB_PLATFORM_POLICY_OVERRIDE is logged as ignored, as on Unknown.
+    return apply_policy_override(profile_for(PiModel::Mac),
+                                 std::getenv(kPolicyOverrideEnv));
+#else
+    return detect_platform("/proc/device-tree/model");
+#endif
 }
 
 PlatformProfile apply_policy_override(PlatformProfile detected,
@@ -344,6 +366,16 @@ long read_mem_available_kib(const std::string& meminfo_path) {
     std::stringstream ss;
     ss << f.rdbuf();
     return parse_mem_available_kib(ss.str());
+}
+
+const char* host_model_name(PiModel model) {
+    switch (model) {
+        case PiModel::Pi4: return "pi4";
+        case PiModel::Pi5: return "pi5";
+        case PiModel::Mac: return "mac";
+        case PiModel::Unknown: break;
+    }
+    return "unknown";
 }
 
 } // namespace platform

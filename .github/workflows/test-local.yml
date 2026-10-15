@@ -102,25 +102,27 @@ jobs:
       - name: Run suites
         run: ctest --test-dir build-ci --output-on-failure
 
-      # Guard against the MB leg silently degrading back to 8 suites (a
+      # Guard against the MB leg silently degrading back to 9 suites (a
       # CMake gate change that drops the MediaBrowserUnit registration would
       # otherwise still exit green).
       - name: Assert Media Browser suite ran
         if: matrix.media_browser == 'ON'
         run: ctest --test-dir build-ci -N | grep -q "MediaBrowserUnit"
 
-      # The same guard for the eight standalone suites, on BOTH legs: each
+      # The same guard for the nine standalone suites, on BOTH legs: each
       # is registered behind its own CMake condition (AppUnit is skipped
       # with only a configure-time WARNING when yaml-cpp is missing), so a
       # dropped suite would otherwise still exit green with one fewer.
+      # CoreUnit is test_core_unit, the mdb_core library's own suite (the
+      # headless engine's seams).
       - name: Assert every standalone suite ran
         run: |
           listing="$(ctest --test-dir build-ci -N)"
           for suite in RetroArchUnit UiUnit AppUnit PlatformUnit DisplayUnit \
-                       UtilsUnit VideoUnit PhoneRemoteUnit; do
+                       UtilsUnit VideoUnit PhoneRemoteUnit CoreUnit; do
             echo "$listing" | grep -qw "$suite" || { echo "FATAL: $suite not registered"; exit 1; }
           done
-          want=8; [ "${{ matrix.media_browser }}" = "ON" ] && want=9
+          want=9; [ "${{ matrix.media_browser }}" = "ON" ] && want=10
           got="$(echo "$listing" | sed -n 's/^Total Tests: //p')"
           echo "ctest suites: $got (want $want)"
           [ "$got" = "$want" ]
@@ -155,6 +157,15 @@ jobs:
           cmake -S magic_dingus_box_cpp -B build-kiosk -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF
           cmake --build build-kiosk -j"$(nproc)"
+
+      # mdb_core is EXCLUDE_FROM_ALL (the headless engine's library, never
+      # in a plain kiosk build), so this is the only place its source list
+      # builds with the kiosk's own toolchain. It cannot catch a Linux-only
+      # header leaking into the library (Linux has those headers, and a
+      # static library never links): tests/local/mdb_core_portable.bats
+      # does, and mdb_headless's Mac build is the final check.
+      - name: Build mdb_core (the headless engine's library)
+        run: cmake --build build-kiosk -j"$(nproc)" --target mdb_core
 
       - name: Assert release-blocking capabilities
         run: |

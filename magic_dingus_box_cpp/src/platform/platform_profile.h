@@ -23,8 +23,12 @@ namespace platform {
 enum class PiModel {
     Pi4,
     Pi5,
+    Mac,      // mdb_headless: an Apple-silicon host; nothing gated, no GPIO
     Unknown
 };
+// The enum predates the Mac port; HostModel is the name new code should use.
+using HostModel = PiModel;
+const char* host_model_name(PiModel model);
 
 // ---------------------------------------------------------------------
 // Field classification — READ BEFORE ADDING A FIELD.
@@ -188,8 +192,14 @@ PlatformProfile profile_for(PiModel model);
 // Missing/unreadable file yields the Unknown profile (dev machines), or —
 // only then — the model named by MDB_PI_MODEL_OVERRIDE (dev VMs).
 // Also applies the TEST-ONLY MDB_PLATFORM_POLICY_OVERRIDE (below).
-PlatformProfile detect_platform(
-    const std::string& model_path = "/proc/device-tree/model");
+// Reads `model_path` on every host, a Mac included.
+PlatformProfile detect_platform(const std::string& model_path);
+
+// The running host: /proc/device-tree/model on Linux; PiModel::Mac on an
+// Apple host (the headless engine), which has no device tree. This is a
+// host check, not a board branch: Pi 4B vs Pi 5 is still decided at
+// runtime from the file.
+PlatformProfile detect_platform();
 
 // TEST-ONLY pre-release rehearsal: run a Pi 5 with the Pi 4B's SOFTWARE
 // POLICIES so Pi 4B logic (N64/Dreamcast hidden, 64 MB poster budget,

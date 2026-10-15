@@ -28,6 +28,7 @@ load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 # pkg_check_modules (pkg-config name) or find_package.
 MODULE_MAP='
 PkgConfig            -                                 -        # the build tool itself
+Threads              -                                 -        # the FindThreads module (libc pthreads), for mdb_core; no package
 libdrm               libdrm-dev                        libdrm
 gbm                  libgbm-dev                        libgbm
 egl                  libegl-dev                        libegl   # egl.pc ships here (libglvnd); libegl1-mesa-dev only adds two unused Mesa extension headers

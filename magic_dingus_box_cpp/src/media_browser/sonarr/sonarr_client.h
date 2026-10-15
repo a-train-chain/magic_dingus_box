@@ -521,6 +521,13 @@ private:
 // 2026-10-05). Never called by the kiosk.
 void set_autoredownload_held_marker_path_for_testing(std::string path);
 
+// The same move for a host other than the Pi: the headless engine
+// (mdb_headless) keeps the marker under its own data root, not in a /tmp no
+// verify_box.sh reads. Call it once at startup, before any guard runs. The
+// kiosk never calls it.
+void set_autoredownload_held_marker_path(std::string path);
+std::string autoredownload_held_marker_path();
+
 class AutoRedownloadGuard {
 public:
     // Reads the current config and, if auto-redownload is ON, switches it

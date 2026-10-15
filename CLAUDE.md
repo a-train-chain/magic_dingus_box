@@ -63,7 +63,7 @@ rules, each earned by a real bug:
    and the CI binary's glibc. Anything older can neither build nor run
    the kiosk (v1.6.4 was the last Bookworm release).
 7. **Before a release that touches the platform layer**, run the Mac
-   suites (all 9 with Media Browser ON, 8 with it OFF), and validate on real hardware of BOTH boards when the
+   suites (all 10 with Media Browser ON, 9 with it OFF; CoreUnit is mdb_core's), and validate on real hardware of BOTH boards when the
    change plausibly differs between them — the sd_notify failure was
    invisible in every off-Pi test.
 
@@ -170,6 +170,7 @@ sudo usermod -a -G video,input $USER
 ### C++ Source Structure (`magic_dingus_box_cpp/src/`)
 
 - **`main.cpp`** - Entry point: wiring (display/GL/input/player/service clients, the hooks below) + the main loop: poll input → update state → render video → render UI → swap buffers. Playlist playback and the game hand-off live in `app/` (`playlist_playback`, `playlist_reload`, `game_handoff`) — main.cpp calls them at fixed points in the loop.
+- **`mdb_core`** (CMake target, `MDB_CORE_SOURCES`) - the portable kiosk logic as a consumer-only static library (`EXCLUDE_FROM_ALL`), linked by the headless Mac engine (chaney-labs/mdb_headless) through its submodule on branch `mdb-core`; `test_core_unit` (CoreUnit) is its suite. No kiosk-only file and no Linux-only header may reach it (`tests/local/mdb_core_portable.bats`); when a file in the list is split, the new units usually join the list too.
 - **`media_browser/mb_host`** - `MediaBrowserHost`: the kiosk side of the Media Browser — owns the MB screens, modals and dispatcher; main.cpp's loop calls it at fixed points (unlock sequence → `handle_input` → redraw-gate inputs → `render` → `tick_watch_state`). main() keeps the service clients/stores and passes references in. Screen-to-screen hand-offs are the pure table in `media_browser/ui/mb_transition.h` (unit-tested).
 - **`media_browser/mb_services`** - builds the service clients main() owns: `make_service_clients()` (Radarr/Sonarr/TMDB/Prowlarr/qBittorrent with the three-stage API-key chain `MDB_*_API_KEY` → `*_API_KEY` → `services/.env`, the Radarr/Sonarr mock fallbacks + `sonarr_configured`, Sonarr's TV path prefixes derived from the movie vars), `bootstrap_qbit_alt_limits()` (boot alt-limit converge + crash-recovery clear, gated on `services/.env`) and `start_vpn_health_monitor()` (Layer 3 monitor + container-unpause safety net). Renderer-free; the env lookup is injected so it is unit-tested on the Mac (`tests/media_browser/test_mb_services.cpp`).
 - **MB screens are "spawn, drain and paint"** — decisions live beside them in Renderer-free, I/O-free units compiled into `test_media_browser_unit` (the screen `.cpp`s are kiosk-only and never reach a Mac test): `series_detail_logic.h` + `series_detail_view.h` + `../series_mutations.{h,cpp}` + `../season_delete.{h,cpp}` (SeriesDetail), `detail_logic.h` + `../movie_remove.{h,cpp}` (Detail), `browse_logic.h` + `browse_view.h` (Browse), `queue_groups.h` + `queue_view.h` (Queue), `episode_logic.h` + `still_watching.h` + `playback_view.h` (Playback). Worker bodies that do I/O take the client by reference and return an outcome struct (mockable via `SonarrMockClient` subclasses); text colors cross the boundary as `MbTone` (`mb_tone.h`), buttons/hints as `chrome::ButtonKind` / `chrome::Hint`. New decision logic goes in these units with a test, not in the screen.
@@ -193,6 +194,7 @@ sudo usermod -a -G video,input $USER
 - **`app/`** - Application logic
   - `app_state.h` - Global state (playlists, playback, settings)
   - `controller` - High-level video/audio control, RetroArch launch/return orchestration
+  - `game_session_hooks.h` - the display/input hand-off around a RetroArch launch as a seam (`GameSessionHooks`): the kiosk installs `platform/pi_game_session_hooks` (DRM master release/re-acquire, evdev, `udev_wake`, the display-lost restart through `app::apply_display_reacquire`); a host with no display (the headless engine) installs none, and its default hooks never read as a lost display. A change to the game hand-off goes into `PiGameSessionHooks`, not back into `controller.cpp`.
   - `playlist_loader` - YAML playlist parsing
   - `settings_persistence` - YAML settings storage
   - `sample_mode` - Sample/demo mode for kiosk auto-play

@@ -6,11 +6,9 @@
 #include "playlist_cursor.h"
 #include "shuffle_queue.h"
 #include "../video/video_player.h"
-#include "../video/gst_player.h"
 #include "../utils/path_resolver.h"
 #include "../retroarch/retroarch_launcher.h"
 #include "../retroarch/launch_contract.h"
-#include "../platform/drm_display.h"
 #include "app_state.h"
 
 #include <sstream>
@@ -29,8 +27,6 @@
 #include <json/json.h>
 #include "../utils/config.h"
 
-#include "../platform/input_manager.h"
-#include "../platform/udev_wake.h"
 #include "../utils/subprocess.h"
 
 namespace fs = std::filesystem;
@@ -38,7 +34,7 @@ namespace fs = std::filesystem;
 namespace app {
 
 Controller::Controller(video::VideoPlayer* player)
-    : player_(player), display_(nullptr), input_manager_(nullptr)
+    : player_(player)
 {
 }
 
@@ -447,10 +443,8 @@ void Controller::wait_for_playback_start(int max_ms, std::function<void()> progr
     while (std::chrono::steady_clock::now() - start < budget) {
         // Tick the player state machine so is_playing_ can flip: drains the
         // GStreamer bus and does a 0-timeout state poll (which counts
-        // ASYNC+pending==PLAYING as playing — see GstPlayer::update_state).
-        if (auto gst_player = dynamic_cast<video::GstPlayer*>(player_)) {
-            gst_player->update_state();
-        }
+        // ASYNC+pending==PLAYING as playing — see the backend's update_state()).
+        if (player_) player_->update_state();
         if (is_playing()) return;  // started — no reason to keep waiting
         if (player_ && player_->has_error()) return;  // broken file: the
                                     // error policy in main skips it; waiting
@@ -670,20 +664,14 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
         // CRITICAL: Release controller input grab before launching RetroArch
         // This ensures the main app doesn't block RetroArch from accessing the controller
-        if (input_manager_) {
-            std::cout << "Releasing input devices for RetroArch..." << std::endl;
-            input_manager_->cleanup();
-            std::cout << "Input devices released" << std::endl;
-        }
+        if (hooks_) hooks_->release_input();
         state.loading_progress.store(0.55f);
         state.loading_phase = "RELEASING INPUT";
         if (progress_callback) progress_callback();
 
         // CRITICAL: Wake up controller before launching RetroArch
         // Controller may be in sleep mode after GStreamer/DRM cleanup
-        std::cout << "Waking up controller before RetroArch launch..." << std::endl;
-        platform::udev::wake_input_devices();
-        if (progress_callback) progress_callback();
+        if (hooks_) hooks_->wake_controllers([&] { if (progress_callback) progress_callback(); });
         state.loading_progress.store(0.75f);
         state.loading_phase = "WAKING CONTROLLER";
         wait_with_callback(200, progress_callback);
@@ -723,20 +711,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             if (progress_callback) {
                 progress_callback();
             }
-            if (display_) {
-                // CRITICAL: Keep CRTC enabled (disable_crtc = false) for Vulkan
-                // compatibility. Disabling it causes "QueuePresent failed" on
-                // startup for most cores (Genesis, SNES, NES, PS1). We rely on
-                // the launcher's session stop and display restoration logic
-                // for a clean exit.
-                const bool disable_crtc = false;
-                std::cout << "Releasing DRM master for RetroArch (disable_crtc="
-                          << disable_crtc << ")..." << std::endl;
-                display_->release_master(disable_crtc);
-                std::cout << "DRM master released" << std::endl;
-                // Let DRM resources settle before RetroArch grabs the display.
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            }
+            if (hooks_) hooks_->release_display();
         };
 
         // Feed the systemd watchdog while RetroArch plays (main.cpp wires
@@ -773,52 +748,17 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         std::cout << "Waiting for system to settle..." << std::endl;
         std::this_thread::sleep_for(kRetroArchSettleDelay);
 
-        // Re-acquire DRM master with retry logic
-        if (display_) {
-            std::cout << "Re-acquiring DRM master..." << std::endl;
-            bool acquired = false;
-            for (int i = 0; i < 5; ++i) {
-                if (display_->acquire_master()) {
-                    acquired = true;
-                    std::cout << "DRM master acquired successfully." << std::endl;
-                    break;
-                }
-                std::cerr << "Failed to acquire DRM master, retrying (" << (i+1) << "/5)..." << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-            
-            if (!acquired) {
-                // Used to "proceed anyway": the render loop then kept the
-                // re-enabled watchdog happy in front of a black screen
-                // forever. Flag it so main exits non-zero and systemd
-                // (Restart=on-failure) restarts the kiosk from scratch.
-                std::cerr << "CRITICAL: Failed to acquire DRM master after retries! "
-                             "Display lost; the kiosk must restart." << std::endl;
-                display_lost_ = true;
-            }
-            
-            // Restore the mode the kiosk actually booted with — NOT 640x480.
-            // No unit boots at 640x480 (target_drm_mode gives 1280x720 /
-            // 1920x1080; 640x480 is only the boot cascade's last resort), so
-            // hardcoding it made every game exit do TWO mode changes: down to
-            // 640x480 here, then back up in main.cpp's reset_display handler
-            // — two black-screen TV resyncs per exit. On success the
-            // display_mode_restored flag tells that handler to skip its own
-            // set_mode, making this the ONLY mode change on the way back.
-            bool mode_restored = false;
-            if (kiosk_mode_w_ > 0 && kiosk_mode_h_ > 0) {
-                std::cout << "Restoring kiosk display mode "
-                          << kiosk_mode_w_ << "x" << kiosk_mode_h_ << "..." << std::endl;
-                mode_restored = display_->set_mode(kiosk_mode_w_, kiosk_mode_h_);
-            }
-            if (!mode_restored) {
-                // Legacy floor, preserved for the never-configured case and
-                // for a failed restore. Gives the dissolve SOMETHING to draw
-                // on; deliberately does NOT set the flag below.
-                std::cout << "Falling back to 640x480..." << std::endl;
-                display_->set_mode(640, 480);
-            }
-            state.display_mode_restored.store(mode_restored);
+        // Re-acquire the display via the game-session hooks (the Pi
+        // implementation retries internally — see
+        // platform::PiGameSessionHooks::reacquire_display).
+        {
+            const app::DisplayReacquire re = hooks_ ? hooks_->reacquire_display(kiosk_mode_w_, kiosk_mode_h_) : app::DisplayReacquire{};
+            // Stores display_mode_restored when a display came back at all.
+            // A lost display used to "proceed anyway": the render loop then
+            // kept the re-enabled watchdog happy in front of a black screen
+            // forever. Flag it so main exits non-zero and systemd
+            // (Restart=on-failure) restarts the kiosk from scratch.
+            if (app::apply_display_reacquire(re, state.display_mode_restored)) display_lost_ = true;
 
             // First frames we may draw since the handover. MUST stay after
             // set_mode() — painting before it blocks on a page-flip event
@@ -843,7 +783,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             // Skipped when DRM master was never re-acquired: present_frame
             // cannot vblank-pace the loop then, and the box is already in a
             // degraded state where a transition is the least of its problems.
-            if (acquired && progress_callback) {
+            if (re.acquired && progress_callback) {
                 constexpr std::chrono::milliseconds kReturnDissolveHold{120};
                 constexpr std::chrono::milliseconds kReturnDissolveRamp{250};
                 const auto dissolve_t0 = std::chrono::steady_clock::now();
@@ -865,37 +805,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         }
 
         // Re-initialize input devices after RetroArch exits with retry logic
-        if (input_manager_) {
-            std::cout << "Re-initializing input devices after RetroArch..." << std::endl;
-            
-            bool input_initialized = false;
-            for (int i = 0; i < 3; ++i) {
-                // Re-wake controller before initializing
-                platform::udev::wake_input_devices();
-                std::this_thread::sleep_for(std::chrono::milliseconds(300));
-                
-                if (input_manager_->initialize()) {
-                    input_initialized = true;
-                    std::cout << "Input devices initialized successfully." << std::endl;
-                    break;
-                }
-                std::cerr << "Failed to initialize input devices, retrying (" << (i+1) << "/3)..." << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-            
-            if (!input_initialized) {
-                std::cerr << "CRITICAL: Failed to re-initialize input devices after 3 retries!" << std::endl;
-                // Last-resort attempt: sleep longer and try once more
-                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                platform::udev::wake_input_devices();
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (input_manager_->initialize()) {
-                    std::cout << "Input devices initialized on final retry." << std::endl;
-                } else {
-                    std::cerr << "CRITICAL: Input devices permanently failed. Controller may not work." << std::endl;
-                }
-            }
-        }
+        if (hooks_) hooks_->reinit_input();
 
         // Restore PulseAudio default sink to match user's audio output preference
         // RetroArch uses ALSA directly, so PulseAudio state may have drifted
