@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
+- **Updates now keep the box's background jobs exactly as designed.**
+  Improvements to how the box schedules its background work (like the
+  automatic retry for movies that found nothing to download) used to need
+  special patches to reach boxes that were already set up, and one of
+  those patches stopped that retry from running at all. Updates now put
+  the jobs' own settings in place directly, undo them with the rest of an
+  update if it is rolled back, and the Box Health check flags a box whose
+  jobs don't match.
 - **The phone remote no longer shows a finished game as "now playing".**
   After you quit a game and came back to the menu, the remote kept
   showing that game's title until something else played. It now clears
@@ -162,6 +170,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owns that state.
 
 ### Internal
+- One script now writes every systemd unit file:
+  `converge_system_units.sh --only <unit>` is how `setup_services.sh`,
+  `deploy_cpp.sh`, `setup_ota_recovery.sh`, `setup_audio_service.sh`,
+  `setup_harness_services.sh`, `install_deps.sh`, the clone tooling and
+  `setup_pi.sh` install their units (each keeps its own enable/start), and
+  a test fails on any other script that writes one. `deploy_cpp.sh` no
+  longer stages unit copies in the install root's `systemd/` and deletes
+  the ones earlier deploys left there. Removed the legacy X11-era units
+  (`magic-mpv*`, `magic-ui*`) and their scripts (`setup_boot_service.sh`,
+  `migrate_to_cpp.sh`, `cleanup_old_system.sh`); none was installed on
+  any box.
 - `main.cpp` slimmed further (4,123 → ~3,300 lines), with no behavior
   change: main-menu playlist playback control moved to
   `app/playlist_playback` (behind a `PlaylistTransport` interface), the

@@ -66,96 +66,82 @@ effective_timer_triggers() {
     grep -qx "\[Service\]" "$dropin"
 }
 
-@test "installs the service timing drop-ins (storage-attach, smoke-test, missing-search)" {
+REPO_UNITS="$SCRIPT_DIR/../../systemd"
+REPO_TIMER="$SCRIPT_DIR/../missing_search/magic-dingus-missing-search.timer"
+
+# A drop-in exactly as the pre-2026-10 script wrote it (marker line first).
+field_dropin() {
+    mkdir -p "$(dirname "$1")"
+    printf '# Magic Dingus Box (setup_memory_tuning.sh): fix drop-in\n%s\n' "$2" > "$1"
+}
+
+@test "no longer writes the unit-fix drop-ins" {
     run bash "$TUNING_SCRIPT"
     [ "$status" -eq 0 ]
     sys="$MAGIC_TUNING_ROOT/etc/systemd/system"
-    grep -qx "TimeoutStartSec=600" "$sys/magic-dingus-storage-attach.service.d/mdb-timeout.conf"
-    grep -qx "TimeoutStartSec=300" "$sys/magic-dingus-smoke-test.service.d/mdb-timeout.conf"
-    timer="$sys/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf"
-    grep -qx "\[Timer\]" "$timer"
-    # Empty assignment first (resets the unit's 3min), then the new value.
-    [ "$(grep -n '^OnBootSec=' "$timer" | head -1)" = "$(grep -n '^OnBootSec=$' "$timer")" ]
-    grep -qx "OnBootSec=11min" "$timer"
+    [ ! -e "$sys/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
+    [ ! -e "$sys/magic-dingus-storage-attach.service.d/mdb-timeout.conf" ]
+    [ ! -e "$sys/magic-dingus-smoke-test.service.d/mdb-timeout.conf" ]
+    [ ! -e "$sys/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf" ]
 }
 
-@test "missing-search drop-in keeps the 4 h repeat (an empty OnBootSec= resets EVERY trigger)" {
-    # Hardware, 2026-10-14: the drop-in carried only OnBootSec=, so the
-    # timer loaded with OnBootSec=11min alone — one sweep per boot, then
-    # 'elapsed' forever. The owner's box went 10 days without a retry.
+@test "a field box: stale units replaced by the tree's, fix drop-ins removed" {
+    sys="$MAGIC_TUNING_ROOT/etc/systemd/system"
+    mkdir -p "$sys"
+    cp "$REPO_UNITS/magic-dingus-box-cpp.service" "$sys/"
+    field_dropin "$sys/magic-dingus-box-cpp.service.d/stop-timeout.conf" "$(printf '[Service]\nTimeoutStopSec=20')"
+    printf '[Service]\nType=oneshot\nTimeoutStartSec=180\n' > "$sys/magic-dingus-storage-attach.service"
+    field_dropin "$sys/magic-dingus-storage-attach.service.d/mdb-timeout.conf" "$(printf '[Service]\nTimeoutStartSec=600')"
+    printf '[Service]\nType=oneshot\n' > "$sys/magic-dingus-smoke-test.service"
+    field_dropin "$sys/magic-dingus-smoke-test.service.d/mdb-timeout.conf" "$(printf '[Service]\nTimeoutStartSec=300')"
+    # The unit field boxes carried (3min), plus the drop-in that broke it.
+    printf '[Timer]\nOnBootSec=3min\nOnUnitActiveSec=4h\nPersistent=true\n' > "$sys/magic-dingus-missing-search.timer"
+    field_dropin "$sys/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf" "$(printf '[Timer]\nOnBootSec=\nOnBootSec=11min')"
+
     run bash "$TUNING_SCRIPT"
     [ "$status" -eq 0 ]
-    dropin="$MAGIC_TUNING_ROOT/etc/systemd/system/magic-dingus-missing-search.timer.d/mdb-boot-delay.conf"
-    # The unit field boxes actually carry (OTA never replaces installed units).
-    printf '[Timer]\nOnBootSec=3min\nOnUnitActiveSec=4h\nPersistent=true\n' > "$TEST_TEMP_DIR/field.timer"
-    [ "$(effective_timer_triggers "$TEST_TEMP_DIR/field.timer" "$dropin")" = \
+    cmp -s "$REPO_UNITS/magic-dingus-storage-attach.service" "$sys/magic-dingus-storage-attach.service"
+    cmp -s "$REPO_UNITS/magic-dingus-smoke-test.service" "$sys/magic-dingus-smoke-test.service"
+    cmp -s "$REPO_TIMER" "$sys/magic-dingus-missing-search.timer"
+    [ ! -e "$sys/magic-dingus-box-cpp.service.d/stop-timeout.conf" ]
+    [ ! -e "$sys/magic-dingus-storage-attach.service.d" ]
+    [ ! -e "$sys/magic-dingus-smoke-test.service.d" ]
+    [ ! -e "$sys/magic-dingus-missing-search.timer.d" ]
+    # What systemd now loads for the timer: the tree's triggers, 4 h repeat included.
+    [ "$(effective_timer_triggers "$sys/magic-dingus-missing-search.timer")" = \
       "$(printf 'OnBootSec=11min\nOnUnitActiveSec=4h')" ]
-    # A box carrying the in-tree unit ends up with that unit's own triggers.
-    intree="$SCRIPT_DIR/../missing_search/magic-dingus-missing-search.timer"
-    [ "$(effective_timer_triggers "$intree" "$dropin")" = "$(effective_timer_triggers "$intree")" ]
+    # Posture drop-ins are not unit fixes: they stay.
+    [ -f "$sys/magic-dingus-box-cpp.service.d/memory-protect.conf" ]
 }
 
-# Step 5 for real (MAGIC_SKIP_SYSTEMCTL=false) against stubbed systemctl and
-# sysctl. The stub logs every call and reports the missing-search timer's
-# SubState from $STUB_DIR/timer_substate.
-reload_stubs() {
-    STUB_DIR="$TEST_TEMP_DIR/stubs"
-    mkdir -p "$STUB_DIR"
-    CALLS="$TEST_TEMP_DIR/systemctl.log"
-    : > "$CALLS"
-    cat > "$STUB_DIR/systemctl" <<STUB
+@test "the unit converge runs before the audio unit install and the cmdline step" {
+    converge_line="$(grep -n 'converge_system_units.sh"$' "$TUNING_SCRIPT" | head -1 | cut -d: -f1)"
+    audio_line="$(grep -n '^# --- 1d\. ' "$TUNING_SCRIPT" | cut -d: -f1)"
+    cmdline_line="$(grep -n '^# --- 4\. kernel cmdline' "$TUNING_SCRIPT" | cut -d: -f1)"
+    [ -n "$converge_line" ] && [ -n "$audio_line" ] && [ -n "$cmdline_line" ]
+    [ "$converge_line" -lt "$audio_line" ]
+    [ "$converge_line" -lt "$cmdline_line" ]
+}
+
+@test "the unit converge call is guarded: its failure never fails the posture" {
+    # The script finds its helpers beside itself, so a copy of it next to a
+    # converge stub that exits 2 (the "something could not be converged"
+    # code) injects the failure. Sibling helpers are deliberately absent:
+    # each has a "not found" / test-mode branch.
+    mkdir -p "$TEST_TEMP_DIR/scripts"
+    cp "$TUNING_SCRIPT" "$TEST_TEMP_DIR/scripts/setup_memory_tuning.sh"
+    cat > "$TEST_TEMP_DIR/scripts/converge_system_units.sh" <<'STUB'
 #!/bin/bash
-echo "systemctl \$*" >> "$CALLS"
-[[ "\$*" == *SubState*magic-dingus-missing-search.timer* ]] && cat "$STUB_DIR/timer_substate"
-exit 0
+echo "[units] stub: pretending a unit could not be converged"
+exit 2
 STUB
-    printf '#!/bin/bash\nexit 0\n' > "$STUB_DIR/sysctl"
-    chmod +x "$STUB_DIR/systemctl" "$STUB_DIR/sysctl"
-    export PATH="$STUB_DIR:$PATH"
-    export MAGIC_SKIP_SYSTEMCTL=false
-}
-
-@test "an elapsed missing-search timer is re-armed after the reload, without blocking" {
-    # daemon-reload alone leaves an 'elapsed' timer dormant until reboot
-    # (hardware, 2026-10-14) — a fielded box would not get the fix.
-    reload_stubs
-    echo elapsed > "$STUB_DIR/timer_substate"
-    run bash "$TUNING_SCRIPT"
+    run bash "$TEST_TEMP_DIR/scripts/setup_memory_tuning.sh"
     [ "$status" -eq 0 ]
-    restart="$(grep -nx "systemctl --no-block restart magic-dingus-missing-search.timer" "$CALLS" | cut -d: -f1)"
-    reload="$(grep -nx "systemctl daemon-reload" "$CALLS" | tail -1 | cut -d: -f1)"
-    [ -n "$restart" ]
-    [ -n "$reload" ]
-    [ "$restart" -gt "$reload" ]
-}
-
-@test "a waiting missing-search timer is never restarted" {
-    reload_stubs
-    echo waiting > "$STUB_DIR/timer_substate"
-    run bash "$TUNING_SCRIPT"
-    [ "$status" -eq 0 ]
-    grep -qx "systemctl daemon-reload" "$CALLS"
-    [ "$(grep -c "restart magic-dingus-missing-search" "$CALLS")" -eq 0 ]
-}
-
-@test "timing drop-ins agree with the in-tree units" {
-    units="$SCRIPT_DIR/../../systemd"
-    grep -qx "TimeoutStartSec=600" "$units/magic-dingus-storage-attach.service"
-    grep -qx "TimeoutStartSec=300" "$units/magic-dingus-smoke-test.service"
-    grep -qx "OnBootSec=11min" "$SCRIPT_DIR/../missing_search/magic-dingus-missing-search.timer"
-}
-
-@test "installs kiosk TimeoutStopSec=20 drop-in, idempotently" {
-    run bash "$TUNING_SCRIPT"
-    [ "$status" -eq 0 ]
-    dropin="$MAGIC_TUNING_ROOT/etc/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf"
-    grep -qx "TimeoutStopSec=20" "$dropin"
-    grep -qx "\[Service\]" "$dropin"
-    first="$(cat "$dropin")"
-    run bash "$TUNING_SCRIPT"
-    [ "$status" -eq 0 ]
-    [ "$(cat "$dropin")" = "$first" ]
-    [ "$(grep -c "TimeoutStopSec" "$dropin")" -eq 1 ]
+    [[ "$output" == *"stub: pretending a unit could not be converged"* ]]
+    [[ "$output" == *"WARNING: unit convergence reported failures"* ]]
+    # The rest of the posture still ran after the failed converge.
+    [[ "$output" == *"memory posture converged"* ]]
+    grep -q "vm.page-cluster = 0" "$MAGIC_TUNING_ROOT/etc/sysctl.d/99-mdb-zram.conf"
 }
 
 @test "appends cgroup flags to cmdline.txt exactly once, keeping it single-line" {

@@ -3,7 +3,8 @@
 # Magic Dingus Box — install the boot-time OTA power-loss recovery unit.
 #
 # Installs magic-dingus-ota-recovery.service (from ../systemd/ next to this
-# script) into /etc/systemd/system and enables it. At boot it runs before
+# script) into /etc/systemd/system — through converge_system_units.sh
+# --only, the one writer of unit files — and enables it. At boot it runs before
 # the kiosk and the web admin, but only when update.sh left its
 # "install in progress" marker behind (ConditionPathExists=), in which case
 # it restores the pre-update backup. See update.sh (OTA_MARKER,
@@ -11,7 +12,8 @@
 #
 # Idempotent; safe to re-run any time. Callers:
 #   - update.sh, at the start of every install, BEFORE it writes the marker
-#     (unit files are otherwise never refreshed by an OTA, so the update.sh
+#     (it must exist before the install writes its marker — earlier than
+#     the unit converge in setup_memory_tuning.sh — so the update.sh
 #     that relies on the unit is the one that delivers it)
 #   - deploy_cpp.sh (provisioning / developer deploys)
 #   - scripts/golden_image/sync_source_box.sh (so a golden image carries it)
@@ -20,6 +22,7 @@
 # Test seams (same conventions as setup_memory_tuning.sh):
 #   MAGIC_TUNING_ROOT    - prefix for /etc (BATS fake root; skips the root check)
 #   MAGIC_SKIP_SYSTEMCTL - "true" skips daemon-reload / enable
+#   (both reach converge_system_units.sh, which honors the same seams)
 
 set -euo pipefail
 
@@ -35,32 +38,17 @@ if [[ -z "$TUNING_ROOT" && "$EUID" -ne 0 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="${SCRIPT_DIR}/../systemd/${UNIT}"
-DEST="${TUNING_ROOT}/etc/systemd/system/${UNIT}"
 
-if [[ ! -f "$SRC" ]]; then
-    echo "[ota-recovery] ERROR: unit source not found: $SRC" >&2
-    exit 1
-fi
-
-changed=0
-if [[ ! -f "$DEST" ]] || ! cmp -s "$SRC" "$DEST"; then
-    mkdir -p "$(dirname "$DEST")"
-    install -m 0644 "$SRC" "$DEST"
-    changed=1
-    log "installed $DEST"
-else
-    log "$UNIT already current"
-fi
+# Writes the tree's unit when it is absent or differs, and daemon-reloads
+# when it wrote. A failure exits non-zero here (set -e), as a failed copy
+# always did; update.sh warns and carries on.
+bash "${SCRIPT_DIR}/converge_system_units.sh" --only "$UNIT"
 
 if [[ "$SKIP_SYSTEMCTL" == "true" ]]; then
-    log "SKIP: daemon-reload / enable (test mode)"
+    log "SKIP: enable (test mode)"
     exit 0
 fi
 
-if [[ "$changed" -eq 1 ]]; then
-    systemctl daemon-reload
-fi
 if ! systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
     systemctl enable "$UNIT" >/dev/null 2>&1
     log "enabled $UNIT"

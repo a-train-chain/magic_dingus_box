@@ -1613,6 +1613,56 @@ retire_audio_service_if_absent() {
     return 0
 }
 
+# Rollback: converge the installed systemd units back to the RESTORED tree.
+#
+# An install converges /etc/systemd/system to the NEW tree's units
+# (setup_memory_tuning.sh -> converge_system_units.sh, before the verified
+# start). A rollback must undo that, or the box runs the rolled-back
+# release's units against the restored tree. The restored tree's own
+# script is preferred (its units, its policy table). A tree that predates
+# the script is converged by a copy of the rolled-back-from tree's script,
+# stashed BEFORE the restore rsync deletes it and pointed at the restored
+# tree with --tree. Units the rolled-back release added are retired from
+# the converge's state file. Never fails the rollback; skipped in test mode
+# like every root hook; prints to stderr (stdout carries the job's JSON).
+# A rollback run by an updater older than this cannot converge back — see
+# docs/superpowers/specs/2026-10-14-converge-system-units-design.md
+# "Rollback" for why the release that ships it changes no unit file.
+# The stash lives in /tmp, never under TMPDIR: a TMPDIR inside the install tree
+# would let the restore's --delete remove it. MAGIC_CONVERGE_STASH_DIR is the
+# test seam.
+CONVERGE_STASH=""
+stash_converge_script() {
+    CONVERGE_STASH=""
+    local src="${INSTALL_DIR}/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+    [ -f "$src" ] || return 0
+    CONVERGE_STASH="$(mktemp "${MAGIC_CONVERGE_STASH_DIR:-/tmp}/mdb-converge.XXXXXX" 2>/dev/null)" || { CONVERGE_STASH=""; return 0; }
+    cp "$src" "$CONVERGE_STASH" 2>/dev/null || { rm -f "$CONVERGE_STASH"; CONVERGE_STASH=""; }
+    return 0
+}
+
+converge_units_after_restore() {
+    local own="${INSTALL_DIR}/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: unit convergence after restore (test mode)"
+    elif [ -f "$own" ]; then
+        log "Converging systemd units to the restored tree..."
+        sudo -n bash "$own" >&2 \
+            || log_warn "unit convergence after restore reported failures (verify_box.sh names them)"
+    elif [ -n "$CONVERGE_STASH" ] && [ -f "$CONVERGE_STASH" ]; then
+        log "Converging systemd units to the restored tree (its release predates converge_system_units.sh)..."
+        sudo -n bash "$CONVERGE_STASH" --tree "$INSTALL_DIR" >&2 \
+            || log_warn "unit convergence after restore reported failures (verify_box.sh names them)"
+    else
+        log_warn "no converge_system_units.sh in either tree; installed units left as they are"
+    fi
+    if [ -n "$CONVERGE_STASH" ]; then
+        rm -f "$CONVERGE_STASH"
+    fi
+    CONVERGE_STASH=""
+    return 0
+}
+
 # A failed install: put the previous version back, then report the outcome
 # as the job's final JSON (the web admin shows its message). Reported AFTER
 # the rollback so the message says what actually happened.
@@ -2431,6 +2481,10 @@ rollback_internal() {
     # Root-owned files would make the restore exit 23 (see
     # normalize_tree_ownership).
     normalize_tree_ownership
+    # The restore below deletes the rolled-back-from tree's converge script;
+    # keep a copy for a restored tree that predates it
+    # (see converge_units_after_restore).
+    stash_converge_script
     local restore_exit=0
 
     # Restore backup. Same exclude list as the install rsync — the
@@ -2496,6 +2550,19 @@ rollback_internal() {
     # refresh_out_of_tree_files). Before this, a rollback left them at the
     # release it had just rolled back.
     refresh_out_of_tree_files
+
+    # Units back to the restored tree's (see converge_units_after_restore) —
+    # only from a complete restore: a partial tree would retire the units it
+    # is missing, and the boot recovery retries the whole restore anyway.
+    if rsync_exit_ok "$restore_exit"; then
+        converge_units_after_restore
+    else
+        if [ -n "$CONVERGE_STASH" ]; then
+            rm -f "$CONVERGE_STASH"
+        fi
+        CONVERGE_STASH=""
+        log_warn "restore incomplete; systemd units left as they are until the retry"
+    fi
 
     # Restart C++ service (web service will be restarted at end of main
     # function). At boot the kiosk starts by itself right after us.
@@ -2594,6 +2661,8 @@ rollback() {
     # a rollback must restore the old version number.
     log "Restoring from backup..."
     normalize_tree_ownership
+    # See rollback_internal: keep the rolled-back-from converge script.
+    stash_converge_script
     local rsync_exit=0
     rsync -av --delete --no-group --no-owner \
         --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
@@ -2622,6 +2691,10 @@ rollback() {
         "$BACKUP_DIR/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
 
     if ! rsync_exit_ok "$rsync_exit"; then
+        if [ -n "$CONVERGE_STASH" ]; then
+            rm -f "$CONVERGE_STASH"
+        fi
+        CONVERGE_STASH=""
         json_response "false" "Failed to restore backup (rsync exit code: $rsync_exit)"
         return 1
     fi
@@ -2640,6 +2713,9 @@ rollback() {
 
     # See rollback_internal: helpers outside the tree follow the tree.
     refresh_out_of_tree_files
+
+    # See rollback_internal: units back to the restored tree's.
+    converge_units_after_restore
 
     # A restored tree supersedes any interrupted install.
     clear_ota_marker

@@ -3,16 +3,17 @@
 # Magic Dingus Box — install PulseAudio as its own systemd unit.
 #
 # Installs magic-dingus-audio.service (from ../systemd/ next to this
-# script) into /etc/systemd/system, enables it, and writes the kiosk
+# script) into /etc/systemd/system — through converge_system_units.sh
+# --only, the one writer of unit files — enables it, and writes the kiosk
 # drop-in magic-dingus-box-cpp.service.d/audio-service.conf that:
 #   - Wants= + After= the audio unit, so the kiosk starts with PulseAudio
 #     already answering and the default sink set;
 #   - clears ExecStopPost= — kiosk units installed before 2026-10 carry
 #     `ExecStopPost=/usr/bin/pulseaudio --kill`, which would otherwise
-#     kill the audio unit's PulseAudio on every kiosk stop. OTA never
-#     replaces the kiosk unit file itself (OTA_UPDATE_GUARANTEES.md
-#     "Reaching field boxes"), so the drop-in is the fix's only route to
-#     fielded boxes;
+#     kill the audio unit's PulseAudio on every kiosk stop. Since the
+#     2026-10 unit converge the kiosk unit itself carries both, so this
+#     part is redundant on converged boxes; it stays for boxes whose kiosk
+#     unit is masked or not yet converged;
 #   - sets XDG_RUNTIME_DIR from the magic user's REAL uid, replacing the
 #     unit's hardcoded /run/user/1000 so the kiosk's GStreamer pulsesink
 #     and apply_output()'s pactl reach the audio unit's socket on a box
@@ -35,6 +36,7 @@
 #   MAGIC_TUNING_ROOT    - prefix for /etc (BATS fake root; skips the root check)
 #   MAGIC_SKIP_SYSTEMCTL - "true" skips daemon-reload / enable
 #   MAGIC_AUDIO_UID      - uid to write into the drop-in (default: id -u magic)
+#   (the first two reach converge_system_units.sh, which honors them too)
 
 set -euo pipefail
 
@@ -51,25 +53,14 @@ if [[ -z "$TUNING_ROOT" && "$EUID" -ne 0 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="${SCRIPT_DIR}/../systemd/${UNIT}"
-DEST="${TUNING_ROOT}/etc/systemd/system/${UNIT}"
 DROPIN_DIR="${TUNING_ROOT}/etc/systemd/system/${KIOSK_UNIT}.d"
 DROPIN="${DROPIN_DIR}/audio-service.conf"
 
-if [[ ! -f "$SRC" ]]; then
-    echo "[audio-service] ERROR: unit source not found: $SRC" >&2
-    exit 1
-fi
+# Writes the tree's unit when it is absent or differs, and daemon-reloads
+# when it wrote; a failure exits here (set -e), as a failed copy did.
+bash "${SCRIPT_DIR}/converge_system_units.sh" --only "$UNIT"
 
 changed=0
-if [[ ! -f "$DEST" ]] || ! cmp -s "$SRC" "$DEST"; then
-    mkdir -p "$(dirname "$DEST")"
-    install -m 0644 "$SRC" "$DEST"
-    changed=1
-    log "installed $DEST"
-else
-    log "$UNIT already current"
-fi
 
 AUDIO_UID="${MAGIC_AUDIO_UID:-$(id -u magic 2>/dev/null || true)}"
 env_line=""

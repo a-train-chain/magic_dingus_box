@@ -653,6 +653,53 @@ done
 (( ARMED )) && pass "${ARMED} repeating timer(s) armed (next run scheduled)"
 
 # ---------------------------------------------------------------------
+# System units: the installed units must be the tree's. Every delivery
+# path converges them (setup_memory_tuning.sh -> converge_system_units.sh,
+# and every rollback run by an updater that has the converge), so a
+# mismatch means the converge is failing on this box or
+# /etc/systemd/system was edited by hand — the class that silenced
+# missing-search for 10 days (2026-10) while this script said SHIPPABLE.
+# Hence FAIL. A leftover fix drop-in on a converged unit only restates the
+# unit's own value: WARN. Customizations belong in other drop-ins, which
+# this never looks at.
+# ---------------------------------------------------------------------
+header "System units"
+# Pure, pinned by tests/local/verify_box_units.bats: one --check line ->
+# "<fail|warn><TAB><message>".
+unit_finding_verdict() {
+  local kind="${1%% *}" what="${1#* }"
+  case "$kind" in
+    DRIFT)   printf '%s\t%s\n' fail "${what}: the installed copy differs from the tree's" ;;
+    MISSING) printf '%s\t%s\n' fail "${what}: not installed, but this box should have it" ;;
+    STALE)   printf '%s\t%s\n' fail "${what}: still installed, but the tree no longer ships it" ;;
+    DROPIN)  printf '%s\t%s\n' warn "${what}: leftover fix drop-in on a converged unit" ;;
+    *)       printf '%s\t%s\n' warn "unexpected converge output: $1" ;;
+  esac
+}
+CONVERGE_UNITS="${BASE}/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+if [[ ! -f "$CONVERGE_UNITS" ]]; then
+  warn "converge_system_units.sh is not in this tree — installed units not compared"
+else
+  UNITS_OUT="$(bash "$CONVERGE_UNITS" --check 2>&1)"; UNITS_RC=$?
+  if [[ $UNITS_RC -eq 0 ]]; then
+    pass "installed systemd units match the tree"
+  elif [[ $UNITS_RC -eq 1 ]]; then
+    while IFS= read -r _line; do
+      [[ -n "$_line" ]] || continue
+      [[ "$_line" == "[units] note:"* ]] && continue  # stderr (2>&1 above), not a finding
+      IFS=$'\t' read -r _verdict _msg <<<"$(unit_finding_verdict "$_line")"
+      if [[ "$_verdict" == fail ]]; then
+        fail "${_msg} (fix: sudo bash ${CONVERGE_UNITS})"
+      else
+        warn "${_msg} (fix: sudo bash ${CONVERGE_UNITS})"
+      fi
+    done <<<"$UNITS_OUT"
+  else
+    warn "could not compare installed units: $(printf '%s' "$UNITS_OUT" | tail -1)"
+  fi
+fi  # System units
+
+# ---------------------------------------------------------------------
 # VPN tunnel reliability (Media Browser boxes only — nothing to report
 # without a tunnel, so an unprovisioned box gets no section at all).
 # The owner's tunnel dropped ~170 times over 2026-10-03/04, every ~11 min

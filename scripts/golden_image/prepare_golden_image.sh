@@ -521,9 +521,11 @@ fi
 # ---------------------------------------------------------------------------
 echo -e "${CYAN}[12/13] Installing first-boot service...${NC}"
 
+# converge_system_units.sh --only is the one writer of unit files: it
+# installs the tree's copy when absent or different and daemon-reloads.
 if [[ -f "$SYSTEMD_SRC" ]]; then
-    cp "$SYSTEMD_SRC" /etc/systemd/system/magic-first-boot.service
-    systemctl daemon-reload
+    bash "${SCRIPT_DIR}/../../magic_dingus_box_cpp/scripts/converge_system_units.sh" \
+        --only magic-first-boot.service
     systemctl enable magic-first-boot.service
     echo -e "  ${GREEN}Installed and enabled${NC} magic-first-boot.service"
 else

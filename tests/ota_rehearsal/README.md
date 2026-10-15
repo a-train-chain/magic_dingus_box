@@ -139,9 +139,11 @@ do not stop the run (the rollback and restore still happen), step failures do.
 
 After the downgrade the box runs the OLD tree but keeps every piece of
 system state later deploys/OTAs put **outside** the tree — state a real OLD
-field box never had (OTA never reinstalls unit files). Updating such a box
-would rehearse the dev bench, not the customer. The strip plan is merged
-from:
+field box never had. Units are the clearest case: a field box on an OLD
+release that predates the unit converge still carries its old unit files,
+because an updater older than the converge never reinstalls them.
+Updating such a box would rehearse the dev bench, not the customer. The
+strip plan is merged from:
 
 - **Generic (derived from git, every release):** unit files NEW's systemd
   dirs have and OLD's lack (`unit`: disable --now + remove); unit files both

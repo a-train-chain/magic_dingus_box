@@ -61,11 +61,12 @@ push() {
     fi
     local base; base=$(basename "$dest")
     scp "${SSH_OPTS[@]}" -q "${REPO}/${src}" "${PI_HOST}:/tmp/${base}" 2>/dev/null
-    ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    # -n: a caller may be looping over stdin, and ssh would drain it.
+    ssh "${SSH_OPTS[@]}" -n "$PI_HOST" \
         "sudo install -D -m ${mode} -o root -g root /tmp/${base} '${dest}' && rm -f /tmp/${base}" 2>/dev/null
     local l r
     l=$(shasum -a 256 "${REPO}/${src}" | cut -c1-16)
-    r=$(ssh "${SSH_OPTS[@]}" "$PI_HOST" "sha256sum '${dest}' | cut -c1-16" 2>/dev/null)
+    r=$(ssh "${SSH_OPTS[@]}" -n "$PI_HOST" "sha256sum '${dest}' | cut -c1-16" 2>/dev/null)
     if [[ "$l" == "$r" ]]; then
         echo -e "  ${GREEN}OK${NC}      ${label}"
     else
@@ -141,6 +142,18 @@ push magic_dingus_box_cpp/systemd/magic-dingus-audio.service \
 push magic_dingus_box_cpp/scripts/restart_stale_cascade_watcher.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/restart_stale_cascade_watcher.sh 755 \
      "restart_stale_cascade_watcher.sh (setup_memory_tuning step 1e)"
+# The unit converge (setup_memory_tuning.sh step 1a) installs the box TREE's
+# unit files, so the tree must hold the repo's: an image cut from a box
+# whose /opt units are stale would ship those to every unit.
+push magic_dingus_box_cpp/scripts/converge_system_units.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/converge_system_units.sh 755 \
+     "converge_system_units.sh (installed units = the tree's; setup_memory_tuning step 1a)"
+# The source box must already run THIS checkout's release: this loop pushes
+# every tracked unit into the box tree, and a unit whose script is not on the
+# box would ship broken.
+while IFS= read -r unit_file; do
+    push "$unit_file" "/opt/magic_dingus_box/${unit_file}" 644 "${unit_file} (repo copy)"
+done < <(cd "$REPO" && git ls-files '*.service' '*.timer')
 push magic_dingus_box_cpp/scripts/setup_memory_tuning.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh 755 \
      "setup_memory_tuning.sh (kiosk MemoryLow + zram tune + cgroup cmdline)"
@@ -156,6 +169,14 @@ if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
     echo -e "  ${GREEN}OK${NC}      memory posture applied live (MemoryLow + zram + cmdline)"
 else
     echo -e "  ${RED}FAILED${NC}  memory tuning installer did not complete"; FAILED=1
+fi
+# The image must carry converged units: every installed tree unit equal to
+# the tree, nothing MISSING or STALE, no leftover fix drop-in.
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    "bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/converge_system_units.sh --check" 2>&1 | sed 's/^/          /'; then
+    echo -e "  ${GREEN}OK${NC}      installed systemd units match the tree"
+else
+    echo -e "  ${RED}FAILED${NC}  installed systemd units differ from the tree (lines above)"; FAILED=1
 fi
 # The image must carry the audio unit ENABLED with the kiosk ordered after
 # it — otherwise every clone boots with PulseAudio back in the kiosk's

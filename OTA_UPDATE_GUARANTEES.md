@@ -34,6 +34,7 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 >
 > The four rsync exclude lists are unchanged by this fix.
 | `/usr/local/bin/{playback_services_pause.sh, gluetun_cascade_restart.sh, clear_radarr_cooldowns.py, sync_qbit_password.sh, auto_blocklist_stuck_warnings.py, qbit-port-sync.sh}` and `/etc/dnsmasq.d/usb0.conf` | **Refreshed as of v1.9.8** (`refresh_out_of_tree_files` in `update.sh`). These are copies made *outside* `/opt` by `setup_services.sh` / `install_deps.sh` at provisioning time, and the install rsync only ever writes inside `INSTALL_DIR` — so before v1.9.8 they were frozen at image-cut time on every fielded box. Refresh only, never provision: each target is copied **only if it already exists**, so an OTA can never hand a box a helper it was not set up with. Skipped entirely in test mode (`MAGIC_SKIP_SYSTEMCTL=true`). |
+| `/etc/systemd/system/*.service`, `*.timer` — the tree's units (`systemd/`, `magic_dingus_box_cpp/systemd/`, `magic_dingus_box_cpp/scripts/{missing_search,episode_priority}/`) | **Converged on every OTA as of the release after v1.10.0** by `converge_system_units.sh`, which the NEW tree's `setup_memory_tuning.sh` runs — so even the OLD `update.sh` delivers it on its first hop. Changed units are replaced by same-directory rename; absent ones are installed only when their policy row says so (Media Browser units only with `services/.env`); masked units, operators' drop-ins and installed units' enablement are never touched; the kiosk is never restarted (it is stopped while the hook runs and the OTA starts it). It is the only writer of unit files: `setup_ota_recovery.sh` (start of the OTA), `setup_audio_service.sh` (the hook), `setup_services.sh` (Reconfigure), deploy and the clone tooling all install their units through `converge_system_units.sh --only <unit>`, so every path writes the same tree file. A rollback converges back to the restored tree (retiring units the rolled-back release added) only when the updater running it already has the converge: the user-initiated rollback runs the installed, newer updater and always can, while a failed-install rollback and the power-cut recovery (which runs the backup's `update.sh`) run the OLDER updater, so on the hop INTO the release that ships the converge, or from any release ≤ v1.10.0, they cannot — that release therefore changes no installable unit (it only deletes the six legacy `magic-mpv*`/`magic-ui*` unit files, which no install path ever installed), so the units it leaves behind equal the restored tree's; boxes skip releases, so while boxes on ≤ v1.10.0 remain in the field, any later unit-changing release must likewise be safe with a pre-converge tree. The internal rollback converges only after a complete restore. Deleting a unit from the tree retires it on every box (the converge disables and removes it); a rollback restores it only where the restored tree's policy row installs it when absent (`install`/`enable`/`enable-now`) and never restores its previous enablement — a `skip`-row unit is never reinstalled — so keep a deleted unit's file for one release, or accept that a rollback won't bring it back. Rules and policy table: CLAUDE.md "System units converge". |
 | `CMakeLists.txt`, top-level build configs | Used during the on-Pi rebuild. |
 | `CHANGELOG.md` | Updated metadata. |
 
@@ -41,7 +42,7 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 
 | Path | Reality |
 |---|---|
-| `/etc/systemd/system/*.service`, `*.timer` (the installed copies of `magic_dingus_box_cpp/systemd/**`) | **NOT reinstalled** — with ONE exception: `magic-dingus-ota-recovery.service` is installed/refreshed by `update.sh` itself (via `setup_ota_recovery.sh`) at the start of every install, because the update.sh that relies on it is the one that delivers it. Everything else: This table claimed otherwise until v1.9.8. `update.sh` rsyncs the unit *sources* into `/opt` and runs `systemctl daemon-reload`, but it never writes `/etc/systemd/system` — daemon-reload re-reads a directory the OTA never touched. Unit files on a fielded box are frozen at provisioning time. Harmless so far (the only unit changed between v1.9.3 and v1.9.7 was a comment), but **a unit-file change is not a shippable fix**: it reaches a box only via the Content Manager's Media Browser Configure/Reconfigure flow, which re-runs `setup_services.sh`. |
+| Unit **enablement**, masked units, and units whose policy is `skip` when absent | The converge (row above) keeps installed units current but never enables, disables or unmasks an installed unit, and never installs a unit that needs provisioning it cannot do (a `/usr/local/bin` helper, dnsmasq config, harness wiring). Before the converge (≤ v1.10.0) no unit file was reinstalled except the OTA-recovery and audio units, which `setup_ota_recovery.sh` / `setup_audio_service.sh` wrote: the rest were frozen at provisioning time and unit fixes rode drop-ins from `setup_memory_tuning.sh`. |
 | `/etc/NetworkManager/**`, `/etc/sysctl.d/**`, `/etc/resolv.conf` | Not written by any rsync. Delivered by `setup_network_hardening.sh`, which `update.sh` *does* invoke as root on every OTA — that is the one supported route for network posture. |
 | Anything else outside `/opt/magic_dingus_box` | Not touched, except the explicitly enumerated refresh row above. |
 | Long-running services that execute tree code (e.g. `content-manager-redirect.service` → `scripts/content_manager_redirect.py`) | The new file lands, but the process keeps running the OLD code until something restarts it. The OTA restarts only `magic-dingus-web` and the kiosk — plus `gluetun-cascade-restart.service` when its `/usr/local/bin` script is newer than the running process (`restart_stale_cascade_watcher.sh`, run by `setup_memory_tuning.sh`, so it works even on the hop executed by an older `update.sh` that copied the script without restarting the watcher). |
@@ -53,13 +54,14 @@ version rsyncs the tree, then runs the NEW tree's
 `setup_network_hardening.sh` and `setup_memory_tuning.sh` as root, then
 `daemon-reload` and starts the kiosk. Those two scripts are therefore the
 only root-level delivery path a fix has on the update that ships it. A
-system-side fix (a unit setting, a service restart, anything under `/etc`)
-must ride one of them — as a systemd drop-in rather than a unit-file edit,
-idempotent, and never able to fail the script. Examples: the kiosk's
-`TimeoutStopSec=20` is a drop-in written by `setup_memory_tuning.sh`; the
-port-80 redirect is `try-restart`ed by `setup_network_hardening.sh`; the
-PulseAudio unit (`magic-dingus-audio.service`) and the kiosk drop-in that
-orders the kiosk after it are installed by `setup_audio_service.sh`, which
+**unit-file fix** is now an ordinary edit of the unit in the tree (plus its
+`POLICY` row in `converge_system_units.sh` for a new unit), which
+`setup_memory_tuning.sh`'s converge installs — never a drop-in. Any other
+system-side fix (a sysctl, a service restart, anything else under `/etc`)
+must ride one of the two scripts, idempotent, and never able to fail the
+script. Examples: the port-80 redirect is `try-restart`ed by
+`setup_network_hardening.sh`; the PulseAudio unit's per-box kiosk drop-in
+(the real uid) is written by `setup_audio_service.sh`, which
 `setup_memory_tuning.sh` calls. The reverse direction: when a rollback
 (internal, user-initiated or boot recovery) restores a tree without
 `audio_service.sh`, `update.sh`'s `retire_audio_service_if_absent` removes

@@ -111,12 +111,12 @@ fi
 # Lets the operator type `magicpi.local` (or `10.55.0.1`, or the Pi's
 # Wi-Fi IP) without remembering the port number — landing on the
 # Content Manager directly.
+# The unit goes through converge_system_units.sh --only, the one writer of
+# unit files (it daemon-reloads when it wrote).
 REDIRECT_UNIT_SRC="$(cd "${SCRIPT_DIR}/.." && pwd)/systemd/content-manager-redirect.service"
 if [[ -f "$REDIRECT_UNIT_SRC" ]]; then
     echo "Installing content-manager-redirect service..."
-    sudo cp "$REDIRECT_UNIT_SRC" /etc/systemd/system/content-manager-redirect.service
-    sudo chmod 644 /etc/systemd/system/content-manager-redirect.service
-    sudo systemctl daemon-reload
+    sudo bash "${SCRIPT_DIR}/converge_system_units.sh" --only content-manager-redirect.service
     sudo systemctl enable content-manager-redirect.service
     sudo systemctl restart content-manager-redirect.service
     echo "  ✓ port-80 → :5000 redirect running"

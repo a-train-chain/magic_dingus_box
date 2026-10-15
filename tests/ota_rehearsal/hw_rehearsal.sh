@@ -531,9 +531,9 @@ step_downgrade() {
 derive_lists() {
     local d="${LOGDIR}/field"
     mkdir -p "$d/old_units"
-    git -C "$REPO" ls-tree --name-only "$OLD_SHA" -- systemd/ magic_dingus_box_cpp/systemd/ > "$d/old_units.txt"
-    git -C "$REPO" ls-tree --name-only "$NEW_SHA" -- systemd/ magic_dingus_box_cpp/systemd/ > "$d/new_units.txt"
-    git -C "$REPO" diff --name-only --diff-filter=M "$OLD_SHA" "$NEW_SHA" -- systemd/ magic_dingus_box_cpp/systemd/ > "$d/changed_units.txt"
+    git -C "$REPO" ls-tree --name-only "$OLD_SHA" -- systemd/ magic_dingus_box_cpp/systemd/ magic_dingus_box_cpp/scripts/missing_search/ magic_dingus_box_cpp/scripts/episode_priority/ > "$d/old_units.txt"
+    git -C "$REPO" ls-tree --name-only "$NEW_SHA" -- systemd/ magic_dingus_box_cpp/systemd/ magic_dingus_box_cpp/scripts/missing_search/ magic_dingus_box_cpp/scripts/episode_priority/ > "$d/new_units.txt"
+    git -C "$REPO" diff --name-only --diff-filter=M "$OLD_SHA" "$NEW_SHA" -- systemd/ magic_dingus_box_cpp/systemd/ magic_dingus_box_cpp/scripts/missing_search/ magic_dingus_box_cpp/scripts/episode_priority/ > "$d/changed_units.txt"
     local re='systemd/system/[A-Za-z0-9@._-]+\.d/[A-Za-z0-9._-]+\.conf'
     { git -C "$REPO" grep -ohE "$re" "$OLD_SHA" -- magic_dingus_box_cpp/scripts scripts || true; } | sed 's/^[^:]*://' | sort -u > "$d/old_dropins.txt"
     { git -C "$REPO" grep -ohE "$re" "$NEW_SHA" -- magic_dingus_box_cpp/scripts scripts || true; } | sed 's/^[^:]*://' | sort -u > "$d/new_dropins.txt"
@@ -563,7 +563,7 @@ while read -r directive arg; do
             n="$(basename "$arg")"
             if [ -e "/etc/systemd/system/$n" ]; then
                 sudo -n install -m 0644 "$SNAP/field/old_units/$n" "/etc/systemd/system/$n"
-                echo "  strip: $n -> the OLD tree's copy (OTA never reinstalls unit files)"
+                echo "  strip: $n -> the OLD tree's copy (an updater older than the converge never reinstalls unit files)"
             else echo "  strip: $n not installed"; fi ;;
         dropin|file)
             if [ -e "$arg" ]; then

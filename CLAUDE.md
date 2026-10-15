@@ -324,10 +324,12 @@ This guarantees correct compositing without X11/compositor overhead.
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
 - **Server: gunicorn, ONE worker, gthread threads** (`web/serve.py`, since
   2026-10). `magic-dingus-web.service` still runs
-  `python3 -m magic_dingus_box.web.wsgi` — that line is frozen in the field
-  because an OTA never rewrites unit files — and `wsgi.py`'s `__main__`
-  hands over to `serve.main()`, which runs gunicorn when `python3-gunicorn`
-  imports and **falls back to the Werkzeug server** otherwise
+  `python3 -m magic_dingus_box.web.wsgi` — that line stays: boxes ran it
+  frozen until the 2026-10 unit converge, and an older updater's
+  failed-install rollback can still leave any installed unit in place —
+  and `wsgi.py`'s `__main__` hands over to `serve.main()`, which runs
+  gunicorn when `python3-gunicorn` imports and **falls back to the
+  Werkzeug server** otherwise
   (`MAGIC_WEB_SERVER=werkzeug` forces it). Rules, each load-bearing:
   - **`workers` must stay 1.** The uinput virtual gamepad, CSRF tokens,
     transcode/update job registries, pairing lock, Network Doctor and
@@ -450,6 +452,76 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
 - Downloads tarball, backs up current installation, extracts update
 - Rollback support if update fails
 - **Never leaves a box without a kiosk** (2026-10): builds in `build.new/` and swaps it in only after `verify_kiosk_binary`; an "install in progress" marker (`/home/magic/.magic_dingus_box_backup.ota_in_progress`) + `magic-dingus-ota-recovery.service` restore the backup at the next boot after a power cut. The kiosk exits **69** (`src/platform/kiosk_exit.h`) when no display is connected — `update.sh` accepts that as a good start; keep the two in sync. rsync exit 23 is a FAILURE. Details: `OTA_UPDATE_GUARANTEES.md` "2026-10 hardening".
+- **System units converge** (2026-10, `scripts/converge_system_units.sh`):
+  every delivery path makes `/etc/systemd/system` equal to the tree's unit
+  files — `setup_memory_tuning.sh` step 1a runs it (deploy, OTA incl. the
+  OLD updater's first hop, first boot, source-box sync), and a rollback
+  run by an updater that has the converge runs the RESTORED tree's copy
+  (or a stashed copy with `--tree` when that tree predates it;
+  `rollback_internal` only after a complete restore). Rules:
+  - **A unit fix is a unit-file edit, never a drop-in.** Drop-ins are only
+    for per-box values (`audio-service.conf`'s real uid) and posture tied
+    to other state (`memory-protect.conf` + the slice companion). An
+    operator's own drop-ins are never touched.
+  - **A new unit needs a `POLICY` row** (gate base/mb, if-absent
+    skip/install/enable/enable-now, on-change none/try-restart/rearm,
+    redundant drop-in); `tests/local/converge_units_table.bats` fails
+    without one, and refuses `install`/`enable` for a unit whose ExecStart
+    is a `/usr/local/bin` helper (only `setup_services.sh` creates those).
+    Unit files live in `systemd/`, `magic_dingus_box_cpp/systemd/` or
+    `magic_dingus_box_cpp/scripts/{missing_search,episode_priority}/` only.
+  - Installed units' enablement is never changed; masked (symlinked)
+    units are never written; the kiosk, web admin and OTA recovery are
+    never restarted or retired; MB units are installed/started only with
+    `services/.env`; every start/stop is `--no-block` (it runs at boot).
+  - A unit the tree stops shipping is disabled and removed (from
+    `/var/lib/magic-dingus/system_units`, the installed set of the last
+    run) — that is what makes a rollback remove a unit the rolled-back
+    release added.
+  - **Deleting a unit from the tree retires it on EVERY box** (the next
+    converge disables and removes it), and nothing brings it back
+    reliably: a rollback to the release that still shipped it reinstalls
+    it only when the RESTORED tree's `POLICY` row installs it when absent
+    (`install`/`enable`/`enable-now`; an `mb`-gated one only with
+    `services/.env`), and never restores its previous enablement — an
+    `enable` row comes back enabled even if the owner had disabled it, an
+    `install` row comes back disabled. A `skip` row (the harness units,
+    the port-80 redirect, cpu-performance, wifi-powersave, the
+    `/usr/local/bin`-helper MB units) is never reinstalled at all. So keep
+    a deleted unit's file for one release, or accept that a rollback won't
+    bring it back.
+  - **It is the only writer of unit files.** Every other script that
+    installs a unit — `setup_services.sh`, `deploy_cpp.sh`,
+    `setup_ota_recovery.sh` (still run by `update.sh` before it writes the
+    in-progress marker), `setup_audio_service.sh`,
+    `setup_harness_services.sh`, `install_deps.sh`, the clone tooling,
+    `scripts/setup_pi.sh` — calls `converge_system_units.sh --only <unit>`
+    (writes that unit from the tree whatever its row says, daemon-reloads
+    if it wrote; never enables, starts, retires or touches drop-ins) and
+    keeps its own enable/start. `converge_units_table.bats` fails on any
+    other script writing a `.service`/`.timer` into `/etc/systemd/system`,
+    and on a tracked unit whose name fails `UNIT_NAME_RE`. `deploy_cpp.sh`
+    syncs the git-tracked root `systemd/` into the box tree and deletes the
+    copies of `magic_dingus_box_cpp/systemd/` units that deploys before
+    2026-10 staged there (the converge's directory precedence still
+    resolves such a shadow to the `magic_dingus_box_cpp/systemd/` file).
+  - `verify_box.sh` FAILs drift (`--check`: DRIFT/MISSING/STALE; a leftover
+    fix drop-in is a WARN); `sync_source_box.sh` pushes every repo unit
+    file into the source box's tree and refuses an image without converged
+    units.
+  - A failed-install rollback and the power-cut recovery (which runs the
+    backup's `update.sh`) are run by the OLDER updater, so on the hop INTO
+    the release that ships the converge, or from any release ≤ v1.10.0,
+    they cannot converge back; only the user-initiated rollback (the
+    installed, newer updater) always can. So the release that ships the
+    converge must change no installable unit: every unit an install path
+    can put on a box stays byte-identical to the previous tree's (it only
+    deletes the six legacy `magic-mpv*`/`magic-ui*` files, which nothing
+    ever installed), which makes "kept the new units" equal "converged to
+    the restored tree". The same holds for any unit-changing release a box
+    on ≤ v1.10.0 can reach in one hop (boxes skip releases): until no such
+    box remains, a release that changes a unit must also be safe with a
+    pre-converge tree.
 - **The kiosk is stopped once, only for the swap + restart** — not before
   the rsync. A source build (no usable pre-compiled binary) compiles in
   `build.new/` while the OLD kiosk keeps the TV on, when the box can
@@ -561,15 +633,16 @@ catch-up).
   required to arm). `verify_box.sh` fails a box whose controller or
   kiosk memory.low is missing. The same kiosk drop-in carries
   `OOMScoreAdjust=-500` (the OOM killer takes a self-restarting
-  container, never the kiosk; `verify_box.sh` checks it). Because OTA
-  never re-installs unit files, this script is also the delivery path
-  for in-tree unit fixes on fielded boxes: it writes drop-ins for the
-  storage-attach `TimeoutStartSec=600`, the smoke-test
-  `TimeoutStartSec=300` and the missing-search timer's `OnBootSec=11min`
-  — change one, change both. A timer drop-in's empty `OnBootSec=` resets
-  EVERY trigger in the unit, so that drop-in restates `OnUnitActiveSec=4h`
-  (until 2026-10-14 it didn't, and every box swept once per boot, then
-  never again). No container `mem_limit`s, deliberately:
+  container, never the kiosk; `verify_box.sh` checks it). It is also
+  where installed systemd units converge to the tree (step 1a,
+  `converge_system_units.sh`, 2026-10 — see "System units converge" under
+  OTA Updates): unit fixes ship as unit-file edits and every delivery path
+  installs them. The hand-written fix drop-ins it used to write
+  (`stop-timeout.conf`, the storage-attach and smoke-test
+  `mdb-timeout.conf`, the missing-search `mdb-boot-delay.conf`) are removed
+  by the converge once each unit matches the tree — one of them, an empty
+  `OnBootSec=` that resets EVERY trigger, stopped the missing-search timer
+  for 10 days (2026-10-14). No container `mem_limit`s, deliberately:
   measured on a 2 GB Pi 5 (2026-10-03) Byparr idles at ~10 MB but peaks
   at 762 MB inside a Cloudflare challenge (a cap breaks the indexers
   behind it), and qBittorrent's ~1 GB peak is reclaimable page cache.
