@@ -571,8 +571,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Atari 7800; Genesis X/Y/Z) are fixed, with the mapping snapshot
   regenerated: 8 `btn=` lines move, N64 and UNKNOWN entries only. One
   question stays open: on the built-in DragonRise profile, L3/R3 (it is
-  not yet known whether the pad has stick clicks). `path_resolver.cpp` no
-  longer warns under `-Wextra`.
+  not yet known whether the pad has stick clicks).
+- The kiosk and the Mac test builds compile with no warnings outside
+  third-party code. `path_resolver.cpp` no longer warns under `-Wextra`;
+  four GCC warnings in `main.cpp`, `gst_player.cpp`,
+  `builtin_controller_profiles.inc` and `mb_settings_screen.cpp` are
+  fixed; and `ProwlarrClient`'s destructor is now virtual, like the other
+  service clients'. Tests subclass it, and `mb_services.cpp` owns it
+  through a `unique_ptr<ProwlarrClient>`.
 - Removed dead code in the Media Browser screens (`BrowseScreen::
   category_cursor_`, `DetailScreen::render`'s unused `blink_on`,
   QueueScreen's unused text-hint locals).

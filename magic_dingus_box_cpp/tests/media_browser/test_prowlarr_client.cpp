@@ -8,9 +8,17 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace mb = media_browser;
+
+// The fixtures below subclass ProwlarrClient through its virtual HTTP seams,
+// and mb_services.cpp owns the client as a unique_ptr<ProwlarrClient>, so a
+// subclass deleted through that pointer needs a virtual destructor -- as the
+// Radarr, Sonarr and qBittorrent clients already have.
+static_assert(std::has_virtual_destructor_v<mb::ProwlarrClient>,
+              "ProwlarrClient is polymorphic and owned through a base pointer");
 
 namespace {
 

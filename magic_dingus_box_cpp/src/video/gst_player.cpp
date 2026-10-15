@@ -41,7 +41,7 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     }
 
     // Helper to promote hardware decoders
-    auto promote_decoder = [](const char* name, const char* friendly) {
+    auto promote_decoder = [](const char* name, [[maybe_unused]] const char* friendly) {
         GstRegistry* registry = gst_registry_get();
         GstPluginFeature* feature = gst_registry_lookup_feature(registry, name);
         if (feature) {

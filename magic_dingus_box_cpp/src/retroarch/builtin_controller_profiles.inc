@@ -5,8 +5,8 @@
 // every unit recognises them the moment they are plugged in.
 //
 // Regenerate after capturing a new pad you intend to ship:
-//   scp magic@<box>:/opt/magic_dingus_box/config/controller_profiles.json - \
-//     | python3 -c 'import json,sys;print(json.dumps(json.load(sys.stdin),indent=2,sort_keys=True))'
+//   ssh magic@<box> cat /opt/magic_dingus_box/config/controller_profiles.json |
+//     python3 -c 'import json,sys;print(json.dumps(json.load(sys.stdin),indent=2,sort_keys=True))'
 // and paste the result between the delimiters below.
 //
 // Parsed by profiles_from_json(), the same never-throws parser used for the

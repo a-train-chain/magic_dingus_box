@@ -60,7 +60,7 @@ public:
     };
 
     explicit ProwlarrClient(Config cfg);
-    ~ProwlarrClient();
+    virtual ~ProwlarrClient();
 
     ProwlarrClient(const ProwlarrClient&) = delete;
     ProwlarrClient& operator=(const ProwlarrClient&) = delete;

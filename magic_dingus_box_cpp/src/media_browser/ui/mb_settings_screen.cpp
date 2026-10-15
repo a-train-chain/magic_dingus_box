@@ -1624,6 +1624,8 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 r.mb_draw_text(hint, tx, ty, hint_size, th.dim, 0.7f);
                 break;
             }
+            case RowKind::SectionHeader:
+                break;  // drawn and skipped before this switch; no value column
         }
 
         // Inter-group dividers retired in v1.6.x — SectionHeader rows

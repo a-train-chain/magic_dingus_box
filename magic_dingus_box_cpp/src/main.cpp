@@ -527,7 +527,7 @@ int main(int /* argc */, char* /* argv */[]) {
         }
     }
     // seek_request.json and pending_revocations.txt shouldn't survive a crash either.
-    for (const std::string& f : {"seek_request.json", "pending_revocations.txt"}) {
+    for (const char* f : {"seek_request.json", "pending_revocations.txt"}) {
         std::error_code ec;
         std::filesystem::remove(config::get_data_path() + "/" + f, ec);
     }
