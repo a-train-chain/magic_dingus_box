@@ -89,10 +89,16 @@ constexpr char kExpectedBinds[] =
     // 0e6d:111d adapter's layout. The visible consequence is the face
     // buttons: the physical button reporting token "1" is this pad's A, and
     // was previously being driven as RetroPad B.
+    //
+    // SELECT CHANGED 2026-10-15: "10" -> "9". The SNES table never bound
+    // Select, so it shipped the struct default "10" -- no button on this pad
+    // -- and Select could not be pressed. It is now C_UP, the pad's Select on
+    // every other console that has one; "9" is this pad's C_UP token. Both
+    // players' select lines changed and nothing else did.
     "input_player1_analog_dpad_mode = \"0\"\n"
     "input_player1_b_btn = \"2\"\n"
     "input_player1_y_btn = \"0\"\n"
-    "input_player1_select_btn = \"10\"\n"
+    "input_player1_select_btn = \"9\"\n"
     "input_player1_start_btn = \"12\"\n"
     "input_player1_up_btn = \"h0up\"\n"
     "input_player1_down_btn = \"h0down\"\n"
@@ -117,7 +123,7 @@ constexpr char kExpectedBinds[] =
     "input_player2_analog_dpad_mode = \"0\"\n"
     "input_player2_b_btn = \"2\"\n"
     "input_player2_y_btn = \"0\"\n"
-    "input_player2_select_btn = \"10\"\n"
+    "input_player2_select_btn = \"9\"\n"
     "input_player2_start_btn = \"12\"\n"
     "input_player2_up_btn = \"h0up\"\n"
     "input_player2_down_btn = \"h0down\"\n"

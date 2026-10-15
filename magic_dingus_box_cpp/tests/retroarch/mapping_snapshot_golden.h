@@ -5,6 +5,8 @@
 // GENERATED from the pre-refactor get_mapping() (Task 1, 2026-07-28).
 // DO NOT EDIT BY HAND unless a mapping change is deliberate and
 // hardware-verified. Regenerate with the [mapping_snapshot_gen] test.
+// Regenerated 2026-10-15 for the N64-pad fills (Select on SNES / PC Engine /
+// Atari 7800, Genesis X/Y/Z): 8 btn= lines, N64 and UNKNOWN entries only.
 inline const std::map<std::string, std::string>& mapping_golden() {
     static const std::map<std::string, std::string> kMappingGolden = {
         {"N64|nestopia_libretro", R"GOLD(name=NES (N64 Controller)
@@ -25,7 +27,7 @@ nestopia_audio_vol_dpcm = "100"
 )GOLD"},
 {"N64|snes9x2010_libretro", R"GOLD(name=Super Nintendo
 adm=0|drv=udev|pad=
-btn=1,3,10,12,2,0,4,5,,
+btn=1,3,9,12,2,0,4,5,,
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -36,7 +38,7 @@ hotkeys=6,,12
 extra=)GOLD"},
 {"N64|genesis_plus_gx_libretro", R"GOLD(name=Sega Genesis
 adm=0|drv=udev|pad=
-btn=1,3,10,12,2,4,5,6,,
+btn=1,3,10,12,2,0,4,5,,
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -58,7 +60,7 @@ hotkeys=6,,12
 extra=)GOLD"},
 {"N64|mednafen_pce_fast_libretro", R"GOLD(name=PC Engine / TurboGrafx-16
 adm=0|drv=udev|pad=
-btn=1,0,10,12,2,3,5,6,,
+btn=1,0,9,12,2,3,5,6,,
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -69,7 +71,7 @@ hotkeys=6,,12
 extra=)GOLD"},
 {"N64|prosystem_libretro", R"GOLD(name=Atari 7800
 adm=0|drv=udev|pad=
-btn=1,3,10,12,2,4,5,6,,
+btn=1,3,9,12,2,4,5,6,,
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -277,7 +279,7 @@ nestopia_audio_vol_dpcm = "100"
 )GOLD"},
 {"UNKNOWN|snes9x2010_libretro", R"GOLD(name=Super Nintendo
 adm=0|drv=udev|pad=
-btn=1,3,10,12,2,0,4,5,,
+btn=1,3,9,12,2,0,4,5,,
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -288,7 +290,7 @@ hotkeys=6,,12
 extra=)GOLD"},
 {"UNKNOWN|genesis_plus_gx_libretro", R"GOLD(name=Sega Genesis
 adm=0|drv=udev|pad=
-btn=1,3,10,12,2,4,5,6,,
+btn=1,3,10,12,2,0,4,5,,
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -310,7 +312,7 @@ hotkeys=6,,12
 extra=)GOLD"},
 {"UNKNOWN|mednafen_pce_fast_libretro", R"GOLD(name=PC Engine / TurboGrafx-16
 adm=0|drv=udev|pad=
-btn=1,0,10,12,2,3,5,6,,
+btn=1,0,9,12,2,3,5,6,,
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -321,7 +323,7 @@ hotkeys=6,,12
 extra=)GOLD"},
 {"UNKNOWN|prosystem_libretro", R"GOLD(name=Atari 7800
 adm=0|drv=udev|pad=
-btn=1,3,10,12,2,4,5,6,,
+btn=1,3,9,12,2,4,5,6,,
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1

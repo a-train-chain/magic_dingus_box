@@ -84,10 +84,11 @@ SemanticMapping semantic_n64_style(const std::string& core) {
     } else if (core.find("prosystem") != std::string::npos) {
         s.name = "Atari 7800"; s.analog_dpad_mode = "0";
         s.b = L::N64_B; s.a = L::N64_A; s.start = L::N64_START;
-        // legacy sets select_btn="10" explicitly — that IS the struct
-        // default, and physical button 10 is unused on this pad, so the
-        // slot stays nullopt and the default carries it. Same for the
-        // other branches below that "set" a field to its default.
+        // The 7800's Select switch picks game mode / difficulty on many
+        // titles. Legacy left select_btn at its struct default "10", which
+        // is no button on this pad, so it could never be pressed. C_UP is
+        // Select for this pad on every other console that has one.
+        s.select = L::N64_C_UP;
         dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("genesis_plus_gx") != std::string::npos) {
@@ -96,6 +97,23 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.a = L::N64_A;       // C
         s.b = L::N64_B;       // B
         s.y = L::N64_C_DOWN;  // A
+        // 6-button top row. RetroPad X/L/R are Genesis X/Y/Z for
+        // genesis_plus_gx. Before these were bound, the three came from
+        // struct defaults that happened to be N64 L/R/Z on the built-in
+        // adapter (and whatever indices 4/5/6 were on a captured pad) --
+        // and Z is the exit gesture's hold button, so Genesis Z + Start
+        // quit the game.
+        //
+        // C_LEFT is the most reachable C button after C_DOWN (which is
+        // Genesis A), and Y/Z go on the physical shoulders. The alternative --
+        // all six under the thumb on the C-cluster, like real 6-button
+        // hardware -- was rejected because it puts Genesis Y on C_UP, the
+        // least reachable input on the pad, and Y is medium punch in Street
+        // Fighter II: pressed constantly. Frequency beats thumb-locality here.
+        // Revisit with a 6-button fighter in hand if it feels wrong.
+        s.x = L::N64_C_LEFT;  // X
+        s.l = L::N64_L;       // Y
+        s.r = L::N64_R;       // Z
         s.start = L::N64_START;
         dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
@@ -104,6 +122,12 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         // SNES layout: B, A, Y, X, L, R
         s.b = L::N64_B; s.a = L::N64_A; s.y = L::N64_C_DOWN; s.x = L::N64_C_LEFT;
         s.l = L::N64_L; s.r = L::N64_R; s.start = L::N64_START;
+        // SNES has a Select button and this pad had no way to press it.
+        // C_UP is already Select for this pad on NES, PS1 and FBNeo -- the
+        // convention existed, SNES just missed it. C_UP being the least
+        // reachable C button suits a control pressed between lives, not
+        // during them.
+        s.select = L::N64_C_UP;
         dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("mednafen_pce_fast") != std::string::npos) {
@@ -114,6 +138,8 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         // Turbo buttons
         s.y = L::N64_C_LEFT;  // Turbo II
         s.x = L::N64_C_DOWN;  // Turbo I
+        // PC Engine has a Select button; same missed convention as SNES.
+        s.select = L::N64_C_UP;
         dpad();
         stick(); s.left_stick = true; s.stick_to_dpad = true;
 

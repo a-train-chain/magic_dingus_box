@@ -234,33 +234,6 @@ inline const std::vector<Exception>& kExceptions() {
         {retroarch::ControllerType::PS_STYLE_DRAGONRISE, "pcsx_rearmed", Slot::R3,
          "OPEN: the built-in DragonRise profile has no R3; unverified whether "
          "the physical pad has stick clicks."},
-        // KNOWN GAPS on the N64 pad (open since 2026-07-29). Each table below
-        // never assigns the slot, so it ships ControllerMapping's struct
-        // default -- a raw physical button index, not a control. Fixes for all
-        // but the Atari 7800 one are drafted in Task 2 of
-        // docs/superpowers/plans/2026-07-29-controller-coverage-invariant.md;
-        // they change shipped layouts, so they wait for the owner.
-        {retroarch::ControllerType::N64_ADAPTER, "snes9x", Slot::SELECT,
-         "KNOWN GAP: the SNES table never binds Select; the default \"10\" is no "
-         "button on the N64 adapter, so Select cannot be pressed. Drafted fix: "
-         "select = C_UP."},
-        {retroarch::ControllerType::N64_ADAPTER, "mednafen_pce_fast", Slot::SELECT,
-         "KNOWN GAP: the PC Engine table never binds Select; the default \"10\" "
-         "is no button on the N64 adapter. Drafted fix: select = C_UP."},
-        {retroarch::ControllerType::N64_ADAPTER, "prosystem", Slot::SELECT,
-         "KNOWN GAP: the Atari 7800 table never binds Select; the default \"10\" "
-         "is no button on the N64 adapter. No fix drafted yet."},
-        {retroarch::ControllerType::N64_ADAPTER, "genesis_plus_gx", Slot::X,
-         "KNOWN GAP: Genesis X works only by accident, through the default \"4\" "
-         "(N64 L on the built-in adapter; on a wizard-captured pad, whatever "
-         "button index 4 is). Drafted fix: x = C_LEFT."},
-        {retroarch::ControllerType::N64_ADAPTER, "genesis_plus_gx", Slot::L,
-         "KNOWN GAP: Genesis Y works only by accident, through the default \"5\" "
-         "(N64 R on the built-in adapter). Drafted fix: l = N64_L."},
-        {retroarch::ControllerType::N64_ADAPTER, "genesis_plus_gx", Slot::R,
-         "KNOWN GAP: Genesis Z works only by accident, through the default \"6\" "
-         "(N64 Z on the built-in adapter -- also the exit gesture's hold button, "
-         "so Z + Start quits the game). Drafted fix: r = N64_R."},
     };
     return v;
 }

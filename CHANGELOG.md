@@ -289,6 +289,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buttons that make Z+Start / Select+Start quit a game — leaving no way
   out of a game except the restart button. Those buttons are now
   required, and pads whose Z or trigger reports as analog work too.
+- **Select, and Genesis's extra 6-button buttons, now work on the
+  N64-style controller.**
+  On that pad, Select did nothing in Super Nintendo, PC Engine and Atari
+  7800 games, so a game that asked you to press Select (to pick a mode or
+  a difficulty, for example) could not go on. C-Up is now Select there, as it
+  already was for NES, PlayStation and arcade games. In Genesis games the
+  three extra 6-button buttons now sit on C-Left (X), L (Y) and R (Z).
+  They used to land on L, R and Z only by accident, and because Z is the
+  button you hold to quit, Genesis Z + Start closed the game. The
+  PlayStation-style pad is unchanged.
 - **The emulator's own menu can no longer be opened by accident** by
   holding L1+R1+Start+Select in a game, and its online updater is off.
 - **A game with a missing emulator now says so** ("Unable to start
@@ -557,10 +567,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built-in pads and every shipped core, each RetroPad slot the core reads
   must be bound by its semantic table (a struct default does not count),
   and each declared exception must still be genuinely unbound, so the list
-  cannot rot. It records the open gaps: on the N64 pad, Select on SNES,
-  PC Engine and Atari 7800 and Genesis X/Y/Z (unfixed table omissions);
-  on the built-in DragonRise profile, L3/R3 (unverified whether the pad
-  has stick clicks). `path_resolver.cpp` no longer warns under `-Wextra`.
+  cannot rot. The N64-pad gaps it found (Select on SNES, PC Engine and
+  Atari 7800; Genesis X/Y/Z) are fixed, with the mapping snapshot
+  regenerated: 8 `btn=` lines move, N64 and UNKNOWN entries only. One
+  question stays open: on the built-in DragonRise profile, L3/R3 (it is
+  not yet known whether the pad has stick clicks). `path_resolver.cpp` no
+  longer warns under `-Wextra`.
 - Removed dead code in the Media Browser screens (`BrowseScreen::
   category_cursor_`, `DetailScreen::render`'s unused `blink_on`,
   QueueScreen's unused text-hint locals).
