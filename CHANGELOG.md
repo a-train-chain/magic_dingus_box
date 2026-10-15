@@ -7,222 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **The Box Health check now says how reliable the VPN is.** On boxes
-  that use Movies, a new "VPN tunnel" line reports how often the VPN
-  dropped in the last 24 hours, how long it was down in total and the
-  longest single outage — e.g. "VPN tunnel dropped 23 times in the last
-  24 h (down 1 h 40 min total, longest 9 min)". It's a note, not a
-  failure, and it is called out in the headline when the tunnel has been
-  unreliable (6 or more drops, 30 minutes or more down, or down right
-  now). It also says when the tunnel itself was fine and only the
-  forwarded port was lost. The same history is included in Download
-  Diagnostics. Until now ~170 drops over two days on one box were only
-  visible by reading system logs.
-- **Choose the VPN country (ProtonVPN).** Content Manager → Media
-  Browser → Advanced → VPN server country, from a short list of
-  countries with plenty of download-friendly (P2P) servers. Applying it
-  reconnects only the VPN; downloads pause for about a minute. Boxes
-  stay on the Netherlands until someone changes it, and re-uploading a
-  VPN config with Reconfigure now keeps the chosen country instead of
-  resetting it.
-
-### Changed
-- **Updates that need to build on the box no longer leave the TV dark for
-  ten minutes.** Most updates install a ready-made program in seconds, but
-  when a box has to build the new version itself it used to switch the TV
-  off first and keep it off for the whole 8-10 minute build. Now the
-  current version keeps running — menu, videos and games all work — while
-  the new one builds in the background, and the TV only blanks for the
-  few seconds it takes to switch over. The box decides how to do this from
-  how much free memory it has at that moment: with plenty, the build runs
-  at full speed; with less, it builds more slowly (about 15-20 minutes) so
-  the TV can stay on; on a box that is already short of memory it briefly
-  pauses the Movies background services to make room (Movies is hidden on
-  the TV until the update finishes, then comes straight back — downloads
-  keep going throughout); and if even that is not enough it does exactly
-  what it did before. If the build ever runs out of memory anyway, it is
-  the build that gets stopped, never what you are watching or playing, and
-  the update simply retries with the TV paused. The Content Manager says
-  "the TV keeps working" while this is happening.
-  Like every updater improvement, this applies from the update *after* the
-  one that delivers it, because a box always updates using the updater it
-  already has.
-
-### Fixed
-- **Updates now keep the box's background jobs exactly as designed.**
-  Improvements to how the box schedules its background work (like the
-  automatic retry for movies that found nothing to download) used to need
-  special patches to reach boxes that were already set up, and one of
-  those patches stopped that retry from running at all. Updates now put
-  the jobs' own settings in place directly, undo them with the rest of an
-  update if it is rolled back, and the Box Health check flags a box whose
-  jobs don't match.
-- **The phone remote no longer shows a finished game as "now playing".**
-  After you quit a game and came back to the menu, the remote kept
-  showing that game's title until something else played. It now clears
-  the moment the game ends.
-- **Box health no longer reports "1 error" on a box with none.** When the
-  kiosk had logged no errors at all, the check counted the system's
-  "no entries" notice as an error and showed a warning for nothing.
-- **Switching playlists while a video plays no longer locks the remote's
-  next/previous for two seconds.** Every switch made mid-video used to be
-  "stuck" until a 2-second safety timer released it (logging a CRITICAL
-  error each time), and NEXT/PREV were ignored until then. The switch now
-  completes the moment the new video is playing.
-- **The VPN no longer restarts every few minutes when ProtonVPN takes
-  back its forwarded port.** Watched live on 2026-10-05: all 9 restarts
-  of the whole Movies service stack in two hours were caused by port
-  forwarding, not the VPN — Proton's gateway refused to renew the port a
-  few minutes after granting it ("connection refused" from 10.2.0.1:5351),
-  the VPN software (gluetun 3.41.1) then never got a port again, the
-  box's health check flagged it ~5 minutes later and the box restarted
-  the VPN and all five services ~5 minutes after that, even though the
-  tunnel itself was carrying traffic the whole time. Gluetun is updated
-  to 3.41.3, whose release notes fix exactly this ("no longer stuck after
-  failed port forwarding", plus a follow-up deadlock fix), so it gets a
-  new port by itself. The health check still treats a lost port as a
-  problem as a last resort.
-- **The VPN connection is kept alive while idle.** The box now sends a
-  WireGuard keepalive every 25 seconds, as ProtonVPN's own config files
-  ask for; before, gluetun ignored that setting and sent none.
-- **Switching playlists no longer freezes the screen.** Picking a
-  different playlist while a video was playing froze the picture, the
-  menu and the phone remote for up to about two-thirds of a second while
-  the box waited for the old video to let go. The box still waits exactly
-  as long before starting the new playlist, but the menu stays live while
-  it does. Button presses made during that moment (another select,
-  next/previous, play/pause) are ignored rather than acted on late, and
-  turning the knob no longer changes which playlist starts.
-- **Less log writing to the SD card.** At the end of each video, while
-  the next one was loading, the box wrote the same "NOT auto-advancing"
-  line to its log every frame — dozens of times a second. It is now
-  written once. A dropped-frames warning that could repeat twice a second
-  through a whole film is now written at most every 5 seconds.
-- **Movies queue: the knob press is labelled again.** The on-screen hint
-  for pressing the knob on the download queue showed "—" (does nothing),
-  although it cancels a download. It now reads "Cancel", and "Confirm"
-  once a cancel is armed.
-
-### Security
-- **A box cloned from another can no longer quietly share its VPN
-  connection.** Two boxes using the same VPN key knock each other off the
-  VPN, over and over, and nothing on either box says why — Movies
-  downloads stall and searches fail in bursts. A new box used to be able
-  to start up holding the original box's VPN key (the very first batch did,
-  because their first-start setup stopped early). Now a new box throws that
-  key away — and the background services that carried a copy of it — as
-  the very first thing it does, even if the rest of its first start runs
-  into trouble. The box health check in the Content Manager also now fails,
-  with plain instructions, on any box still using another box's VPN key or
-  passwords; the original box itself is never flagged. No secret is ever
-  shown or stored to do this — only one-way fingerprints of it.
-- **The VPN's control panel now only answers the two questions the box
-  asks: which port is forwarded, and which address the VPN shows the
-  world.** Everything else — including "turn the VPN off" — now needs a
-  password the box never sets, so the web-scraping helper in the movie
-  services can no longer reach it. This also keeps Movies working
-  through future VPN-software updates: newer versions lock that panel
-  completely by default. A box locked out would have read "no forwarded
-  port" and restarted all the movie services every ten minutes. Takes
-  effect the next time the VPN service starts.
-
-### Tooling
-- **Blocking ShellCheck gate over every shell script.** New
-  `tests/shellcheck_gate.sh` lints every tracked `*.sh`/`*.bash` file and
-  extensionless sh/bash-shebang script at `-S info` (ShellCheck pinned to
-  0.11.0 in CI, new test-local.yml `shellcheck` job — release.yml runs it,
-  so a finding blocks a release). Repo-wide exclusions, each justified, are
-  in the new `.shellcheckrc` (SC2029, SC2012, SC2015); deliberate one-off
-  patterns carry an inline reasoned disable. test-ota.yml's non-blocking
-  `shellcheck update.sh || true` is gone. In-scope findings went from 118
-  (49 at warning or above) to 0 — 45 covered by the three repo-wide
-  exclusions, the rest fixed or justified inline — with no behavior change
-  on any box; two real bugs in dev-only scripts
-  were fixed: `web/run_tests.sh --stress` died at a top-level `local`
-  under `set -e`, and `test_audio.sh` wrote every driver's config to the
-  same file (`$driver_` is an unset variable). `update.sh`'s comment now
-  says `MAGIC_DRY_RUN` is inert (nothing ever consulted it).
-- **`scripts/fleet_check.sh`** (Mac-side): runs each box's own
-  `verify_box.sh` over ssh in parallel (bounded `-j`, ssh
-  `ConnectTimeout`), reads board, VERSION, update channel and uptime, and
-  prints one table — host / board / version / channel / uptime /
-  pass-warn-fail / result / first failing check. `--hosts FILE`,
-  `--with-services`, `--log-dir`. Strictly read-only on the boxes; exits
-  non-zero if any box is not shippable or unreachable. Now a pre-tag step
-  in `RELEASING.md`.
-- Design note for splitting `update.sh` safely (which updater actually
-  runs during an OTA, and an incremental, rehearsed plan):
-  `docs/superpowers/specs/2026-10-05-update-sh-split-design.md`. No code
-  moved yet.
-- **Content Manager split into modules (internal; no behavior change).**
-  `web/admin.py` (6,800 lines) keeps `create_app()` and its once-per-process
-  startup work; the routes moved verbatim into `admin_*.py` modules by area
-  (security guards, system/backup, playlists, playlist import, media +
-  transcode, ROMs, support tools, OTA updates, Media Browser setup and
-  operations, page serving + Phone Remote) plus pure helper modules, each
-  wired by a `register(app, ctx)` call at its original position — the URL
-  map, methods, endpoint names, hook order and per-process singletons are
-  identical (checked by dumping `app.url_map` before/after). `manager.js`
-  (7,000 lines) became eight classic scripts loaded in a fixed order by
-  `index.html`; global function names used by inline handlers are
-  unchanged. Two CSRF-store / pause-marker tests now patch the module that
-  owns that state.
-
-### Internal
-- One script now writes every systemd unit file:
-  `converge_system_units.sh --only <unit>` is how `setup_services.sh`,
-  `deploy_cpp.sh`, `setup_ota_recovery.sh`, `setup_audio_service.sh`,
-  `setup_harness_services.sh`, `install_deps.sh`, the clone tooling and
-  `setup_pi.sh` install their units (each keeps its own enable/start), and
-  a test fails on any other script that writes one. `deploy_cpp.sh` no
-  longer stages unit copies in the install root's `systemd/` and deletes
-  the ones earlier deploys left there. Removed the legacy X11-era units
-  (`magic-mpv*`, `magic-ui*`) and their scripts (`setup_boot_service.sh`,
-  `migrate_to_cpp.sh`, `cleanup_old_system.sh`); none was installed on
-  any box.
-- `main.cpp` slimmed further (4,123 → ~3,300 lines), with no behavior
-  change: main-menu playlist playback control moved to
-  `app/playlist_playback` (behind a `PlaylistTransport` interface), the
-  playlist reload's re-anchoring to `app/playlist_reload`, and the game
-  hand-off to `app/game_handoff` (session bracketing, quiet mode, torrent
-  resume recovery) + `app/game_handoff_kiosk` (loading-plate launch,
-  post-game display restore). New Mac unit tests cover all three.
-- `main.cpp` slimmed again (~3,300 → ~2,480 lines), with no behavior
-  change: the Media Browser service-client setup (Radarr/Sonarr/TMDB/
-  Prowlarr/qBittorrent, VPN monitor start, qBit alt-limit bootstrap) moved
-  to `media_browser/mb_services`; the boot intro video to
-  `app/intro_sequence` (pure) + `app/intro_sequence_kiosk`; the Settings-
-  menu input dispatch (BTN4 toggle/volume hold, on-screen keyboard, game
-  browser, Controller Setup wizard, pairing screen, menu rows) to
-  `app/settings_input` + `app/settings_input_logic` (pure). New Mac unit
-  tests cover the API-key chains and mock fallbacks, the intro's end/fade
-  decisions, and the BTN4 hold and game-browser row decisions.
-- The mid-playback playlist switch's waits (200 ms settle, up to 10 x 50 ms
-  "still playing?" re-polls, and the stuck-switch timeout's 200 ms settle)
-  are no longer `sleep_for` calls on the render thread: `PlaylistPlayback`
-  runs them as a per-frame state machine advanced from
-  `tick_switch_timeout()`, against an injected clock
-  (`PlaylistTransport::now()` replaces `sleep_for`). Same calls, order,
-  poll count and end states; re-entrancy rules in `playlist_playback.h`;
-  Mac tests drive it with a fake clock.
-- Removed dead code in the Media Browser screens (`BrowseScreen::
-  category_cursor_`, `DetailScreen::render`'s unused `blink_on`,
-  QueueScreen's unused text-hint locals).
-- `test_serve.py`'s phone-remote WebSocket storm test no longer flakes on
-  a loaded machine (the test client could strand the server's `hello_ack`
-  in its handshake buffer; the roundtrip now sends first and asserts
-  order, with condition-based 30 s deadlines).
-- Media Browser screens split into "decide" and "paint": the decision logic
-  of the TV series page, movie detail, Browse, Queue and Playback screens
-  (button rows, input mapping, paging, worker-result handling, every
-  composed label and toast) moved into Renderer-free units —
-  `series_mutations.{h,cpp}`, `series_detail_view.h`, `detail_logic.h`,
-  `browse_view.h`, `queue_view.h`, `playback_view.h` — with ~100 new Mac
-  unit tests. No behaviour change.
-
-## [1.10.0] - 2026-10-04
-
 ### Security
 - **The Content Manager can no longer be used to take over a box from
   the home network.** Anyone on the same Wi-Fi could send a crafted
@@ -257,6 +41,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coming from another website. Scanning the pairing QR code, typing the
   box's address, the home-screen app, and links to the box all work
   exactly as before.
+- **A box cloned from another can no longer quietly share its VPN
+  connection.** Two boxes using the same VPN key knock each other off the
+  VPN, over and over, and nothing on either box says why — Movies
+  downloads stall and searches fail in bursts. A new box used to be able
+  to start up holding the original box's VPN key (the very first batch did,
+  because their first-start setup stopped early). Now a new box throws that
+  key away — and the background services that carried a copy of it — as
+  the very first thing it does, even if the rest of its first start runs
+  into trouble. The box health check in the Content Manager also now fails,
+  with plain instructions, on any box still using another box's VPN key or
+  passwords; the original box itself is never flagged. No secret is ever
+  shown or stored to do this — only one-way fingerprints of it.
+- **The VPN's control panel now only answers the two questions the box
+  asks: which port is forwarded, and which address the VPN shows the
+  world.** Everything else — including "turn the VPN off" — now needs a
+  password the box never sets, so the web-scraping helper in the movie
+  services can no longer reach it. This also keeps Movies working
+  through future VPN-software updates: newer versions lock that panel
+  completely by default. A box locked out would have read "no forwarded
+  port" and restarted all the movie services every ten minutes. Takes
+  effect the next time the VPN service starts.
 
 ### Added
 - **"Box Health" in the Content Manager.** Settings now has a Run
@@ -267,6 +72,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checked. The last result stays on the page, so you can come back to
   it. If the Movies feature is turned on, you can also include a check
   of the Movies services.
+- **Box Health also says how reliable the VPN is.** On boxes
+  that use Movies, a new "VPN tunnel" line reports how often the VPN
+  dropped in the last 24 hours, how long it was down in total and the
+  longest single outage — e.g. "VPN tunnel dropped 23 times in the last
+  24 h (down 1 h 40 min total, longest 9 min)". It's a note, not a
+  failure, and it is called out in the headline when the tunnel has been
+  unreliable (6 or more drops, 30 minutes or more down, or down right
+  now). It also says when the tunnel itself was fine and only the
+  forwarded port was lost. The same history is included in Download
+  Diagnostics. Until now ~170 drops over two days on one box were only
+  visible by reading system logs.
 - **"Download Diagnostics" for support.** Next to the health check, one
   button saves a single file with the box's recent logs, its health
   result and basic system details — the things support asks for first.
@@ -281,6 +97,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mind; nothing downloads until you confirm. A season that was set to
   download but never found a copy can now be picked again, which searches
   for it once more.
+- **Choose the VPN country (ProtonVPN).** Content Manager → Media
+  Browser → Advanced → VPN server country, from a short list of
+  countries with plenty of download-friendly (P2P) servers. Applying it
+  reconnects only the VPN; downloads pause for about a minute. Boxes
+  stay on the Netherlands until someone changes it, and re-uploading a
+  VPN config with Reconfigure now keeps the chosen country instead of
+  resetting it.
+
+### Changed
+- **The menus use less power and run cooler.** The box now redraws the
+  main menu, Settings and the Movies browsing screens only when something
+  on them changes (with the CRT look on, the menu draws at the effect's own
+  30 frames a second instead of 60), and draws each screen in far fewer
+  steps. Nothing looks different.
+- **Movie posters use a fraction of the memory.** Grids load small posters
+  and only the detail page loads the large one, leaving more memory for
+  playback, especially on a Raspberry Pi 4B.
+- **The Content Manager runs on a proper web server.** It used to run on
+  a simple built-in server meant for development, which started a new
+  worker for every request with no limit. It now uses a production
+  server (gunicorn) with a fixed pool of workers, so a busy page, a
+  phone remote left connected all evening and a big upload can't pile
+  up and slow the box down. Nothing changes in how you use it: same
+  address, phones stay paired, uploads and updates work as before. The
+  update installs the new server by itself; if it can't (for example the
+  box is offline), the Content Manager simply keeps the old server and
+  the next update tries again.
+- **Movie availability appears faster.** Detail's availability check
+  asks each source separately and at the same time, instead of waiting
+  up to a minute and a half for the slowest one.
+- **Pi 4B boxes convert one uploaded video at a time** (Pi 5 still does
+  two), so an upload no longer starves playback on the smaller board.
+- **N64 and Dreamcast games stay hidden on a Pi 4B** even when a
+  playlist names only the emulator and not the system.
+- **Movie playback has more memory to work with.** Film posters kept
+  in graphics memory are trimmed when a movie starts, instead of holding
+  on to as much as ~340 MB — memory the Pi 4B needs for smooth video.
+- **Log files no longer grow forever on the SD card**: the emulator log
+  starts fresh each game, and the Movies service logs are capped at a
+  few tens of megabytes each. The cap takes effect the next time the
+  box is restarted after updating (Movies takes a little longer to come
+  up that one time).
+- **Updates that need to build on the box no longer leave the TV dark for
+  ten minutes.** Most updates install a ready-made program in seconds, but
+  when a box has to build the new version itself it used to switch the TV
+  off first and keep it off for the whole 8-10 minute build. Now the
+  current version keeps running — menu, videos and games all work — while
+  the new one builds in the background, and the TV only blanks for the
+  few seconds it takes to switch over. The box decides how to do this from
+  how much free memory it has at that moment: with plenty, the build runs
+  at full speed; with less, it builds more slowly (about 15-20 minutes) so
+  the TV can stay on; on a box that is already short of memory it briefly
+  pauses the Movies background services to make room (Movies is hidden on
+  the TV until the update finishes, then comes straight back — downloads
+  keep going throughout); and if even that is not enough it does exactly
+  what it did before. If the build ever runs out of memory anyway, it is
+  the build that gets stopped, never what you are watching or playing, and
+  the update simply retries with the TV paused. The Content Manager says
+  "the TV keeps working" while this is happening.
+  Like every updater improvement, this applies from the update *after* the
+  one that delivers it, because a box always updates using the updater it
+  already has.
 
 ### Fixed
 - **The menu comes back when a playlist ends.** A playlist set not to
@@ -289,6 +167,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   happened when every video in a playlist failed to play, and when a new
   playlist failed to load while another was playing. The menu, and any
   "couldn't play" message, now always comes back.
+- **Switching playlists while a video plays no longer locks the remote's
+  next/previous for two seconds.** Every switch made mid-video used to be
+  "stuck" until a 2-second safety timer released it (logging a CRITICAL
+  error each time), and NEXT/PREV were ignored until then. The switch now
+  completes the moment the new video is playing.
+- **Switching playlists no longer freezes the screen.** Picking a
+  different playlist while a video was playing froze the picture, the
+  menu and the phone remote for up to about two-thirds of a second while
+  the box waited for the old video to let go. The box still waits exactly
+  as long before starting the new playlist, but the menu stays live while
+  it does. Button presses made during that moment (another select,
+  next/previous, play/pause) are ignored rather than acted on late, and
+  turning the knob no longer changes which playlist starts.
 - **Trimmed clips stop where you trimmed them.** A playlist item with an
   end time played on to the end of the file; it now moves on at the end
   time you set.
@@ -404,6 +295,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   game") instead of freezing on the launch screen.
 - **The box recovers by itself if the TV picture doesn't come back
   after a game**, instead of sitting on a black screen until unplugged.
+- **The phone remote no longer shows a finished game as "now playing".**
+  After you quit a game and came back to the menu, the remote kept
+  showing that game's title until something else played. It now clears
+  the moment the game ends.
 - **A damaged settings file no longer stops the box from starting.** A
   settings file with a wrong value in it — for example from an edited
   backup — made the box crash on every start, with a black screen. The
@@ -459,6 +354,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honestly.** When the availability check found nothing but some sources
   never answered, Detail said "No sources found" — even though the
   source most likely to have an obscure film hadn't replied.
+- **Movies queue: the knob press is labelled again.** The on-screen hint
+  for pressing the knob on the download queue showed "—" (does nothing),
+  although it cancels a download. It now reads "Cancel", and "Confirm"
+  once a cancel is armed.
 - **Deleting every season no longer makes a show disappear.** Clearing
   old seasons to make room used to remove the show from your Library
   entirely once the last one went, and downloading it again started
@@ -480,6 +379,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after a slow boot, or stopped answering, it stayed that way until the
   box was restarted. The box now checks every few minutes and brings it
   back. Services set aside during a movie or game are left alone.
+- **The VPN no longer restarts every few minutes when ProtonVPN takes
+  back its forwarded port.** Watched live on 2026-10-05: all 9 restarts
+  of the whole Movies service stack in two hours were caused by port
+  forwarding, not the VPN — Proton's gateway refused to renew the port a
+  few minutes after granting it ("connection refused" from 10.2.0.1:5351),
+  the VPN software (gluetun 3.41.1) then never got a port again, the
+  box's health check flagged it ~5 minutes later and the box restarted
+  the VPN and all five services ~5 minutes after that, even though the
+  tunnel itself was carrying traffic the whole time. Gluetun is updated
+  to 3.41.3, whose release notes fix exactly this ("no longer stuck after
+  failed port forwarding", plus a follow-up deadlock fix), so it gets a
+  new port by itself. The health check still treats a lost port as a
+  problem as a last resort.
+- **The VPN connection is kept alive while idle.** The box now sends a
+  WireGuard keepalive every 25 seconds, as ProtonVPN's own config files
+  ask for; before, gluetun ignored that setting and sent none.
 - **Search sources come back after a bad morning for TV shows too.**
   Sources that failed briefly were being cleared at start-up for movies
   only; TV searches could stay locked out for up to a day. Both are now
@@ -488,6 +403,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Downloads that found nothing at first are retried properly.** The
   first automatic retry after switching on happened too early and did
   nothing, so a box that is on for only a few hours a day never retried.
+- **Updates now keep the box's background jobs exactly as designed.**
+  Changes to the box's scheduled background jobs (such as when the retry
+  above first runs) never reached a box that was already set up: updates
+  replaced the programs, never the jobs' own settings. Updates now put
+  those settings in place directly, undo them with the rest of an update
+  if it is rolled back, and the Box Health check flags a box whose jobs
+  don't match.
 - **Downloads stay quiet during a movie.** On boxes with enough memory to
   keep downloading while a film plays, uploading is meant to drop to a
   trickle so the film gets the drive — but a start-up step quietly raised
@@ -498,46 +420,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The box's player is protected when memory runs out.** If the box
   ever runs completely out of memory, a background service is stopped
   (it restarts by itself) instead of the picture or the game.
-
-### Changed
-- **The menus use less power and run cooler.** The box now redraws the
-  main menu, Settings and the Movies browsing screens only when something
-  on them changes (with the CRT look on, the menu draws at the effect's own
-  30 frames a second instead of 60), and draws each screen in far fewer
-  steps. Nothing looks different.
-- **Movie posters use a fraction of the memory.** Grids load small posters
-  and only the detail page loads the large one, leaving more memory for
-  playback, especially on a Raspberry Pi 4B.
-- **The Content Manager runs on a proper web server.** It used to run on
-  a simple built-in server meant for development, which started a new
-  worker for every request with no limit. It now uses a production
-  server (gunicorn) with a fixed pool of workers, so a busy page, a
-  phone remote left connected all evening and a big upload can't pile
-  up and slow the box down. Nothing changes in how you use it: same
-  address, phones stay paired, uploads and updates work as before. The
-  update installs the new server by itself; if it can't (for example the
-  box is offline), the Content Manager simply keeps the old server and
-  the next update tries again.
-- **Movie availability appears faster.** Detail's availability check
-  asks each source separately and at the same time, instead of waiting
-  up to a minute and a half for the slowest one.
-- **Pi 4B boxes convert one uploaded video at a time** (Pi 5 still does
-  two), so an upload no longer starves playback on the smaller board.
-- **N64 and Dreamcast games stay hidden on a Pi 4B** even when a
-  playlist names only the emulator and not the system.
-- **Movie playback has more memory to work with.** Film posters kept
-  in graphics memory are trimmed when a movie starts, instead of holding
-  on to as much as ~340 MB — memory the Pi 4B needs for smooth video.
-- **Log files no longer grow forever on the SD card**: the emulator log
-  starts fresh each game, and the Movies service logs are capped at a
-  few tens of megabytes each. The cap takes effect the next time the
-  box is restarted after updating (Movies takes a little longer to come
-  up that one time).
+- **Less log writing to the SD card.** At the end of each video, while
+  the next one was loading, the box wrote the same "NOT auto-advancing"
+  line to its log every frame — dozens of times a second. It is now
+  written once. A dropped-frames warning that could repeat twice a second
+  through a whole film is now written at most every 5 seconds.
 
 ### For operators
-- **The update TO 1.10.0 is installed by each box's previous updater.**
-  The new safeguards (power-cut recovery, TV-off updates, the faster web
-  server package) protect updates from 1.10.0 onward. For this one update:
+- **This update is installed by each box's previous updater.** The new
+  safeguards (power-cut recovery, TV-off updates, keeping the TV on while
+  the box builds, the faster web server package) protect every update
+  after this one. For this one update:
   keep the TV on, don't power the box off while it says "Installing", and
   quit any game first. Boxes pick up the web server package and the new
   sound service on their own; nothing to do by hand.
@@ -564,8 +457,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `services/docker-compose.yml`, so they reach updated boxes too.
 - Media Browser service housekeeping: the weekly service check can no
   longer hang forever on a stuck service (it times out and reports a
-  failure); the VPN container is pinned to the exact version the
-  production box runs instead of following whatever was newest; plugging
+  failure); the VPN container is pinned to an exact, tested
+  version (gluetun 3.41.3) instead of following whatever was newest; plugging
   the movie drive back in no longer gets cut off halfway through
   reconnecting; and the scripts that start and stop the Movies
   containers now take turns instead of tripping over each other.
@@ -580,6 +473,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builds the real kiosk and runs every test suite in about a minute on
   a Mac, and `push` installs a built binary on a box without compiling
   there (keeping the previous one if the new one fails to start).
+
+### Tooling
+- **Blocking ShellCheck gate over every shell script.** New
+  `tests/shellcheck_gate.sh` lints every tracked `*.sh`/`*.bash` file and
+  extensionless sh/bash-shebang script at `-S info` (ShellCheck pinned to
+  0.11.0 in CI, new test-local.yml `shellcheck` job — release.yml runs it,
+  so a finding blocks a release). Repo-wide exclusions, each justified, are
+  in the new `.shellcheckrc` (SC2029, SC2012, SC2015); deliberate one-off
+  patterns carry an inline reasoned disable. test-ota.yml's non-blocking
+  `shellcheck update.sh || true` is gone. In-scope findings went from 118
+  (49 at warning or above) to 0 — 45 covered by the three repo-wide
+  exclusions, the rest fixed or justified inline — with no behavior change
+  on any box; two real bugs in dev-only scripts
+  were fixed: `web/run_tests.sh --stress` died at a top-level `local`
+  under `set -e`, and `test_audio.sh` wrote every driver's config to the
+  same file (`$driver_` is an unset variable). `update.sh`'s comment now
+  says `MAGIC_DRY_RUN` is inert (nothing ever consulted it).
+- **`scripts/fleet_check.sh`** (Mac-side): runs each box's own
+  `verify_box.sh` over ssh in parallel (bounded `-j`, ssh
+  `ConnectTimeout`), reads board, VERSION, update channel and uptime, and
+  prints one table — host / board / version / channel / uptime /
+  pass-warn-fail / result / first failing check. `--hosts FILE`,
+  `--with-services`, `--log-dir`. Strictly read-only on the boxes; exits
+  non-zero if any box is not shippable or unreachable. Now a pre-tag step
+  in `RELEASING.md`.
+- Design note for splitting `update.sh` safely (which updater actually
+  runs during an OTA, and an incremental, rehearsed plan):
+  `docs/superpowers/specs/2026-10-05-update-sh-split-design.md`. No code
+  moved yet.
+- **Content Manager split into modules (internal; no behavior change).**
+  `web/admin.py` (6,800 lines) keeps `create_app()` and its once-per-process
+  startup work; the routes moved verbatim into `admin_*.py` modules by area
+  (security guards, system/backup, playlists, playlist import, media +
+  transcode, ROMs, support tools, OTA updates, Media Browser setup and
+  operations, page serving + Phone Remote) plus pure helper modules, each
+  wired by a `register(app, ctx)` call at its original position — the URL
+  map, methods, endpoint names, hook order and per-process singletons are
+  identical (checked by dumping `app.url_map` before/after). `manager.js`
+  (7,000 lines) became eight classic scripts loaded in a fixed order by
+  `index.html`; global function names used by inline handlers are
+  unchanged. Two CSRF-store / pause-marker tests now patch the module that
+  owns that state.
+
+### Internal
+- One script now writes every systemd unit file:
+  `converge_system_units.sh --only <unit>` is how `setup_services.sh`,
+  `deploy_cpp.sh`, `setup_ota_recovery.sh`, `setup_audio_service.sh`,
+  `setup_harness_services.sh`, `install_deps.sh`, the clone tooling and
+  `setup_pi.sh` install their units (each keeps its own enable/start), and
+  a test fails on any other script that writes one. `deploy_cpp.sh` no
+  longer stages unit copies in the install root's `systemd/` and deletes
+  the ones earlier deploys left there. Removed the legacy X11-era units
+  (`magic-mpv*`, `magic-ui*`) and their scripts (`setup_boot_service.sh`,
+  `migrate_to_cpp.sh`, `cleanup_old_system.sh`); none was installed on
+  any box.
+- `main.cpp` slimmed further (4,123 → ~3,300 lines), with no behavior
+  change: main-menu playlist playback control moved to
+  `app/playlist_playback` (behind a `PlaylistTransport` interface), the
+  playlist reload's re-anchoring to `app/playlist_reload`, and the game
+  hand-off to `app/game_handoff` (session bracketing, quiet mode, torrent
+  resume recovery) + `app/game_handoff_kiosk` (loading-plate launch,
+  post-game display restore). New Mac unit tests cover all three.
+- `main.cpp` slimmed again (~3,300 → ~2,480 lines), with no behavior
+  change: the Media Browser service-client setup (Radarr/Sonarr/TMDB/
+  Prowlarr/qBittorrent, VPN monitor start, qBit alt-limit bootstrap) moved
+  to `media_browser/mb_services`; the boot intro video to
+  `app/intro_sequence` (pure) + `app/intro_sequence_kiosk`; the Settings-
+  menu input dispatch (BTN4 toggle/volume hold, on-screen keyboard, game
+  browser, Controller Setup wizard, pairing screen, menu rows) to
+  `app/settings_input` + `app/settings_input_logic` (pure). New Mac unit
+  tests cover the API-key chains and mock fallbacks, the intro's end/fade
+  decisions, and the BTN4 hold and game-browser row decisions.
+- The mid-playback playlist switch's waits (200 ms settle, up to 10 x 50 ms
+  "still playing?" re-polls, and the stuck-switch timeout's 200 ms settle)
+  are no longer `sleep_for` calls on the render thread: `PlaylistPlayback`
+  runs them as a per-frame state machine advanced from
+  `tick_switch_timeout()`, against an injected clock
+  (`PlaylistTransport::now()` replaces `sleep_for`). Same calls, order,
+  poll count and end states; re-entrancy rules in `playlist_playback.h`;
+  Mac tests drive it with a fake clock.
+- Removed dead code in the Media Browser screens (`BrowseScreen::
+  category_cursor_`, `DetailScreen::render`'s unused `blink_on`,
+  QueueScreen's unused text-hint locals).
+- `test_serve.py`'s phone-remote WebSocket storm test no longer flakes on
+  a loaded machine (the test client could strand the server's `hello_ack`
+  in its handshake buffer; the roundtrip now sends first and asserts
+  order, with condition-based 30 s deadlines).
+- Media Browser screens split into "decide" and "paint": the decision logic
+  of the TV series page, movie detail, Browse, Queue and Playback screens
+  (button rows, input mapping, paging, worker-result handling, every
+  composed label and toast) moved into Renderer-free units —
+  `series_mutations.{h,cpp}`, `series_detail_view.h`, `detail_logic.h`,
+  `browse_view.h`, `queue_view.h`, `playback_view.h` — with ~100 new Mac
+  unit tests. No behaviour change.
 
 ## [1.9.14] - 2026-08-13
 
