@@ -11,6 +11,14 @@
 > is specified in
 > `2026-07-30-universal-ps-style-n64-controller-mapping-design.md`.
 
+> **2026-10-14 update:** the coverage test is committed as
+> `magic_dingus_box_cpp/tests/retroarch/core_slot_coverage.h` +
+> `test_core_slot_coverage.cpp`. The ghost-default blocker below is resolved
+> on the test side: `slot_value()` counts a button only when the semantic
+> table assigned it deliberately. The gaps that check surfaces on the N64
+> pad (Select on SNES / PC Engine / Atari 7800, Genesis X/Y/Z) are recorded
+> as KNOWN GAP exceptions until the Task 2 fills are approved.
+
 **Author's note:** this document exists because the investigation took most of a day, went through five wrong hypotheses before the real one, and none of it is written down anywhere else. Read this before touching N64 pad mapping again.
 
 ## Executive summary
