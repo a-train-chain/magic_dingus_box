@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <functional>
 
@@ -32,6 +33,16 @@ struct DisplayReacquire {
 // with no display to reacquire (attempted=false) never loses it.
 inline bool display_was_lost(const DisplayReacquire& r) {
     return r.attempted && !r.acquired;
+}
+
+// What the controller does with reacquire_display()'s answer after a game:
+// when a display was reacquired at all, store whether the kiosk mode came
+// back (main.cpp's reset_display handler then skips its own set_mode), and
+// report a lost display. A host with no display leaves the flag alone.
+inline bool apply_display_reacquire(const DisplayReacquire& r,
+                                    std::atomic<bool>& display_mode_restored) {
+    if (r.attempted) display_mode_restored.store(r.mode_restored);
+    return display_was_lost(r);
 }
 
 struct GameSessionHooks {

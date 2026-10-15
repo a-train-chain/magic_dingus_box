@@ -63,7 +63,7 @@ rules, each earned by a real bug:
    and the CI binary's glibc. Anything older can neither build nor run
    the kiosk (v1.6.4 was the last Bookworm release).
 7. **Before a release that touches the platform layer**, run the Mac
-   suites (all 9 with Media Browser ON, 8 with it OFF), and validate on real hardware of BOTH boards when the
+   suites (all 10 with Media Browser ON, 9 with it OFF; CoreUnit is mdb_core's), and validate on real hardware of BOTH boards when the
    change plausibly differs between them — the sd_notify failure was
    invisible in every off-Pi test.
 

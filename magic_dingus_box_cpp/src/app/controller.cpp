@@ -753,12 +753,12 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         // platform::PiGameSessionHooks::reacquire_display).
         {
             const app::DisplayReacquire re = hooks_ ? hooks_->reacquire_display(kiosk_mode_w_, kiosk_mode_h_) : app::DisplayReacquire{};
-            if (re.attempted) state.display_mode_restored.store(re.mode_restored);
-            // Used to "proceed anyway": the render loop then kept the
-            // re-enabled watchdog happy in front of a black screen forever.
-            // Flag it so main exits non-zero and systemd
+            // Stores display_mode_restored when a display came back at all.
+            // A lost display used to "proceed anyway": the render loop then
+            // kept the re-enabled watchdog happy in front of a black screen
+            // forever. Flag it so main exits non-zero and systemd
             // (Restart=on-failure) restarts the kiosk from scratch.
-            if (app::display_was_lost(re)) display_lost_ = true;
+            if (app::apply_display_reacquire(re, state.display_mode_restored)) display_lost_ = true;
 
             // First frames we may draw since the handover. MUST stay after
             // set_mode() — painting before it blocks on a page-flip event
