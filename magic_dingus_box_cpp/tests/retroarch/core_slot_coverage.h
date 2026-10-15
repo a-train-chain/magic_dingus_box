@@ -168,7 +168,7 @@ inline const std::vector<CoreSlots>& kCoreSlots() {
             {"nestopia", with_dpad({{Slot::B}, {Slot::A}, {Slot::SELECT}, {Slot::START}})},
             {"snes9x", with_dpad({{Slot::B}, {Slot::A}, {Slot::Y}, {Slot::X},
                                   {Slot::L}, {Slot::R}, {Slot::SELECT}, {Slot::START}})},
-            // Genesis 6-button: RetroPad Y/B/A = A/B/C, X/L/R = X/Y/Z.
+            // Genesis 6-button: RetroPad Y/B/A = A/B/C, L/X/R = X/Y/Z.
             {"genesis_plus_gx", with_dpad({{Slot::B}, {Slot::A}, {Slot::Y}, {Slot::X},
                                            {Slot::L}, {Slot::R}, {Slot::START}})},
             {"pcsx_rearmed", with_dpad({{Slot::B}, {Slot::A}, {Slot::Y}, {Slot::X},

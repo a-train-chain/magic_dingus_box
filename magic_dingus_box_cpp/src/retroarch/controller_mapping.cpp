@@ -97,22 +97,23 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.a = L::N64_A;       // C
         s.b = L::N64_B;       // B
         s.y = L::N64_C_DOWN;  // A
-        // 6-button top row. RetroPad X/L/R are Genesis X/Y/Z for
-        // genesis_plus_gx. Before these were bound, the three came from
-        // struct defaults that happened to be N64 L/R/Z on the built-in
-        // adapter (and whatever indices 4/5/6 were on a captured pad) --
-        // and Z is the exit gesture's hold button, so Genesis Z + Start
-        // quit the game.
+        // 6-button top row. genesis_plus_gx reads RetroPad L/X/R as Genesis
+        // X/Y/Z (libretro.c, DEVICE_PAD6B). Before these were bound, the
+        // three came from struct defaults that happened to be N64 L/R/Z on
+        // the built-in adapter (and whatever indices 4/5/6 were on a
+        // captured pad) -- and Z is the exit gesture's hold button, so
+        // Genesis Z + Start quit the game.
         //
-        // C_LEFT is the most reachable C button after C_DOWN (which is
-        // Genesis A), and Y/Z go on the physical shoulders. The alternative --
-        // all six under the thumb on the C-cluster, like real 6-button
-        // hardware -- was rejected because it puts Genesis Y on C_UP, the
-        // least reachable input on the pad, and Y is medium punch in Street
-        // Fighter II: pressed constantly. Frequency beats thumb-locality here.
-        // Revisit with a 6-button fighter in hand if it feels wrong.
-        s.x = L::N64_C_LEFT;  // X
-        s.l = L::N64_L;       // Y
+        // Genesis Y goes on C_LEFT, the most reachable C button after C_DOWN
+        // (which is Genesis A), and X/Z go on the physical shoulders. The
+        // alternative -- all six under the thumb on the C-cluster, like real
+        // 6-button hardware -- was rejected because it puts Genesis Y on
+        // C_UP, the least reachable input on the pad, and Y is medium punch
+        // in Street Fighter II: pressed constantly. Frequency beats
+        // thumb-locality here. Revisit with a 6-button fighter in hand if it
+        // feels wrong.
+        s.l = L::N64_L;       // X
+        s.x = L::N64_C_LEFT;  // Y
         s.r = L::N64_R;       // Z
         s.start = L::N64_START;
         dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
@@ -261,8 +262,9 @@ SemanticMapping semantic_ps_style(const std::string& core) {
         s.y = L::SQUARE;    // Genesis A (left)
         s.b = L::CROSS;     // Genesis B (middle)
         s.a = L::CIRCLE;    // Genesis C (right)
-        s.x = L::TRIANGLE;  // Genesis X (6-button top)
-        s.l = L::L1;        // Genesis Y
+        // genesis_plus_gx reads RetroPad L/X/R as Genesis X/Y/Z.
+        s.l = L::L1;        // Genesis X (6-button top)
+        s.x = L::TRIANGLE;  // Genesis Y
         s.r = L::R1;        // Genesis Z
         s.start = L::START;
         s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
