@@ -1771,6 +1771,27 @@ std::string read_marker() {
 }
 }  // namespace
 
+TEST_CASE("set_autoredownload_held_marker_path moves the held marker for "
+          "a host other than the Pi", "[sonarr][redownload][marker]") {
+    // The headless engine (mdb_headless) keeps the marker under its own data
+    // root; the kiosk never calls this and keeps the path verify_box.sh checks.
+    const std::string other = kHeldMarkerPath + "_host";
+    fs::remove(other);
+    fs::remove(kHeldMarkerPath);  // earlier tests leave it behind on purpose
+    mb::set_autoredownload_held_marker_path(other);
+    CHECK(mb::autoredownload_held_marker_path() == other);
+    RedownloadCfgSonarr c;
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK(fs::exists(other));
+        CHECK_FALSE(fs::exists(kHeldMarkerPath));
+        CHECK(g.restore());
+    }
+    CHECK_FALSE(fs::exists(other));
+    mb::set_autoredownload_held_marker_path(kHeldMarkerPath);  // back for the other tests
+}
+
 TEST_CASE("AutoRedownloadGuard writes a held marker before the disable PUT "
           "and removes it on a confirmed restore",
           "[sonarr][redownload][marker]") {

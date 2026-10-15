@@ -1198,6 +1198,12 @@ void set_autoredownload_held_marker_path_for_testing(std::string path) {
     held_marker_path() = std::move(path);
 }
 
+void set_autoredownload_held_marker_path(std::string path) {
+    held_marker_path() = std::move(path);
+}
+
+std::string autoredownload_held_marker_path() { return held_marker_path(); }
+
 AutoRedownloadGuard::AutoRedownloadGuard(SonarrClient& client)
     : client_(client) {
     auto cfg = client_.get_download_client_config();

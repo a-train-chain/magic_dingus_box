@@ -159,8 +159,11 @@ jobs:
           cmake --build build-kiosk -j"$(nproc)"
 
       # mdb_core is EXCLUDE_FROM_ALL (the headless engine's library, never
-      # in a plain kiosk build); compile it here so a Linux-only header
-      # leaking into a shared source fails on Linux as well as on the Mac.
+      # in a plain kiosk build), so this is the only place its source list
+      # builds with the kiosk's own toolchain. It cannot catch a Linux-only
+      # header leaking into the library (Linux has those headers, and a
+      # static library never links): tests/local/mdb_core_portable.bats
+      # does, and mdb_headless's Mac build is the final check.
       - name: Build mdb_core (the headless engine's library)
         run: cmake --build build-kiosk -j"$(nproc)" --target mdb_core
 
