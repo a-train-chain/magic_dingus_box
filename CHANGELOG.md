@@ -553,6 +553,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`PlaylistTransport::now()` replaces `sleep_for`). Same calls, order,
   poll count and end states; re-entrancy rules in `playlist_playback.h`;
   Mac tests drive it with a fake clock.
+- New Mac test `tests/retroarch/test_core_slot_coverage.cpp`: for both
+  built-in pads and every shipped core, each RetroPad slot the core reads
+  must be bound by its semantic table (a struct default does not count),
+  and each declared exception must still be genuinely unbound, so the list
+  cannot rot. It records the open gaps: on the N64 pad, Select on SNES,
+  PC Engine and Atari 7800 and Genesis X/Y/Z (unfixed table omissions);
+  on the built-in DragonRise profile, L3/R3 (unverified whether the pad
+  has stick clicks). `path_resolver.cpp` no longer warns under `-Wextra`.
 - Removed dead code in the Media Browser screens (`BrowseScreen::
   category_cursor_`, `DetailScreen::render`'s unused `blink_on`,
   QueueScreen's unused text-hint locals).
