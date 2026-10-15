@@ -33,6 +33,13 @@ a compressed image):
     --output "/Volumes/Alexander's SSD/golden_image_pi5_vX.Y.Z_$(date +%Y-%m-%d).img.gz"
 ```
 
+**The source box's movie drive must be attached and mounted at `/mnt/ssd`.**
+It holds the secret stash for the length of the dd (see "Reboot safety"
+below); `prepare_for_cloning.sh` refuses to start without it, before
+touching anything. A drive-less box can pass `--allow-ram-stash`, which
+stashes in RAM and prints a loud warning — with that flag a reboot
+mid-clone destroys the box's secrets permanently.
+
 After the dd and restore, the script automatically scans the finished
 `.img.gz` for the source box's live credentials
 (`scan_image_for_secrets.sh`) and **refuses to report success on a hit**
@@ -70,17 +77,26 @@ ControlMaster + ControlPersist). Seven steps:
 3. **Verify required local tools** (`ssh`, `gzip`, `bc`, `python3` for
    the leak scanner, optionally `pv` for a nice progress bar).
 4. **Run `prepare_for_cloning.sh` on the Pi**, which:
+   - Checks the movie drive is a mounted filesystem on a different disk
+     from the SD root (else refuses, changing nothing)
    - Writes the `cloning_backup/in_progress` marker FIRST (restore is
-     armed before the first destructive step)
+     armed before the first destructive step), then creates the secret
+     stash and records its location in `cloning_backup/secret_stash_path`
    - Stops kiosk + Content Manager + Docker/containerd daemons + the
      periodic timers and the gluetun cascade watcher
    - Snapshots `device_info.json` + `/etc/hostname` + `/etc/hosts` to
      `/var/lib/magic-dingus-box/cloning_backup/` (these need to differ
      on each clone, so we remove them from disk for the dd, then put
      them back during restore)
-   - Stashes every secret-bearing file to RAM (`/dev/shm`) and the
-     operator's non-shipping playlists/videos to the movie drive
-     (`/mnt/ssd/.mdb-content-stash`), zeroes free space on both
+   - Records salted **fingerprints** (never values) of the box's per-box
+     secrets — the WireGuard private key above all — into
+     `/etc/magic-dingus/source_secret_fingerprints`, which ships in the
+     image (see "One VPN key per box" below)
+   - Stashes every secret-bearing file to the movie drive
+     (`/mnt/ssd/.mdb-secret-stash`, root-owned 0700: copy all, flush,
+     verify byte-for-byte, and only then zero + unlink the originals) and
+     the operator's non-shipping playlists/videos alongside it
+     (`/mnt/ssd/.mdb-content-stash`), zeroes free space on both SD
      partitions, and ABORTS if its post-scrub leak check finds any
      credential class still present
    - Re-enables `magic-first-boot.service` (so the cloned image
@@ -89,9 +105,14 @@ ControlMaster + ControlPersist). Seven steps:
 5. **dd the SD card over SSH**, gzip-compressed in flight, written to
    the local `.img.gz` file. Progress shown via `pv` if installed.
 6. **Run `restore_after_cloning.sh` on the Pi**, which:
+   - Restores every stashed secret to its exact path with its owner and
+     mode, verifies each byte-for-byte, then shreds the stash — or exits
+     non-zero, keeping the stash and marker, if it cannot
    - Restores `device_info.json` + `/etc/hostname` + `/etc/hosts` from
-     backup, and every stashed secret/content file to its exact path
+     backup, and the curated content to its exact path
    - Disables `magic-first-boot.service` (don't re-fire on source)
+   - Deletes `/etc/magic-dingus/source_secret_fingerprints` from the
+     source (only when the file names this board — a clone keeps its copy)
    - Restarts the Docker stack, Content Manager, kiosk, timers, and
      watchers
    - Removes the marker + backup files
@@ -119,6 +140,7 @@ That runs `first_boot.sh`, which does:
 |------|------|-------------------|
 | 1 | Regenerate SSH host keys | Old keys removed, `ssh-keygen -A`, sshd restarted — every unit gets its own |
 | 1b | Regenerate machine-id | New DHCP DUID so clones don't fight the source box for a lease |
+| 1c | **Revoke the source's VPN identity** | `services/.env` deleted and every inherited Docker container removed (`docker rm -f`, or straight from `/var/lib/docker/containers` when dockerd is down) — BEFORE the risky expand, and never fatal |
 | 2 | Expand root FS to fill SD | `growpart` + `resize2fs` (non-fatal on failure — the wipes below always run) |
 | 3 | Generate device identity | New UUID + new hostname `magicpi-XXXX` (hostname files first, gate record last) |
 | 4 | Create required directories | (idempotent) |
@@ -150,6 +172,92 @@ default, and its owner can capture it through the same wizard.
 > unit. The image scanner accordingly reports host keys as
 > `expected-present`, not as a leak.
 
+## One VPN key per box (2026-10)
+
+Two VPN clients on **one WireGuard private key knock each other off the
+tunnel**: ProtonVPN keeps one peer per key, so every handshake from one
+box drops the other — in bursts, on both boxes, with nothing in either
+box's logs saying why. Every unit starts life holding the source box's
+key, three ways over:
+
+- `services/.env` (`WIREGUARD_PRIVATE_KEY`). `first_boot.sh` wipes it —
+  but on the **2026-08-04 image** first boot died at Step 2, long before
+  that wipe, so every unit flashed from it kept the key and its
+  `magic-dingus-services` brought the stack up on it.
+- Docker's own state. `/var/lib/docker/containers/*/config.v2.json`
+  embeds each container's environment, gluetun is `restart:
+  unless-stopped`, and dockerd starts such a container by itself — `.env`
+  or no `.env`. (The 2026-08-04 image carried 5 copies of the key.)
+- By hand, when a working `.env` is copied onto a unit.
+
+Three layers now close it (`source_secrets_lib.sh` holds the logic):
+
+1. **Prevent.** `first_boot.sh` Step 1c deletes `.env` and removes every
+   inherited container as the first thing after the identity reset —
+   before the expand step that once killed first boot — and a failure
+   there is logged loudly but never aborts the rest. `prepare` also
+   refuses to ship an image with any `config.v2.json` left (post-scrub
+   leak check), on top of stashing them.
+2. **Detect.** `prepare` records `sha256(salt:value)` (128 bits, random
+   salt per image) of every secret-named `.env` value and the Flask HMAC
+   secret into `/etc/magic-dingus/source_secret_fingerprints`. On any unit,
+   `verify_box.sh` **FAILs** when `services/.env` or any container (running
+   or stopped) holds one: *"this unit is using the SOURCE box's WireGuard
+   VPN key"*. No value is ever printed.
+3. **The source never flags itself.** `restore_after_cloning.sh` deletes the
+   file from the source, and the file records a salted hash of the source
+   **board's** hardware serial (`/proc/device-tree/serial-number` — burned
+   into the SoC, so no dd can copy it). `verify_box.sh` skips the comparison
+   on that board, so even a leftover copy is harmless.
+
+### Is a unit using the source's VPN key? (units cloned before 2026-10)
+
+Those units have no fingerprint file. Give them one — it carries only
+salted hashes, so piping it between boxes moves no secret:
+
+```bash
+# On the Mac. SOURCE = the box the image was made from; UNIT = the clone.
+ssh magic@SOURCE 'sudo bash /opt/magic_dingus_box/scripts/golden_image/source_secrets_lib.sh record -' \
+  | ssh magic@UNIT 'sudo mkdir -p /etc/magic-dingus && sudo tee /etc/magic-dingus/source_secret_fingerprints >/dev/null'
+ssh magic@UNIT 'sudo /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/verify_box.sh'
+```
+
+(Both boxes need a tree with `source_secrets_lib.sh` — sync or OTA first.
+The fingerprints describe the source's **current** secrets: do this before
+rotating its key, or it cannot recognise the old one.)
+A FAIL on *"WireGuard VPN key"* means that unit is fighting the source for
+the tunnel. Fix the unit: remove its stack containers (`sudo docker rm -f
+$(sudo docker ps -aq --filter name=mdb_)`), **Reset Media Browser** in its
+Content Manager, then set it up with a WireGuard config generated **for that
+unit** in the ProtonVPN dashboard (NAT-PMP on). If units are out of reach,
+fix it from the source side instead: generate a new WireGuard config for the
+SOURCE box, upload it there, and **delete the old config in the ProtonVPN
+dashboard** — that revokes the leaked key on every unit at once.
+
+### Does an old image carry the VPN key?
+
+`scan_image_for_secrets.sh` already harvests `WIREGUARD_PRIVATE_KEY` (every
+`services/.env` value outside a short non-secret list) and searches the whole
+decompressed image for it, Docker's `config.v2.json` and containerd's
+`meta.db` included. `--vpn-key` narrows the report to just that question:
+
+```bash
+./scripts/golden_image/scan_image_for_secrets.sh --image ~/golden-2026-08-04.img.gz \
+    --pi magic@SOURCE --vpn-key
+```
+
+- `LEAK: env:WIREGUARD_PRIVATE_KEY ... appears N time(s)` → every unit
+  flashed from that image started with the source's key. Audit those units
+  (above) or rotate the source's key.
+- The harvest reads the source's **current** key. Run this **before**
+  rotating; after a rotation, scan for the old key with a needles file
+  instead (`--needles FILE`, one line `env:WIREGUARD_PRIVATE_KEY<TAB>key`,
+  `chmod 600`, delete it afterwards). A box with no key makes the scan exit 2
+  ("not a pass"), never CLEAN.
+- The search is over raw bytes, so a key split across two non-adjacent ext4
+  blocks could be missed; a hit is definitive, a clean is strong evidence.
+  The live-unit check above is the authoritative one.
+
 ## Recovery if a clone goes sideways
 
 If the Mac script crashes after running `prepare_for_cloning.sh` but
@@ -163,8 +271,52 @@ ssh magic@<your-box>.local "sudo /opt/magic_dingus_box/scripts/golden_image/rest
 ```
 
 The restore script is idempotent — running it without an in-progress
-marker is a no-op. So it's always safe to run if you're not sure
-whether the Pi needs restoration.
+marker (and with no stash pending) is a no-op, and re-running it after a
+partial restore finishes the job without ever copying a stash back twice.
+So it's always safe to run if you're not sure whether the Pi needs
+restoration.
+
+### Reboot safety: the source Pi lost power or rebooted mid-clone
+
+Nothing is lost. Every secret `prepare_for_cloning.sh` removed from the SD
+— `services/.env` (VPN key, qBittorrent password), the Radarr/Sonarr/
+Prowlarr databases, `config.xml` files and their `Backups/` zips,
+`flask_secret.key` (phone pairings), the TMDB key, the Wi-Fi profile, the
+boot-partition cloud-init files — is in `/mnt/ssd/.mdb-secret-stash` on the
+movie drive, which survives the reboot and is never part of the dd'd SD
+card. (Before this, the stash lived in `/dev/shm`: a reboot erased it, and
+restore then reported "nothing to restore" and exited 0 while the box had
+permanently lost all of it.)
+
+To recover:
+
+1. Boot the Pi **with the movie drive attached**. On an SD root,
+   `first_boot.sh` recognises the source card by its CID and refuses to
+   run. The box comes up stripped: no `.env` (so the Docker stack stays
+   down) and **no Wi-Fi profile** — reach it over Ethernet or the USB
+   gadget (`magic@10.55.0.1`) if Wi-Fi does not come back.
+2. Run the same command as above:
+   ```bash
+   sudo /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh
+   ```
+   It mounts `/mnt/ssd` if the udev rule has not already, restores and
+   verifies every file, shreds the stash, and brings the services back.
+
+Restore **exits non-zero and says why** rather than restoring nothing
+quietly. Nothing is deleted on any of these paths, so re-running is safe:
+
+| Message | Meaning | Do |
+|---|---|---|
+| `... /mnt/ssd is NOT mounted` | The stash is on a drive that is not attached | Attach the drive, re-run |
+| `SECRET STASH IS MISSING` | A stash was started and is gone (the `--allow-ram-stash` RAM stash after a reboot, or a reformatted drive) | Those files are unrecoverable. `--accept-secret-loss` brings the box back without them; Media Browser then needs re-provisioning |
+| `... failed to restore` | A file would not go back (full disk, I/O error) | Fix the cause, re-run — the stash is kept |
+
+A box whose root is NOT on an SD card (USB/NVMe) has no card CID, so
+`first_boot.sh` cannot tell it from a clone: **do not reboot such a box
+mid-clone.** If it happens anyway, first-boot runs its per-unit wipes
+(saves, pairings, identity — those are not undone) and deletes
+`cloning_backup/`, marker included; the secret stash on the drive
+survives, and restore still finds and restores it.
 
 ## When to use this vs. `prepare_golden_image.sh`
 
@@ -189,6 +341,18 @@ on the source Pi (game saves, settings, downloaded movies in Radarr's
 DB, etc.) — useful if you want to start fresh, but not if you have a
 working library you want to keep using on the source while building
 the golden image.
+
+## Update channel — clones always ship on stable
+
+A source box on the **beta** OTA channel (`config/update_channel` = `beta`,
+the owner's early-release opt-in) cannot be cloned: `prepare_for_cloning.sh`
+refuses at preflight, before touching anything. Switch it back first:
+
+    /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/update.sh channel stable
+
+`first_boot.sh` Step 6i also deletes the flag on every clone, and
+`verify_box.sh` WARNs on any box still on beta. How betas are cut,
+promoted and pulled: `magic_dingus_box_cpp/docs/RELEASING.md`.
 
 ## Boot config (2026-07-16)
 

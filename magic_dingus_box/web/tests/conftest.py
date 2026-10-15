@@ -19,6 +19,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from admin import create_app
 
 
+@pytest.fixture(autouse=True)
+def _isolated_job_state_dir(tmp_path, monkeypatch):
+    """Detached-job records (OTA / Media Browser setup) default to /tmp so
+    the OTA's own rsync --delete cannot erase them; point each test at its
+    own scratch dir instead so nothing leaks between tests or into /tmp."""
+    monkeypatch.setenv("MAGIC_JOB_STATE_DIR", str(tmp_path / "mdb_jobs"))
+
+
 @pytest.fixture
 def temp_data_dir() -> Generator[Path, None, None]:
     """Create a temporary data directory for testing."""

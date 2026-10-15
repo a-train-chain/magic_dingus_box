@@ -114,7 +114,7 @@ echo "  Skipped: $skipped"
 echo ""
 
 # List all .m3u files
-m3u_count=$(ls -1 *.m3u 2>/dev/null | wc -l || echo 0)
+m3u_count=$(ls -1 ./*.m3u 2>/dev/null | wc -l || echo 0)
 if [ "$m3u_count" -gt 0 ]; then
     echo "Current .m3u playlists:"
     for m3u in *.m3u; do

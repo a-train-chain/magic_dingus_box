@@ -24,6 +24,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+
+#include "media_browser/radarr/radarr_client.h"  // GrabOutcome
+#include "media_browser/ui/worker_pool.h"
 #include <vector>
 
 namespace media_browser {
@@ -285,11 +288,29 @@ private:
     std::string                       loading_title_;      // guarded by load_mu_
     std::chrono::steady_clock::time_point loading_started_at_{};
 
-    // All worker threads spawned during this screen's lifetime. Joined
-    // in the destructor so a worker mid-CURL doesn't outlive the
-    // ReleasePickerScreen and segfault on result publication. Same
-    // tracking pattern DetailScreen uses for its TMDB workers.
-    std::vector<std::thread>          load_workers_;
+    // --- Async grab ------------------------------------------------------
+    // grab_release is a 5 s-timeout POST and ran on the render thread
+    // (WatchdogSec=10). One grab at a time on grab_worker_. While it runs
+    // every input is swallowed, BTN4 included: the outcome decides where
+    // the user goes and the watchdog registration (not thread-safe) must
+    // happen on this thread — the wait is bounded by the client timeout.
+    // drain_grab_result() runs at the top of handle_input (every frame).
+    // grab_outcome_ is written before the release store to grab_done_ and
+    // read only after the acquire exchange — that pair is the ordering.
+    Screen drain_grab_result();
+    std::thread                       grab_worker_;
+    std::atomic<bool>                 grab_in_flight_{false};
+    std::atomic<bool>                 grab_done_{false};
+    GrabOutcome                       grab_outcome_ = GrabOutcome::Unknown;
+
+    // Worker threads spawned during this screen's lifetime. Finished ones
+    // are reaped (instant join, done flag) from load_async()/update();
+    // the destructor joins the rest so a worker mid-CURL doesn't outlive
+    // the screen and segfault on result publication. NEVER a blocking
+    // join on the render thread: the old ">4 workers -> join the oldest"
+    // reap could wait out a 45 s interactive search. Declared after every
+    // member the workers touch (members destruct in reverse order).
+    WorkerPool                        load_workers_;
 
     // Worker entry — runs on a background thread spawned by load_async.
     // Captures gen at spawn time and compares against load_generation_

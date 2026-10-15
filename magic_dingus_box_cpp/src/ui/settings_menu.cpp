@@ -5,6 +5,7 @@
 #include "toast.h"
 #include "virtual_keyboard.h"
 #include "../utils/config.h"
+#include "../utils/services_env.h"
 #include "../utils/wifi_manager.h"
 #include "../platform/platform_profile.h"
 #include "../retroarch/controller_profile.h"
@@ -20,6 +21,7 @@
 #include <arpa/inet.h>
 
 #include "../app/app_state.h"
+#include "../app/redraw_gate.h"
 #include "../app/settings_persistence.h"
 #ifdef MEDIA_BROWSER_ENABLED
 #include "../media_browser/mb_entry_gate.h"
@@ -151,6 +153,20 @@ void SettingsMenuManager::update() {
         // why we no longer gate the rebuild on the WIFI_NETWORKS-only check
         // that was here before — both submenus need to reflect the state.
         was_connecting_ = is_connecting;
+
+        // Async forget's outcome. The confirm action armed was_forgetting_;
+        // the worker stores its result before is_forgetting falls, so the
+        // result is ready on this edge.
+        if (was_forgetting_ && !wifi.is_forgetting()) {
+            was_forgetting_ = false;
+            ui::Toast::show(wifi.last_forget_succeeded()
+                                ? "Forgot network " + forgetting_ssid_
+                                : "Could not forget " + forgetting_ssid_);
+            if (current_submenu_ == MenuSection::WIFI ||
+                current_submenu_ == MenuSection::WIFI_NETWORKS) {
+                rebuild_current_submenu();
+            }
+        }
     }
 }
 
@@ -357,23 +373,9 @@ void SettingsMenuManager::open() {
         // on each open so the UI reflects current state without
         // requiring a kiosk restart.
         if (app_state_) {
-            std::ifstream f("/opt/magic_dingus_box/services/.env");
-            bool found = false;
-            if (f) {
-                std::string line;
-                while (std::getline(f, line)) {
-                    constexpr std::string_view kKey = "WIREGUARD_PRIVATE_KEY=";
-                    if (line.rfind(kKey, 0) != 0) continue;
-                    std::string val = line.substr(kKey.size());
-                    while (!val.empty() && (val.back() == ' ' || val.back() == '\t' ||
-                                            val.back() == '"' || val.back() == '\'')) val.pop_back();
-                    while (!val.empty() && (val.front() == ' ' || val.front() == '\t' ||
-                                            val.front() == '"' || val.front() == '\'')) val.erase(val.begin());
-                    found = !val.empty();
-                    break;
-                }
-            }
-            app_state_->media_browser_vpn_configured = found;
+            app_state_->media_browser_vpn_configured =
+                !utils::read_env_value(utils::kServicesEnvPath,
+                                       "WIREGUARD_PRIVATE_KEY").empty();
 
             // Is the movie drive attached? The library lives on an
             // external drive mounted at STORAGE_ROOT (/mnt/ssd); without
@@ -485,6 +487,34 @@ void SettingsMenuManager::force_close() {
     is_closing_ = false;
     close_pairing_screen();
     close_controller_wizard();
+}
+
+bool SettingsMenuManager::is_static_for_redraw() const {
+    if (!active_ || is_opening_ || is_closing_) return false;
+    if (pairing_active_ || wizard_active_) return false;
+    if (game_browser_active_) return false;
+    const auto& wifi = utils::WifiManager::instance();
+    if (wifi.is_scanning() || wifi.is_connecting() || wifi.is_forgetting()) {
+        return false;
+    }
+    return true;
+}
+
+uint64_t SettingsMenuManager::redraw_signature() const {
+    app::ContentSignature sig;
+    sig.add(static_cast<uint64_t>(current_submenu_));
+    sig.add(static_cast<uint64_t>(selected_index_));
+    sig.add(static_cast<uint64_t>(scroll_offset_));
+    sig.add(static_cast<uint64_t>(wifi_disconnect_confirm_));
+    sig.add(static_cast<uint64_t>(controller_reset_confirm_));
+    for (const auto* items : {&menu_items_, &submenu_items_}) {
+        sig.add(static_cast<uint64_t>(items->size()));
+        for (const auto& item : *items) {
+            sig.add(item.label);
+            sig.add(item.sublabel);
+        }
+    }
+    return sig.value();
 }
 
 float SettingsMenuManager::get_animation_progress() const {
@@ -964,6 +994,8 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
         std::string target = wifi.get_connecting_ssid();
         status = "Connecting to " + (target.empty() ? std::string("Wi-Fi") : target) + "...";
         meta = "Verifying credentials...";
+    } else if (wifi.is_forgetting()) {
+        status = "Forgetting " + wifi.get_forgetting_ssid() + "...";
     } else if (auto ws = utils::WifiManager::instance().get_status_cached();
                ws.connected) {
         status = "Connected: " + ws.ssid;
@@ -986,7 +1018,9 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
     // forgetting, and toast the outcome.
     const auto ws = wifi.get_status_cached();
     std::string current = ws.connected ? ws.ssid : "";
-    if (!current.empty()) {
+    // Hidden while a forget runs: the cached status still reads connected
+    // until the worker invalidates it.
+    if (!current.empty() && !wifi.is_forgetting()) {
         items.emplace_back(
             wifi_disconnect_confirm_ ? "Confirm: forget " + current + "?"
                                      : "Disconnect from " + current,
@@ -995,9 +1029,20 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
                                      : "Drops Wi-Fi and deletes the saved password",
             [this, current]() {
                 if (wifi_disconnect_confirm_) {
-                    bool ok = utils::WifiManager::instance().forget_network(current);
-                    ui::Toast::show(ok ? "Forgot network " + current
-                                       : "Could not forget " + current);
+                    // Async: forget_network() is two sudo nmcli calls (15 s
+                    // timeout each) and this runs on the render thread,
+                    // inside systemd's 10 s watchdog. update() toasts the
+                    // outcome on the worker's falling edge.
+                    if (utils::WifiManager::instance().forget_network_async(current)) {
+                        // Arm the edge HERE, not in update(): a fast worker
+                        // can finish before the next update() would see it
+                        // running, and the outcome toast would be lost.
+                        was_forgetting_ = true;
+                        forgetting_ssid_ = current;
+                        ui::Toast::show("Forgetting " + current + "...");
+                    } else {
+                        ui::Toast::show("Wi-Fi is busy — try again in a moment");
+                    }
                     wifi_disconnect_confirm_ = false;
                     rebuild_current_submenu();
                 } else {

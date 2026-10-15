@@ -331,7 +331,13 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
                 LOG_DEBUG("GStreamer debug: {}", debug);
                 g_free(debug);
             }
+            // Latch it: the pipeline may keep reporting PLAYING with a
+            // frozen position, and update_state()'s poll must not undo
+            // this. Callers (main.cpp playlist advance, the Media Browser
+            // PlaybackScreen) read has_error() to leave the dead item.
+            player->has_error_ = true;
             player->is_playing_ = false;
+            player->is_paused_ = false;
             break;
         }
 
@@ -345,7 +351,10 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
 
                 if (new_state == GST_STATE_PLAYING) {
                     LOG_DEBUG("Pipeline entering PLAYING state");
-                    player->is_playing_ = true;
+                    // Same gate as update_state(): a latched error/EOS
+                    // wins over a late state-change message.
+                    player->is_playing_ = !player->has_error_.load()
+                                          && !player->at_eos_.load();
                     player->is_paused_ = false;
 
                     // Inspect pipeline to see what decoder is used (only once per pipeline)
@@ -427,11 +436,16 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
             //     drops accumulate slowly enough to surface; pipeline
             //     rebasing bursts collapse into 1-2 lines instead of
             //     thousands.
-            //   - AND only log at most once per 500 ms wall clock. Belt
+            //   - AND only log at most once per 5 s wall clock. Belt
             //     and suspenders against any other GStreamer behavior
             //     that wants to emit messages at full pipeline tick rate.
+            //     Was 500 ms: content the board cannot decode in time
+            //     (software HEVC on a Pi 4B) drops frames continuously,
+            //     which held this at two journald lines a second for
+            //     the whole film. Nothing is lost by the wider window —
+            //     the line carries the running total AND the delta.
             constexpr guint64 kDropDeltaThreshold = 30;
-            constexpr int kMinIntervalMs = 500;
+            constexpr int kMinIntervalMs = 5000;
             const auto now = std::chrono::steady_clock::now();
             const auto since_last_ms = std::chrono::duration_cast<
                 std::chrono::milliseconds>(
@@ -497,17 +511,12 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
 
     LOG_DEBUG("GstPlayer::load_file - Current volume: {}%", get_volume());
 
-    if (start > 0.0) {
-        // play() no longer blocks for preroll, but a seek issued before the
-        // pipeline has prerolled can be dropped by some demuxers. No current
-        // caller passes start > 0 (all live call sites load from 0.0), so
-        // this bounded wait preserves the original seek-after-preroll
-        // semantics for this branch only, without costing the common path
-        // anything.
-        GstState current, pending;
-        (void)gst_element_get_state(pipeline_, &current, &pending, 3 * GST_SECOND);
-        seek_absolute(start);
-    }
+    // A seek issued before preroll can be dropped by some demuxers, so the
+    // start offset waits for it — but NOT here. This used to block up to 3 s
+    // in gst_element_get_state on the render thread, which became every
+    // trimmed playlist item and every Media Browser resume once callers
+    // started passing start > 0. update_state()'s per-frame poll fires it.
+    deferred_start_.arm(start);
 
     return true;
 }
@@ -559,7 +568,12 @@ void GstPlayer::seek(double seconds) {
     // off pending_seek_target_ns_ makes N rapid "+5s" ticks correctly add
     // up to +5N s, which is what the user expects from a fast scrub.
     gint64 base;
-    if (seek_in_progress_ || has_pending_seek_) {
+    if (deferred_start_.armed()) {
+        // Not prerolled yet: the stream is logically at its start offset,
+        // and the user's scrub supersedes the deferred seek.
+        base = static_cast<gint64>(*deferred_start_.position_override() * GST_SECOND);
+        deferred_start_.cancel();
+    } else if (seek_in_progress_ || has_pending_seek_) {
         base = pending_seek_target_ns_;
     } else if (!gst_element_query_position(pipeline_, GST_FORMAT_TIME, &base)) {
         return;  // can't establish a base position; drop this scrub tick
@@ -578,6 +592,7 @@ void GstPlayer::seek(double seconds) {
 
 void GstPlayer::seek_absolute(double timestamp) {
     if (!initialized_) return;
+    deferred_start_.cancel();  // an explicit target supersedes load's start
     gint64 target = static_cast<gint64>(timestamp * GST_SECOND);
     // Absolute seeks (UI "go to position" / phone-remote scrub) carry no
     // intrinsic direction — SNAP_NEAREST lands on whichever keyframe is
@@ -612,6 +627,8 @@ void GstPlayer::request_seek(gint64 target_ns, GstSeekFlags snap) {
 }
 
 void GstPlayer::fire_seek() {
+    // Never serve a pre-seek position from the per-frame memo.
+    position_query_.invalidate();
     seek_in_progress_ = true;
     has_pending_seek_ = false;
     // A FLUSH seek out of EOS resumes playback — the stream is no longer
@@ -655,8 +672,11 @@ void GstPlayer::stop() {
     is_playing_ = false;
     is_paused_ = false;
     at_eos_ = false;
+    has_error_ = false;
     position_ = 0.0;
     duration_ = 0.0;
+    position_query_.invalidate();
+    duration_query_.invalidate();
 
     // Reset seek-coalescing state so the next stream starts clean — a
     // leftover seek_in_progress_ from the prior file would block its
@@ -664,6 +684,7 @@ void GstPlayer::stop() {
     seek_in_progress_ = false;
     has_pending_seek_ = false;
     pending_seek_target_ns_ = 0;
+    deferred_start_.cancel();
 }
 
 bool GstPlayer::is_playing() const {
@@ -676,6 +697,15 @@ bool GstPlayer::is_paused() const {
 
 double GstPlayer::get_position() const {
     if (!initialized_) return 0.0;
+    // Until the deferred start seek lands, report its target (the old
+    // blocking load returned already there). Not on error: the playback
+    // error policy treats position as proof of healthy play, and a broken
+    // file must not look like it reached its start offset.
+    if (auto start = deferred_start_.position_override(); start && !has_error_.load()) {
+        return *start;
+    }
+    // This frame's update_position() already asked the pipeline.
+    if (position_query_.fresh(QueryCache::now_ns())) return position_;
     gint64 pos = 0;
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
         return static_cast<double>(pos) / GST_SECOND;
@@ -691,6 +721,7 @@ double GstPlayer::get_position() const {
 
 double GstPlayer::get_duration() const {
     if (!initialized_) return 0.0;
+    if (duration_query_.fresh(QueryCache::now_ns())) return duration_;
     gint64 dur = 0;
     if (gst_element_query_duration(pipeline_, GST_FORMAT_TIME, &dur)) {
         return static_cast<double>(dur) / GST_SECOND;
@@ -758,6 +789,21 @@ void GstPlayer::update_state() {
     GstState current_state, pending_state;
     GstStateChangeReturn ret = gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
 
+    // load_file(start > 0): fire the start seek on the first poll that sees
+    // the pipeline prerolled (reached PAUSED, even if still heading to
+    // PLAYING). Goes through request_seek so the coalescer serializes it
+    // with any scrub and the seek watchdog covers it.
+    {
+        const bool prerolled = ret != GST_STATE_CHANGE_FAILURE &&
+                               (current_state == GST_STATE_PAUSED ||
+                                current_state == GST_STATE_PLAYING);
+        if (auto start = deferred_start_.take_if_prerolled(prerolled)) {
+            LOG_DEBUG("GstPlayer: prerolled, seeking to start offset {}s", *start);
+            request_seek(static_cast<gint64>(*start * GST_SECOND),
+                         GST_SEEK_FLAG_SNAP_NEAREST);
+        }
+    }
+
     if (ret == GST_STATE_CHANGE_SUCCESS || ret == GST_STATE_CHANGE_NO_PREROLL || ret == GST_STATE_CHANGE_ASYNC) {
         // Update our cached state
         bool was_playing = is_playing_;
@@ -784,9 +830,18 @@ void GstPlayer::update_state() {
         if (at_eos_.load()) {
             now_playing = false;
         }
+        // Same for a fatal error: the pipeline can stay PLAYING (frozen
+        // position) after posting GST_MESSAGE_ERROR. Before this gate the
+        // poll re-set is_playing_=true every frame, so neither the
+        // playlist auto-advance nor the stall watchdog could ever leave a
+        // corrupt file. The latch clears only on stop()/load_file().
+        if (has_error_.load()) {
+            now_playing = false;
+        }
 
         is_playing_ = now_playing;
-        is_paused_ = (current_state == GST_STATE_PAUSED && !now_playing);
+        is_paused_ = (current_state == GST_STATE_PAUSED && !now_playing
+                      && !has_error_.load());
 
         // Log when playback starts (decoder inspection deferred to avoid blocking render loop)
         if (!was_playing && now_playing) {
@@ -844,13 +899,22 @@ void GstPlayer::update_state() {
 void GstPlayer::update_position() {
     if (!initialized_ || !pipeline_) return;
 
-    // Update position and duration
+    // Update position and duration — the frame's one real query of each;
+    // the getters reuse these for the rest of the frame (query_cache.h).
+    // A failed query leaves its memo stale so the getters retry.
+    const std::int64_t now = QueryCache::now_ns();
     gint64 pos, dur;
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
         position_ = static_cast<double>(pos) / GST_SECOND;
+        position_query_.store(now);
+    } else {
+        position_query_.invalidate();
     }
     if (gst_element_query_duration(pipeline_, GST_FORMAT_TIME, &dur)) {
         duration_ = static_cast<double>(dur) / GST_SECOND;
+        duration_query_.store(now);
+    } else {
+        duration_query_.invalidate();
     }
 }
 

@@ -67,6 +67,7 @@ LEGACY_PLAYLISTS=(
 # The check in Step 2 doesn't actively keep these — it's just for
 # the verification block at the end so the script confirms expected
 # defaults are present.
+# shellcheck disable=SC2034  # empty placeholder; no verification block reads it yet
 EXPECTED_DEFAULT_PLAYLISTS=(
     # e.g. "kids_movies.yaml"
     # e.g. "kiosk_demo.yaml"
@@ -188,6 +189,12 @@ echo -e "${CYAN}[1/9] Stopping services...${NC}"
 systemctl stop magic-dingus-box-cpp.service 2>/dev/null && \
     echo -e "  ${GREEN}Stopped${NC} magic-dingus-box-cpp.service" || \
     echo -e "  ${DIM}magic-dingus-box-cpp.service was not running${NC}"
+
+# PulseAudio has its own unit; stop it so it cannot rewrite the
+# ~/.config/pulse state cleared below.
+systemctl stop magic-dingus-audio.service 2>/dev/null && \
+    echo -e "  ${GREEN}Stopped${NC} magic-dingus-audio.service" || \
+    echo -e "  ${DIM}magic-dingus-audio.service was not running${NC}"
 
 systemctl stop magic-dingus-web.service 2>/dev/null && \
     echo -e "  ${GREEN}Stopped${NC} magic-dingus-web.service" || \
@@ -325,6 +332,13 @@ else
     echo -e "  ${DIM}No settings.json found${NC}"
 fi
 
+# The OTA update channel: an image must start on stable (absence = stable).
+channel_file="${CONFIG_DIR}/update_channel"
+if [[ -e "$channel_file" ]]; then
+    rm -f "$channel_file" "${channel_file}.tmp"
+    echo -e "  ${RED}Removed${NC} ${channel_file} (units start on the stable update channel)"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 6: Remove SSH host keys
 # ---------------------------------------------------------------------------
@@ -421,7 +435,8 @@ if [[ -d "$disabled_dir" ]]; then
     echo -e "  ${RED}Removed${NC} disabled playlists directory"
 fi
 
-# Clean PulseAudio state (will regenerate on boot via init_audio.sh)
+# Clean PulseAudio state (regenerated on boot by magic-dingus-audio.service,
+# audio_service.sh run)
 if [[ -d "${MAGIC_HOME}/.config/pulse" ]]; then
     rm -rf "${MAGIC_HOME}/.config/pulse"
     echo -e "  ${RED}Cleared${NC} PulseAudio state"
@@ -506,9 +521,11 @@ fi
 # ---------------------------------------------------------------------------
 echo -e "${CYAN}[12/13] Installing first-boot service...${NC}"
 
+# converge_system_units.sh --only is the one writer of unit files: it
+# installs the tree's copy when absent or different and daemon-reloads.
 if [[ -f "$SYSTEMD_SRC" ]]; then
-    cp "$SYSTEMD_SRC" /etc/systemd/system/magic-first-boot.service
-    systemctl daemon-reload
+    bash "${SCRIPT_DIR}/../../magic_dingus_box_cpp/scripts/converge_system_units.sh" \
+        --only magic-first-boot.service
     systemctl enable magic-first-boot.service
     echo -e "  ${GREEN}Installed and enabled${NC} magic-first-boot.service"
 else

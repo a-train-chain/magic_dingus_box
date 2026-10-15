@@ -19,11 +19,17 @@
 #   ./scan_image_for_secrets.sh --image ~/golden.img.gz --needles ~/secrets.txt
 #
 #   --pi HOST        harvest needles from a live box over SSH (Wi-Fi SSID +
-#                    PSK, every services/.env value, the Flask HMAC secret,
-#                    SSH host private keys)
+#                    PSK + seen BSSIDs, every services/.env value, the Flask
+#                    HMAC secret, SSH host private keys, the operator's SSH
+#                    client private keys, git-credentials, gh OAuth token)
 #   --needles FILE   use a file of literal secrets instead, one per line
 #   --skip-integrity skip the gzip CRC check (faster, but a truncated image
 #                    can then report a false clean -- not recommended)
+#   --only REGEX     scan only needles whose label matches REGEX (anchored),
+#                    e.g. --only 'env:WIREGUARD_PRIVATE_KEY'
+#   --vpn-key        shorthand for --only env:WIREGUARD_PRIVATE_KEY: "does
+#                    this image carry the source box's VPN key?" -- the audit
+#                    for images made before the fingerprint gate (CLONING.md)
 #
 # Exit: 0 clean, 1 leak found, 2 could not check.
 #
@@ -35,6 +41,7 @@ PI_HOST=""
 NEEDLES=""
 CHECK_INTEGRITY=1
 EXPECT_BYTES=0
+ONLY=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -43,7 +50,9 @@ while [[ $# -gt 0 ]]; do
         --needles)        NEEDLES="$2"; shift 2 ;;
         --skip-integrity) CHECK_INTEGRITY=0; shift ;;
         --expect-bytes)   EXPECT_BYTES="$2"; CHECK_INTEGRITY=0; shift 2 ;;
-        -h|--help)        sed -n 's/^# \{0,1\}//;1,/^$/p' "$0" | head -32; exit 0 ;;
+        --only)           ONLY="$2"; shift 2 ;;
+        --vpn-key)        ONLY="env:WIREGUARD_PRIVATE_KEY"; shift ;;
+        -h|--help)        awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
         *)                echo "Unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -63,6 +72,7 @@ fi
 
 TMP_NEEDLES=""
 PY_SCANNER=""
+# shellcheck disable=SC2329  # invoked by the trap below
 cleanup() {
     [[ -n "$TMP_NEEDLES" ]] && rm -f "$TMP_NEEDLES"
     [[ -n "$PY_SCANNER"  ]] && rm -f "$PY_SCANNER"
@@ -104,6 +114,17 @@ if [[ -n "$PI_HOST" ]]; then
     # They are still scanned -- if that design decision changes, the gate
     # notices immediately -- but they are reported separately instead of
     # turning every correct image red.
+    #
+    # Operator OUTBOUND identity (prepare_for_cloning.sh stashes all of it):
+    # SSH client private keys (body lines 2+ only -- line 1 of an unencrypted
+    # OpenSSH key is a near-constant header shared with the host keys above,
+    # and would report a false LEAK on every correct image), git-credentials
+    # lines, the gh CLI OAuth token, and NetworkManager's seen-bssids (AP
+    # MACs, geolocatable). NOT scanned: known_hosts and ~/.gitconfig -- their
+    # values (hostnames, the operator's name/email) legitimately recur in
+    # any image carrying a git checkout's reflogs, so they would bury real
+    # hits; prepare's post-scrub file check covers those instead.
+    # authorized_keys is never harvested: it ships by owner decision.
     ssh -o ConnectTimeout=10 "$PI_HOST" '
         sudo grep -hoE "^ssid=.+" /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null | sed "s/^ssid=/wifi-ssid\t/"
         sudo grep -hoE "^psk=.+"  /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null | sed "s/^psk=/wifi-psk\t/"
@@ -112,6 +133,14 @@ if [[ -n "$PI_HOST" ]]; then
           | sed "s/^\([A-Za-z_][A-Za-z0-9_]*\)=/env:\1\t/"
         sudo sed "s/^/flask-secret\t/" /opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key 2>/dev/null
         sudo grep -h -v -e "-----" /etc/ssh/ssh_host_*_key 2>/dev/null | sed "s/^/expected:ssh-host-key\t/"
+        sudo find /home/magic/.ssh /root/.ssh -maxdepth 1 -type f -name "id_*" ! -name "*.pub" \
+             -exec awk "/-----/{n=0;next} {n++; if (n>1) print}" {} + 2>/dev/null \
+          | sed "s/^/ssh-client-private-key\t/"
+        sudo cat /home/magic/.git-credentials /root/.git-credentials 2>/dev/null | sed "s/^/git-credentials\t/"
+        sudo grep -hoE "oauth_token:[[:space:]]*[^[:space:]]+" /home/magic/.config/gh/hosts.yml /root/.config/gh/hosts.yml 2>/dev/null \
+          | sed -E "s/^oauth_token:[[:space:]]*/gh-oauth-token\t/"
+        sudo grep -hoE "([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" /var/lib/NetworkManager/seen-bssids 2>/dev/null \
+          | sed "s/^/wifi-bssid\t/"
     ' 2>/dev/null \
         | sed -e '/\t[[:space:]]*$/d' -e 's/[[:space:]]*$//' -e '/^$/d' \
         | sort -u > "$TMP_NEEDLES" || true
@@ -137,6 +166,25 @@ if [[ -n "$NEEDLES" && -f "$NEEDLES" ]] && LC_ALL=C grep -q $'\r' "$NEEDLES" 2>/
     [[ -n "$TMP_NEEDLES" ]] && rm -f "$TMP_NEEDLES"
     TMP_NEEDLES="$NORMALISED"
     NEEDLES="$NORMALISED"
+fi
+
+# --only / --vpn-key: keep just the needles whose SOURCE label matches. The
+# audit question for an image made before the fingerprint gate is narrow --
+# "would a unit flashed from this dial the VPN on the source's key?" -- and a
+# whole-box scan buries that one answer among every other credential.
+if [[ -n "$ONLY" ]]; then
+    FILTERED=$(mktemp "${TMPDIR:-/tmp}/mdb-needles-only.XXXXXX")
+    chmod 600 "$FILTERED"
+    awk -F'\t' -v re="^(${ONLY})$" 'NF >= 2 && $1 ~ re' "$NEEDLES" > "$FILTERED"
+    [[ -n "$TMP_NEEDLES" ]] && rm -f "$TMP_NEEDLES"
+    TMP_NEEDLES="$FILTERED"
+    NEEDLES="$FILTERED"
+    if ! grep -q . "$NEEDLES" 2>/dev/null; then
+        echo -e "  ${RED}No secret labelled '${ONLY}' to scan for.${NC} A vacuous scan is not a pass."
+        echo -e "  (Rotated already, or Media Browser never set up on the box? Scan for the"
+        echo -e "  OLD value with --needles: one line, label<TAB>value, chmod 600, then delete it.)"
+        exit 2
+    fi
 fi
 
 N_TOTAL=$(grep -c . "$NEEDLES" 2>/dev/null || echo 0)

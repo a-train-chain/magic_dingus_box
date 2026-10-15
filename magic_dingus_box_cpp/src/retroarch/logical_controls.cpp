@@ -85,10 +85,10 @@ std::vector<LogicalControl> required_controls(ControllerStyle style) {
     using L = LogicalControl;
     if (style == ControllerStyle::N64_STYLE) {
         return {L::N64_DPAD_UP, L::N64_DPAD_DOWN, L::N64_DPAD_LEFT,
-                L::N64_DPAD_RIGHT, L::N64_A, L::N64_START};
+                L::N64_DPAD_RIGHT, L::N64_A, L::N64_START, L::N64_Z};
     }
     return {L::DPAD_UP, L::DPAD_DOWN, L::DPAD_LEFT, L::DPAD_RIGHT,
-            L::CROSS, L::START};
+            L::CROSS, L::START, L::SELECT};
 }
 
 const char* controller_style_key(ControllerStyle s) {

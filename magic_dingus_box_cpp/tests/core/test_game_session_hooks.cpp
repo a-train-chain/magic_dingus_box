@@ -7,9 +7,9 @@ namespace {
 struct RecordingHooks : app::GameSessionHooks {
     std::vector<std::string> calls;
     void release_input() override { calls.push_back("release_input"); }
-    void wake_controllers(const std::function<void()>& between) override {
+    void wake_controllers(const std::function<void()>& after) override {
         calls.push_back("wake_controllers");
-        if (between) between();
+        if (after) after();
     }
     void release_display() override { calls.push_back("release_display"); }
     app::DisplayReacquire reacquire_display(uint32_t w, uint32_t h) override {
@@ -40,4 +40,16 @@ TEST_CASE("Default hooks are no-ops that report success", "[core][controller]") 
     // was null.
     REQUIRE(!hooks.reacquire_display(1280, 720).attempted);
     REQUIRE(hooks.reinit_input());
+}
+
+TEST_CASE("Only a re-acquire that was attempted and failed loses the display", "[core][controller]") {
+    // The Pi: DRM master not re-acquired after a game -> the kiosk must
+    // exit non-zero so systemd restarts it (Controller::display_lost()).
+    REQUIRE(app::display_was_lost(app::DisplayReacquire{true, false, false}));
+    REQUIRE_FALSE(app::display_was_lost(app::DisplayReacquire{true, true, true}));
+    REQUIRE_FALSE(app::display_was_lost(app::DisplayReacquire{true, true, false}));
+    // A host with no display to reacquire (the base default: the headless
+    // engine, a Pi run without a DrmDisplay) must never read as lost, or
+    // every game exit would end the process.
+    REQUIRE_FALSE(app::display_was_lost(app::GameSessionHooks{}.reacquire_display(1280, 720)));
 }

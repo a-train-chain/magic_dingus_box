@@ -240,7 +240,7 @@
                             <div class="upload-content" id="libraryUploadContent" style="display: none;">
                                 <div class="resolution-row">
                                     <label>Quality:</label>
-                                    <!-- Values must match TRANSCODE_RESOLUTIONS in admin.py;
+                                    <!-- Values must match TRANSCODE_RESOLUTIONS in admin_media.py;
                                          crt_hd is the master default (4:3, 1:1 in the kiosk's
                                          4:3 viewport at 720p output). -->
                                     <select id="targetResolution" class="resolution-select-compact">
@@ -250,7 +250,7 @@
                                 </div>
                                 <div class="resolution-row">
                                     <label>Framing:</label>
-                                    <!-- Values must match TRANSCODE_FIT_MODES in admin.py. -->
+                                    <!-- Values must match TRANSCODE_FIT_MODES in admin_media.py. -->
                                     <select id="framingMode" class="resolution-select-compact">
                                         <option value="crop" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> Fill screen — crop edges (TV look)</option>
                                         <option value="fit"><svg class="ic" aria-hidden="true"><use href="#ic-monitor"/></svg> Show everything — add borders</option>
@@ -603,6 +603,34 @@
                         </div>
                     </details>
 
+                    <!-- Advanced: VPN server country. Lazy-loaded the first
+                         time it is opened; all behaviour is in
+                         static/vpn_settings.js (backend: vpn_settings.py). -->
+                    <details id="mbVpnAdvanced" style="margin-top: 1rem;">
+                        <summary style="cursor: pointer; color: var(--accent2); font-weight: 600; padding: 0.5rem 0;">
+                            <svg class="ic" aria-hidden="true"><use href="#ic-settings"/></svg> Advanced
+                        </summary>
+                        <div style="padding: 0.75rem 0;">
+                            <label for="mbVpnCountrySelect" class="settings-description"
+                                   style="display: block; margin-bottom: 0.35rem;">
+                                VPN server country
+                            </label>
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                                <select id="mbVpnCountrySelect" disabled
+                                    style="flex: 1 1 12rem; padding: 0.5rem; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;">
+                                    <option>Loading…</option>
+                                </select>
+                                <button class="btn-secondary small" id="mbVpnCountryApply" disabled>Apply</button>
+                            </div>
+                            <p class="settings-description" id="mbVpnCountryNote" style="margin-top: 0.5rem; font-size: 0.85rem;">
+                                If downloads keep stalling because the VPN drops, a different
+                                country often helps. Applying reconnects the VPN — downloads
+                                pause for about a minute.
+                            </p>
+                            <div id="mbVpnCountryStatus" class="restore-status" style="display: none; margin-top: 0.5rem;"></div>
+                        </div>
+                    </details>
+
                     <!-- Restart + Reset destructive actions -->
                     <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color); display: flex; gap: 0.5rem; flex-wrap: wrap;">
                         <button class="btn-secondary small" id="mbRestartBtn" onclick="restartMediaBrowserServices()">
@@ -799,7 +827,7 @@
                         <button class="btn-secondary"
                             onclick="document.getElementById('mobileRestoreFile').click()">Select Backup File</button>
                         <!-- The only restore status element in the document —
-                             showRestoreStatus() (manager.js) writes here. -->
+                             showRestoreStatus() (manager_settings.js) writes here. -->
                         <div id="mobileRestoreStatus" class="restore-status"></div>
                     </div>
                 </div>
@@ -824,6 +852,35 @@
                 </div>
             </div>
 
+            <!-- Box health: runs the box's own acceptance test
+                 (verify_box.sh) and shows the verdict in plain language.
+                 The diagnostics download sits here because it is the next
+                 thing to reach for when the verdict is bad. -->
+            <div class="settings-section-mobile">
+                <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-health"/></svg> Box Health</div>
+                <div class="section-body">
+                    <p class="settings-description">
+                        Checks the picture, sound, games, storage and the box's
+                        own services, the same way it was checked before it
+                        shipped. Takes about 30 seconds.
+                    </p>
+                    <label id="boxHealthServicesRow" class="settings-description" style="display: none; margin-bottom: 0.5rem;">
+                        <input type="checkbox" id="boxHealthWithServices">
+                        Also check the Movies services (takes a few minutes)
+                    </label>
+                    <div class="update-actions">
+                        <button class="btn-primary" id="boxHealthBtn" onclick="runBoxHealth()">Run Health Check</button>
+                        <button class="btn-secondary" id="diagBundleBtn" onclick="downloadDiagnostics()">Download Diagnostics</button>
+                    </div>
+                    <div id="boxHealthVerdict" class="restore-status" style="display: none; margin-top: 0.75rem;"></div>
+                    <div id="boxHealthDetails" style="display: none; margin-top: 0.5rem; font-size: 0.85rem;"></div>
+                    <p class="settings-description" style="margin-top: 0.75rem; font-size: 0.8rem;">
+                        The diagnostics file is for support: logs and settings
+                        with passwords, keys and paired phones left out.
+                    </p>
+                </div>
+            </div>
+
             <div class="settings-section-mobile">
                 <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-health"/></svg> System Health</div>
                 <div class="section-body">
@@ -841,6 +898,13 @@
                         <div class="health-row">
                             <span class="health-label">Current Version</span>
                             <span class="health-value" id="currentVersion">Loading...</span>
+                        </div>
+                        <!-- Hidden until /admin/update/channel answers (a box on
+                             an updater older than the channel feature has no
+                             such endpoint). -->
+                        <div class="health-row" id="updateChannelRow" style="display: none;">
+                            <span class="health-label">Update Channel</span>
+                            <span class="health-value" id="updateChannel">Stable</span>
                         </div>
                     </div>
 
@@ -876,6 +940,24 @@
                             Rollback
                         </button>
                     </div>
+
+                    <details id="updateAdvanced" style="margin-top: 1rem; display: none;">
+                        <summary style="cursor: pointer; color: var(--accent2); font-size: 0.9rem;">
+                            Advanced
+                        </summary>
+                        <div style="padding: 0.75rem 0;">
+                            <label style="display: flex; gap: 0.5rem; align-items: center; cursor: pointer;">
+                                <input type="checkbox" id="betaChannelToggle"
+                                    onchange="setUpdateChannel(this.checked ? 'beta' : 'stable')">
+                                Get early (beta) updates
+                            </label>
+                            <p class="settings-description" style="color: var(--accent); font-size: 0.85rem; margin-top: 0.5rem;">
+                                <svg class="ic" aria-hidden="true"><use href="#ic-warning"/></svg>
+                                Beta updates are unfinished test builds that may have bugs — leave this off unless you are testing a new release.
+                                Turning it off later does not undo a beta; this box simply waits for the next regular update.
+                            </p>
+                        </div>
+                    </details>
                 </div>
             </div>
         </section>
@@ -932,7 +1014,17 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=122"></script>
+    <!-- Classic scripts sharing one global scope; ORDER MATTERS (see the note
+         at the top of manager.js). Bump a file's ?v= whenever it changes. -->
+    <script src="/static/manager.js?v=124"></script>
+    <script src="/static/manager_devices.js?v=1"></script>
+    <script src="/static/manager_media.js?v=1"></script>
+    <script src="/static/manager_roms.js?v=1"></script>
+    <script src="/static/manager_playlists.js?v=1"></script>
+    <script src="/static/manager_import.js?v=1"></script>
+    <script src="/static/manager_settings.js?v=1"></script>
+    <script src="/static/manager_media_browser.js?v=1"></script>
+    <script src="/static/vpn_settings.js?v=1"></script>
 
 </body>
 

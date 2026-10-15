@@ -12,7 +12,7 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 
 | Path | Why |
 |---|---|
-| `magic_dingus_box_cpp/src/**` | Kiosk C++ source. Rebuilt on-Pi via `cmake .. && make -j2` after rsync. |
+| `magic_dingus_box_cpp/src/**` | Kiosk C++ source. Rebuilt on-Pi (in `build.new/`, at `-j1` or `-j2` per `build_memory_plan`) after rsync when no usable pre-compiled binary exists — see "The TV stays on while a source build compiles". |
 | `magic_dingus_box_cpp/scripts/**` (incl. `update.sh`, `deploy_cpp.sh`, `setup_services.sh`, `kiosk_standby_watcher.sh`) | All shipping scripts. |
 | `scripts/golden_image/**` (`first_boot.sh`, `prepare_for_cloning.sh`, `restore_after_cloning.sh`) | Clone tooling. Updated on the Pi so future re-clones from a customer Pi (rare but supported) use current logic. |
 | `magic_dingus_box_cpp/assets/**` (bezels, fonts, logos, Marquee wood-frame) | Visual assets. Bezel updates and Marquee wood-frame revisions (`assets/marquee/marquee_frame.png`) flow through cleanly. |
@@ -34,6 +34,7 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 >
 > The four rsync exclude lists are unchanged by this fix.
 | `/usr/local/bin/{playback_services_pause.sh, gluetun_cascade_restart.sh, clear_radarr_cooldowns.py, sync_qbit_password.sh, auto_blocklist_stuck_warnings.py, qbit-port-sync.sh}` and `/etc/dnsmasq.d/usb0.conf` | **Refreshed as of v1.9.8** (`refresh_out_of_tree_files` in `update.sh`). These are copies made *outside* `/opt` by `setup_services.sh` / `install_deps.sh` at provisioning time, and the install rsync only ever writes inside `INSTALL_DIR` — so before v1.9.8 they were frozen at image-cut time on every fielded box. Refresh only, never provision: each target is copied **only if it already exists**, so an OTA can never hand a box a helper it was not set up with. Skipped entirely in test mode (`MAGIC_SKIP_SYSTEMCTL=true`). |
+| `/etc/systemd/system/*.service`, `*.timer` — the tree's units (`systemd/`, `magic_dingus_box_cpp/systemd/`, `magic_dingus_box_cpp/scripts/{missing_search,episode_priority}/`) | **Converged on every OTA as of the release after v1.10.0** by `converge_system_units.sh`, which the NEW tree's `setup_memory_tuning.sh` runs — so even the OLD `update.sh` delivers it on its first hop. Changed units are replaced by same-directory rename; absent ones are installed only when their policy row says so (Media Browser units only with `services/.env`); masked units, operators' drop-ins and installed units' enablement are never touched; the kiosk is never restarted (it is stopped while the hook runs and the OTA starts it). It is the only writer of unit files: `setup_ota_recovery.sh` (start of the OTA), `setup_audio_service.sh` (the hook), `setup_services.sh` (Reconfigure), deploy and the clone tooling all install their units through `converge_system_units.sh --only <unit>`, so every path writes the same tree file. A rollback converges back to the restored tree (retiring units the rolled-back release added) only when the updater running it already has the converge: the user-initiated rollback runs the installed, newer updater and always can, while a failed-install rollback and the power-cut recovery (which runs the backup's `update.sh`) run the OLDER updater, so on the hop INTO the release that ships the converge, or from any release ≤ v1.10.0, they cannot — that release therefore changes no installable unit (it only deletes the six legacy `magic-mpv*`/`magic-ui*` unit files, which no install path ever installed), so the units it leaves behind equal the restored tree's; boxes skip releases, so while boxes on ≤ v1.10.0 remain in the field, any later unit-changing release must likewise be safe with a pre-converge tree. The internal rollback converges only after a complete restore. Deleting a unit from the tree retires it on every box (the converge disables and removes it); a rollback restores it only where the restored tree's policy row installs it when absent (`install`/`enable`/`enable-now`) and never restores its previous enablement — a `skip`-row unit is never reinstalled — so keep a deleted unit's file for one release, or accept that a rollback won't bring it back. Rules and policy table: CLAUDE.md "System units converge". |
 | `CMakeLists.txt`, top-level build configs | Used during the on-Pi rebuild. |
 | `CHANGELOG.md` | Updated metadata. |
 
@@ -41,9 +42,34 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 
 | Path | Reality |
 |---|---|
-| `/etc/systemd/system/*.service`, `*.timer` (the installed copies of `magic_dingus_box_cpp/systemd/**`) | **NOT reinstalled.** This table claimed otherwise until v1.9.8. `update.sh` rsyncs the unit *sources* into `/opt` and runs `systemctl daemon-reload`, but it never writes `/etc/systemd/system` — daemon-reload re-reads a directory the OTA never touched. Unit files on a fielded box are frozen at provisioning time. Harmless so far (the only unit changed between v1.9.3 and v1.9.7 was a comment), but **a unit-file change is not a shippable fix**: it reaches a box only via the Content Manager's Media Browser Configure/Reconfigure flow, which re-runs `setup_services.sh`. |
+| Unit **enablement**, masked units, and units whose policy is `skip` when absent | The converge (row above) keeps installed units current but never enables, disables or unmasks an installed unit, and never installs a unit that needs provisioning it cannot do (a `/usr/local/bin` helper, dnsmasq config, harness wiring). Before the converge (≤ v1.10.0) no unit file was reinstalled except the OTA-recovery and audio units, which `setup_ota_recovery.sh` / `setup_audio_service.sh` wrote: the rest were frozen at provisioning time and unit fixes rode drop-ins from `setup_memory_tuning.sh`. |
 | `/etc/NetworkManager/**`, `/etc/sysctl.d/**`, `/etc/resolv.conf` | Not written by any rsync. Delivered by `setup_network_hardening.sh`, which `update.sh` *does* invoke as root on every OTA — that is the one supported route for network posture. |
 | Anything else outside `/opt/magic_dingus_box` | Not touched, except the explicitly enumerated refresh row above. |
+| Long-running services that execute tree code (e.g. `content-manager-redirect.service` → `scripts/content_manager_redirect.py`) | The new file lands, but the process keeps running the OLD code until something restarts it. The OTA restarts only `magic-dingus-web` and the kiosk — plus `gluetun-cascade-restart.service` when its `/usr/local/bin` script is newer than the running process (`restart_stale_cascade_watcher.sh`, run by `setup_memory_tuning.sh`, so it works even on the hop executed by an older `update.sh` that copied the script without restarting the watcher). |
+| Docker containers | Not recreated by the OTA. A `docker-compose.yml` change applies at the next `compose up -d` — which `magic-dingus-services` runs on every boot — so compose-level fixes (e.g. per-container log rotation) arm on the box's next restart. `/etc/docker/daemon.json` is never written by OTA. |
+
+**Reaching field boxes — the rule.** Boxes in the field update with the
+`update.sh` they already have, not the one in the new release. That
+version rsyncs the tree, then runs the NEW tree's
+`setup_network_hardening.sh` and `setup_memory_tuning.sh` as root, then
+`daemon-reload` and starts the kiosk. Those two scripts are therefore the
+only root-level delivery path a fix has on the update that ships it. A
+**unit-file fix** is now an ordinary edit of the unit in the tree (plus its
+`POLICY` row in `converge_system_units.sh` for a new unit), which
+`setup_memory_tuning.sh`'s converge installs — never a drop-in. Any other
+system-side fix (a sysctl, a service restart, anything else under `/etc`)
+must ride one of the two scripts, idempotent, and never able to fail the
+script. Examples: the port-80 redirect is `try-restart`ed by
+`setup_network_hardening.sh`; the PulseAudio unit's per-box kiosk drop-in
+(the real uid) is written by `setup_audio_service.sh`, which
+`setup_memory_tuning.sh` calls. The reverse direction: when a rollback
+(internal, user-initiated or boot recovery) restores a tree without
+`audio_service.sh`, `update.sh`'s `retire_audio_service_if_absent` removes
+our marker-tagged `~/.config/pulse/client.conf` (`autospawn = no`), disables
+and stops the audio unit and removes the kiosk drop-in, so the restored
+release's PulseAudio autospawn recovery works again. Only rollbacks run by
+this `update.sh` or a later one get this — a rollback to v1.9.14 performed
+by v1.9.14's own updater leaves the `client.conf` behind.
 
 ## What's PRESERVED — the contract
 
@@ -60,13 +86,68 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `magic_dingus_box_cpp/data/device_info.json` | Per-Pi device identity (UUID, hostname). | Generated at first boot; stable across the Pi's life. |
 | `magic_dingus_box_cpp/data/paired_remotes.json`, `data/flask_secret.key`, `data/pairing_session.json`, `data/pairing_audit.log` | Phone Remote pairing state. None are in git, so before these excludes were added (2026-07-30) the install rsync's `--delete` wiped them — **every paired phone was silently unpaired on every OTA**. | Paired-device records, the HMAC cookie-signing secret, in-flight pairing session, pairing audit log. |
 | `magic_dingus_box_cpp/data/kiosk_status.json`, `data/text_input_queue.jsonl`, `data/seek_request.json` | Transient kiosk↔web runtime files; excluded so an OTA can't yank them out from under the running web admin. | Status broadcast, phone-remote text-input queue, seek requests. |
-| `config/*` | Kiosk settings (display mode, audio, bezel selection, master volume, Media Browser unlock flag). Plus WiFi credentials in NetworkManager. | `config/settings.json`. |
-| `config/controller_profiles.json` | Captured controller mappings from the Controller Setup wizard. Covered by the existing `config/*` exclude; listed here so nobody "cleans it up". | Per-model button/axis profiles keyed by USB VID/PID. |
-| `magic_dingus_box_cpp/build/*` | Local build artifacts. Always rebuilt fresh during install. | CMake cache, object files, the kiosk binary. |
+| `/config/*` (anchored to the install root) | Kiosk settings (display mode, audio, bezel selection, master volume, Media Browser unlock flag). Plus WiFi credentials in NetworkManager. | `config/settings.json`. |
+| `config/controller_profiles.json` | Captured controller mappings from the Controller Setup wizard. Covered by the existing `/config/*` exclude; listed here so nobody "cleans it up". | Per-model button/axis profiles keyed by USB VID/PID. |
+| `config/update_channel` | The box's OTA update channel (see "Update channels" below). Covered by `/config/*` in all four lists, so neither an install nor either rollback can flip a box between stable and beta. Absent = stable. | The single word `beta`, or nothing. |
+| `magic_dingus_box_cpp/build/*` | Local build artifacts. Always rebuilt fresh during install — **in `build.new/`, swapped in only after the new binary is verified** (see the 2026-10 section below); the live `build/` is never deleted first. | CMake cache, object files, the kiosk binary. |
+| `magic_dingus_box_cpp/data/pending_revocations.txt`, `magic_dingus_box_cpp/data/upload_temp/` | Per-box runtime state, never in a release tarball, so the install `--delete` removed them on every OTA. Excluded from all four lists as of the 2026-10 hardening (`deploy_cpp.sh` already excluded both). | Phone-unpair revocations not yet applied; half-finished Content Manager uploads. |
 | `services/.env` | Per-Pi Media Browser secrets. NOT in git. | WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr/qBit API keys, qBit admin password. |
 | `services/config/*` | Per-Pi Media Browser stack runtime state. NOT in git. | Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime state, FlareSolverr state. |
 | `magic_dingus_box_cpp/data/media_browser.db*` | Media Browser watch state. NOT in git (`prepare_for_cloning.sh` deliberately wipes it, so it can never ship in a tarball). Excluded as of **v1.9.8** — before that, every OTA of every fielded box deleted it and `WatchStore` silently re-created an empty schema, so nothing errored and nothing warned. | Resume positions, watched/unwatched flags and NEW-badge state for movies **and** TV, plus the `-wal`/`-shm` sidecars. The library itself repopulates from Radarr/Sonarr; only the per-household viewing history was lost. |
-| `VERSION` (backup + install rsyncs only) | Not operator content — a control file. Excluded from the **install** rsync so the new version is stamped only after a verified kiosk start, and from the **backup** rsync so `$BACKUP_DIR/VERSION` can be written afterwards as a completion marker. Both rollback rsyncs deliberately keep it (a rollback must restore the old number) and also `cp` it explicitly. Pinned by `tests/local/update_rsync_excludes.bats`. | The single line of text the Content Manager reports as the box's version. |
+| `/VERSION` (backup + install rsyncs only; anchored) | Not operator content — a control file. Excluded from the **install** rsync so the new version is stamped only after a verified kiosk start, and from the **backup** rsync so `$BACKUP_DIR/VERSION` can be written afterwards as a completion marker. Both rollback rsyncs deliberately keep it (a rollback must restore the old number) and also `cp` it explicitly. Pinned by `tests/local/update_rsync_excludes.bats`. | The single line of text the Content Manager reports as the box's version. |
+
+## The TV stays on while a source build compiles (kiosk stopped only for the swap)
+
+When no usable pre-compiled binary exists (none published, or it needs newer libraries than the OS has), `update.sh` compiles the kiosk on the box — 8-10 minutes at `-j2` on a Pi 4B. The kiosk used to be stopped **before** the rsync, so that whole compile was a black TV. Now the kiosk is stopped exactly once, by `stop_kiosk_for_swap`, immediately before its binary changes.
+
+**Exact kiosk-down window.**
+
+| Path | Before | Now |
+|---|---|---|
+| Pre-compiled binary | rsync + binary download + install + hooks + restart (~14 s) | binary install (a rename) + hooks + restart |
+| Source build, kiosk kept up (`keep_j2` / `keep_j1`) | rsync + **whole compile** + hooks + restart | `promote_build_dir` (two renames) + hooks + restart |
+| Source build, `stop_kiosk` plan | rsync + whole compile + hooks + restart | whole compile + hooks + restart (unchanged in practice) |
+
+"Hooks" = Phone Remote/cores bootstraps, network hardening, memory tuning, Custom Format convergence — all still run with the kiosk stopped, as before (`setup_audio_service.sh` relies on it). A failed install's rollback still stops/restores/restarts the kiosk itself.
+
+**Why the old kiosk may run against the new tree.** From the install rsync to the swap, the OLD binary runs beside the NEW tree — exactly what the web admin has always done during an update. `build/` (the binary *and* the unit's `WorkingDirectory=`, against which the kiosk resolves `../assets/...` and `path_resolver` candidates) is excluded from the rsync and replaced only at the swap; the compile writes only `build.new/`. rsync replaces each file by rename, so an open file keeps its old contents and a later open sees a whole old or whole new file. After startup the kiosk reads only image/font assets and system tiles from the tree; the scripts it runs are in `/usr/local/bin` (refreshed only after the verified start); settings, playlists and its runtime files are excluded. Worst case is cosmetic (an asset the release renamed fails to load until the restart). The swap itself must NOT happen under a running kiosk — renaming `build/` away deletes its working directory — which is why the stop sits right before `promote_build_dir` / `install_kiosk_binary`. A final `stop_kiosk_for_swap` before `verify_kiosk_started` guarantees that check always starts a stopped unit (starting a running unit would "verify" the old process).
+
+**The decision — `build_memory_plan` (pure, table-tested).** Inputs: board (`/proc/device-tree/model`, same prefix rule as `PlatformProfile`), `MemAvailable` measured with the kiosk running, whether the kiosk is `active` (reached READY), and whether Media Browser services can be paused.
+
+| Condition (first match wins) | Plan |
+|---|---|
+| board not Pi 4 / Pi 5 | `stop_kiosk` (today's behaviour — the thresholds are Pi measurements) |
+| kiosk not `active` (TV off → exit-69 restart loop, or stopped) | `stop_kiosk` (no picture to keep; each restart's startup unpause would undo a services pause) |
+| `MemAvailable` ≥ 1300 MiB | `keep_j2` |
+| `MemAvailable` ≥ 700 MiB | `keep_j1` (twice as slow; the TV works) |
+| services pausable | `pause_services` → re-measure → decide again without pausing |
+| otherwise | `stop_kiosk`, `-j2` |
+
+Thresholds: 600 MiB per make job (CLAUDE.md's cc1plus peak; `deploy_cpp.sh` measured ~430 MB and budgets 600) + 100 MiB reserve. The per-job budget already carries ~170 MiB/job over the measured peak, so a build started exactly at its floor has ~440 MiB (`-j2`) / ~270 MiB (`-j1`) of real slack for a viewer who starts a movie or a game mid-build. Never wider than `-j2` (the kiosk needs CPU). The tarball and its extracted copy are deleted from `TEMP_DIR` before measuring — `/tmp` is a RAM tmpfs on Trixie.
+
+**Services pause.** Uses `/usr/local/bin/playback_services_pause.sh` — the kiosk's own quiet-mode script and marker (`/tmp/mdb_playback_services_paused`), so the cascade watcher and Content Manager already honour it; qBittorrent and Gluetun are untouched (downloads continue). Only on a provisioned box (`services/.env`), and never when the marker already exists (the kiosk paused them for a movie/game in progress — that memory is already in the measurement, and they are the kiosk's to resume). Paused only to keep the TV, never to upgrade `-j1` to `-j2`: while paused, the kiosk's tunnel monitor stops seeing Radarr and hides Movies (with a "tunnel down" toast) until the update finishes. **Resumed on every exit:** right after the compile (before the hooks — Custom Format convergence needs Radarr/Sonarr up), in `fail_install`, and by an `EXIT` trap the `install` dispatcher arms (killed job, `set -e` abort). Only what this update paused is resumed. A SIGKILL skips even the trap; the next kiosk start's crash-recovery unpause or the next boot (`compose up -d`; the tmpfs marker is gone) restores them. The script's compose-lock wait is bounded at 20 s; `update.sh` closes its own fd 9 (the single-flight lock) for it.
+
+**Safety net.** The compile runs at `nice 19`, best-effort/lowest I/O priority, and `oom_score_adj 1000`, so if memory runs out anyway the kernel kills `cc1plus`, not the kiosk or RetroArch. A build that dies that way (gcc's "Killed signal terminated program", ld killed by signal 9, make exit 137) is retried once with the kiosk stopped at `-j1`; a real compile error is not retried and rolls back as before. build.new + verify + promote, the in-progress marker and boot recovery, rollback, the flock single-flight, the exit-69 acceptance and the `systemd-run` launch are all unchanged.
+
+**Progress.** No new stage names. `building` carries "Compiling from source - the TV keeps working meanwhile (about 8-10 / 15-20 minutes)..." when the kiosk is kept up; `stopping_services` is now emitted at the swap ("Stopping the kiosk to switch to the new version...").
+
+**Needs hardware validation before trusting the numbers further:** real `MemAvailable` with the kiosk up on a Pi 4B (games-only and Media Browser) and a Pi 5 2 GB; peak RSS of `cc1plus` at `-j1`/`-j2` on the current tree; menu/video/game responsiveness during a `-j1` build on a Pi 4B; and a game or movie started mid-build (expect the compiler, not the session, to be the casualty).
+
+**Reaching the field:** like every `update.sh` change, this applies on the update AFTER the one that ships it.
+
+## 2026-10 hardening — an interrupted or headless update can no longer brick or roll back a box
+
+Seven defects in `update.sh`, each re-verified by reading before it was fixed:
+
+1. **The kiosk binary is never missing or truncated.** `run_build` used to `rm -rf build/` and then compile for 8-10 minutes — a power cut or a killed job in that window left no kiosk at all (and the unit crash-loops forever, `StartLimitIntervalSec=0`). It now builds in `build.new/`, checks the result with `verify_kiosk_binary` (non-empty, 64-bit little-endian ELF for this CPU — `aarch64` on the Pis — executable), and only then swaps directories with two renames. The pre-compiled-binary path no longer `cp`s over the live file (cp truncates first: ENOSPC = truncated kiosk): it stages `<binary>.new`, verifies, and `mv -f`s it into place; a failed extract falls back to compiling, a failed install rolls back. Both used to be bare commands under `set -e` that exited with the kiosk stopped and no rollback.
+2. **Power loss mid-install is recovered at the next boot.** Once the backup is complete, `update.sh` writes `/home/magic/.magic_dingus_box_backup.ota_in_progress`; it is removed only after a verified start (or a completed rollback). `magic-dingus-ota-recovery.service` (oneshot, `Before=` the kiosk and the web admin, `ConditionPathExists=` the marker, runs the **backup's** copy of `update.sh recover`) restores the backup if the marker survived. If VERSION already equals the marker's target, the update had completed and only the marker is cleared. A later install that finds the marker restores first, so it can never back up a half-installed tree over the only good backup. Installed by `update.sh` (every install), `deploy_cpp.sh`, `sync_source_box.sh` and `first_boot.sh`. **The marker can never ship in a golden image:** its name matches `prepare_for_cloning.sh`'s existing `/home/magic/.magic_dingus_box_backup*` tripwire (clone refused), and `first_boot.sh` deletes it.
+3. **A good update is no longer rolled back on a box with no TV connected.** The kiosk now exits **69** (`platform::kExitNoDisplay`, `src/platform/kiosk_exit.h`) when DRM works but no connector is connected, instead of 1. `update.sh` treats a NEW process exiting 69 as "the binary runs" and keeps the update; systemd still restarts it every 5 s (69 is deliberately not in `RestartPreventExitStatus=`), so switching the TV on later works. The old "is-active 2 s after start" check is replaced by `verify_kiosk_started`: poll for up to 90 s, then require the kiosk to stay active with the same PID and no automatic restarts for 10 s — a crash right after READY now rolls back.
+4. **rsync exit 23 is a failure.** It was accepted as "OK", so a root-owned file the install could not replace produced a half-applied update reported as success. Before the backup and before both restores, `normalize_tree_ownership` re-owns anything in the tree not owned by the update user (`sudo -n find … -exec chown`, like `deploy_cpp.sh` Step 0.9), **pruning `services/config` and `services/.env`**, which keep their ownership. That also unblocks the backup, which used to fail forever on an unreadable root 0600 file. Exit 24 (vanished source files) stays OK.
+5. **Rollback puts the out-of-tree helpers back too.** `refresh_out_of_tree_files` now runs after both rollback paths, and on install only after the verified start — before, a rolled-back update left `/usr/local/bin` helpers and `/etc/dnsmasq.d/usb0.conf` at the release it had just rolled back.
+6. **The Phone Remote bootstrap no longer runs `setup_services.sh`.** Run unprivileged, it always died at Step 0, so the uinput rule never arrived and `install_deps.sh` re-ran every OTA (and if it had worked, it would have restarted the web service mid-update and started Docker on games-only boxes). The uinput rule + `input` group step is now `setup_phone_remote_uinput.sh`, called by both `setup_services.sh` and (via `sudo -n`) `update.sh`.
+7. **Exclude gaps closed.** `data/pending_revocations.txt` and `data/upload_temp/` added to all four lists. `config/*` and `VERSION` are now anchored (`/config/*`, `/VERSION`): unanchored, rsync matched them against the end of every path, so any nested `*/config/*` or `*/VERSION` (e.g. `build/_deps/*/VERSION`) was silently never delivered or backed up. Pinned by `tests/local/update_rsync_excludes.bats`.
+
+**Reaching the field:** like every `update.sh` change, these take effect on the update AFTER the one that ships them (boxes update with the `update.sh` they already have). The kiosk's exit-69 change ships in the binary immediately, but the OLD `update.sh` on that first hop still treats it as a failed start — so a box doing that hop with its TV off will roll back once; the next attempt (with the TV on, or any later release) goes through.
 
 ## 2026-07-30 audit (pre-golden-image) — three contract fixes
 
@@ -160,9 +241,30 @@ The full preservation list lives in 4 rsync invocations inside `magic_dingus_box
 
 Adding a new "this should be preserved" path? Update **all four** lists. Inconsistency between them is a recipe for partial-update data loss.
 
+## Update channels (stable / beta)
+
+Added after v1.10.0 so the owner can ship a release to their own boxes before every customer gets it. Operator workflow: [`magic_dingus_box_cpp/docs/RELEASING.md`](magic_dingus_box_cpp/docs/RELEASING.md).
+
+- **The channel is per box**: one word in `/opt/magic_dingus_box/config/update_channel`. Absent, unreadable, or anything but the exact word `beta` = **stable**. Setting stable deletes the file. Preserved by `/config/*` (table above); `deploy_cpp.sh` never syncs `config/`. Set with `update.sh channel [stable|beta]` or the Content Manager's Software Updates → Advanced → "Get early (beta) updates" (`POST /admin/update/channel`, which runs the same command).
+- **Stable** (`update.sh check`) makes exactly the request every earlier updater makes: `GET releases/latest`. Nothing about stable discovery changed. A bats test drives `check` against the rehearsal's fake GitHub and asserts from its request log that the stable path **never** requests the release list.
+- **Beta** requests `GET releases?per_page=20`, drops drafts and any tag outside the version grammar, and takes the **highest SemVer** among stable *and* prerelease releases — selection by version, never by list order, so a 1.9.x hotfix published after a 1.10.1 beta cannot outrank it, and a beta box moves onto the final 1.10.1 the moment it is published.
+- **Version grammar**: `X.Y.Z` or `X.Y.Z-beta.N`, nothing else, enforced in `update.sh` (`VERSION_RE`: install, binary lookup, check output), `admin_updates.py` (`_OTA_VERSION_RE`; the download URL must still name exactly `v<version>` of this repo) and `release.yml` (a tag of any other shape fails the release).
+- **Ordering** is SemVer precedence via `update.sh`'s pure-bash `version_cmp`: `1.10.0 < 1.10.1-beta.1 < 1.10.1-beta.2 < 1.10.1-beta.10 < 1.10.1`, numeric at any length. It replaced `sort -V`, which ranks `1.10.1` *below* `1.10.1-beta.1` — a beta box would never have been offered the release it was testing.
+- **No downgrades, on either channel.** A box on `1.10.1-beta.2` switched back to stable while `releases/latest` is `1.10.0` reports no update and waits for the next stable (`1.10.1` or later). A `-beta` version that somehow appears at `releases/latest` (someone hand-cleared the prerelease flag) is never offered on stable.
+
+### Why a beta can never reach a customer box — safety by construction
+
+1. `release.yml` publishes every `vX.Y.Z-beta.N` tag with `prerelease: true` (`contains(github.ref_name, '-')`, pinned by `tests/local/release_prerelease.bats`).
+2. GitHub's `releases/latest` endpoint, by GitHub's own definition, returns the most recent **non-prerelease, non-draft** release. A prerelease is never "latest".
+3. Every updater shipped up to and including **v1.10.0** knows only `releases/latest` — the endpoint is hard-coded in their `update.sh` (`GITHUB_API`) and the boxes update with the `update.sh` they already have. So every box in the field today is structurally blind to betas; no change in this repo can alter what those already-installed scripts request. Belt and braces: updaters that carry the strict version check (`c75fdee`, "validate version as X.Y.Z") would also refuse to install a `-beta.N` version even if one were posted to them by hand.
+4. New updaters on the stable channel (the default, and the only state a clone can boot in) make that same single request.
+5. Clones: `prepare_for_cloning.sh` refuses to clone a beta box, `first_boot.sh` deletes the flag on every clone, `prepare_golden_image.sh` removes it, and `verify_box.sh` WARNs on any box still on beta.
+
+The only way onto beta is a deliberate per-box opt-in on a box that already runs the channel feature.
+
 ## The version-detection path
 
-`update.sh check` queries `https://api.github.com/repos/a-train-chain/magic_dingus_box/releases/latest`. **Tags alone don't trigger updates** — you need a published GitHub *Release* (via `gh release create v1.X.Y --notes ...` or the GitHub web UI) for OTA to see it.
+`update.sh check` queries `https://api.github.com/repos/a-train-chain/magic_dingus_box/releases/latest` on the stable channel (the default) — see "Update channels" above for beta. **Tags alone don't trigger updates** — you need a published GitHub *Release* (via `gh release create v1.X.Y --notes ...` or the GitHub web UI) for OTA to see it.
 
 Releases for v1.0.0–v1.0.17 and v1.1.0–v1.3.0 are published. v1.4.0 and v1.4.1 are git tags only (intentional — they were stepping stones during the v1.4.x release cycle). v1.4.2 onwards: every patch tagged in git also gets a GitHub Release.
 

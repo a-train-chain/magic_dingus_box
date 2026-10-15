@@ -9,9 +9,9 @@ set_all_leds() {
     local state=$1  # "on" or "off"
     for pin in "${LED_PINS[@]}"; do
         if [ "$state" = "on" ]; then
-            pinctrl set $pin op dh 2>/dev/null
+            pinctrl set "$pin" op dh 2>/dev/null
         else
-            pinctrl set $pin op dl 2>/dev/null
+            pinctrl set "$pin" op dl 2>/dev/null
         fi
     done
 }
@@ -38,7 +38,7 @@ stage_num=0
 total_stages=${#flicker_stages[@]}
 
 for stage in "${flicker_stages[@]}"; do
-    read delay cycles <<< "$stage"
+    read -r delay cycles <<< "$stage"
     
     # Calculate simulated fade - reduce on_time as we progress
     fade_factor=$((total_stages - stage_num))
@@ -47,9 +47,9 @@ for stage in "${flicker_stages[@]}"; do
     
     for ((c=0; c<cycles; c++)); do
         set_all_leds "on"
-        sleep 0.$(printf '%03d' $on_time)
+        sleep "0.$(printf '%03d' "$on_time")"
         set_all_leds "off"
-        sleep 0.$(printf '%03d' $off_time)
+        sleep "0.$(printf '%03d' "$off_time")"
     done
     
     ((stage_num++))

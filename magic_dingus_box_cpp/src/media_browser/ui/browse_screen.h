@@ -15,6 +15,7 @@
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_logic.h"
+#include "media_browser/ui/browse_view.h"
 #include "media_browser/ui/mb_filter_overlay.h"
 #include "media_browser/ui/mb_filter_state.h"
 #include "media_browser/ui/mb_screen.h"
@@ -80,31 +81,27 @@ public:
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). The only animation is the filter
+    // overlay's slide; everything else changes on input or when a worker
+    // result is applied (content_epoch_).
+    bool wants_continuous_redraw() const override;
+    uint64_t redraw_signature() const override;
+
     // tmdb_id of the poster most recently selected by the user. Consumed by
     // the dispatcher in main.cpp to forward to DetailScreen on transition.
     int selected_tmdb_id() const { return selected_tmdb_id_; }
 
 private:
-    // Top-strip chip order. Content chips load a grid; nav chips transition.
-    enum class Category {
-        Popular = 0,
-        NowPlaying = 1,
-        TopRated = 2,
-        Upcoming = 3,
-        Filter = 4,
-        ForYou = 5,
-        Search = 6,
-        Library = 7,
-        Queue = 8,
-        Settings = 9,
-    };
+    // Top-strip chip order (content chips load a grid; nav chips
+    // transition) — the vocabulary lives in browse_view.h so the decisions
+    // built on it are Mac-testable; this alias keeps the screen's spelling.
+    using Category = BrowseCategory;
     enum class Focus {
         CategoryStrip,
         FilterPanel,   // Phase B — only reachable when Category::Filter is active.
         PosterGrid,
     };
 
-    static constexpr int kNumContentCategories = 6;  // Popular..ForYou
     // 9-column grid: at 1280×720 this fits TWO full rows of 2:3 posters
     // (~119×178 px each) inside the available grid height of 532 px, with
     // 45 px breathing room before the bottom bar. 18 posters visible per
@@ -113,24 +110,11 @@ private:
     // available width, so this is the only knob that needs to change.
     static constexpr int kGridCols = 9;
 
-    static bool is_nav_chip(Category cat) {
-        return static_cast<int>(cat) >= kNumContentCategories;
-    }
+    static bool is_nav_chip(Category cat) { return browse_is_nav_chip(cat); }
 
-    // Single source of truth for the Marquee strip — consumed by BOTH
-    // handle_input() and render(). Was duplicated in the two functions
-    // with a "keep in sync" comment.
-    static constexpr Category kVisibleTabs[] = {
-        Category::Popular,
-        Category::TopRated,
-        Category::ForYou,
-        Category::Search,
-        Category::Library,
-        Category::Queue,
-        Category::Settings,
-    };
-    static constexpr int kNumVisibleTabs =
-        static_cast<int>(sizeof(kVisibleTabs) / sizeof(kVisibleTabs[0]));
+    // The Marquee strip (kBrowseVisibleTabs, browse_view.h) is the single
+    // source of truth for both handle_input() and render().
+    static constexpr int kNumVisibleTabs = kBrowseNumVisibleTabs;
 
     // Public load entry point. Spawns a background thread that does
     // the (slow, ~6s) TMDB fetch off the render thread; render() can
@@ -198,19 +182,19 @@ private:
     void apply_pending();
     // Lazily fetches /genre/movie/list on first entry to the Filter category.
     void ensure_genres_loaded();
-    // Retired in v1.6.x — was the BTN2 quick-add shortcut, replaced by
-    // the back-grammar remap. Preserved intentionally in case a future
-    // overlay or shortcut wants the same library-add flow without going
-    // through DetailScreen. Add to the new caller, then remove the
-    // [[maybe_unused]] when reactivating.
-    [[maybe_unused]] void quick_add_focused();
 
-    static const char* label_for_category(Category cat);
+    static const char* label_for_category(Category cat) {
+        return browse_category_label(cat);
+    }
 
     RadarrClient& radarr_;
     SonarrClient& sonarr_;
     TmdbClient& tmdb_;
     ::app::AppState& state_;
+    // Bumped whenever update() applies a worker result (TMDB page, For You,
+    // library refresh) — the redraw gate's "content changed" signal. A
+    // revalidate can swap in a same-size page, so sizes alone would miss it.
+    uint64_t content_epoch_ = 0;
     // See the constructor's doc comment. Read only by render() (via
     // browse_grid_state_message and the service-warning line) and never
     // written after construction.
@@ -220,7 +204,6 @@ private:
 
     Category category_ = Category::Popular;
     Focus focus_ = Focus::PosterGrid;
-    int category_cursor_ = 0;   // Index into the top strip when Focus::CategoryStrip.
     int grid_cursor_ = 0;       // Flat index into movies_ when Focus::PosterGrid.
     int scroll_row_ = 0;        // Topmost visible row index.
 
@@ -360,8 +343,6 @@ private:
     // cross-referencing with the library's radarr_id → tmdb_id mapping.
     // Drives the DOWNLOADING badge on poster cards.
     std::unordered_set<MediaRef> downloading_refs_;
-    std::vector<QualityProfile> quality_profiles_;
-    bool library_cached_ = false;
 
     // --- For You state (spec 1c) -----------------------------------
     // Cached merged list — activation re-renders this without refetching;
@@ -402,20 +383,14 @@ private:
 
     // --- Async Radarr library/services refresh (mirrors LibraryScreen) ---
     // enter() used to call is_reachable() + get_library() + get_queue()
-    // (+ get_quality_profiles() on first entry) SYNCHRONOUSLY on the render
-    // thread — 3-4 blocking HTTP round-trips (~200ms-1s+ over the VPN egress)
-    // that stalled the whole kiosk every time the operator opened the movie
-    // marquee. Those calls now run on lib_refresh_worker_; apply_library_pending()
-    // drains the result on the render thread on the next update() tick.
-    //
-    // Correctness note for quick_add_focused(): it reads library_refs_ and
-    // quality_profiles_. During the async window those sets keep the PREVIOUS
-    // visit's data (they're only replaced atomically in apply_library_pending(),
-    // never cleared first), so quick-add always sees complete — if up to one
-    // refresh-cycle stale — data. Same staleness tolerance LibraryScreen and
-    // QueueScreen already accept. On the very first entry the sets are empty,
-    // which reads as "not in library yet" — identical to the pre-async state
-    // during the blocking fetch, just non-blocking now.
+    // SYNCHRONOUSLY on the render thread — 3-4 blocking HTTP round-trips
+    // (~200ms-1s+ over the VPN egress) that stalled the whole kiosk every
+    // time the operator opened the movie marquee. Those calls now run on
+    // lib_refresh_worker_; apply_library_pending() drains the result on the
+    // render thread on the next update() tick. During the async window the
+    // sets keep the PREVIOUS visit's data (they're only replaced atomically
+    // in apply_library_pending(), never cleared first) — the same staleness
+    // tolerance LibraryScreen and QueueScreen accept.
     struct PendingLibrary {
         bool                        services_ok = false;
         // Named movie_refs (not library_refs) from the start: Task 8 adds a
@@ -426,13 +401,11 @@ private:
         // just that service's contribution (see replace_refs_of_kind).
         std::unordered_set<MediaRef> tv_refs;
         std::unordered_set<MediaRef> downloading_refs;
-        std::vector<QualityProfile> quality_profiles;
-        bool                        quality_fetched = false;
         bool                        movie_fetch_ok = false;
         bool                        tv_fetch_ok    = false;
     };
     void refresh_library_async();              // non-blocking; spawns worker
-    void run_library_refresh(bool fetch_quality);  // worker body (off render)
+    void run_library_refresh();                // worker body (off render)
     void apply_library_pending();              // drain on render thread
     std::mutex        lib_pending_mtx_;
     PendingLibrary    lib_pending_;

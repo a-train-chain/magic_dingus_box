@@ -1,6 +1,8 @@
 #pragma once
 
 #include "video_player.h"
+#include "deferred_start.h"
+#include "query_cache.h"
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 #include <string>
@@ -32,6 +34,7 @@ public:
     bool is_playing() const override;
     bool is_paused() const override;
     bool at_eos() const override { return at_eos_.load(); }
+    bool has_error() const override { return has_error_.load(); }
     double get_position() const override;
     double get_duration() const override;
     
@@ -76,8 +79,21 @@ private:
     // within the same call and the player could never report "stopped"
     // after natural end-of-stream.
     std::atomic<bool> at_eos_{false};
+    // Latched by bus_call on GST_MESSAGE_ERROR; cleared ONLY by stop()
+    // (which every load_file() runs through). Unlike at_eos_ a seek does
+    // not clear it — a failed pipeline stays failed until it is torn down.
+    // Gates is_playing_ the same way at_eos_ does: an errored pipeline can
+    // keep reporting GST_STATE_PLAYING, and the state poll used to flip
+    // is_playing_ back to true on the very next frame, hiding the error
+    // from every caller.
+    std::atomic<bool> has_error_{false};
     std::atomic<double> duration_;
     std::atomic<double> position_;
+    // Per-frame memo of the two pipeline queries (query_cache.h):
+    // update_position() refreshes them once per frame, the getters reuse
+    // that answer for the rest of the frame. Invalidated by seeks/stop.
+    QueryCache position_query_;
+    QueryCache duration_query_;
     
     // Bus message dispatcher. Called from update_state()'s polling drain
     // (NOT registered with gst_bus_add_watch — see gst_player.cpp::update_state
@@ -118,6 +134,10 @@ private:
     gint64 pending_seek_target_ns_ = 0;
     GstSeekFlags pending_seek_snap_ = GST_SEEK_FLAG_SNAP_NEAREST;
     std::chrono::steady_clock::time_point seek_started_at_{};
+
+    // load_file(start > 0)'s seek, held until update_state()'s poll sees
+    // the pipeline prerolled (render-thread-only, like the fields above).
+    DeferredStart deferred_start_;
 
     // Clamp + store the absolute target, then either fire immediately
     // (no seek in flight) or queue it behind the in-flight seek.

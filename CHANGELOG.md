@@ -7,6 +7,567 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **The Content Manager can no longer be used to take over a box from
+  the home network.** Anyone on the same Wi-Fi could send a crafted
+  "country" value through the Movies setup page, and the box would later
+  run it as a system command with full privileges. Setup values are now
+  checked before they are saved, so that can't happen — and a normal
+  country with a space in its name, like "United States", now saves
+  correctly too, where it used to break the file. There is still no
+  password or PIN anywhere: phones and laptops connect exactly as before.
+- **Web pages elsewhere can't reach the box behind your back.** A
+  malicious site open on a phone or laptop at home could previously talk
+  to the Content Manager as if it were you. The box now only answers to
+  its own names (its IP address, `magicpi-XXXX.local`, `dingus.box` over
+  the USB cable, and ordinary home-network names). Plugging in the USB
+  cable on a Mac still pops open the Content Manager — the update
+  restarts the small helper behind that pop-up so it works straight
+  away, not only after the next restart.
+- **Other doors closed** — none of which change anything for normal use:
+  a crafted playlist can no longer delete files outside the videos
+  folder or point a game at a file that isn't an emulator; the plain
+  upload endpoint only accepts video files; a malicious package import
+  can no longer fill the SD card; pairing codes can no longer be guessed
+  in parallel to get around the attempt limit.
+- **Software updates can only install this project's own releases.** A
+  crafted update request could name a version that quietly pointed the
+  box at someone else's download. The box now accepts only a plain
+  version number and only the matching official release.
+- **Other websites can no longer poke the box through your browser.**
+  A page on the internet could make a phone or laptop at home quietly
+  ask the box to check for updates over and over, or use up the pairing
+  code's guesses. The box now ignores requests that a browser marks as
+  coming from another website. Scanning the pairing QR code, typing the
+  box's address, the home-screen app, and links to the box all work
+  exactly as before.
+- **A box cloned from another can no longer quietly share its VPN
+  connection.** Two boxes using the same VPN key knock each other off the
+  VPN, over and over, and nothing on either box says why — Movies
+  downloads stall and searches fail in bursts. A new box used to be able
+  to start up holding the original box's VPN key (the very first batch did,
+  because their first-start setup stopped early). Now a new box throws that
+  key away — and the background services that carried a copy of it — as
+  the very first thing it does, even if the rest of its first start runs
+  into trouble. The box health check in the Content Manager also now fails,
+  with plain instructions, on any box still using another box's VPN key or
+  passwords; the original box itself is never flagged. No secret is ever
+  shown or stored to do this — only one-way fingerprints of it.
+- **The VPN's control panel now only answers the two questions the box
+  asks: which port is forwarded, and which address the VPN shows the
+  world.** Everything else — including "turn the VPN off" — now needs a
+  password the box never sets, so the web-scraping helper in the movie
+  services can no longer reach it. This also keeps Movies working
+  through future VPN-software updates: newer versions lock that panel
+  completely by default. A box locked out would have read "no forwarded
+  port" and restarted all the movie services every ten minutes. Takes
+  effect the next time the VPN service starts.
+
+### Added
+- **"Box Health" in the Content Manager.** Settings now has a Run
+  Health Check button that runs the same checks the box went through
+  before it shipped — picture, sound, games, storage and its own
+  services — and answers in plain words: "Everything looks good" or
+  "2 problems found", with each area expandable to see exactly what was
+  checked. The last result stays on the page, so you can come back to
+  it. If the Movies feature is turned on, you can also include a check
+  of the Movies services.
+- **Box Health also says how reliable the VPN is.** On boxes
+  that use Movies, a new "VPN tunnel" line reports how often the VPN
+  dropped in the last 24 hours, how long it was down in total and the
+  longest single outage — e.g. "VPN tunnel dropped 23 times in the last
+  24 h (down 1 h 40 min total, longest 9 min)". It's a note, not a
+  failure, and it is called out in the headline when the tunnel has been
+  unreliable (6 or more drops, 30 minutes or more down, or down right
+  now). It also says when the tunnel itself was fine and only the
+  forwarded port was lost. The same history is included in Download
+  Diagnostics. Until now ~170 drops over two days on one box were only
+  visible by reading system logs.
+- **"Download Diagnostics" for support.** Next to the health check, one
+  button saves a single file with the box's recent logs, its health
+  result and basic system details — the things support asks for first.
+  Passwords, VPN and service keys, Wi-Fi passwords, paired phones and
+  anything being typed on the TV keyboard are never included; anything
+  in a log that looks like a password or key is blanked out.
+- **Choose which season to download.** A show's page now suggests the
+  season after the last one you watched or have — "Download Season 5"
+  if you've seen the first four — and pressing it lets you turn the knob
+  (or press Left/Right) to pick any other season before it starts. New
+  shows work the same way ("Add Season 3"). Press back to change your
+  mind; nothing downloads until you confirm. A season that was set to
+  download but never found a copy can now be picked again, which searches
+  for it once more.
+- **Choose the VPN country (ProtonVPN).** Content Manager → Media
+  Browser → Advanced → VPN server country, from a short list of
+  countries with plenty of download-friendly (P2P) servers. Applying it
+  reconnects only the VPN; downloads pause for about a minute. Boxes
+  stay on the Netherlands until someone changes it, and re-uploading a
+  VPN config with Reconfigure now keeps the chosen country instead of
+  resetting it.
+
+### Changed
+- **The menus use less power and run cooler.** The box now redraws the
+  main menu, Settings and the Movies browsing screens only when something
+  on them changes (with the CRT look on, the menu draws at the effect's own
+  30 frames a second instead of 60), and draws each screen in far fewer
+  steps. Nothing looks different.
+- **Movie posters use a fraction of the memory.** Grids load small posters
+  and only the detail page loads the large one, leaving more memory for
+  playback, especially on a Raspberry Pi 4B.
+- **The Content Manager runs on a proper web server.** It used to run on
+  a simple built-in server meant for development, which started a new
+  worker for every request with no limit. It now uses a production
+  server (gunicorn) with a fixed pool of workers, so a busy page, a
+  phone remote left connected all evening and a big upload can't pile
+  up and slow the box down. Nothing changes in how you use it: same
+  address, phones stay paired, uploads and updates work as before. The
+  update installs the new server by itself; if it can't (for example the
+  box is offline), the Content Manager simply keeps the old server and
+  the next update tries again.
+- **Movie availability appears faster.** Detail's availability check
+  asks each source separately and at the same time, instead of waiting
+  up to a minute and a half for the slowest one.
+- **Pi 4B boxes convert one uploaded video at a time** (Pi 5 still does
+  two), so an upload no longer starves playback on the smaller board.
+- **N64 and Dreamcast games stay hidden on a Pi 4B** even when a
+  playlist names only the emulator and not the system.
+- **Movie playback has more memory to work with.** Film posters kept
+  in graphics memory are trimmed when a movie starts, instead of holding
+  on to as much as ~340 MB — memory the Pi 4B needs for smooth video.
+- **Log files no longer grow forever on the SD card**: the emulator log
+  starts fresh each game, and the Movies service logs are capped at a
+  few tens of megabytes each. The cap takes effect the next time the
+  box is restarted after updating (Movies takes a little longer to come
+  up that one time).
+- **Updates that need to build on the box no longer leave the TV dark for
+  ten minutes.** Most updates install a ready-made program in seconds, but
+  when a box has to build the new version itself it used to switch the TV
+  off first and keep it off for the whole 8-10 minute build. Now the
+  current version keeps running — menu, videos and games all work — while
+  the new one builds in the background, and the TV only blanks for the
+  few seconds it takes to switch over. The box decides how to do this from
+  how much free memory it has at that moment: with plenty, the build runs
+  at full speed; with less, it builds more slowly (about 15-20 minutes) so
+  the TV can stay on; on a box that is already short of memory it briefly
+  pauses the Movies background services to make room (Movies is hidden on
+  the TV until the update finishes, then comes straight back — downloads
+  keep going throughout); and if even that is not enough it does exactly
+  what it did before. If the build ever runs out of memory anyway, it is
+  the build that gets stopped, never what you are watching or playing, and
+  the update simply retries with the TV paused. The Content Manager says
+  "the TV keeps working" while this is happening.
+  Like every updater improvement, this applies from the update *after* the
+  one that delivers it, because a box always updates using the updater it
+  already has.
+
+### Fixed
+- **The menu comes back when a playlist ends.** A playlist set not to
+  loop (the default for new playlists) used to leave the TV black when it
+  finished, with the menu invisible until the box was restarted. The same
+  happened when every video in a playlist failed to play, and when a new
+  playlist failed to load while another was playing. The menu, and any
+  "couldn't play" message, now always comes back.
+- **Switching playlists while a video plays no longer locks the remote's
+  next/previous for two seconds.** Every switch made mid-video used to be
+  "stuck" until a 2-second safety timer released it (logging a CRITICAL
+  error each time), and NEXT/PREV were ignored until then. The switch now
+  completes the moment the new video is playing.
+- **Switching playlists no longer freezes the screen.** Picking a
+  different playlist while a video was playing froze the picture, the
+  menu and the phone remote for up to about two-thirds of a second while
+  the box waited for the old video to let go. The box still waits exactly
+  as long before starting the new playlist, but the menu stays live while
+  it does. Button presses made during that moment (another select,
+  next/previous, play/pause) are ignored rather than acted on late, and
+  turning the knob no longer changes which playlist starts.
+- **Trimmed clips stop where you trimmed them.** A playlist item with an
+  end time played on to the end of the file; it now moves on at the end
+  time you set.
+- **The volume no longer jumps at the start of each video.** It stays
+  where you set it.
+- **Buttons pressed right after quitting a game land where you expect.**
+  A press in the moment the menu was coming back could open Settings and
+  then start Master Shuffle instead. The box now waits until the menu is
+  really back before it listens.
+- **Master Shuffle no longer misbehaves with empty playlists,** and going
+  back through its history skips videos whose playlist was removed.
+- **The CRT look keeps flickering properly on boxes left on for days.**
+  The scan-line effect used to slow down and freeze after a few days of
+  uptime.
+- **Forgetting a Wi-Fi network can no longer freeze the screen** while the
+  box talks to the network service.
+- **Movie and TV services with a quoted key in their settings now
+  connect.** A key written with quote marks around it was sent with the
+  quotes and refused.
+- **Sound no longer gets cut off every time the box's main program
+  restarts.** The part of the box that plays sound used to be switched
+  on by the main program and was forcibly killed whenever that program
+  stopped, restarted or crashed — which could damage its saved settings
+  and left sound depending on a clean restart every time. It now runs
+  as its own background service that starts before the main program and
+  keeps running through restarts, and comes back by itself within a
+  couple of seconds if it ever stops. Updates, deploys and new boxes all
+  set this up automatically; a box that somehow misses it still has
+  sound the old way.
+- **A power cut during a software update no longer leaves a box that
+  won't start.** If the power went out (or the update was stopped) while
+  the box was rebuilding itself, it could be left with no working program
+  at all and nothing on screen, forever. The old program now stays in
+  place until the new one is built and checked, and if an update is ever
+  interrupted, the box puts the previous version back by itself the next
+  time it's switched on.
+- **Updating with the TV off no longer undoes the update.** The box
+  checks that the new version starts before keeping it, and with no TV
+  connected that check used to fail — so a perfectly good update was
+  rolled back on any box nobody was watching. It now recognizes "no TV
+  connected" as fine, keeps the update, and the menu appears as soon as
+  the TV is switched on. The check also now waits a few seconds to make
+  sure the new version keeps running, instead of trusting the first
+  moment it starts.
+- **Updates no longer half-install and call it a success.** A file left
+  behind by an earlier setup step could stop parts of an update from
+  being copied — or stop the update from even starting, on every try —
+  while the box reported success. The box now fixes those files first,
+  and if anything still can't be copied it puts the previous version back
+  and says so.
+- **Rolling back an update now rolls everything back.** A few helper
+  programs kept the newer version after a rollback; they now return to
+  the matching version too.
+- **The phone remote setup no longer re-runs on every update.** A setup
+  step that could never finish made every update repeat part of the
+  phone remote installation; the one piece it actually needs is now
+  installed directly, once.
+- **Updates no longer forget phones you were unpairing, or uploads that
+  were still arriving.** Both used to be cleared by every software
+  update.
+- **No sound when the TV is plugged into the second HDMI port.** The box
+  assumed the TV was always on the first port and switched the second
+  one's audio off entirely, so a TV on the other port showed the picture
+  with no sound at all — videos, menus and games. Either port now works,
+  and games send their sound to whichever port the TV is on. Boxes that
+  were affected fix themselves after this update.
+- **A video upload in progress is no longer lost when the box is
+  updated from a computer.** The update could clear the folder the
+  Content Manager stores half-received uploads in.
+- **A shared playlist or game pack can no longer run code in the
+  Content Manager.** A file name crafted to look like part of the page
+  could have acted on your behalf once you opened the Games tab —
+  including deleting videos, games or playlists. File names are now
+  always treated as plain text.
+- **An update, rollback or Movies setup can no longer be cut off halfway.**
+  These ran inside the Content Manager's own service, so anything that
+  restarted it — including the Movies setup itself — stopped them
+  mid-way, which for an update could leave a half-installed box. They
+  now run on their own, the Content Manager keeps showing their progress
+  even after it restarts, and starting a second one while one is running
+  is politely refused instead of letting the two collide.
+- **Uploading two videos with the same name keeps both.** If a second
+  copy of a file was uploaded while the first was still converting, the
+  second could silently replace the first. The second one is now saved
+  alongside it with a `_1` added to its name.
+- **Uploads no longer hang forever if the box restarts mid-conversion.**
+  The progress bar used to sit frozen; it now says the box restarted and
+  asks you to upload that video again.
+- **A broken video no longer freezes the box.** A truncated upload, a bad
+  SD-card sector or a format the box can't decode used to stop an
+  unattended playlist dead on that video until someone pressed Next. The
+  box now skips it and carries on. If *every* video in a playlist is
+  broken it stops after one try each and shows the menu with a message
+  instead of cycling forever. In Movies & TV, a file that won't play
+  shows "Couldn't play this file" and goes back — and it is **not**
+  marked as watched, and the next episode doesn't start counting down.
+- **Games are saved when the box is switched off or updated mid-game.**
+  Turning the box off, rebooting it or installing an update while a game
+  was running closed the emulator without its automatic save, losing
+  progress since the last in-game save. The emulator now gets to save
+  first. One exception: the update that *installs* this fix is still
+  carried out by the old version, so if a game is running while this
+  particular update installs, that game is closed the old way. Quit the
+  game first to be safe; every stop after this update saves properly.
+- **Every controller can always leave a game.** Controller Setup let you
+  skip Z (N64-style pads) or Select (PlayStation-style pads) — the
+  buttons that make Z+Start / Select+Start quit a game — leaving no way
+  out of a game except the restart button. Those buttons are now
+  required, and pads whose Z or trigger reports as analog work too.
+- **The emulator's own menu can no longer be opened by accident** by
+  holding L1+R1+Start+Select in a game, and its online updater is off.
+- **A game with a missing emulator now says so** ("Unable to start
+  game") instead of freezing on the launch screen.
+- **The box recovers by itself if the TV picture doesn't come back
+  after a game**, instead of sitting on a black screen until unplugged.
+- **The phone remote no longer shows a finished game as "now playing".**
+  After you quit a game and came back to the menu, the remote kept
+  showing that game's title until something else played. It now clears
+  the moment the game ends.
+- **A damaged settings file no longer stops the box from starting.** A
+  settings file with a wrong value in it — for example from an edited
+  backup — made the box crash on every start, with a black screen. The
+  bad file is now set aside as `settings.json.corrupt` and the box
+  starts on default settings.
+- **Videos at unusual sizes (such as 854×480) no longer look slanted**
+  or have their colours shifted.
+- **Multi-disc PlayStation and Dreamcast uploads now get their disc
+  playlist.** The step that ties the discs together never ran.
+- **Controllers plugged in after the box starts now work in the
+  menus.** A pad (or keyboard) connected after power-on, a cable that
+  got bumped and reconnected, or a wireless pad waking up did nothing in
+  the menus until a game had been played or the box restarted. The box
+  now notices new controllers within a few seconds.
+- **Movies no longer freezes or restarts the box when the internet is
+  down.** Starting a second film, turning a download source on or off,
+  or opening the source list while the connection was down could hang
+  the screen long enough for the box to restart itself. That work now
+  happens in the background and the screen stays responsive.
+- **Downloads resume after the box is restarted in the middle of a
+  movie.** On a Pi 4B, downloads pause while a film plays; if the box
+  was restarted or updated before the film ended, they stayed paused
+  until someone resumed them by hand. They now pick up again on their
+  own. Downloads you paused yourself are left alone.
+- **Watch history can no longer be lost to a badly timed power cut.**
+  Losing power during the one-time database upgrade after an update
+  could switch off resume points and "watched" marks for good. The
+  upgrade now either finishes completely or not at all, and boxes
+  already stuck this way repair themselves.
+- **The picture uses the TV mode the box actually chose.** On some TVs
+  the first frame switched to an interlaced mode instead of the one the
+  box picked. And on newer 120 Hz TVs the box now runs at 60 Hz, which
+  is all films and games need and keeps the Pi 4B's workload normal.
+- **A movie drive plugged in after the box started is now picked up.**
+  If the box was switched on without its movie drive and the drive was
+  connected later, Movies kept looking at an empty folder on the SD
+  card: the library showed empty and new downloads filled the SD card
+  instead of the drive. The box now notices and reconnects Movies to the
+  drive within moments of plugging it in.
+- **Re-entering the VPN settings can no longer lock Movies out of its
+  own download service.** On some boxes the Content Manager couldn't
+  read the Movies settings file, treated it as empty, and saved it back
+  with only the VPN details — throwing away the download service's
+  password, after which downloads stopped working. It now stops with a
+  clear error and changes nothing.
+- **Movies setup finishes even when part of it is slow to start.** On a
+  Pi 4B, the TV service, the search service or one of the download
+  sources being slow on first start could stop setup halfway, leaving
+  Movies unable to download at all. Setup now waits longer for them and,
+  if one still isn't ready, finishes everything else and picks that part
+  up the next time it runs.
+- **The "some sources didn't respond" case in Movies is reported
+  honestly.** When the availability check found nothing but some sources
+  never answered, Detail said "No sources found" — even though the
+  source most likely to have an obscure film hadn't replied.
+- **Movies queue: the knob press is labelled again.** The on-screen hint
+  for pressing the knob on the download queue showed "—" (does nothing),
+  although it cancels a download. It now reads "Cancel", and "Confirm"
+  once a cancel is armed.
+- **Deleting every season no longer makes a show disappear.** Clearing
+  old seasons to make room used to remove the show from your Library
+  entirely once the last one went, and downloading it again started
+  from Season 1. The show now stays in your Library, marked "Nothing
+  downloaded", ready for you to pick the next season.
+- **"Start Season N" after a season finale now works on shows where
+  earlier seasons were deleted** — it used to say the update didn't
+  apply.
+- **Downloads can no longer fill the SD card while the movie drive is
+  unplugged.** The box paused downloads once when the drive went
+  missing, but finishing a game or a movie (or restarting the box)
+  started them again — straight onto the SD card, until it was full.
+  Downloads now stay stopped the whole time the drive is away, new ones
+  are added stopped, and when the drive comes back exactly the downloads
+  the box stopped start again — even across a restart. Downloads you
+  paused yourself stay paused.
+- **Movies repairs itself when one of its background services stops.**
+  If a download or search service was missing, never finished starting
+  after a slow boot, or stopped answering, it stayed that way until the
+  box was restarted. The box now checks every few minutes and brings it
+  back. Services set aside during a movie or game are left alone.
+- **The VPN no longer restarts every few minutes when ProtonVPN takes
+  back its forwarded port.** Watched live on 2026-10-05: all 9 restarts
+  of the whole Movies service stack in two hours were caused by port
+  forwarding, not the VPN — Proton's gateway refused to renew the port a
+  few minutes after granting it ("connection refused" from 10.2.0.1:5351),
+  the VPN software (gluetun 3.41.1) then never got a port again, the
+  box's health check flagged it ~5 minutes later and the box restarted
+  the VPN and all five services ~5 minutes after that, even though the
+  tunnel itself was carrying traffic the whole time. Gluetun is updated
+  to 3.41.3, whose release notes fix exactly this ("no longer stuck after
+  failed port forwarding", plus a follow-up deadlock fix), so it gets a
+  new port by itself. The health check still treats a lost port as a
+  problem as a last resort.
+- **The VPN connection is kept alive while idle.** The box now sends a
+  WireGuard keepalive every 25 seconds, as ProtonVPN's own config files
+  ask for; before, gluetun ignored that setting and sent none.
+- **Search sources come back after a bad morning for TV shows too.**
+  Sources that failed briefly were being cleared at start-up for movies
+  only; TV searches could stay locked out for up to a day. Both are now
+  cleared, and a hiccup during that clean-up can no longer leave Movies
+  switched off until the next restart.
+- **Downloads that found nothing at first are retried properly.** The
+  first automatic retry after switching on happened too early and did
+  nothing, so a box that is on for only a few hours a day never retried.
+- **Updates now keep the box's background jobs exactly as designed.**
+  Changes to the box's scheduled background jobs (such as when the retry
+  above first runs) never reached a box that was already set up: updates
+  replaced the programs, never the jobs' own settings. Updates now put
+  those settings in place directly, undo them with the rest of an update
+  if it is rolled back, and the Box Health check flags a box whose jobs
+  don't match.
+- **Downloads stay quiet during a movie.** On boxes with enough memory to
+  keep downloading while a film plays, uploading is meant to drop to a
+  trickle so the film gets the drive — but a start-up step quietly raised
+  that limit again on every box. It now stays at the trickle.
+- **Re-running Movies setup no longer interrupts what's on screen.** It
+  used to restart the box's player every time, stopping a movie or game
+  in progress, even when nothing needed it.
+- **The box's player is protected when memory runs out.** If the box
+  ever runs completely out of memory, a background service is stopped
+  (it restarts by itself) instead of the picture or the game.
+- **Less log writing to the SD card.** At the end of each video, while
+  the next one was loading, the box wrote the same "NOT auto-advancing"
+  line to its log every frame — dozens of times a second. It is now
+  written once. A dropped-frames warning that could repeat twice a second
+  through a whole film is now written at most every 5 seconds.
+
+### For operators
+- **This update is installed by each box's previous updater.** The new
+  safeguards (power-cut recovery, TV-off updates, keeping the TV on while
+  the box builds, the faster web server package) protect every update
+  after this one. For this one update:
+  keep the TV on, don't power the box off while it says "Installing", and
+  quit any game first. Boxes pick up the web server package and the new
+  sound service on their own; nothing to do by hand.
+- **A box whose phone remote was never set up** re-runs its
+  phone-remote package setup during this update (a step the previous
+  updater already had). The update takes a few minutes longer, and the box's
+  short web address (the one without `:5000`) and its USB-cable address
+  may stop answering for a moment. Nothing to do; it comes back by itself.
+- **Cloning can't damage the source box.** If the source box rebooted
+  partway through a clone, its first-boot cleanup ran on the source
+  itself and wiped its saves, pairings and settings. It now recognises
+  its own SD card and refuses.
+- **Freshly cloned units no longer pause at first power-on** when no
+  Wi-Fi is set up, and appear under their new network name straight
+  away.
+- **Less of the source box's private data travels in the image**: the
+  Movies service logs, SSH private keys and known hosts, git/GitHub
+  credentials and the list of Wi-Fi networks it has seen. (The shared
+  service password and SSH access keys are kept on every unit on
+  purpose.)
+- Re-running Movies setup on a box that already has it no longer
+  restarts Docker partway through (which could end in "container name
+  already in use"). The service log caps now live in
+  `services/docker-compose.yml`, so they reach updated boxes too.
+- Media Browser service housekeeping: the weekly service check can no
+  longer hang forever on a stuck service (it times out and reports a
+  failure); the VPN container is pinned to an exact, tested
+  version (gluetun 3.41.3) instead of following whatever was newest; plugging
+  the movie drive back in no longer gets cut off halfway through
+  reconnecting; and the scripts that start and stop the Movies
+  containers now take turns instead of tripping over each other.
+  `verify_box.sh` additionally checks the player's out-of-memory
+  protection.
+- `verify_box.sh` now also fails a unit whose first boot didn't finish,
+  whose first-boot service is still enabled, or whose `config.txt`
+  Pi 4 / Pi 5 sections are wrong.
+- The release build now refuses to publish a binary with the power
+  button, LEDs and rotary encoder compiled out.
+- New off-Pi test loop, `magic_dingus_box_cpp/dev/pisim/pisim.sh`:
+  builds the real kiosk and runs every test suite in about a minute on
+  a Mac, and `push` installs a built binary on a box without compiling
+  there (keeping the previous one if the new one fails to start).
+
+### Tooling
+- **Blocking ShellCheck gate over every shell script.** New
+  `tests/shellcheck_gate.sh` lints every tracked `*.sh`/`*.bash` file and
+  extensionless sh/bash-shebang script at `-S info` (ShellCheck pinned to
+  0.11.0 in CI, new test-local.yml `shellcheck` job — release.yml runs it,
+  so a finding blocks a release). Repo-wide exclusions, each justified, are
+  in the new `.shellcheckrc` (SC2029, SC2012, SC2015); deliberate one-off
+  patterns carry an inline reasoned disable. test-ota.yml's non-blocking
+  `shellcheck update.sh || true` is gone. In-scope findings went from 118
+  (49 at warning or above) to 0 — 45 covered by the three repo-wide
+  exclusions, the rest fixed or justified inline — with no behavior change
+  on any box; two real bugs in dev-only scripts
+  were fixed: `web/run_tests.sh --stress` died at a top-level `local`
+  under `set -e`, and `test_audio.sh` wrote every driver's config to the
+  same file (`$driver_` is an unset variable). `update.sh`'s comment now
+  says `MAGIC_DRY_RUN` is inert (nothing ever consulted it).
+- **`scripts/fleet_check.sh`** (Mac-side): runs each box's own
+  `verify_box.sh` over ssh in parallel (bounded `-j`, ssh
+  `ConnectTimeout`), reads board, VERSION, update channel and uptime, and
+  prints one table — host / board / version / channel / uptime /
+  pass-warn-fail / result / first failing check. `--hosts FILE`,
+  `--with-services`, `--log-dir`. Strictly read-only on the boxes; exits
+  non-zero if any box is not shippable or unreachable. Now a pre-tag step
+  in `RELEASING.md`.
+- Design note for splitting `update.sh` safely (which updater actually
+  runs during an OTA, and an incremental, rehearsed plan):
+  `docs/superpowers/specs/2026-10-05-update-sh-split-design.md`. No code
+  moved yet.
+- **Content Manager split into modules (internal; no behavior change).**
+  `web/admin.py` (6,800 lines) keeps `create_app()` and its once-per-process
+  startup work; the routes moved verbatim into `admin_*.py` modules by area
+  (security guards, system/backup, playlists, playlist import, media +
+  transcode, ROMs, support tools, OTA updates, Media Browser setup and
+  operations, page serving + Phone Remote) plus pure helper modules, each
+  wired by a `register(app, ctx)` call at its original position — the URL
+  map, methods, endpoint names, hook order and per-process singletons are
+  identical (checked by dumping `app.url_map` before/after). `manager.js`
+  (7,000 lines) became eight classic scripts loaded in a fixed order by
+  `index.html`; global function names used by inline handlers are
+  unchanged. Two CSRF-store / pause-marker tests now patch the module that
+  owns that state.
+
+### Internal
+- One script now writes every systemd unit file:
+  `converge_system_units.sh --only <unit>` is how `setup_services.sh`,
+  `deploy_cpp.sh`, `setup_ota_recovery.sh`, `setup_audio_service.sh`,
+  `setup_harness_services.sh`, `install_deps.sh`, the clone tooling and
+  `setup_pi.sh` install their units (each keeps its own enable/start), and
+  a test fails on any other script that writes one. `deploy_cpp.sh` no
+  longer stages unit copies in the install root's `systemd/` and deletes
+  the ones earlier deploys left there. Removed the legacy X11-era units
+  (`magic-mpv*`, `magic-ui*`) and their scripts (`setup_boot_service.sh`,
+  `migrate_to_cpp.sh`, `cleanup_old_system.sh`); none was installed on
+  any box.
+- `main.cpp` slimmed further (4,123 → ~3,300 lines), with no behavior
+  change: main-menu playlist playback control moved to
+  `app/playlist_playback` (behind a `PlaylistTransport` interface), the
+  playlist reload's re-anchoring to `app/playlist_reload`, and the game
+  hand-off to `app/game_handoff` (session bracketing, quiet mode, torrent
+  resume recovery) + `app/game_handoff_kiosk` (loading-plate launch,
+  post-game display restore). New Mac unit tests cover all three.
+- `main.cpp` slimmed again (~3,300 → ~2,480 lines), with no behavior
+  change: the Media Browser service-client setup (Radarr/Sonarr/TMDB/
+  Prowlarr/qBittorrent, VPN monitor start, qBit alt-limit bootstrap) moved
+  to `media_browser/mb_services`; the boot intro video to
+  `app/intro_sequence` (pure) + `app/intro_sequence_kiosk`; the Settings-
+  menu input dispatch (BTN4 toggle/volume hold, on-screen keyboard, game
+  browser, Controller Setup wizard, pairing screen, menu rows) to
+  `app/settings_input` + `app/settings_input_logic` (pure). New Mac unit
+  tests cover the API-key chains and mock fallbacks, the intro's end/fade
+  decisions, and the BTN4 hold and game-browser row decisions.
+- The mid-playback playlist switch's waits (200 ms settle, up to 10 x 50 ms
+  "still playing?" re-polls, and the stuck-switch timeout's 200 ms settle)
+  are no longer `sleep_for` calls on the render thread: `PlaylistPlayback`
+  runs them as a per-frame state machine advanced from
+  `tick_switch_timeout()`, against an injected clock
+  (`PlaylistTransport::now()` replaces `sleep_for`). Same calls, order,
+  poll count and end states; re-entrancy rules in `playlist_playback.h`;
+  Mac tests drive it with a fake clock.
+- Removed dead code in the Media Browser screens (`BrowseScreen::
+  category_cursor_`, `DetailScreen::render`'s unused `blink_on`,
+  QueueScreen's unused text-hint locals).
+- `test_serve.py`'s phone-remote WebSocket storm test no longer flakes on
+  a loaded machine (the test client could strand the server's `hello_ack`
+  in its handshake buffer; the roundtrip now sends first and asserts
+  order, with condition-based 30 s deadlines).
+- Media Browser screens split into "decide" and "paint": the decision logic
+  of the TV series page, movie detail, Browse, Queue and Playback screens
+  (button rows, input mapping, paging, worker-result handling, every
+  composed label and toast) moved into Renderer-free units —
+  `series_mutations.{h,cpp}`, `series_detail_view.h`, `detail_logic.h`,
+  `browse_view.h`, `queue_view.h`, `playback_view.h` — with ~100 new Mac
+  unit tests. No behaviour change.
+
 ## [1.9.14] - 2026-08-13
 
 ### Changed

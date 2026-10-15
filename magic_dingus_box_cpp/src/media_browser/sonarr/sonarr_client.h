@@ -198,7 +198,8 @@ public:
     // Flips one season's monitored flag. Sonarr's PUT replaces the whole
     // resource, so this GETs the current record, edits one season, and PUTs
     // it back untouched otherwise. false when the series or season is not
-    // found, or the PUT failed.
+    // found, or the PUT failed. monitored=true also sets the SERIES-level
+    // monitored flag (an unmonitored series downloads nothing — see the .cpp).
     virtual bool set_season_monitored(int sonarr_id, int season_number, bool monitored);
 
     // POST /api/v3/command. Command names are the C# class name minus
@@ -513,6 +514,13 @@ private:
 // best-effort. It runs on every exit path (explicit call, abort, exception),
 // retries, logs at error, and reports failure so the caller can tell the
 // owner in words.
+// TEST SEAM. Points the guard's held marker (default
+// /tmp/mdb_sonarr_autoredownload_held — the path verify_box.sh checks) at
+// another file. The unit tests redirect it so a ctest run ON A REAL BOX
+// cannot leave a false "season delete interrupted" FAIL behind (it did,
+// 2026-10-05). Never called by the kiosk.
+void set_autoredownload_held_marker_path_for_testing(std::string path);
+
 class AutoRedownloadGuard {
 public:
     // Reads the current config and, if auto-redownload is ON, switches it

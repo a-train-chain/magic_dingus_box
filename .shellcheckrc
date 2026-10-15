@@ -1,0 +1,28 @@
+# ShellCheck configuration for every tracked shell script.
+# Enforced by tests/shellcheck_gate.sh (CI: test-local.yml "shellcheck" job,
+# pinned ShellCheck 0.11.0, severity info). A finding that is a deliberate
+# pattern at ONE site gets an inline `# shellcheck disable=SCxxxx  # reason`
+# there; only patterns that are deliberate repo-wide belong in this file,
+# each with its reason.
+
+# Follow `source`/`.` to the file it names, resolved relative to the script
+# that sources it (lib files next to their callers: clone_stash_lib.sh,
+# hw_rehearsal_lib.sh, ...).
+external-sources=true
+source-path=SCRIPTDIR
+
+# SC2029 — "this expands on the client side" for `ssh host "cmd $VAR"`.
+# Deliberate everywhere it appears: the dev/rehearsal scripts (deploy_cpp.sh,
+# install_cores.sh --pi, sync_source_box.sh, hw_rehearsal*.sh, migrate_box.sh)
+# build remote command lines from LOCAL values (PI_DIR, versions, paths).
+disable=SC2029
+
+# SC2012 — "use find instead of ls". Every use here counts or picks the
+# newest of our own fixed-name files (*.m3u, web_*.log, ssh_host_*, ...);
+# none of those names can contain a newline, which is the case find guards.
+disable=SC2012
+
+# SC2015 — "A && B || C is not if-then-else". Used only where B cannot fail
+# (`probe && break || sleep 2`, the rehearsal's `cond && pass ... || fail ...`
+# where pass only prints), so C never runs after a true A.
+disable=SC2015

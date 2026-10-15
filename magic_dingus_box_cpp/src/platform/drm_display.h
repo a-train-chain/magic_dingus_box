@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include "platform/kiosk_exit.h"
+#include <xf86drmMode.h>
 #include <string>
 #include <vector>
 
@@ -28,6 +30,12 @@ public:
 
     // Get current mode
     DisplayMode get_current_mode() const { return current_mode_; }
+    // The exact timing set on the CRTC (refresh, interlace, clock). Callers
+    // that re-issue drmModeSetCrtc (first frame, page-flip fallback, post-
+    // game reset) must use THIS, not re-search the connector by size: the
+    // kernel lists 1080i60 ahead of 1080p50, so a size-only match re-set a
+    // different mode than pick_mode() chose.
+    const drmModeModeInfo& get_current_mode_info() const { return current_mode_info_; }
     
     // Get DRM file descriptor (for GBM)
     int get_fd() const { return drm_fd_; }
@@ -47,6 +55,10 @@ public:
     // Re-acquire DRM master
     bool acquire_master();
 
+    // Why the last initialize() failed (None after a success). main() maps
+    // this to the process exit code — see kiosk_exit.h.
+    DisplayInitFailure init_failure() const { return init_failure_; }
+
 private:
     int drm_fd_;
     uint32_t connector_id_;
@@ -55,6 +67,8 @@ private:
     uint32_t saved_crtc_id_;
     void* saved_crtc_;
     DisplayMode current_mode_;
+    drmModeModeInfo current_mode_info_{};
+    DisplayInitFailure init_failure_ = DisplayInitFailure::None;
     
     bool find_connector();
     bool find_crtc();

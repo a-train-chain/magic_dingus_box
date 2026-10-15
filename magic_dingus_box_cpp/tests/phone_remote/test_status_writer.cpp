@@ -98,3 +98,37 @@ TEST_CASE("status_writer emits text_input block when keyboard active", "[remote]
     REQUIRE(root["text_input"]["title"].asString() == "Search movies");
     REQUIRE(root["text_input"]["buffer"].asString() == "shawsh");
 }
+
+TEST_CASE("status_writer publishes the TEST-ONLY platform policy override",
+          "[remote][status][platform]") {
+    // verify_box.sh fails a box whose status carries a non-null
+    // platform_policy_override, so the field must be present (null) when
+    // the override is off and carry "pi4" when it is on.
+    fs::path tmp = fs::temp_directory_path() / "mdb_status_policy_override.json";
+
+    auto read_root = [&]() {
+        std::ifstream f(tmp);
+        Json::Value root;
+        f >> root;
+        return root;
+    };
+
+    {
+        fs::remove(tmp);
+        app::AppState state;
+        app::StatusWriter w(tmp.string());
+        w.write_now(state);
+        Json::Value root = read_root();
+        REQUIRE(root.isMember("platform_policy_override"));
+        REQUIRE(root["platform_policy_override"].isNull());
+    }
+    {
+        fs::remove(tmp);
+        app::AppState state;
+        state.platform_profile.policy_override = "pi4";
+        app::StatusWriter w(tmp.string());
+        w.write_now(state);
+        Json::Value root = read_root();
+        REQUIRE(root["platform_policy_override"].asString() == "pi4");
+    }
+}

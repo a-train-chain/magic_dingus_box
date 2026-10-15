@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "media_browser/ui/series_detail_logic.h"
+#include "media_browser/ui/season_choice.h"
+#include <algorithm>
 
 using namespace media_browser;
 using namespace media_browser::ui;
@@ -272,7 +274,7 @@ TEST_CASE("action row: not-in-library offers the add pair, focused on add",
     auto in = row_inputs(SeriesDetailState::NotInLibrary);
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 2);
-    CHECK(row.buttons[0].action == Action::AddSeason1);
+    CHECK(row.buttons[0].action == Action::AddSeason);
     CHECK(row.buttons[0].label == "Add Season 1");
     CHECK(row.buttons[1].action == Action::WholeSeries);
     CHECK(row.buttons[1].label == "Whole series\xE2\x80\xA6");
@@ -282,12 +284,12 @@ TEST_CASE("action row: not-in-library offers the add pair, focused on add",
 TEST_CASE("action row: an UNSETTLED in-library record is [Remove] only",
           "[series_detail]") {
     // The window where Sonarr holds the record but has never refreshed it:
-    // every season reads unmonitored, so next_unmonitored answers the first
+    // every season reads unmonitored, so the primary target answers the first
     // season we JUST added. Offering "Download Season 1" one second after
     // adding season 1 is the bug this rule exists for.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = false;
-    in.next_unmonitored = 1;
+    in.primary_season = 1;
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 1);
     CHECK(row.buttons[0].action == Action::Remove);
@@ -298,7 +300,7 @@ TEST_CASE("action row: a settled in-library record offers next season + whole + 
           "[series_detail]") {
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;
+    in.primary_season = 2;
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 3);
     CHECK(row.buttons[0].action == Action::NextSeason);
@@ -308,7 +310,7 @@ TEST_CASE("action row: a settled in-library record offers next season + whole + 
     CHECK(row.focus == 0);  // never the destructive one
 
     // Everything monitored: the add controls hide, Remove stays.
-    in.next_unmonitored = std::nullopt;
+    in.primary_season = std::nullopt;
     const auto only_remove = decide_action_row(in);
     REQUIRE(only_remove.buttons.size() == 1);
     CHECK(only_remove.buttons[0].action == Action::Remove);
@@ -318,7 +320,7 @@ TEST_CASE("action row: arming a confirm keeps focus on the SAME canonical button
           "[series_detail]") {
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;  // row is [NextSeason, WholeSeries, Remove]
+    in.primary_season = 2;  // row is [NextSeason, WholeSeries, Remove]
 
     // Remove -> ConfirmRemove: one button in two states, focus must not move.
     in.prev_focus_action = Action::Remove;
@@ -349,11 +351,11 @@ TEST_CASE("action row: arming a confirm keeps focus on the SAME canonical button
 TEST_CASE("action row: focus biases AWAY from Remove when the kept action is gone",
           "[series_detail]") {
     // The user pressed Add on a not-in-library page; the add landed and the
-    // row became the in-library set. AddSeason1 no longer exists.
+    // row became the in-library set. AddSeason1 was renamed AddSeason.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;
-    in.prev_focus_action = Action::AddSeason1;
+    in.primary_season = 2;
+    in.prev_focus_action = Action::AddSeason;
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 3);
     CHECK(row.focus == 0);
@@ -366,8 +368,8 @@ TEST_CASE("action row: [Remove]-only falls back onto Remove itself",
     // only thing on offer — otherwise focus points at nothing.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = false;
-    in.next_unmonitored = 1;
-    in.prev_focus_action = Action::AddSeason1;  // no match in the new row
+    in.primary_season = 1;
+    in.prev_focus_action = Action::AddSeason;  // no match in the new row
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 1);
     CHECK(row.buttons[0].action == Action::Remove);
@@ -393,12 +395,12 @@ TEST_CASE("action row: a FORCED [Remove]-only focus is not preserved when the ro
     auto s1 = row_inputs(SeriesDetailState::NotInLibrary);
     const auto add_row = decide_action_row(s1);
     REQUIRE(add_row.buttons.size() == 2);
-    REQUIRE(add_row.buttons[add_row.focus].action == Action::AddSeason1);
+    REQUIRE(add_row.buttons[add_row.focus].action == Action::AddSeason);
 
     // --- step 2: the unsettled drain ---
     auto s2 = row_inputs(SeriesDetailState::InLibrary);
     s2.series_settled = false;
-    s2.next_unmonitored = 1;
+    s2.primary_season = 1;
     s2.prev_focus_action = add_row.buttons[add_row.focus].action;
     s2.prev_row_remove_only = false;  // the previous row was the add pair
     const auto forced = decide_action_row(s2);
@@ -409,7 +411,7 @@ TEST_CASE("action row: a FORCED [Remove]-only focus is not preserved when the ro
     // --- step 3: the poll settles and the row re-expands ---
     auto s3 = row_inputs(SeriesDetailState::InLibrary);
     s3.series_settled = true;
-    s3.next_unmonitored = 2;
+    s3.primary_season = 2;
     s3.prev_focus_action = forced.buttons[forced.focus].action;  // Remove
     s3.prev_row_remove_only = true;  // ...and it was the ONLY button
     const auto settled = decide_action_row(s3);
@@ -433,7 +435,7 @@ TEST_CASE("action row: the non-actionable states have an EMPTY row",
                     SeriesDetailState::NotConfigured,
                     SeriesDetailState::SonarrUnreachable}) {
         auto in = row_inputs(st);
-        in.next_unmonitored = 1;
+        in.primary_season = 1;
         in.prev_focus_action = Action::Remove;
         const auto row = decide_action_row(in);
         CHECK(row.buttons.empty());
@@ -454,7 +456,7 @@ TEST_CASE("action row: PlayNextUp leads the in-library row, labels pinned",
           "[series_detail][series_detail_logic]") {
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;
+    in.primary_season = 2;
     in.has_next_up = true;
     in.next_up_season = 2;
     in.next_up_episode = 5;
@@ -489,12 +491,12 @@ TEST_CASE("action row: PlayNextUp requires InLibrary; absent when has_next_up is
     in.next_up_is_first = true;
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 2);
-    CHECK(row.buttons[0].action == Action::AddSeason1);
+    CHECK(row.buttons[0].action == Action::AddSeason);
 
     // In-library without a playable episode: the pre-Task-6 row, unchanged.
     auto lib = row_inputs(SeriesDetailState::InLibrary);
     lib.series_settled = true;
-    lib.next_unmonitored = 2;
+    lib.primary_season = 2;
     lib.has_next_up = false;
     const auto no_nu = decide_action_row(lib);
     REQUIRE(no_nu.buttons.size() == 3);
@@ -508,7 +510,7 @@ TEST_CASE("action row: an UNSETTLED record with a playable episode is [PlayNextU
     // on disk is safe in that window, so PlayNextUp stays.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = false;
-    in.next_unmonitored = 1;
+    in.primary_season = 1;
     in.has_next_up = true;
     in.next_up_season = 1;
     in.next_up_episode = 3;
@@ -526,7 +528,7 @@ TEST_CASE("action row: focus identity survives a PlayNextUp insertion and relabe
     // the head. Identity, not index: the ring must FOLLOW NextSeason to 1.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;
+    in.primary_season = 2;
     in.has_next_up = true;
     in.next_up_season = 1;
     in.next_up_episode = 1;
@@ -555,15 +557,15 @@ TEST_CASE("action row: the forced [Remove]-only escape lands on PlayNextUp when 
     // new head (index 0), never back on the delete button.
     auto s2 = row_inputs(SeriesDetailState::InLibrary);
     s2.series_settled = false;
-    s2.next_unmonitored = 1;
-    s2.prev_focus_action = Action::AddSeason1;
+    s2.primary_season = 1;
+    s2.prev_focus_action = Action::AddSeason;
     const auto forced = decide_action_row(s2);
     REQUIRE(forced.buttons.size() == 1);
     REQUIRE(forced.buttons[0].action == Action::Remove);
 
     auto s3 = row_inputs(SeriesDetailState::InLibrary);
     s3.series_settled = true;
-    s3.next_unmonitored = 2;
+    s3.primary_season = 2;
     s3.has_next_up = true;
     s3.next_up_season = 1;
     s3.next_up_episode = 1;
@@ -644,38 +646,40 @@ TEST_CASE("season_row_opens_picker: files OR a live download, never files alone"
     CHECK_FALSE(season_row_opens_picker(empty));
 }
 
-TEST_CASE("a deleted season above an un-downloaded one is NOT the action row's "
-          "target — the season list has to carry it") {
-    // Pins the reason the season list's SELECT starts a download. Delete
-    // season 3 of a series whose season 2 was never downloaded and the
-    // action row still reads "Download Season 2": next_unmonitored_season
-    // answers with the LOWEST unmonitored season and decide_action_row
-    // builds exactly ONE such button, so season 3 has no action-row path
-    // back at all. Both rows fail season_row_opens_picker, so both are
-    // reachable through the list.
+TEST_CASE("a deleted season above an un-downloaded one is reachable from the "
+          "primary button (suggested_season) and the season list") {
+    // Delete season 3 of a series whose season 2 was never downloaded. The
+    // old lowest-unmonitored targeting could only ever offer season 2. The
+    // screen now passes suggested_season(rows, watch) - the first eligible
+    // season past the furthest one watched/on disk (season 1 here), i.e.
+    // season 2 - and the chooser steps up to season 3. Both rows also fail
+    // season_row_opens_picker, so the list SELECT downloads either directly.
     using namespace media_browser::ui;
     std::vector<SeasonRow> rows;
     SeasonRow s1; s1.season_number = 1; s1.monitored = true;
     s1.episode_count = 10; s1.episode_file_count = 10; s1.state = SeasonState::Complete;
     SeasonRow s2; s2.season_number = 2; s2.monitored = false; s2.episode_count = 10;
     SeasonRow s3; s3.season_number = 3; s3.monitored = false; s3.episode_count = 10;
-    rows = {s1, s2, s3};  // s3: just deleted — unmonitored, no files
-    const auto next = next_unmonitored_season(rows);
-    REQUIRE(next.has_value());
-    CHECK(*next == 2);
+    rows = {s1, s2, s3};  // s3: just deleted - unmonitored, no files
+    const watch_map watch;
+    const auto target = suggested_season(rows, watch);
+    REQUIRE(target.has_value());
+    CHECK(*target == 2);
+    const auto elig = eligible_seasons(rows);
+    CHECK(std::find(elig.begin(), elig.end(), 3) != elig.end());  // reachable
     ActionRowInputs in;
     in.state = SeriesDetailState::InLibrary;
-    in.next_unmonitored = next;
+    in.primary_season = target;
     const auto row = decide_action_row(in);
     int download_buttons = 0;
     for (const auto& b : row.buttons) {
         if (b.action == Action::NextSeason) {
             ++download_buttons;
-            CHECK(b.label == "Download Season 2");   // never "Download Season 3"
+            CHECK(b.label == "Download Season 2");
         }
     }
     CHECK(download_buttons == 1);
-    CHECK_FALSE(season_row_opens_picker(s3));        // ...so the LIST offers it
+    CHECK_FALSE(season_row_opens_picker(s3));
     CHECK_FALSE(season_row_opens_picker(s2));
 }
 
@@ -685,4 +689,151 @@ TEST_CASE("season_delete_label three states") {
     REQUIRE(season_delete_label(SeasonDeleteState::Idle, 3)    == "Delete Season 3\xE2\x80\xA6");
     REQUIRE(season_delete_label(SeasonDeleteState::Armed, 3)   == "Confirm delete Season 3");
     REQUIRE(season_delete_label(SeasonDeleteState::Removing, 3)== "Removing season\xE2\x80\xA6");
+}
+
+TEST_CASE("action row: not-in-library add targets the suggested season",
+          "[series_detail]") {
+    using namespace media_browser::ui;
+    ActionRowInputs in;
+    in.state = SeriesDetailState::NotInLibrary;
+    in.primary_season = 3;
+    const auto row = decide_action_row(in);
+    REQUIRE_FALSE(row.buttons.empty());
+    CHECK(row.buttons[0].action == Action::AddSeason);
+    CHECK(row.buttons[0].label == "Add Season 3");
+}
+
+TEST_CASE("action row: not-in-library with no suggestion still offers Season 1",
+          "[series_detail]") {
+    using namespace media_browser::ui;
+    ActionRowInputs in;
+    in.state = SeriesDetailState::NotInLibrary;
+    const auto row = decide_action_row(in);
+    REQUIRE_FALSE(row.buttons.empty());
+    CHECK(row.buttons[0].label == "Add Season 1");
+}
+
+TEST_CASE("action row: the chooser label replaces the primary label, same action",
+          "[series_detail]") {
+    using namespace media_browser::ui;
+    ActionRowInputs in;
+    in.state = SeriesDetailState::InLibrary;
+    in.series_settled = true;
+    in.primary_season = 5;
+    in.primary_label_override = "\xE2\x80\xB9 Season 6 \xC2\xB7 ~20 GB \xE2\x80\xBA";
+    in.prev_focus_action = Action::NextSeason;
+    const auto row = decide_action_row(in);
+    REQUIRE_FALSE(row.buttons.empty());
+    const auto& b = row.buttons[static_cast<size_t>(row.focus)];
+    CHECK(b.action == Action::NextSeason);
+    CHECK(b.label == "\xE2\x80\xB9 Season 6 \xC2\xB7 ~20 GB \xE2\x80\xBA");
+}
+
+TEST_CASE("poll downloading set: a failed queue read is NO evidence, not an empty queue",
+          "[series_detail]") {
+    // A failed read must not flip every downloading season to None — that
+    // made them eligible in the season chooser and invited duplicate
+    // searches. nullopt in, nullopt out: the caller keeps its prior set.
+    CHECK_FALSE(downloading_seasons_from_queue(std::nullopt, 7).has_value());
+
+    SECTION("an answered empty queue really is an empty set") {
+        const auto got = downloading_seasons_from_queue(
+            std::vector<SonarrQueueItem>{}, 7);
+        REQUIRE(got.has_value());
+        CHECK(got->empty());
+    }
+    SECTION("only this series' rows count, deduped by season") {
+        SonarrQueueItem a; a.series_id = 7; a.season_number = 2;
+        SonarrQueueItem b; b.series_id = 7; b.season_number = 2;
+        SonarrQueueItem c; c.series_id = 9; c.season_number = 3;
+        SonarrQueueItem d; d.series_id = 7; d.season_number = 4;
+        const auto got = downloading_seasons_from_queue(
+            std::vector<SonarrQueueItem>{a, b, c, d}, 7);
+        REQUIRE(got.has_value());
+        CHECK(*got == std::unordered_set<int>{2, 4});
+    }
+}
+
+TEST_CASE("season-end intent: waits for Sonarr, then for a FRESH answer",
+          "[series_detail][season_end]") {
+    // The FullPause shape: playback just ended, Sonarr is still restarting,
+    // and the page's series_ is a pre-playback snapshot. Starting now fails
+    // ("couldn't monitor season") or refuses ("didn't apply") for a season
+    // that IS downloadable — the old immediate path's two failure modes.
+    DeferredStartInputs in;
+    in.has_series = true;
+    in.settled = true;
+    in.want_eligible = true;
+
+    SECTION("gate pending -> wait") {
+        in.gate = DeferredGate::Pending;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Wait);
+    }
+    SECTION("gate ready but only the pre-playback snapshot -> wait") {
+        in.gate = DeferredGate::Ready;
+        in.fresh_answer = false;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Wait);
+    }
+    SECTION("gate ready + fresh, settled, eligible record -> start") {
+        in.gate = DeferredGate::Ready;
+        in.fresh_answer = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Start);
+    }
+    SECTION("an unsettled fresh record waits rather than refusing") {
+        // series_settled_ can read false right after Sonarr comes back; the
+        // old path turned that into "Season update didn't apply".
+        in.gate = DeferredGate::Ready;
+        in.fresh_answer = true;
+        in.settled = false;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Wait);
+    }
+    SECTION("a mutation already running waits its turn") {
+        in.gate = DeferredGate::Ready;
+        in.fresh_answer = true;
+        in.mutation_in_flight = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Wait);
+    }
+}
+
+TEST_CASE("season-end intent: drift and outage are said out loud",
+          "[series_detail][season_end]") {
+    DeferredStartInputs in;
+    in.gate = DeferredGate::Ready;
+    in.fresh_answer = true;
+    in.has_series = true;
+    in.settled = true;
+
+    SECTION("fresh rows say the season is no longer downloadable") {
+        in.want_eligible = false;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Drifted);
+    }
+    SECTION("the record vanished") {
+        in.has_series = false;
+        in.want_eligible = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Drifted);
+    }
+    SECTION("the gate timed out -> services down, whatever else is true") {
+        in.gate = DeferredGate::TimedOut;
+        in.want_eligible = true;
+        CHECK(decide_deferred_season_start(in) ==
+              DeferredStartStep::ServicesDown);
+    }
+    SECTION("deadline with no fresh answer -> services down") {
+        in.fresh_answer = false;
+        in.want_eligible = true;
+        in.past_deadline = true;
+        CHECK(decide_deferred_season_start(in) ==
+              DeferredStartStep::ServicesDown);
+    }
+    SECTION("deadline while still unsettled -> drift, not a silent wait") {
+        in.settled = false;
+        in.want_eligible = true;
+        in.past_deadline = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Drifted);
+    }
+    SECTION("deadline does not override a start that is ready right now") {
+        in.want_eligible = true;
+        in.past_deadline = true;
+        CHECK(decide_deferred_season_start(in) == DeferredStartStep::Start);
+    }
 }

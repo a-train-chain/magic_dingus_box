@@ -80,6 +80,11 @@ public:
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). Nothing animates except the 2 Hz caret
+    // blink, which goes in the signature rather than forcing 60 fps.
+    bool wants_continuous_redraw() const override { return false; }
+    uint64_t redraw_signature() const override;
+
     // tmdb_id of the most recently selected result poster. The dispatcher
     // in main.cpp reads this to forward to DetailScreen on transition
     // (same handoff pattern BrowseScreen uses).
@@ -104,15 +109,10 @@ private:
     static constexpr int kDebounceMs = 400;
 
     void run_lookup_if_due();
-    // Retired in v1.6.x — was the BTN2 quick-add shortcut on the
-    // results grid, replaced by the back-grammar remap. Preserved
-    // intentionally in case a future overlay or shortcut wants the
-    // same library-add flow without going through DetailScreen.
-    [[maybe_unused]] void quick_add_focused();
 
     // --- Async pipelines (lib_ + lookup_) -----------------------------
-    // Library cache: one-shot fetch dispatched from enter() (and after a
-    // successful add). Populates library_tmdb_ids_ + quality_profiles_.
+    // Library cache: one-shot fetch dispatched from enter(). Populates
+    // library_tmdb_ids_ + downloading_tmdb_ids_ (the result chips).
     void start_lib_fetch();
     void run_lib_fetch(uint64_t gen);
     void apply_pending_lib();
@@ -124,16 +124,16 @@ private:
     void run_lookup(uint64_t gen, std::string query);
     void apply_pending_lookup();
 
-    // Bundled output of run_lib_fetch(). profiles_valid is separate
-    // because we only re-fetch profiles on the FIRST library load —
-    // subsequent refreshes (post-add) just refresh the in-library set.
-    // queue carries the Radarr download queue so apply_pending_lib()
-    // can populate downloading_tmdb_ids_ without an extra round-trip.
+    // Bundled output of run_lib_fetch(). queue carries the Radarr download
+    // queue so apply_pending_lib() can populate downloading_tmdb_ids_
+    // without an extra round-trip.
     struct LibFetchResult {
         std::vector<Movie>          library;
-        std::vector<QualityProfile> profiles;
         std::vector<QueueItem>      queue;
-        bool profiles_valid = false;
+        // Radarr answered the library / queue read. A failed read must not
+        // be applied as an empty one (it wiped every chip on a blip).
+        bool library_ok = false;
+        bool queue_ok = false;
     };
 
     RadarrClient& radarr_;
@@ -148,23 +148,21 @@ private:
         std::chrono::steady_clock::time_point::min();
 
     std::vector<MovieSearchHit> results_;
+    // Bumped when update() applies a lookup or library result (redraw gate).
+    uint64_t content_epoch_ = 0;
 
     int grid_cursor_ = 0;
     int scroll_row_ = 0;
 
     int selected_tmdb_id_ = 0;
 
-    // --- Quick-add caches (preserved post-v1.6.x, see comment above) ---
+    // --- Result-chip caches ----------------------------------------------
+    // tmdb_ids in the Radarr library. Drives the IN LIBRARY chip.
     std::unordered_set<int> library_tmdb_ids_;
     // tmdb_ids of movies currently in the Radarr download queue. Populated
     // alongside library_tmdb_ids_ in run_lib_fetch() / apply_pending_lib().
     // Drives the DOWNLOADING badge on result poster cards.
     std::unordered_set<int> downloading_tmdb_ids_;
-    std::vector<QualityProfile> quality_profiles_;
-    bool library_cached_ = false;   // True once profiles_ have been fetched.
-    bool lib_loaded_     = false;   // True once the in-library set has populated
-                                    // at least once. Used by the IN LIBRARY badge
-                                    // on result cells; pre-v1.6.x also gated quick-add.
 
     // --- Async lib_ pipeline ------------------------------------------
     // Library fetch was synchronous in enter() and blocked the render

@@ -36,6 +36,13 @@
 #   ./clone_live_sd.sh --pi ... --device /dev/mmcblk0  # if non-default
 #   ./clone_live_sd.sh --pi ... --yes                  # skip the "Continue?" prompt
 #   ./clone_live_sd.sh --pi ... --skip-leak-scan       # UNCHECKED image — do not ship
+#   ./clone_live_sd.sh --pi ... --allow-ram-stash      # no movie drive: secrets in RAM
+#
+# The source box's secrets are stashed on its movie drive (/mnt/ssd) for the
+# duration of the dd, so a reboot or power cut mid-clone loses nothing — boot
+# it with the drive attached and run restore_after_cloning.sh. Without a
+# mounted drive prepare refuses to start; --allow-ram-stash overrides that by
+# stashing in /dev/shm, where a reboot mid-clone DESTROYS them permanently.
 #
 
 set -euo pipefail
@@ -55,6 +62,7 @@ DRY_RUN=0
 COMPRESS=1
 SKIP_CONFIRM=0
 SKIP_LEAK_SCAN=0
+PREPARE_ARGS=""
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -78,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --no-compress)   COMPRESS=0; shift ;;
         --yes|-y)        SKIP_CONFIRM=1; shift ;;
         --skip-leak-scan) SKIP_LEAK_SCAN=1; shift ;;
+        --allow-ram-stash) PREPARE_ARGS="--allow-ram-stash"; shift ;;
         -h|--help)
             sed -n 's/^# //;s/^#$//;1,/^$/p' "$0" | head -50
             exit 0
@@ -126,7 +135,9 @@ DD_DONE=0
 # the single-address restore then failed with "Operation timed out" even
 # though the box was up and answering on Wi-Fi the whole time. It was left
 # stripped, with 258 secrets parked in /dev/shm that a reboot would have
-# destroyed permanently.
+# destroyed permanently. (The stash has since moved to the movie drive, so a
+# reboot no longer destroys it — but the box stays stripped until restore
+# runs, so reaching it by a second route still matters.)
 RESTORE_FALLBACK=""
 
 restore_on() {
@@ -163,11 +174,14 @@ cleanup() {
         done
         if [[ $ok -eq 0 ]]; then
             echo
-            echo -e "${RED}${BOLD}    RESTORE DID NOT RUN — THE SOURCE PI IS STILL STRIPPED.${NC}"
-            echo -e "${RED}    Its secrets are stashed in /dev/shm, which is RAM: rebooting or${NC}"
-            echo -e "${RED}    powering off the Pi DESTROYS THEM PERMANENTLY.${NC}"
-            echo -e "${RED}    Do not reboot it. Reach it by any route and run:${NC}"
+            echo -e "${RED}${BOLD}    RESTORE DID NOT COMPLETE — THE SOURCE PI IS STILL STRIPPED.${NC}"
+            echo -e "${RED}    Its secrets are stashed on its movie drive (/mnt/ssd/.mdb-secret-stash)${NC}"
+            echo -e "${RED}    and survive a reboot — keep that drive attached. (With --allow-ram-stash${NC}"
+            echo -e "${RED}    they are in /dev/shm instead: do NOT reboot, that destroys them.)${NC}"
+            echo -e "${RED}    Until restore runs the box has no Wi-Fi profile — reach it over${NC}"
+            echo -e "${RED}    Ethernet or the USB gadget if Wi-Fi is gone — and run:${NC}"
             echo -e "${RED}      sudo /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh${NC}"
+            echo -e "${RED}    Read its output: it exits non-zero and says why if it cannot restore.${NC}"
         fi
         RESTORE_DONE=1
     fi
@@ -325,7 +339,7 @@ echo -e "${CYAN}[4/6] Running prepare_for_cloning.sh on source Pi...${NC}"
 
 PREPARE_STARTED=1
 ssh "${SSH_OPTS[@]}" "$PI_HOST" \
-    "sudo /opt/magic_dingus_box/scripts/golden_image/prepare_for_cloning.sh" \
+    "sudo /opt/magic_dingus_box/scripts/golden_image/prepare_for_cloning.sh ${PREPARE_ARGS}" \
     2>&1 | sed 's/^/    /'
 
 if [[ $DRY_RUN -eq 1 ]]; then

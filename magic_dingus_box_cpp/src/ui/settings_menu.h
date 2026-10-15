@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 
 namespace app {
@@ -105,7 +106,22 @@ public:
     bool is_closing() const { return is_closing_; }
     
     float get_animation_progress() const;
-    
+
+    // ── Redraw gate (app/redraw_gate.h) ──────────────────────────────
+    // True when the open menu shows nothing that changes on its own, so
+    // the main loop may skip unchanged frames. False while: opening or
+    // closing (the slide only advances inside drawing, via
+    // get_animation_progress()); the pairing screen is up (1 s code
+    // countdown); the controller wizard is up (raw pad capture, not
+    // counted as input); the game browser is up (thumbnails decode and
+    // upload inside drawing); Wi-Fi is scanning, connecting or forgetting
+    // (live rows). The on-screen keyboard is gated separately by main.cpp.
+    bool is_static_for_redraw() const;
+
+    // Hash of what a static menu draws: page, cursor, scroll and every
+    // row's label/sublabel (rebuilt by update() on Wi-Fi edges etc.).
+    uint64_t redraw_signature() const;
+
     void navigate(int delta, int game_playlists_count = 0, int games_in_current_playlist = 0);
     MenuSection select_current();
     
@@ -188,6 +204,8 @@ private:
     // State for async operations
     bool was_scanning_;
     bool was_connecting_;
+    bool was_forgetting_ = false;  // armed by the confirm action, cleared by update()
+    std::string forgetting_ssid_;  // for the outcome toast (worker clears its copy)
     bool wifi_disconnect_confirm_ = false;
     // Two-press confirm for "Reset Controller Setup", same idiom as
     // wifi_disconnect_confirm_ above (and cleared in the same places).

@@ -16,6 +16,10 @@ Environment=MAGIC_DATA_DIR=/opt/magic_dingus_box/magic_dingus_box_cpp/data
 # Point temp files at the SD card instead.
 Environment=TMPDIR=/opt/magic_dingus_box/tmp
 ExecStartPre=/bin/mkdir -p /opt/magic_dingus_box/tmp
+# Do NOT change this command line. An OTA never rewrites unit files, so this
+# exact ExecStart runs on every fielded box forever; wsgi.py's __main__ is
+# the launcher (web/serve.py) that picks gunicorn (gthread, 1 worker) when
+# python3-gunicorn is installed and Werkzeug's server otherwise.
 ExecStart=/usr/bin/python3 -u -m magic_dingus_box.web.wsgi
 Restart=always
 RestartSec=5

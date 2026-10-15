@@ -6,9 +6,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
@@ -21,24 +21,6 @@ using namespace std::chrono_literals;
 
 void require_line(const std::string& config, const std::string& line) {
     REQUIRE(config.find(line + "\n") != std::string::npos);
-}
-
-std::string temp_path(const char* leaf) {
-    return (fs::temp_directory_path() /
-            (std::string("mdb-ra-") + std::to_string(getpid()) + "-" + leaf))
-        .string();
-}
-
-pid_t spawn_group(const std::string& command) {
-    const pid_t pid = fork();
-    REQUIRE(pid >= 0);
-    if (pid == 0) {
-        setpgid(0, 0);
-        execl("/bin/bash", "bash", "-c", command.c_str(), nullptr);
-        _exit(127);
-    }
-    setpgid(pid, pid);
-    return pid;
 }
 
 }  // namespace
@@ -764,105 +746,117 @@ TEST_CASE("gameplay uses RetroArch threaded ALSA", "[retroarch][audio]") {
             "alsathread");
 }
 
-TEST_CASE("KMS marker makes startup ready without waiting for game exit",
-          "[retroarch][startup]") {
-    const std::string marker = temp_path("ready");
-    fs::remove(marker);
-    const pid_t pid = spawn_group("sleep 0.10; printf '1234\\n' > '" + marker +
-                                  "'; sleep 5");
-
-    REQUIRE(retroarch::wait_for_startup(pid, marker, 2s, 20ms) ==
-            retroarch::StartupStatus::Ready);
-    REQUIRE(retroarch::terminate_process_group(pid, 500ms));
-    fs::remove(marker);
+TEST_CASE("a stale core .opt is purged only when it carries our option keys",
+          "[retroarch][core-options]") {
+    // Port of the launcher script's `grep -l '^<prefix>'`.
+    const std::string mupen = "mupen64plus-cpucore = \"dynamic_recompiler\"\n"
+                              "mupen64plus-43screensize = \"320x240\"\n";
+    CHECK(retroarch::opt_file_shadows_options(mupen, "mupen64plus-"));
+    CHECK(retroarch::opt_file_shadows_options("x = 1\nreicast_region = \"USA\"",
+                                              "reicast_"));
+    // Prefix must start a LINE, not appear mid-line.
+    CHECK_FALSE(retroarch::opt_file_shadows_options("# see mupen64plus-cpucore\n",
+                                                    "mupen64plus-"));
+    CHECK_FALSE(retroarch::opt_file_shadows_options(mupen, "pcsx_rearmed_"));
+    // A core we write no options for never loses its .opt.
+    CHECK_FALSE(retroarch::opt_file_shadows_options(mupen, ""));
+    CHECK_FALSE(retroarch::opt_file_shadows_options("", "reicast_"));
 }
 
-TEST_CASE("child exit before KMS marker is a startup failure",
-          "[retroarch][startup]") {
-    const std::string marker = temp_path("early-ready");
-    fs::remove(marker);
-    const pid_t pid = spawn_group("exit 7");
-
-    REQUIRE(retroarch::wait_for_startup(pid, marker, 2s, 20ms) ==
-            retroarch::StartupStatus::Exited);
-    fs::remove(marker);
-}
-
-TEST_CASE("startup timeout terminates the entire launch group",
-          "[retroarch][startup]") {
-    const std::string marker = temp_path("timeout-ready");
-    fs::remove(marker);
-    const pid_t pid = spawn_group("sleep 10");
-
-    REQUIRE(retroarch::wait_for_startup(pid, marker, 200ms, 20ms) ==
-            retroarch::StartupStatus::TimedOut);
-    REQUIRE(retroarch::terminate_process_group(pid, 200ms));
-    int status = 0;
-    REQUIRE(waitpid(pid, &status, WNOHANG) == -1);
-    fs::remove(marker);
-}
-
-TEST_CASE("generated watcher removes compositor hints and publishes real PID",
-          "[retroarch][startup]") {
-    retroarch::ReadyWatchOptions options;
-    options.ready_file = "/tmp/mdb-ready";
-    options.drm_card_pattern = "/dev/dri/card*";
-
-    const std::string block = retroarch::build_kms_ready_watch_block(
-        "/usr/bin/retroarch --verbose", options);
-
-    REQUIRE(block.find(
-                "unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE SDL_VIDEODRIVER") !=
-            std::string::npos);
-    REQUIRE(block.find("/proc/$RETROARCH_PID/fd/*") != std::string::npos);
-    REQUIRE(block.find("printf '%s\\n' \"$RETROARCH_PID\"") !=
-            std::string::npos);
-    REQUIRE(block.find("/dev/dri/card*") != std::string::npos);
-}
-
-TEST_CASE("generated KMS watcher is valid Bash", "[retroarch][startup]") {
-    const std::string script_path = temp_path("watcher.sh");
-    retroarch::ReadyWatchOptions options;
-    options.ready_file = temp_path("watcher-ready");
-
-    {
-        std::ofstream script(script_path);
-        REQUIRE(script.is_open());
-        script << "#!/bin/bash\n";
-        script << retroarch::build_kms_ready_watch_block(
-            "/usr/bin/retroarch --verbose", options);
-        script << "exit \"$RETROARCH_EXIT\"\n";
-    }
-
-    REQUIRE(std::system(("/bin/bash -n '" + script_path + "'").c_str()) == 0);
-    fs::remove(script_path);
-}
-
-TEST_CASE("video contract is identical across Pi models until Pi 5 is benchmarked",
+TEST_CASE("video contract pins the swapchain workarounds on every board",
           "[retroarch][video][platform]") {
-    // LaunchOptions carries the detected board so Pi-5-specific tuning has
-    // a single place to land. The two Pi-4-empirical workarounds
-    // (video_threaded=false, max_swapchain_images=2) were RE-BENCHMARKED
-    // on Pi 5 / V3D 7.1 on 2026-07-25 and both were kept: threaded video
-    // still produces a swapchain failure the non-threaded path doesn't
-    // (1 vs 0), and swapchain depth made no measurable difference. See
-    // write_video_config() for the full data. This test pins the parity
-    // so any future divergence stays a conscious, measured decision.
-    retroarch::LaunchOptions pi4_options;
-    pi4_options.display_mode = app::DisplayMode::MODERN_TV;
-    pi4_options.bezel_file = "mdb_kv19.png";
-    pi4_options.pi_model = platform::PiModel::Pi4;
+    // The video contract takes NO board input (LaunchOptions carried an
+    // unread pi_model field until 2026-09; removed as dead). The two
+    // Pi-4-empirical workarounds (video_threaded=false,
+    // max_swapchain_images=2) were RE-BENCHMARKED on Pi 5 / V3D 7.1 on
+    // 2026-07-25 and both were kept: threaded video still produces a
+    // swapchain failure the non-threaded path doesn't (1 vs 0), and
+    // swapchain depth made no measurable difference. See
+    // write_video_config() for the full data. A future per-board split
+    // must add a PlatformProfile field (dual-board contract), not revive
+    // an ad-hoc model switch here.
+    retroarch::LaunchOptions options;
+    options.display_mode = app::DisplayMode::MODERN_TV;
+    options.bezel_file = "mdb_kv19.png";
 
-    retroarch::LaunchOptions pi5_options = pi4_options;
-    pi5_options.pi_model = platform::PiModel::Pi5;
+    std::ostringstream out;
+    retroarch::write_video_config(out, options);
+    require_line(out.str(), "video_threaded = \"false\"");
+    require_line(out.str(), "video_max_swapchain_images = \"2\"");
+}
 
-    std::ostringstream pi4_out, pi5_out;
-    retroarch::write_video_config(pi4_out, pi4_options);
-    retroarch::write_video_config(pi5_out, pi5_options);
+TEST_CASE("core lookup searches the system dir, then the user dir",
+          "[retroarch][core]") {
+    const fs::path root = fs::temp_directory_path() / "mdb_core_lookup_test";
+    fs::remove_all(root);
+    const fs::path sys = root / "sys";
+    const fs::path usr = root / "usr";
+    fs::create_directories(sys);
+    fs::create_directories(usr);
 
-    REQUIRE(pi4_out.str() == pi5_out.str());
-    require_line(pi5_out.str(), "video_threaded = \"false\"");
-    require_line(pi5_out.str(), "video_max_swapchain_images = \"2\"");
+    SECTION("missing everywhere -> nullopt (the launch must be refused)") {
+        REQUIRE_FALSE(retroarch::resolve_core_dir("flycast_libretro",
+                                                  sys.string(), usr.string()));
+        REQUIRE_FALSE(retroarch::resolve_core_dir("", sys.string(), usr.string()));
+    }
+    SECTION("user dir only") {
+        std::ofstream(usr / "flycast_libretro.so") << "x";
+        auto dir = retroarch::resolve_core_dir("flycast_libretro",
+                                               sys.string(), usr.string());
+        REQUIRE(dir);
+        REQUIRE(*dir == usr.string());
+    }
+    SECTION("system dir wins when both have it") {
+        std::ofstream(usr / "nestopia_libretro.so") << "x";
+        std::ofstream(sys / "nestopia_libretro.so") << "x";
+        auto dir = retroarch::resolve_core_dir("nestopia_libretro",
+                                               sys.string(), usr.string());
+        REQUIRE(dir);
+        REQUIRE(*dir == sys.string());
+    }
+    SECTION("a suffix-less name (auto-resolved) finds the _libretro .so") {
+        std::ofstream(sys / "mupen64plus_next_libretro.so") << "x";
+        REQUIRE(retroarch::libretro_core_name("mupen64plus_next") ==
+                "mupen64plus_next_libretro");
+        REQUIRE(retroarch::libretro_core_name("flycast_libretro") ==
+                "flycast_libretro");
+        REQUIRE(retroarch::resolve_core_dir("mupen64plus_next",
+                                            sys.string(), usr.string()));
+    }
+    SECTION("a DIRECTORY named like the core is not a core") {
+        fs::create_directories(sys / "fbneo_libretro.so");
+        REQUIRE_FALSE(retroarch::resolve_core_dir("fbneo_libretro",
+                                                  sys.string(), usr.string()));
+    }
+    fs::remove_all(root);
+}
+
+TEST_CASE("launcher log rotates to .1 so it cannot grow forever",
+          "[retroarch][log]") {
+    const fs::path root = fs::temp_directory_path() / "mdb_log_rotate_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const std::string log = (root / "retroarch_launcher.log").string();
+    auto slurp = [](const std::string& p) {
+        std::ifstream f(p);
+        return std::string(std::istreambuf_iterator<char>(f), {});
+    };
+
+    // No log yet: nothing to do, not an error.
+    REQUIRE(retroarch::rotate_launcher_log(log));
+    REQUIRE_FALSE(fs::exists(log + ".1"));
+
+    std::ofstream(log) << "session 1\n";
+    REQUIRE(retroarch::rotate_launcher_log(log));
+    REQUIRE_FALSE(fs::exists(log));
+    REQUIRE(slurp(log + ".1") == "session 1\n");
+
+    // Second session replaces the old .1 -- bounded at two sessions.
+    std::ofstream(log) << "session 2\n";
+    REQUIRE(retroarch::rotate_launcher_log(log));
+    REQUIRE(slurp(log + ".1") == "session 2\n");
+    REQUIRE_FALSE(fs::exists(log + ".2"));
+    fs::remove_all(root);
 }
 
 TEST_CASE("remote-quit bind lets the phone remote's KEY_Z chord exit the core",
@@ -879,15 +873,25 @@ TEST_CASE("remote-quit bind lets the phone remote's KEY_Z chord exit the core",
     require_line(config, "input_exit_emulator = \"z\"");
 }
 
-TEST_CASE("menu-toggle combo opens Quick Menu with L1 R1 Start Select",
+TEST_CASE("RetroArch menu is unreachable: no chord, no key, no updater",
           "[retroarch][hotkeys][menu-combo]") {
+    // Owner decision 2026-08-03: no RetroArch menu on a kiosk. The old
+    // chord (enum 3 = L1+R1+Start+Select) was the last way into it.
     std::ostringstream out;
-    retroarch::write_menu_toggle_combo_config(out);
+    retroarch::write_menu_disabled_config(out);
     const std::string config = out.str();
 
-    require_line(config, "input_menu_toggle_gamepad_combo = \"3\"");
-    REQUIRE(config.find("input_menu_toggle_gamepad_combo = \"1\"") ==
+    require_line(config, "input_menu_toggle_gamepad_combo = \"0\"");  // NONE
+    require_line(config, "input_menu_toggle = \"nul\"");
+    require_line(config, "menu_show_online_updater = \"false\"");
+    require_line(config, "menu_show_core_updater = \"false\"");
+    REQUIRE(config.find("input_menu_toggle_gamepad_combo = \"3\"") ==
             std::string::npos);
+    // The exit path must not depend on the menu: the remote's quit bind is
+    // a direct exit_emulator hotkey, written alongside this block.
+    std::ostringstream quit;
+    retroarch::write_remote_quit_config(quit);
+    require_line(quit.str(), "input_exit_emulator = \"z\"");
 }
 
 TEST_CASE("HDMI ALSA device picks vc4hdmi0 by NAME on both Pi 4 and Pi 5",
@@ -924,6 +928,102 @@ TEST_CASE("HDMI ALSA device falls back to vc4hdmi1 then legacy default",
     // No vc4 cards at all (dev box, USB-only audio): keep the legacy
     // fallback so behavior off-Pi is unchanged.
     REQUIRE(retroarch::pick_hdmi_alsa_device("null\n    Discard\n") == "plughw:1,0");
+}
+
+TEST_CASE("HDMI ALSA device follows the port the TV is plugged into",
+          "[retroarch][audio]") {
+    // Either physical port is a valid place to plug the TV. Observed live
+    // 2026-10-03: a Pi 5 with its TV on HDMI1 sent every game's audio to
+    // the empty HDMI0, because vc4hdmi0 always won by name.
+    const char* both =
+        "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n";
+    REQUIRE(retroarch::pick_hdmi_alsa_device(both, {"vc4hdmi1"}) ==
+            "sysdefault:CARD=vc4hdmi1");
+    REQUIRE(retroarch::pick_hdmi_alsa_device(both, {"vc4hdmi0"}) ==
+            "sysdefault:CARD=vc4hdmi0");
+    // Two TVs: the primary port keeps priority.
+    REQUIRE(retroarch::pick_hdmi_alsa_device(both, {"vc4hdmi1", "vc4hdmi0"}) ==
+            "sysdefault:CARD=vc4hdmi0");
+    // No ELD readable (TV off, dev box): name order, exactly as before.
+    REQUIRE(retroarch::pick_hdmi_alsa_device(both, {}) ==
+            "sysdefault:CARD=vc4hdmi0");
+    // A monitor reported on a card ALSA doesn't list is ignored.
+    REQUIRE(retroarch::pick_hdmi_alsa_device(
+                "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0\n", {"vc4hdmi1"}) ==
+            "sysdefault:CARD=vc4hdmi0");
+}
+
+TEST_CASE("Game audio AUTO follows PulseAudio to the jack when no HDMI sink takes audio",
+          "[retroarch][audio]") {
+    // Pi 4B on a display with no audio (DVI monitor, HDMI->composite CRT
+    // converter): PulseAudio's AUTO falls back to the analog jack, so the
+    // menus play there — and games used to go to silent HDMI regardless.
+    const char* pi4 =
+        "null\n    Discard all samples\n"
+        "sysdefault:CARD=Headphones\n    bcm2835 Headphones, bcm2835 Headphones\n"
+        "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n";
+    const std::vector<std::string> both_eld = {"vc4hdmi0", "vc4hdmi1"};
+
+    // AUTO, ELD readable, no monitor with audio -> the jack.
+    CHECK(retroarch::pick_game_alsa_device(0, pi4, both_eld, {}) ==
+          "sysdefault:CARD=Headphones");
+    // AUTO with an audio-capable TV -> that HDMI port, as before.
+    CHECK(retroarch::pick_game_alsa_device(0, pi4, both_eld, {"vc4hdmi1"}) ==
+          "sysdefault:CARD=vc4hdmi1");
+    // AUTO with NO ELD readable (dev box / unknown): unchanged HDMI pick —
+    // absence of evidence is not "no audio sink".
+    CHECK(retroarch::pick_game_alsa_device(0, pi4, {}, {}) ==
+          "sysdefault:CARD=vc4hdmi0");
+    // Explicit HDMI is honored even with no audio-capable sink.
+    CHECK(retroarch::pick_game_alsa_device(1, pi4, both_eld, {}) ==
+          "sysdefault:CARD=vc4hdmi0");
+    // Explicit headphones, always.
+    CHECK(retroarch::pick_game_alsa_device(2, pi4, both_eld, {"vc4hdmi0"}) ==
+          "sysdefault:CARD=Headphones");
+}
+
+TEST_CASE("Game audio AUTO on a Pi 5 (no Headphones card) stays on HDMI",
+          "[retroarch][audio]") {
+    const char* pi5 =
+        "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n";
+    CHECK(retroarch::pick_game_alsa_device(0, pi5, {"vc4hdmi0", "vc4hdmi1"}, {}) ==
+          "sysdefault:CARD=vc4hdmi0");
+    // "Headphones" in a description line is not the card being listed.
+    const char* decoy =
+        "sysdefault:CARD=vc4hdmi0\n    Headphones-shaped description\n";
+    CHECK(retroarch::pick_game_alsa_device(0, decoy, {"vc4hdmi0"}, {}) ==
+          "sysdefault:CARD=vc4hdmi0");
+}
+
+TEST_CASE("ELD text reports whether a monitor is attached",
+          "[retroarch][audio]") {
+    // Real /proc/asound/vc4hdmiN/eld#0 from a Pi 5 (2026-10-03). vc4
+    // prints no monitor_present line; a TV that can take audio is one
+    // whose ELD lists at least one short audio descriptor.
+    const char* connected =
+        "monitor_name\t\tV756-J03\n"
+        "connection_type\t\tHDMI\n"
+        "eld_version\t\t[0x2] CEA-861D or below\n"
+        "speakers\t\t[0x1] FL/FR\n"
+        "sad_count\t\t7\n"
+        "sad0_coding_type\t[0x1] LPCM\n";
+    const char* empty_port =
+        "monitor_name\t\t\n"
+        "connection_type\t\tHDMI\n"
+        "eld_version\t\t[0x0] reserved\n"
+        "speakers\t\t[0x0]\n"
+        "sad_count\t\t0\n";
+    REQUIRE(retroarch::eld_reports_monitor(connected));
+    REQUIRE_FALSE(retroarch::eld_reports_monitor(empty_port));
+    REQUIRE_FALSE(retroarch::eld_reports_monitor(""));
+    // HDA-style kernels print monitor_present/eld_valid instead.
+    REQUIRE(retroarch::eld_reports_monitor(
+        "monitor_present\t\t1\neld_valid\t\t1\n"));
+    REQUIRE_FALSE(retroarch::eld_reports_monitor(
+        "monitor_present\t\t1\neld_valid\t\t0\n"));
 }
 
 TEST_CASE("GL renderer path emits video_driver=gl without Vulkan-only settings",

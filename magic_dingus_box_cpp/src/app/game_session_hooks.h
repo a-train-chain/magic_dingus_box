@@ -6,14 +6,12 @@ namespace app {
 
 // What the host must do around a RetroArch child process. Controller calls
 // these on the main thread in this order:
-//   release_input() → wake_controllers(between) → [launcher writes its script]
-//   → release_display() → fork/exec → waitpid
+//   release_input() → wake_controllers(after) → [launcher writes its script]
+//   → release_display() → fork/exec → supervise
 //   → reacquire_display(w, h) → reinit_input()
-// wake_controllers's `between` callback fires between the two udev triggers
-// it runs internally (js* then event*) — see
-// platform::PiGameSessionHooks::wake_controllers — reproducing the original
-// controller.cpp's run_udevadm(js*) / progress_callback() /
-// run_udevadm(event*) ordering exactly.
+// wake_controllers's `after` callback (the loading plate's progress tick)
+// fires once the wake is done — the Pi wakes js* then event* through
+// platform::udev::wake_input_devices(), then ticks, as controller.cpp did.
 // The Pi implementation releases DRM master and evdev grabs
 // (platform/pi_game_session_hooks); a host with a window system needs none of
 // that, so every method defaults to "nothing to do, and it worked".
@@ -28,10 +26,18 @@ struct DisplayReacquire {
     bool mode_restored = false;
 };
 
+// True when the host tried to take the display back after a game and could
+// not (the Pi: DRM master not re-acquired after 5 retries). The kiosk then
+// exits non-zero so systemd restarts it (Controller::display_lost()). A host
+// with no display to reacquire (attempted=false) never loses it.
+inline bool display_was_lost(const DisplayReacquire& r) {
+    return r.attempted && !r.acquired;
+}
+
 struct GameSessionHooks {
     virtual ~GameSessionHooks() = default;
     virtual void release_input() {}
-    virtual void wake_controllers(const std::function<void()>& between) { (void)between; }
+    virtual void wake_controllers(const std::function<void()>& after) { (void)after; }
     virtual void release_display() {}
     virtual DisplayReacquire reacquire_display(uint32_t kiosk_w, uint32_t kiosk_h) {
         (void)kiosk_w; (void)kiosk_h;

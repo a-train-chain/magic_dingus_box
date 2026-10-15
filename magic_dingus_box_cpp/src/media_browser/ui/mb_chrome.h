@@ -244,8 +244,11 @@ ButtonRect draw_button(::ui::Renderer& r, int x, int y,
 // TMDB poster image via mb_draw_poster_or_tint, falling back to the
 // solid `tint` if the image hasn't loaded yet. When empty, the card
 // just draws the tint (back-compat). The artwork-cache is keyed by URL,
-// so the same URL on Browse / Search / Detail / Library all share one
-// fetched texture (no double download).
+// so the same URL on Browse / Search / Library all share one fetched
+// texture (no double download). Grid-sized cards (w <=
+// kTmdbGridPosterMaxLogicalW) fetch the w185 TMDB variant instead of the
+// w500 the data layer emits (tmdb_image.h); wider hero cards keep w500,
+// as a separate cache entry.
 void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
                       const std::string& title,
                       int year,

@@ -82,13 +82,10 @@ struct LibraryEntry {
 // input order, then one per INCLUDED Series, in input order. Sorting stays
 // the caller's job (build_library_view).
 //
-// TV inclusion rule: a series produces an entry only when
-//   series.episode_file_count > 0 || downloading_refs.count({Tv, tmdb_id})
-// The first operand is the SERIES-LEVEL stat on purpose — a series whose only
-// files are S0 specials still owns real disk content and must stay visible —
-// and the second is the escape hatch for a freshly-started download whose
-// first import hasn't landed (episodeFileCount == 0), without which no TV
-// tile could ever show DOWNLOADING.
+// TV inclusion rule: every series Sonarr holds produces an entry, files or
+// not — the same as movies. A show whose seasons were all deleted stays in the
+// Library (file_count == 0, not downloading = "empty"); only Remove takes a
+// show out. Counts use the season-0-excluded sums.
 //
 // `watched_movie_ids` / `tv_watched_counts` are WatchStore::watched_movie_ids
 // / tv_watched_counts snapshots — read them on the render thread (WatchStore
@@ -178,5 +175,30 @@ std::vector<const LibraryEntry*> build_library_view(
     ::app::AppState::DisplaySettings::MbLibrarySort sort,
     const std::string& recent_cutoff_iso,
     bool recent_cutoff_valid);
+
+// ---- Radarr outage policy ----
+//
+// The 2 s refresh read Radarr with the unchecked get_library()/get_queue(),
+// so ANY failed read — a netns re-link blip, and the 20-40 s after every
+// FullPause movie while the stopped container restarts — replaced the movie
+// grid with nothing and painted "Library is empty". LibraryScreen now keeps
+// the last good movie list when Radarr does not answer (its own decision,
+// one line in apply_pending) and uses these two for the rest.
+
+// One badge set (downloading / stuck / importing) for this cycle.
+// movie_half_ok = Radarr's library AND queue both answered, so `fresh`
+// holds real movie refs. Otherwise the movie refs in `fresh` are absent
+// for lack of evidence, not because nothing is downloading: carry the
+// previous cycle's MOVIE refs forward and take TV refs from `fresh`
+// (Sonarr answered or not on its own, and its half already has a policy).
+std::unordered_set<MediaRef> carry_forward_movie_refs(
+    std::unordered_set<MediaRef> fresh,
+    const std::unordered_set<MediaRef>& prev,
+    bool movie_half_ok);
+
+// Centered copy for a grid with nothing to show. any_entries = the library
+// has entries but the filter hid them all. movies_offline = Radarr has not
+// answered since the screen last had a movie list — never "empty" then.
+const char* library_empty_message(bool any_entries, bool movies_offline);
 
 }  // namespace media_browser::ui

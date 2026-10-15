@@ -2,34 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <cmath>
-#include <csignal>
 #include <filesystem>
 #include <ostream>
 #include <sstream>
-#include <thread>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include "utils/config.h"
 
 namespace retroarch {
 
 namespace {
-
-std::string shell_single_quote(const std::string& value) {
-    std::string quoted = "'";
-    for (const char character : value) {
-        if (character == '\'') {
-            quoted += "'\\''";
-        } else {
-            quoted += character;
-        }
-    }
-    quoted += "'";
-    return quoted;
-}
 
 bool is_ps1_core(const std::string& core_name) {
     return core_name.find("pcsx") != std::string::npos ||
@@ -55,14 +37,49 @@ bool core_supports_overscan(const std::string& core_name) {
 
 }  // namespace
 
+std::string libretro_core_name(const std::string& core_name) {
+    if (core_name.find("_libretro") != std::string::npos) return core_name;
+    return core_name + "_libretro";
+}
+
+std::optional<std::string> resolve_core_dir(const std::string& core_name,
+                                            const std::string& system_dir,
+                                            const std::string& user_dir) {
+    if (core_name.empty()) return std::nullopt;
+    const std::string so = libretro_core_name(core_name) + ".so";
+    for (const std::string* dir : {&system_dir, &user_dir}) {
+        if (dir->empty()) continue;
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(
+                std::filesystem::path(*dir) / so, ec)) {
+            return *dir;
+        }
+    }
+    return std::nullopt;
+}
+
+bool rotate_launcher_log(const std::string& log_path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(log_path, ec)) return true;
+    // rename(2) atomically replaces an existing .1.
+    std::filesystem::rename(log_path, log_path + ".1", ec);
+    return !ec;
+}
+
 void write_remote_quit_config(std::ostream& out) {
     // See launch_contract.h. Keep in sync with QUIT_GAME in
     // magic_dingus_box/web/remote/uinput_writer.py (KEY_Z = 44).
     out << "input_exit_emulator = \"z\"\n";
 }
 
-void write_menu_toggle_combo_config(std::ostream& out) {
-    out << "input_menu_toggle_gamepad_combo = \"3\"\n";
+void write_menu_disabled_config(std::ostream& out) {
+    // See launch_contract.h. "0" is INPUT_COMBO_NONE in RetroArch's
+    // menu_toggle_gamepad_combo enum; "nul" is its explicit unbound-key
+    // sentinel (the keyboard default is F1).
+    out << "input_menu_toggle_gamepad_combo = \"0\"\n";
+    out << "input_menu_toggle = \"nul\"\n";
+    out << "menu_show_online_updater = \"false\"\n";
+    out << "menu_show_core_updater = \"false\"\n";
 }
 
 std::vector<std::string> core_input_device_args(
@@ -85,20 +102,66 @@ Renderer renderer_for_core(const std::string& core_name) {
     return Renderer::Vulkan;
 }
 
-std::string pick_hdmi_alsa_device(const std::string& aplay_L_output) {
+std::string pick_hdmi_alsa_device(const std::string& aplay_L_output,
+                                  const std::vector<std::string>& monitor_cards) {
     // Plain substring checks: `aplay -L` prints one device name per
     // line at column 0, and these exact PCM names cannot appear as a
     // substring of another device name. (The previous implementation
     // used std::regex with a `^` anchor, which only matches the start
     // of the WHOLE string in ECMAScript mode — it never matched, and
     // everything fell through to the card-number fallback.)
-    if (aplay_L_output.find("sysdefault:CARD=vc4hdmi0") != std::string::npos) {
-        return "sysdefault:CARD=vc4hdmi0";
+    static const char* const kCards[] = {"vc4hdmi0", "vc4hdmi1"};
+    auto listed = [&](const std::string& card) {
+        return aplay_L_output.find("sysdefault:CARD=" + card) != std::string::npos;
+    };
+    for (const char* card : kCards) {
+        if (listed(card) && std::find(monitor_cards.begin(), monitor_cards.end(),
+                                      card) != monitor_cards.end()) {
+            return std::string("sysdefault:CARD=") + card;
+        }
     }
-    if (aplay_L_output.find("sysdefault:CARD=vc4hdmi1") != std::string::npos) {
-        return "sysdefault:CARD=vc4hdmi1";
+    for (const char* card : kCards) {
+        if (listed(card)) return std::string("sysdefault:CARD=") + card;
     }
     return "plughw:1,0";
+}
+
+bool eld_reports_monitor(const std::string& eld_text) {
+    // Lines are "key<TABs>value". Read the few keys that matter.
+    std::istringstream in(eld_text);
+    std::string line;
+    int sad_count = -1, monitor_present = -1, eld_valid = -1;
+    while (std::getline(in, line)) {
+        std::istringstream fields(line);
+        std::string key;
+        int value = 0;
+        if (!(fields >> key >> value)) continue;
+        if (key == "sad_count") sad_count = value;
+        else if (key == "monitor_present") monitor_present = value;
+        else if (key == "eld_valid") eld_valid = value;
+    }
+    if (sad_count >= 0) return sad_count > 0;
+    return monitor_present == 1 && eld_valid != 0;
+}
+
+std::string pick_game_alsa_device(int audio_output,
+                                  const std::string& aplay_L_output,
+                                  const std::vector<std::string>& eld_readable_cards,
+                                  const std::vector<std::string>& monitor_cards) {
+    static const std::string kHeadphones = "sysdefault:CARD=Headphones";
+    if (audio_output == 2) return kHeadphones;
+    if (audio_output == 0 && !eld_readable_cards.empty() &&
+        monitor_cards.empty()) {
+        // aplay -L prints PCM names at column 0 and descriptions indented,
+        // so the jack counts only when its name is a whole line.
+        std::istringstream in(aplay_L_output);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line == kHeadphones) return kHeadphones;
+        }
+    }
+    return pick_hdmi_alsa_device(aplay_L_output, monitor_cards);
 }
 
 void write_video_config(std::ostream& out, const LaunchOptions& options) {
@@ -700,117 +763,19 @@ int audio_latency_ms_for_core(const std::string& core_name) {
     return 48;
 }
 
-std::string build_kms_ready_watch_block(const std::string& command,
-                                        const ReadyWatchOptions& options) {
-    std::ostringstream block;
-    block << "unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE SDL_VIDEODRIVER\n";
-    block << "RETROARCH_READY_FILE=" << shell_single_quote(options.ready_file)
-          << "\n";
-    block << "rm -f \"$RETROARCH_READY_FILE\"\n";
-    block << command << " &\n";
-    block << "RETROARCH_PID=$!\n";
-    block << "while kill -0 \"$RETROARCH_PID\" 2>/dev/null; do\n";
-    block << "    for fd in /proc/$RETROARCH_PID/fd/*; do\n";
-    block << "        target=$(readlink \"$fd\" 2>/dev/null || true)\n";
-    block << "        case \"$target\" in\n";
-    block << "            " << options.drm_card_pattern << ")\n";
-    block << "                printf '%s\\n' \"$RETROARCH_PID\" > "
-             "\"$RETROARCH_READY_FILE\"\n";
-    block << "                break 2\n";
-    block << "                ;;\n";
-    block << "        esac\n";
-    block << "    done\n";
-    block << "    sleep 0.05\n";
-    block << "done\n";
-    block << "wait \"$RETROARCH_PID\"\n";
-    block << "RETROARCH_EXIT=$?\n";
-    return block.str();
-}
-
-StartupStatus wait_for_startup(pid_t launcher_pid,
-                               const std::string& ready_file,
-                               std::chrono::milliseconds timeout,
-                               std::chrono::milliseconds poll_interval) {
-    if (launcher_pid <= 0) {
-        return StartupStatus::WaitError;
-    }
-
-    if (poll_interval <= std::chrono::milliseconds::zero()) {
-        poll_interval = std::chrono::milliseconds(1);
-    }
-
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (true) {
-        int status = 0;
-        const pid_t wait_result = waitpid(launcher_pid, &status, WNOHANG);
-        if (wait_result == launcher_pid) {
-            return StartupStatus::Exited;
-        }
-        if (wait_result < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            if (errno == ECHILD) {
-                return StartupStatus::Exited;
-            }
-            return StartupStatus::WaitError;
-        }
-
-        std::error_code marker_error;
-        if (std::filesystem::exists(ready_file, marker_error) && !marker_error) {
-            return StartupStatus::Ready;
-        }
-
-        if (std::chrono::steady_clock::now() >= deadline) {
-            return StartupStatus::TimedOut;
-        }
-        std::this_thread::sleep_for(poll_interval);
-    }
-}
-
-bool terminate_process_group(pid_t launcher_pid,
-                             std::chrono::milliseconds grace) {
-    if (launcher_pid <= 0) {
-        return false;
-    }
-
-    if (kill(-launcher_pid, SIGTERM) != 0 && errno != ESRCH) {
-        return false;
-    }
-
-    const auto deadline = std::chrono::steady_clock::now() + grace;
-    while (std::chrono::steady_clock::now() < deadline) {
-        int status = 0;
-        const pid_t wait_result = waitpid(launcher_pid, &status, WNOHANG);
-        if (wait_result == launcher_pid) {
+bool opt_file_shadows_options(const std::string& opt_contents,
+                              const std::string& prefix) {
+    if (prefix.empty()) return false;
+    std::size_t line_start = 0;
+    while (line_start < opt_contents.size()) {
+        if (opt_contents.compare(line_start, prefix.size(), prefix) == 0) {
             return true;
         }
-        if (wait_result < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return errno == ECHILD;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const std::size_t nl = opt_contents.find('\n', line_start);
+        if (nl == std::string::npos) break;
+        line_start = nl + 1;
     }
-
-    if (kill(-launcher_pid, SIGKILL) != 0 && errno != ESRCH) {
-        return false;
-    }
-
-    while (true) {
-        int status = 0;
-        const pid_t wait_result = waitpid(launcher_pid, &status, 0);
-        if (wait_result == launcher_pid) {
-            return true;
-        }
-        if (wait_result < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return errno == ECHILD;
-        }
-    }
+    return false;
 }
 
 }  // namespace retroarch

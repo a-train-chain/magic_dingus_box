@@ -24,13 +24,27 @@ load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 # deliberate simplicity trade — every existing call site follows it, and
 # it keeps this check greppable.
 
+#
+# Extended 2026-10 to the host-side service scripts that run from systemd:
+# verify_services.sh (the weekly smoke-test unit hung forever on a wedged
+# *arr and blocked setup_services.sh's final step), qbit_port_sync.sh (60 s
+# timer) and sync_qbit_password.sh (boot oneshot).
+
 SETUP_SERVICES="$CPP_DIR/scripts/setup_services.sh"
 CONVERGE_CF="$CPP_DIR/scripts/converge_custom_formats.sh"
+VERIFY_SERVICES="$CPP_DIR/scripts/verify_services.sh"
+QBIT_PORT_SYNC="$CPP_DIR/scripts/qbit_port_sync.sh"
+SYNC_QBIT_PW="$CPP_DIR/scripts/sync_qbit_password.sh"
 
 # Every provisioning-path script whose curls must be bounded, with the
 # minimum number of call sites each is known to have (the "guard the guard"
 # floor — see the sanity test below).
-BOUNDED_SCRIPTS=("$SETUP_SERVICES:10" "$CONVERGE_CF:1")
+BOUNDED_SCRIPTS=("$SETUP_SERVICES:10" "$CONVERGE_CF:1" "$VERIFY_SERVICES:10"
+                 "$QBIT_PORT_SYNC:5" "$SYNC_QBIT_PW:8")
+
+@test "smoke-test unit has a start timeout (a hung run must not live forever)" {
+    grep -qE '^TimeoutStartSec=[0-9]+' "$CPP_DIR/systemd/magic-dingus-smoke-test.service"
+}
 
 @test "setup_services.sh exists" {
     [ -f "$SETUP_SERVICES" ]

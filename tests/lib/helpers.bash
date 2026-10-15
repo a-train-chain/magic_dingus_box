@@ -43,6 +43,8 @@ require_joystick() {
 # Sets BATS variables: PI_JOY_VID, PI_JOY_PID
 read_pi_joystick_id() {
     require_joystick
+    # shellcheck disable=SC2034  # outputs: read by the .bats files that load this
     PI_JOY_VID="$(pi_ssh 'cat /sys/class/input/js0/device/id/vendor 2>/dev/null')"
+    # shellcheck disable=SC2034  # outputs: read by the .bats files that load this
     PI_JOY_PID="$(pi_ssh 'cat /sys/class/input/js0/device/id/product 2>/dev/null')"
 }

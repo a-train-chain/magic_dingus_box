@@ -14,6 +14,7 @@ namespace media_browser { class QbittorrentClient; }
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/queue_groups.h"
+#include "media_browser/ui/queue_view.h"
 
 namespace media_browser { class RadarrClient; }
 namespace media_browser { class SonarrClient; }
@@ -170,14 +171,10 @@ private:
     // live telemetry the qBit overlay supplies. The telemetry lives here
     // rather than on TvQueueGroup so queue_groups.h stays a pure,
     // Renderer-free, network-free grouping helper.
-    struct TvQueueRow {
-        TvQueueGroup group;      // size/sizeleft/status updated by the overlay
-        double progress = 0.0;
-        int download_rate_bps = 0;
-        int peers = 0;
-        int seeds = 0;
-        int eta_seconds = 0;
-    };
+    // One TV download row (the collapsed group + live telemetry) — defined
+    // in queue_view.h so the refresh worker's pure passes over it are
+    // Mac-testable; this alias keeps the screen's spelling.
+    using TvQueueRow = ::media_browser::ui::TvQueueRow;
 
     // Refresh cadence. With the new async path the UI never blocks on
     // a refresh, so we can poll faster — 1.5s gives the user a
@@ -210,6 +207,18 @@ private:
     // A cursor >= queue_.size() addresses tv_[cursor - queue_.size()].
     int row_count() const {
         return static_cast<int>(queue_.size() + tv_.size());
+    }
+
+    // The row under the cursor, in the cancel arm's id space (a movie
+    // row's queue id, or a TV group's first queue id). False when the
+    // cursor addresses no row. Shared by SELECT and the footer label.
+    bool focused_row(bool& is_tv, int& id) const {
+        if (cursor_ < 0 || cursor_ >= row_count()) return false;
+        const int movie_rows = static_cast<int>(queue_.size());
+        is_tv = cursor_ >= movie_rows;
+        id = is_tv ? tv_[static_cast<size_t>(cursor_ - movie_rows)].group.first_queue_id
+                   : queue_[static_cast<size_t>(cursor_)].id;
+        return true;
     }
 
     RadarrClient&      radarr_;
@@ -325,6 +334,21 @@ private:
     bool cancel_pending_is_tv_ = false;
     int cancel_pending_queue_id_ = 0;
     std::chrono::steady_clock::time_point cancel_pending_at_{};
+
+    // --- Async cancel -----------------------------------------------------
+    // The confirmed cancel is a 5 s-timeout DELETE; it ran on the render
+    // thread with its result IGNORED, so a failed cancel looked exactly
+    // like a successful one (the row simply stayed, unexplained). One
+    // cancel at a time on cancel_worker_; drain_cancel_result() (update())
+    // toasts a failure and forces the refresh either way. cancel_ok_ /
+    // cancel_title_ are written before the release store to cancel_done_
+    // and read only after the acquire exchange.
+    void drain_cancel_result();
+    std::thread                cancel_worker_;
+    std::atomic<bool>          cancel_in_flight_{false};
+    std::atomic<bool>          cancel_done_{false};
+    bool                       cancel_ok_ = false;
+    std::string                cancel_title_;
 };
 
 }  // namespace media_browser::ui

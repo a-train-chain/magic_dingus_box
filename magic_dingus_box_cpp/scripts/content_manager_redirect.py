@@ -27,12 +27,38 @@ click-through to the Content Manager).
 """
 
 import http.server
+import ipaddress
 import socketserver
 import sys
 from urllib.parse import urlsplit, urlunsplit
 
 PORT = 80
 TARGET_PORT = 5000
+
+
+def _is_box_name(host: str) -> bool:
+    """True for names that reach this box on purpose: IP literals,
+    localhost, mDNS (.local) and the USB-gadget name dingus.box."""
+    h = host.strip("[]").lower()
+    if not h:
+        return False
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        pass
+    return h in ("localhost", "dingus.box") or h.endswith(".local")
+
+
+def _local_address(conn) -> str:
+    """The box's own address on the interface this request arrived on."""
+    try:
+        ip = conn.getsockname()[0]
+    except OSError:
+        return "10.55.0.1"
+    if ip.startswith("::ffff:"):
+        ip = ip[len("::ffff:"):]
+    return f"[{ip}]" if ":" in ip else ip
 
 
 class RedirectHandler(http.server.BaseHTTPRequestHandler):
@@ -61,12 +87,19 @@ class RedirectHandler(http.server.BaseHTTPRequestHandler):
         else:
             host_only = host_header
 
-        # Default fallback so a malformed Host header doesn't crash us.
-        if not host_only:
-            host_only = "magicpi.local"
+        # A name the Content Manager's Host allowlist would refuse (a
+        # captive-portal probe like captive.apple.com — over the USB cable
+        # dnsmasq answers every name with the box — or a missing Host) goes
+        # to the address the client actually reached us on instead: always
+        # valid, always allowed. The old fallback, "magicpi.local", resolved
+        # on no shipped unit (clones are magicpi-XXXX). Probe paths like
+        # /hotspot-detect.html mean nothing on :5000, so land on "/".
+        parts = urlsplit(self.path)
+        if not _is_box_name(host_only):
+            host_only = _local_address(self.connection)
+            parts = urlsplit("/")
 
         # Preserve the path + query so deep-links keep working.
-        parts = urlsplit(self.path)
         target_path = parts.path or "/"
         target_query = ("?" + parts.query) if parts.query else ""
         target_frag = ("#" + parts.fragment) if parts.fragment else ""

@@ -13,6 +13,7 @@
 // Everything in this header is pure logic (no /dev, no forking) except
 // detect_platform(), which only reads a file — all unit-testable off-Pi.
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -29,8 +30,43 @@ enum class PiModel {
 using HostModel = PiModel;
 const char* host_model_name(PiModel model);
 
+// ---------------------------------------------------------------------
+// Field classification — READ BEFORE ADDING A FIELD.
+//
+// Every field below is either a HARDWARE FACT (what the board physically
+// is / what its kernel exposes — faking it would break the box) or a
+// SOFTWARE POLICY (a tuning decision made for the board's performance
+// envelope). The TEST-ONLY policy override (MDB_PLATFORM_POLICY_OVERRIDE,
+// see apply_policy_override below) swaps ONLY the policy fields, so a
+// Pi 5 can rehearse the Pi 4B's software decisions while still driving
+// its own GPIO chip, audio sinks and rotary encoder.
+//
+//   field                          class     why
+//   -----------------------------  --------  ------------------------------
+//   model                          HARDWARE  identity of the real board
+//   model_string                   HARDWARE  raw device-tree model
+//   has_analog_audio               HARDWARE  3.5mm jack exists or not
+//   gpiochip_labels                HARDWARE  RP1 vs bcm2711 header chip
+//   rotary_events_per_detent       HARDWARE  measured encoder pulse rate
+//   pause_services_during_movie    POLICY    memory tactic (FullPause)
+//   trickle_torrents_during_video  POLICY    IO tactic (Trickle vs pause)
+//   unsupported_game_systems       POLICY    CPU/GPU quality bar (N64/DC)
+//   unsupported_emulator_cores     POLICY    same gate keyed on the core
+//   artwork_cache_budget_bytes     POLICY    RAM reservation for posters
+//   policy_override*               META      override bookkeeping
+//
+// A new POLICY field MUST also be copied in apply_policy_override() and
+// asserted in tests/platform/test_platform_profile.cpp's override cases.
+// Facts that live OUTSIDE this struct (GStreamer decoder ranks, kernel
+// page size, Vulkan, DRM, PulseAudio sinks) are probed from the real
+// hardware at runtime and are never affected by the override.
+// ---------------------------------------------------------------------
 struct PlatformProfile {
     PiModel model = PiModel::Unknown;
+
+    // Raw /proc/device-tree/model, trailing NUL/newline stripped ("" when
+    // unreadable). Logging only — branch on `model`, never on this.
+    std::string model_string;
 
     // True when the board has a 3.5mm analog jack (Pi 4B yes, Pi 5 no).
     // Gates the Settings-menu "Headphone" audio output option.
@@ -102,7 +138,48 @@ struct PlatformProfile {
     // protects the menu regardless of what content is on disk (e.g. an
     // operator uploading an N64 ROM to a Pi 4 box via the web admin).
     std::vector<std::string> unsupported_game_systems;
+
+    // Libretro cores this board cannot run, as normalized core names (see
+    // normalize_emulator_core). The CORE twin of unsupported_game_systems:
+    // the system gate alone let an item through whose emulator_system was
+    // blank or nonstandard ("Nintendo 64", "sega-dc", "") while its
+    // emulator_core was still an N64/Dreamcast core, and a Pi 4 would then
+    // try to run mupen64plus/flycast. An item is hidden if EITHER gate
+    // rejects it.
+    //   Pi 4: the two N64 cores + flycast.
+    //   Pi 5 / Unknown: empty.
+    std::vector<std::string> unsupported_emulator_cores;
+
+    // Media Browser poster-texture budget (ArtworkCache LRU threshold),
+    // in bytes of GPU texture INCLUDING mipmaps. On both boards GPU
+    // memory is unswappable system RAM shared with the video decoder and
+    // the Docker stack, so this is a straight RAM reservation.
+    // Grid cards fetch TMDB w185 (~274 KB per texture) and only hero
+    // posters stay w500 (~2 MB) — see media_browser/tmdb_image.h.
+    //   Pi 4: 64 MB  — ~230 grid posters (25+ rows of the 9-column grid;
+    //                 a screen shows 18-27) plus a handful of heroes, on
+    //                 the 1.5 GB envelope board.
+    //   Pi 5: 128 MB — ~460 grid posters: a whole typical library stays
+    //                 resident on the 2 GB board.
+    //   Unknown: 128 MB — dev machines and unrecognized (newer) boards;
+    //                 still half the old fixed 256 MB.
+    // Movie playback still trims to 32 MB and a game launch frees it all
+    // (main.cpp), independent of this ceiling.
+    std::size_t artwork_cache_budget_bytes = 128u * 1024u * 1024u;
+
+    // --- TEST-ONLY policy override bookkeeping (see apply_policy_override)
+    // "pi4" while this profile carries the Pi 4B's POLICY fields on top of
+    // a Pi 5's hardware facts; "" otherwise. Published in kiosk_status.json
+    // as platform_policy_override, and verify_box.sh FAILS while it is set.
+    std::string policy_override;
+    // Non-empty when MDB_PLATFORM_POLICY_OVERRIDE was set but NOT honored
+    // (unrecognized value, or not a Pi 5): the reason, for the startup
+    // warning. A stray env var must never be silent either way.
+    std::string policy_override_ignored_reason;
 };
+
+// Name of the TEST-ONLY env var. Only "pi4" is accepted (exact match).
+inline constexpr const char* kPolicyOverrideEnv = "MDB_PLATFORM_POLICY_OVERRIDE";
 
 // Parse the contents of /proc/device-tree/model (may carry a trailing
 // NUL from the device-tree blob).
@@ -112,9 +189,38 @@ PiModel parse_pi_model(const std::string& device_tree_model);
 PlatformProfile profile_for(PiModel model);
 
 // Read the device-tree model file and build the matching profile.
-// Missing/unreadable file yields the Unknown profile (dev machines).
-PlatformProfile detect_platform(
-    const std::string& model_path = "/proc/device-tree/model");
+// Missing/unreadable file yields the Unknown profile (dev machines), or —
+// only then — the model named by MDB_PI_MODEL_OVERRIDE (dev VMs).
+// Also applies the TEST-ONLY MDB_PLATFORM_POLICY_OVERRIDE (below).
+// Reads `model_path` on every host, a Mac included.
+PlatformProfile detect_platform(const std::string& model_path);
+
+// The running host: /proc/device-tree/model on Linux; PiModel::Mac on an
+// Apple host (the headless engine), which has no device tree. This is a
+// host check, not a board branch: Pi 4B vs Pi 5 is still decided at
+// runtime from the file.
+PlatformProfile detect_platform();
+
+// TEST-ONLY pre-release rehearsal: run a Pi 5 with the Pi 4B's SOFTWARE
+// POLICIES so Pi 4B logic (N64/Dreamcast hidden, 64 MB poster budget,
+// FullPause during movies) can be exercised before Pi 4B hardware is on
+// the bench. Pure function of the detected profile and the env value
+// (nullptr == unset):
+//   - unset / ""         -> profile unchanged
+//   - "pi4" on a Pi 5    -> POLICY fields replaced by profile_for(Pi4)'s,
+//                           HARDWARE fields untouched, policy_override="pi4"
+//   - "pi4" on a Pi 4B   -> unchanged (already Pi 4B policy) + ignored reason
+//   - "pi4" on Unknown   -> unchanged + ignored reason (dev VMs impersonate
+//                           a board with MDB_PI_MODEL_OVERRIDE instead)
+//   - anything else      -> unchanged + ignored reason
+// NEVER ship a box with this set: verify_box.sh fails while it is.
+PlatformProfile apply_policy_override(PlatformProfile detected,
+                                      const char* env_value);
+
+// The one startup warning line for the override state, or "" when the env
+// var is unset. Active: "PLATFORM POLICY OVERRIDE ACTIVE: running Pi 4B
+// policies on <real model> ...". main.cpp logs it at WARN exactly once.
+std::string policy_override_log_line(const PlatformProfile& profile);
 
 // --- Game-system support gating ---------------------------------------
 
@@ -129,6 +235,25 @@ std::string normalize_game_system(const std::string& emulator_system);
 // understand.
 bool supports_game_system(const PlatformProfile& profile,
                           const std::string& emulator_system);
+
+// Normalize an emulator_core value for comparison: lowercase, whitespace
+// and quotes stripped, a trailing ".so" dropped, and "_libretro" appended
+// when absent ("Flycast" -> "flycast_libretro"). "" and "auto" stay as-is
+// (an "auto" core is resolved from the system, which the system gate
+// already covers).
+std::string normalize_emulator_core(const std::string& emulator_core);
+
+// False only when `emulator_core` normalizes into the profile's
+// unsupported_emulator_cores list. Empty/"auto"/unknown cores are
+// SUPPORTED — same never-hide-what-you-don't-understand rule.
+bool supports_emulator_core(const PlatformProfile& profile,
+                            const std::string& emulator_core);
+
+// The gate the playlist filter applies to one emulated_game item: both
+// the system AND the core must be supported.
+bool supports_game_item(const PlatformProfile& profile,
+                        const std::string& emulator_system,
+                        const std::string& emulator_core);
 
 // --- PulseAudio sink resolution -------------------------------------
 // All take the raw output of `pactl list short sinks`, whose lines are

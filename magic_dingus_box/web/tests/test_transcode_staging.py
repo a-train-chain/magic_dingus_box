@@ -88,7 +88,8 @@ def test_success_encodes_via_part_staging_then_publishes(
     assert list(media.glob("*.part")) == [], "staging file must not survive success"
 
     argv = stub_bin.read_text().splitlines()
-    assert argv[-1].endswith("clip.mp4.part"), (
+    staging = Path(argv[-1]).name
+    assert staging.startswith("clip.mp4.") and staging.endswith(".part"), (
         "ffmpeg must write to the .part staging name, never the final path")
     # .part defeats ffmpeg's extension-based muxer inference, so the
     # command must carry the explicit format.
@@ -129,3 +130,102 @@ def test_startup_sweeps_crashed_part_files(temp_data_dir: Path):
         "startup must sweep crashed transcode staging files")
     assert (media / "Real Movie.mp4").exists(), (
         "the sweep must never touch finished videos")
+
+
+# ---------------------------------------------------------------------------
+# Concurrent uploads of the same filename.
+#
+# Output names used to be chosen by output_path.exists() at REQUEST time, but
+# a transcode's output only appears at its final os.replace — minutes later.
+# Two uploads of "clip.mov" in that window (two phones, a double-submit, or
+# simply a queued second job behind the encoder semaphore) both picked
+# clip.mp4: the second replace silently destroyed the first video, and both
+# encoders shared clip.mp4.part, so one job's error path unlinked the other's
+# in-progress encode.
+# ---------------------------------------------------------------------------
+
+SLOW_ECHO_FFMPEG = """#!/usr/bin/env python3
+import pathlib, sys, time
+argv = sys.argv[1:]
+src = argv[argv.index("-i") + 1]
+time.sleep(0.4)
+pathlib.Path(argv[-1]).write_bytes(pathlib.Path(src).read_bytes())
+print("out_time_ms=1000000")
+"""
+
+
+@pytest.fixture
+def slow_echo_bin(temp_data_dir: Path, monkeypatch):
+    bin_dir = temp_data_dir.parent / "slow_scratch" / "bin"
+    bin_dir.mkdir(parents=True)
+    for name, body in (("ffmpeg", SLOW_ECHO_FFMPEG), ("ffprobe", FFPROBE_STUB)):
+        stub = bin_dir / name
+        stub.write_text(body)
+        stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+
+
+def _start(client, payload: bytes, filename="clip.mov", endpoint="/admin/upload-and-transcode"):
+    import io
+    data = {"file": (io.BytesIO(payload), filename)}
+    if endpoint == "/admin/smart-upload":
+        data["normalize_audio"] = "true"  # forces the transcode branch
+    resp = client.post(endpoint, data=data, content_type="multipart/form-data")
+    assert resp.status_code == 200, resp.get_json()
+    return resp.get_json()["data"]["job_id"]
+
+
+def _wait_all(client, job_ids):
+    deadline = time.time() + 20
+    out = {}
+    while time.time() < deadline and len(out) < len(job_ids):
+        for jid in job_ids:
+            st = client.get(f"/admin/transcode-status/{jid}").get_json()["data"]
+            if st["status"] in ("complete", "error"):
+                out[jid] = st
+        time.sleep(0.05)
+    assert len(out) == len(job_ids), "transcode jobs did not finish"
+    return out
+
+
+@pytest.mark.parametrize("endpoint", ["/admin/upload-and-transcode", "/admin/smart-upload"])
+def test_same_name_uploads_never_overwrite_each_other(
+        client, temp_data_dir: Path, slow_echo_bin, endpoint):
+    media = temp_data_dir / "media"
+    a = _start(client, b"first-video", endpoint=endpoint)
+    b = _start(client, b"second-video", endpoint=endpoint)
+    results = _wait_all(client, [a, b])
+
+    assert {r["status"] for r in results.values()} == {"complete"}
+    names = {results[a]["output_filename"], results[b]["output_filename"]}
+    assert names == {"clip.mp4", "clip_1.mp4"}
+    contents = {p.read_bytes() for p in media.glob("*.mp4")}
+    assert contents == {b"first-video", b"second-video"}, (
+        "both uploads must survive as distinct files")
+    assert list(media.glob("*.part")) == []
+
+
+def test_unknown_job_is_a_404_the_uploader_can_act_on(client):
+    """Transcode jobs are in-memory and their encoder dies with the web
+    service, so after a restart the job is gone for good. manager.js keys
+    its "failed — upload it again" handling on exactly this 404 +
+    NOT_FOUND; it used to read the missing .data as "still running" and
+    poll forever."""
+    resp = client.get("/admin/transcode-status/0f0e0d0c-lost-after-restart")
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "NOT_FOUND"
+    assert "restart" in body["error"]["message"].lower()
+
+
+def test_name_is_released_after_the_job_finishes(
+        client, temp_data_dir: Path, slow_echo_bin):
+    """A finished job's reservation must not leak: deleting its output and
+    uploading the same name again gets the plain name back."""
+    media = temp_data_dir / "media"
+    a = _start(client, b"one")
+    _wait_all(client, [a])
+    (media / "clip.mp4").unlink()
+    b = _start(client, b"two")
+    assert _wait_all(client, [b])[b]["output_filename"] == "clip.mp4"

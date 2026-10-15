@@ -16,6 +16,21 @@
 
 set -euo pipefail
 
+# Single-flight. Two concurrent runs (a double-submitted Content Manager
+# setup, or one racing first_boot.sh) rewrite .env, recreate the same
+# containers and set the qBit password against each other. The web admin
+# refuses a second launch with 409; this lock covers every other caller.
+# fd 8 is held for the life of the script and released by the kernel on
+# exit, however it exits. Skipped where flock is absent (macOS dev runs).
+SETUP_LOCK="${MDB_SETUP_LOCK:-/run/lock/mdb-setup-services.lock}"
+if command -v flock >/dev/null 2>&1 && { exec 8>>"$SETUP_LOCK"; } 2>/dev/null; then
+    if ! flock -n 8; then
+        echo "ERROR: setup_services.sh is already running (lock: $SETUP_LOCK)." >&2
+        echo "       Wait for it to finish, then run it again if needed." >&2
+        exit 1
+    fi
+fi
+
 # Resolve our own absolute path NOW, before any `cd` — later steps cd into
 # /opt/magic_dingus_box/services for docker-compose, which breaks any
 # subsequent BASH_SOURCE-relative paths.
@@ -164,6 +179,15 @@ fi
 # silently succeeds if already a member).
 echo "Ensuring ${TARGET_USER} is in docker group..."
 usermod -aG docker "${TARGET_USER}"
+
+# 1b. Container log rotation lives in docker-compose.yml (the x-logging
+# anchor: json-file, 10m x 3 per container), NOT in /etc/docker/daemon.json.
+# The daemon.json route needed a dockerd restart mid-setup, which on an
+# already-provisioned box also restarts magic-dingus-services
+# (Requires=docker) — its `compose down` + background `up -d` then raced
+# this script's own compose run into "container name already in use". It
+# also never reached OTA'd boxes. Compose-level options ride the tree to
+# every box and apply when compose recreates the containers.
 
 # 2. Storage layout
 echo "Creating storage layout at ${STORAGE_ROOT}..."
@@ -324,6 +348,14 @@ if [ ! -f "${COMPOSE_FILE}" ]; then
 fi
 
 cd "${SERVICES_DIR}"
+
+# Gluetun's control-server access file, before the first gluetun start:
+# keeps the forwarded-port and exit-IP routes this stack reads public on
+# any gluetun version (see ensure_gluetun_auth.sh). Never fatal.
+if [ -f "${SCRIPT_DIR}/ensure_gluetun_auth.sh" ]; then
+    sudo bash "${SCRIPT_DIR}/ensure_gluetun_auth.sh" --provision "${SERVICES_DIR}" || true
+fi
+
 echo "Starting Docker stack..."
 #
 # --remove-orphans tears down containers that used to be in compose but
@@ -454,15 +486,17 @@ fi
 # mdb_gluetun --filter event=start` and runs `compose restart` on the
 # dependents so they reattach cleanly.
 SYSTEMD_DIR="${SCRIPT_DIR}/../systemd"
+# Every unit file below is written by converge_system_units.sh --only, the
+# one writer of unit files: it writes a unit that is absent or differs from
+# the tree and daemon-reloads when it wrote. Each block keeps its own
+# helper install and enable/start.
+CONVERGE_UNITS="${SCRIPT_DIR}/converge_system_units.sh"
 if [ -f "${SCRIPT_DIR}/gluetun_cascade_restart.sh" ] && \
    [ -f "${SYSTEMD_DIR}/gluetun-cascade-restart.service" ]; then
     sudo install -m 0755 \
         "${SCRIPT_DIR}/gluetun_cascade_restart.sh" \
         /usr/local/bin/gluetun_cascade_restart.sh
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/gluetun-cascade-restart.service" \
-        /etc/systemd/system/gluetun-cascade-restart.service
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only gluetun-cascade-restart.service
     sudo systemctl enable --now gluetun-cascade-restart.service
     echo "Gluetun cascade-restart watcher installed + active."
 else
@@ -478,13 +512,7 @@ fi
 # drift within 7 days; failures land in the journal.
 if [ -f "${SYSTEMD_DIR}/magic-dingus-smoke-test.service" ] && \
    [ -f "${SYSTEMD_DIR}/magic-dingus-smoke-test.timer" ]; then
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-smoke-test.service" \
-        /etc/systemd/system/magic-dingus-smoke-test.service
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-smoke-test.timer" \
-        /etc/systemd/system/magic-dingus-smoke-test.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-smoke-test.service --only magic-dingus-smoke-test.timer
     sudo systemctl enable --now magic-dingus-smoke-test.timer
     echo "Weekly smoke-test timer installed + active."
 else
@@ -510,10 +538,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-clear-cooldowns.service" ] && \
     sudo install -m 0755 \
         "${SCRIPT_DIR}/clear_radarr_cooldowns.py" \
         /usr/local/bin/clear_radarr_cooldowns.py
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-clear-cooldowns.service" \
-        /etc/systemd/system/magic-dingus-clear-cooldowns.service
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-clear-cooldowns.service
     sudo systemctl enable magic-dingus-clear-cooldowns.service
     echo "Boot-time cooldown reset installed + enabled."
 else
@@ -532,10 +557,7 @@ fi
 # script no-ops unless the containers are genuinely stale.
 if [ -f "${SYSTEMD_DIR}/magic-dingus-storage-attach.service" ] && \
    [ -f "${SCRIPT_DIR}/storage_attach.sh" ]; then
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-storage-attach.service" \
-        /etc/systemd/system/magic-dingus-storage-attach.service
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-storage-attach.service
     sudo systemctl enable magic-dingus-storage-attach.service
     echo "Movie-drive hot-plug re-link installed + enabled."
 else
@@ -561,10 +583,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-sync-qbit-password.service" ] && \
     sudo install -m 0755 \
         "${SCRIPT_DIR}/sync_qbit_password.sh" \
         /usr/local/bin/sync_qbit_password.sh
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-sync-qbit-password.service" \
-        /etc/systemd/system/magic-dingus-sync-qbit-password.service
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-sync-qbit-password.service
     sudo systemctl enable magic-dingus-sync-qbit-password.service
     echo "Boot-time qBit password resync installed + enabled."
 else
@@ -592,13 +611,7 @@ if [ -f "${SYSTEMD_DIR}/qbit-port-sync.service" ] && \
     sudo install -m 0755 \
         "${SCRIPT_DIR}/qbit_port_sync.sh" \
         /usr/local/bin/qbit-port-sync.sh
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/qbit-port-sync.service" \
-        /etc/systemd/system/qbit-port-sync.service
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/qbit-port-sync.timer" \
-        /etc/systemd/system/qbit-port-sync.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only qbit-port-sync.service --only qbit-port-sync.timer
     sudo systemctl enable --now qbit-port-sync.timer
     echo "qBit-port-sync timer (every 60s) installed + active."
 else
@@ -625,13 +638,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     sudo install -m 0755 \
         "${SCRIPT_DIR}/auto_blocklist_stuck_warnings.py" \
         /usr/local/bin/auto_blocklist_stuck_warnings.py
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" \
-        /etc/systemd/system/magic-dingus-auto-blocklist.service
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.timer" \
-        /etc/systemd/system/magic-dingus-auto-blocklist.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-auto-blocklist.service --only magic-dingus-auto-blocklist.timer
     sudo systemctl enable --now magic-dingus-auto-blocklist.timer
     echo "Auto-blocklist timer (every 15 min) installed + active."
 
@@ -641,9 +648,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     # SDs, and swapped drives all self-heal. Requires the noauto,nofail
     # fstab entry (LABEL=MOVIES → /mnt/ssd) plus the udev mount rule, both
     # added below.
-    sudo install -m 0644 \
-        "${SYSTEMD_DIR}/magic-dingus-library-import.service" \
-        /etc/systemd/system/magic-dingus-library-import.service
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-library-import.service
     # Match on the FULL line, not just "LABEL=MOVIES". The old guard skipped
     # whenever ANY MOVIES line existed, so a box provisioned before nofail and
     # x-systemd.automount were added kept its blocking entry forever — and the
@@ -665,7 +670,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     MOVIES_FSTAB_LINE="LABEL=MOVIES /mnt/ssd ext4 noauto,nofail 0 0"
     if ! grep -qxF "$MOVIES_FSTAB_LINE" /etc/fstab; then
         if grep -q "LABEL=MOVIES" /etc/fstab; then
-            sudo cp /etc/fstab /etc/fstab.mdb-bak-$(date +%Y%m%d-%H%M%S)
+            sudo cp /etc/fstab "/etc/fstab.mdb-bak-$(date +%Y%m%d-%H%M%S)"
             sudo sed -i '/LABEL=MOVIES/d' /etc/fstab
             echo "fstab: replaced a stale MOVIES entry (missing nofail/automount)."
         fi
@@ -684,7 +689,6 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     else
         echo "WARNING: udev/99-magic-movies-mount.rules missing — the movie drive will NOT auto-mount." >&2
     fi
-    sudo systemctl daemon-reload
     sudo systemctl enable magic-dingus-library-import.service
     echo "Library-import-on-mount service installed + enabled."
 
@@ -750,13 +754,7 @@ if [ -f "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.service" ] && \
     # this unit's ExecStart points at the deployed repo path
     # (/opt/magic_dingus_box/.../scripts/missing_search/missing_search.py), so a
     # /usr/local/bin copy would never be executed and would silently go stale.
-    sudo install -m 0644 \
-        "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.service" \
-        /etc/systemd/system/magic-dingus-missing-search.service
-    sudo install -m 0644 \
-        "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.timer" \
-        /etc/systemd/system/magic-dingus-missing-search.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-missing-search.service --only magic-dingus-missing-search.timer
     sudo systemctl enable --now magic-dingus-missing-search.timer
     echo "Missing-movies-search timer (every 4h) installed + active."
 else
@@ -781,13 +779,7 @@ if [ -f "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.service" ] && \
     # NOTE: no copy to /usr/local/bin — same rule as missing-search above:
     # this unit's ExecStart points at the deployed repo path, so a
     # /usr/local/bin copy would never be executed and would silently go stale.
-    sudo install -m 0644 \
-        "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.service" \
-        /etc/systemd/system/magic-dingus-episode-priority.service
-    sudo install -m 0644 \
-        "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.timer" \
-        /etc/systemd/system/magic-dingus-episode-priority.timer
-    sudo systemctl daemon-reload
+    sudo bash "$CONVERGE_UNITS" --only magic-dingus-episode-priority.service --only magic-dingus-episode-priority.timer
     sudo systemctl enable --now magic-dingus-episode-priority.timer
     echo "Episode-priority timer (every 2min) installed + active."
 else
@@ -798,37 +790,24 @@ fi
 #
 # Grants the magic-dingus-web service user permission to open uinput so the
 # phone can drive a virtual gamepad. Without this, UInput() raises EACCES.
-UINPUT_RULES_SRC="${SCRIPT_DIR}/data/90-magicdingus-uinput.rules"
-if [[ -f "$UINPUT_RULES_SRC" ]]; then
-    echo "Installing /dev/uinput udev rule for Phone Remote..."
-    # Ensure the uinput kernel module is loaded NOW and on every boot.
-    # On vanilla Debian Bookworm it isn't auto-loaded; on Raspberry Pi OS
-    # it usually is, but persist it explicitly so udev triggers below have
-    # a device node to match against.
-    sudo modprobe uinput || true
-    echo "uinput" | sudo tee /etc/modules-load.d/uinput.conf > /dev/null
-    sudo install -m 0644 "$UINPUT_RULES_SRC" /etc/udev/rules.d/90-magicdingus-uinput.rules
-    sudo udevadm control --reload-rules
-    sudo udevadm trigger --name-match=uinput || true
-    # Add the magic-dingus-web service user to the input group.
-    SERVICE_USER="$(systemctl show -p User --value magic-dingus-web.service 2>/dev/null)"
-    SERVICE_USER="${SERVICE_USER:-magic}"  # fallback to "magic" if service not installed yet
-    if id -nG "$SERVICE_USER" 2>/dev/null | grep -qw input; then
-        echo "  ✓ user $SERVICE_USER already in input group"
-    else
-        sudo usermod -a -G input "$SERVICE_USER"
-        echo "  ✓ added $SERVICE_USER to input group"
-        # Restart the running web service so it picks up the new group
-        # membership. Without this restart, the existing process retains
-        # its original supplementary groups and UInput() will EACCES until
-        # next manual restart or reboot.
-        if systemctl is-active --quiet magic-dingus-web.service 2>/dev/null; then
-            sudo systemctl restart magic-dingus-web.service
-            echo "  ✓ magic-dingus-web.service restarted to pick up input group"
-        fi
+# The root work lives in setup_phone_remote_uinput.sh so update.sh can run
+# exactly that step on an OTA (it must never run this whole script).
+SERVICE_USER="$(systemctl show -p User --value magic-dingus-web.service 2>/dev/null || true)"
+SERVICE_USER="${SERVICE_USER:-magic}"  # fallback to "magic" if service not installed yet
+HAD_INPUT_GROUP=0
+if id -nG "$SERVICE_USER" 2>/dev/null | grep -qw input; then
+    HAD_INPUT_GROUP=1
+fi
+sudo bash "${SCRIPT_DIR}/setup_phone_remote_uinput.sh" "$SERVICE_USER"
+if [[ "$HAD_INPUT_GROUP" -eq 0 ]] && id -nG "$SERVICE_USER" 2>/dev/null | grep -qw input; then
+    # Restart the running web service so it picks up the new group
+    # membership. Without this restart, the existing process retains
+    # its original supplementary groups and UInput() will EACCES until
+    # next manual restart or reboot.
+    if systemctl is-active --quiet magic-dingus-web.service 2>/dev/null; then
+        sudo systemctl restart magic-dingus-web.service
+        echo "  ✓ magic-dingus-web.service restarted to pick up input group"
     fi
-else
-    echo "  ⚠ ${UINPUT_RULES_SRC} not found — skipping uinput rule install"
 fi
 
 # 4.5. Wait for Gluetun tunnel to come up.
@@ -1028,17 +1007,41 @@ fi
 # silently fail authentication after Step 7.5 disables the localhost
 # bypass. Idempotent: we only write the line if it's missing or stale.
 if [ -n "${QBIT_PW}" ]; then
+    PREV_MDB_QBIT_PASS=$(grep '^MDB_QBIT_PASS=' "${ENV_FILE}" | cut -d= -f2- || true)
     if grep -q '^MDB_QBIT_PASS=' "${ENV_FILE}"; then
         sed -i "s|^MDB_QBIT_PASS=.*|MDB_QBIT_PASS=${QBIT_PW}|" "${ENV_FILE}"
     else
         echo "MDB_QBIT_PASS=${QBIT_PW}" >> "${ENV_FILE}"
     fi
-    # Restart kiosk service if it's running, so it picks up the new env
-    # var. Skip silently if the service isn't loaded (fresh Pi during
-    # initial bootstrap before deploy_cpp.sh has run).
+    # Restart the kiosk ONLY when the value it is actually running with is
+    # missing or stale — it reads MDB_QBIT_PASS once, at start, via
+    # EnvironmentFile=. This used to restart unconditionally, so every
+    # Reconfigure from the Content Manager killed whatever movie or game was
+    # on screen even though nothing had changed. The authoritative answer is
+    # the running process's own environment; when that can't be read, fall
+    # back to "did this run change the line?". Skip silently if the service
+    # isn't running (fresh Pi during initial bootstrap before deploy_cpp.sh).
     if systemctl is-active --quiet magic-dingus-box-cpp.service 2>/dev/null; then
-        echo "  Restarting kiosk so it picks up MDB_QBIT_PASS..."
-        sudo systemctl restart magic-dingus-box-cpp.service || true
+        KIOSK_PID=$(systemctl show -p MainPID --value magic-dingus-box-cpp.service 2>/dev/null || echo 0)
+        KIOSK_RESTART=0
+        KIOSK_ENV=""
+        if [ -n "${KIOSK_PID}" ] && [ "${KIOSK_PID}" != "0" ]; then
+            # Never empty for a live process (PATH etc.), so empty = unreadable.
+            KIOSK_ENV=$(sudo -n cat "/proc/${KIOSK_PID}/environ" 2>/dev/null | tr '\0' '\n' || true)
+        fi
+        if [ -n "${KIOSK_ENV}" ]; then
+            if [ "$(printf '%s\n' "${KIOSK_ENV}" | sed -n 's/^MDB_QBIT_PASS=//p' | head -1)" != "${QBIT_PW}" ]; then
+                KIOSK_RESTART=1
+            fi
+        elif [ "${PREV_MDB_QBIT_PASS}" != "${QBIT_PW}" ]; then
+            KIOSK_RESTART=1
+        fi
+        if [ "${KIOSK_RESTART}" = "1" ]; then
+            echo "  Restarting kiosk so it picks up MDB_QBIT_PASS..."
+            sudo systemctl restart magic-dingus-box-cpp.service || true
+        else
+            echo "  Kiosk already has the current MDB_QBIT_PASS — not restarting it"
+        fi
     fi
 fi
 
@@ -1216,11 +1219,40 @@ MAGIC_SERVICES_DIR="${SERVICES_DIR}" bash "${SCRIPT_DIR}/converge_custom_formats
 # the two and routes requests for tagged indexers via the tagged proxy.
 #
 # We seed the tag first so Steps 12 + 13 can reference it by id.
+#
+# 10.5. Prowlarr API readiness probe — gates Steps 11-14.
+#
+# Same shape and rationale as the Radarr/Sonarr probes in 9.5/9.6: Steps
+# 11-14 are unguarded `VAR=$(python3 ...)` heredocs, so under `set -e` the
+# first urllib error against a Prowlarr that is still migrating its DB (a
+# cold Pi 4B SD card is the slow case) killed the whole run before the
+# Radarr download client, root folder, quality definitions, qBit category
+# and smoke test (Steps 15+) ever ran. Generous budget (up to ~5 min) because
+# a first boot on a Pi 4B is genuinely that slow; a Prowlarr that never
+# answers skips 11-14 with a WARN and the next run applies them.
+echo "Probing Prowlarr API readiness..."
+PROWLARR_READY=0
+for i in {1..60}; do
+    if curl -fsS --max-time 5 -o /dev/null -H "X-Api-Key: ${PROWLARR_KEY}" \
+        http://localhost:9696/api/v1/system/status 2>/dev/null; then
+        PROWLARR_READY=1
+        break
+    fi
+    sleep 3
+done
+if [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable after ~5 min — Prowlarr steps (11-14) will skip and self-heal on the next run."
+else
+    echo "  ✓ Prowlarr API responding"
+fi
+
 echo "Configuring Prowlarr 'cloudflare' tag..."
 PROWLARR_TAGS_FILE="${SCRIPT_DIR}/data/prowlarr_tags.json"
+PROWLARR_CLOUDFLARE_TAG_ID=""
 if [[ ! -f "${PROWLARR_TAGS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_TAGS_FILE} not found — skipping. Tag may already be configured manually; verify via web UI."
-    PROWLARR_CLOUDFLARE_TAG_ID=""
+elif [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable — skipping tag (later runs will apply it)."
 else
     # Idempotent: GET /tag, find by label, POST only if missing. Capture
     # the resulting id (live or just-created) to a single-line stdout
@@ -1284,10 +1316,33 @@ fi
 # The fixture stores the tag membership as `tags_by_label` (a list of
 # human-readable labels) so the file stays diff-friendly across
 # deploys. We translate label → id at apply time using Step 11's map.
+#
+# Byparr readiness: Prowlarr TESTS a proxy when it is saved, so saving it
+# while Byparr is still starting (its first start sets up a headless
+# browser — minutes on a Pi 4B) returns 400 and, under `set -e`, used to
+# abort the run. Wait for Byparr's own endpoint first (the same URL its
+# compose healthcheck uses); if it never answers, skip the proxy with a
+# WARN — the cloudflare-tagged indexers in Step 13 then soft-fail
+# individually and a later run wires everything up.
 echo "Configuring Prowlarr FlareSolverr indexer proxy..."
 PROWLARR_PROXIES_FILE="${SCRIPT_DIR}/data/prowlarr_indexerproxies.json"
+BYPARR_READY=0
+if [[ -f "${PROWLARR_PROXIES_FILE}" ]] && [ "${PROWLARR_READY}" -eq 1 ]; then
+    echo "  Waiting for Byparr to answer..."
+    for i in {1..60}; do
+        if curl -fsS --max-time 10 -o /dev/null http://localhost:8191/ 2>/dev/null; then
+            BYPARR_READY=1
+            break
+        fi
+        sleep 5
+    done
+fi
 if [[ ! -f "${PROWLARR_PROXIES_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_PROXIES_FILE} not found — skipping. Proxy may already be configured manually; verify via web UI."
+elif [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable — skipping indexer proxy (later runs will apply it)."
+elif [ "${BYPARR_READY}" -ne 1 ]; then
+    echo "  WARN: Byparr not answering on :8191 after ~5 min — skipping indexer proxy (later runs will apply it)."
 else
     PROXY_SUMMARY=$(python3 - "${PROWLARR_PROXIES_FILE}" "${PROWLARR_KEY}" "${PROWLARR_CLOUDFLARE_TAG_ID:-}" <<'PYEOF'
 import json, sys, urllib.request
@@ -1402,18 +1457,22 @@ echo "Configuring Prowlarr indexers..."
 PROWLARR_INDEXERS_FILE="${SCRIPT_DIR}/data/prowlarr_indexers.json"
 if [[ ! -f "${PROWLARR_INDEXERS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_INDEXERS_FILE} not found — skipping."
+elif [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable — skipping indexers (later runs will apply them)."
 else
     INDEXER_SUMMARY=$(python3 - "${PROWLARR_INDEXERS_FILE}" "${PROWLARR_KEY}" "${PROWLARR_CLOUDFLARE_TAG_ID:-}" <<'PYEOF'
-import json, sys, urllib.request
+import json, sys, urllib.error, urllib.request
 indexers_path, api_key, cloudflare_tag_id = sys.argv[1], sys.argv[2], sys.argv[3]
 BASE = "http://localhost:9696/api/v1"
 
-# EZTV is enabled for season-pack coverage but is cloudflare-tagged and
-# routes through Byparr — its Cardigann definition can 404/challenge at
-# apply time. Treat an EZTV apply failure as a warning, not fatal, so a
-# transient Byparr/EZTV outage never bricks a whole setup run. The stable
-# indexers the smoke test asserts on are unaffected.
-NON_FATAL_ENABLED = {"EZTV"}
+# Prowlarr TESTS an indexer on save, so one enabled indexer whose site is
+# down, Cloudflare-challenged, or behind a Byparr that is still starting
+# returns 400 and — when this was fatal — aborted the whole provisioning
+# run under `set -e` (EZTV used to be the lone hard-coded exception). Now
+# ANY single enabled indexer failing is a warning; only ALL enabled
+# indexers failing is fatal, because that means Prowlarr itself (or the
+# tunnel) is broken and the operator must see it. The smoke test still
+# asserts on live search results, so a degraded set is not silent.
 
 LABEL_TO_ID = {}
 if cloudflare_tag_id:
@@ -1474,6 +1533,7 @@ live_indexers = http("GET", "/indexer") or []
 live_by_name = {i["name"]: i for i in live_indexers}
 
 created, updated, unchanged, skipped = [], [], [], []
+enabled_ok, enabled_failed = [], []
 for desired in desired_indexers:
     name = desired["name"]
     payload = shape_payload(desired)
@@ -1497,18 +1557,20 @@ for desired in desired_indexers:
         else:
             http("POST", "/indexer", payload)
             created.append(name)
+        if desired.get("enable", False):
+            enabled_ok.append(name)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
-        # Re-raise for ENABLED indexers — a live/active indexer failing
-        # is a real problem the operator needs to see fail loudly. EZTV is
-        # the deliberate exception: enabled but allowed to fail soft
-        # (HTTP error OR Byparr-challenge timeout).
-        if desired.get("enable", False) and name not in NON_FATAL_ENABLED:
-            sys.stderr.write("FATAL: enabled indexer %r failed: %s\n" % (name, e))
-            raise
+        if desired.get("enable", False):
+            sys.stderr.write("  WARN: enabled indexer %r failed: %s\n" % (name, e))
+            enabled_failed.append(name)
         skipped.append(name)
 
 print(json.dumps({"created": created, "updated": updated,
                   "unchanged": unchanged, "skipped": skipped}))
+if enabled_failed and not enabled_ok:
+    sys.stderr.write("FATAL: every enabled indexer failed (%s) — Prowlarr or the "
+                     "VPN tunnel is not working\n" % ", ".join(enabled_failed))
+    sys.exit(1)
 PYEOF
 )
     echo "${INDEXER_SUMMARY}" | python3 -c '
@@ -1552,12 +1614,22 @@ echo "Configuring Prowlarr → Radarr Apps integration..."
 PROWLARR_APPS_FILE="${SCRIPT_DIR}/data/prowlarr_applications.json"
 if [[ ! -f "${PROWLARR_APPS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_APPS_FILE} not found — skipping."
+elif [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable — skipping Apps integration (later runs will apply it)."
 elif [ "${RADARR_READY:-0}" -ne 1 ]; then
     echo "  WARN: Radarr not reachable — skipping Prowlarr → Radarr Apps integration (later runs will apply it)."
 else
-    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" "${SONARR_KEY}" <<'PYEOF'
-import json, sys, urllib.request
+    # The Sonarr app is gated on SONARR_READY (Step 9.6, which also fails
+    # closed on an empty SONARR_KEY). Prowlarr TESTS an application on
+    # create/update, so POSTing the Sonarr app with no key or with Sonarr
+    # down returned 400 — the python raised, `set -e` killed setup, and
+    # Steps 15+ (Radarr download client, root folder, quality definitions,
+    # qBit category, smoke test) never ran. Sonarr-only faults degrade to
+    # a WARN here, as promised at Step 6; the Radarr app still applies.
+    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" "${SONARR_KEY}" "${SONARR_READY:-0}" <<'PYEOF'
+import json, sys, urllib.error, urllib.request
 apps_path, prowlarr_key, radarr_key, sonarr_key = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sonarr_ready = sys.argv[5] == "1" and bool(sonarr_key)
 BASE = "http://localhost:9696/api/v1"
 
 def http(method, path, body=None):
@@ -1626,23 +1698,39 @@ with open(apps_path) as f:
 live_apps = http("GET", "/applications") or []
 live_by_name = {a["name"]: a for a in live_apps}
 
-created, updated, unchanged = [], [], []
+created, updated, unchanged, skipped = [], [], [], []
 for desired in desired_apps:
     name = desired["name"]
+    is_sonarr = desired.get("implementation") == "Sonarr"
+    if is_sonarr and not sonarr_ready:
+        sys.stderr.write("  WARN: Sonarr not ready (or no API key) — skipping "
+                         "Prowlarr app %r; a later run applies it\n" % name)
+        skipped.append(name)
+        continue
     payload = shape_payload(desired)
-    if name in live_by_name:
-        live = live_by_name[name]
-        if match(live, payload):
-            unchanged.append(name)
+    try:
+        if name in live_by_name:
+            live = live_by_name[name]
+            if match(live, payload):
+                unchanged.append(name)
+            else:
+                payload["id"] = live["id"]
+                http("PUT", "/applications/%d" % live["id"], payload)
+                updated.append(name)
         else:
-            payload["id"] = live["id"]
-            http("PUT", "/applications/%d" % live["id"], payload)
-            updated.append(name)
-    else:
-        http("POST", "/applications", payload)
-        created.append(name)
+            http("POST", "/applications", payload)
+            created.append(name)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+        # Radarr is the product's core path — its app failing stays fatal.
+        # A Sonarr-only fault must not take Radarr's setup down with it.
+        if not is_sonarr:
+            raise
+        sys.stderr.write("  WARN: Prowlarr app %r failed: %s — a later run "
+                         "applies it\n" % (name, e))
+        skipped.append(name)
 
-print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+print(json.dumps({"created": created, "updated": updated,
+                  "unchanged": unchanged, "skipped": skipped}))
 PYEOF
 )
     echo "${APPS_SUMMARY}" | python3 -c '
@@ -1654,6 +1742,7 @@ def show(label, items):
 show("created  ", s["created"])
 show("updated  ", s["updated"])
 show("unchanged", s["unchanged"])
+show("skipped  ", s.get("skipped", []))
 '
 fi
 
@@ -2685,6 +2774,7 @@ fi
 # is captured but only printed; the credentials block always runs so
 # the operator at least gets API keys + login info if they need to
 # debug interactively.
+# shellcheck disable=SC2034  # SMOKE_TEST_OK records the outcome for anyone reading/tracing; nothing consumes it
 if [[ -x "${SCRIPT_DIR}/verify_services.sh" ]]; then
     echo ""
     echo "Running smoke test..."

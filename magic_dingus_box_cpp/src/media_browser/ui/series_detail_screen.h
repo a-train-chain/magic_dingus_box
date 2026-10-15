@@ -12,10 +12,12 @@
 #include <unordered_set>
 #include <vector>
 
+#include "media_browser/series_mutations.h"
 #include "media_browser/sonarr/sonarr_types.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
+#include "media_browser/ui/season_choice.h"
 #include "media_browser/ui/series_detail_logic.h"
 
 namespace media_browser {
@@ -34,9 +36,13 @@ namespace media_browser::ui {
 //
 // Deliberately Radarr-free: everything mutating is SonarrClient-shaped,
 // the mirror image of DetailScreen being Radarr-shaped — the two screens
-// share chrome helpers and idioms, never clients. All decisions live in
-// series_detail_logic.h (pure, Mac-tested); this class is transport +
-// paint.
+// share chrome helpers and idioms, never clients. The decisions live in
+// three Mac-tested units: series_detail_logic.h (page state, season merge,
+// action row, disk verdict, deferred start), series_detail_view.h (row and
+// footer text, paging, the rotary/paging/SELECT input mapping) and
+// ../series_mutations.h (the mutation workers' Sonarr sequences and their
+// toasts; the per-season delete is ../season_delete.h). This class is
+// thread plumbing + paint: it spawns, drains and draws.
 class SeriesDetailScreen : public MbScreen {
 public:
     // watch is nullable (null-safe: no resume points, no ✓/▶ glyphs, no
@@ -79,11 +85,15 @@ public:
 
     // One-shot "Start Season N" intent from Playback's season-end card.
     // Set by the dispatcher on the Playback->SeriesDetail transition
-    // (PRE-leave); consumed in enter(), which re-derives the target via
-    // next_unmonitored_season and runs the EXISTING NextSeason dispatch
-    // only when they still agree — drift means the world changed while
-    // playing, and the safe answer is a no-op said out loud ("Season
-    // update didn't apply — try from this screen").
+    // (PRE-leave); consumed in enter(), which does NOT start it there: on a
+    // FullPause box Sonarr is still restarting at that instant. enter()
+    // hands it to begin_deferred_season_start(), which holds it until a
+    // ServiceGate says Sonarr answers and a fresh Sonarr answer has landed,
+    // then honours exactly that season (start_season_download) while it is
+    // still in eligible_seasons. Drift (record gone, never settled, season
+    // no longer downloadable) is a no-op said out loud ("Season update
+    // didn't apply — try from this screen"); an outage past the deadline
+    // says Sonarr didn't come back.
     void set_pending_intent_next_season(int season) {
         pending_intent_next_season_ = season;
     }
@@ -98,9 +108,22 @@ public:
     Screen origin() const { return origin_; }
 
     void enter() override;
+    // Drops a still-pending season-end start (said out loud): its decision
+    // needs this page's update() ticks, and acting later against whatever
+    // page is shown then would be the unasked-for mutation.
+    void leave() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
+
+    // Redraw gate (mb_screen.h). Nothing in this screen's paint path is
+    // time-based ("Loading...", "syncing…", "Removing season…" are fixed
+    // text); every change arrives through input or update() — fetch and
+    // mutation drains, the 9 s series poll, confirm expiries — so the
+    // signature hashes the state render() draws from. The poll rebuilds
+    // rows_/buttons_ even when unchanged, hence contents, not a counter.
+    bool wants_continuous_redraw() const override { return false; }
+    uint64_t redraw_signature() const override;
 
 private:
     // ---- load pipeline (DetailScreen's FetchWorker idiom) ----
@@ -120,6 +143,10 @@ private:
         // Sonarr half
         bool sonarr_done = false;
         bool sonarr_ok = false;
+        // Sonarr actually ANSWERED this publish (the load's library read,
+        // or the poll's get_series). sonarr_ok can't say that: the poll
+        // carries the previous verdict forward on a failure.
+        bool sonarr_fresh = false;
         bool in_library = false;
         std::optional<Series> series;
         std::vector<QualityDefinition> quality_defs;
@@ -172,34 +199,27 @@ private:
     // RENDER thread. The ONE entry point for "download this one season":
     // monitor the season, re-monitor its EPISODES, search. Both callers go
     // through it — the action row's "Download Season N" (whose target is
-    // next_unmonitored_season, i.e. the LOWEST unmonitored season) and the
-    // season list's SELECT on a season with nothing on disk and nothing in
-    // flight (which is what closes the re-download loop for every OTHER
-    // season, the just-deleted one included). Owns its own guards and
+    // whatever season the chooser confirmed, opening on suggested_season)
+    // and the season list's SELECT on a season with nothing on disk and
+    // nothing in flight. Owns its own guards and
     // toasts: not-in-library and not-yet-settled are both reachable from
     // the season list, and neither may be a silent no-op.
     void start_season_download(int season);
-    // WORKER thread. One get_episodes_checked + one bulk PUT re-monitoring
-    // every episode of `seasons`. Probe P3: season->episode monitoring does
-    // NOT cascade and SeasonSearch skips unmonitored episodes, so EVERY
-    // path that monitors a season in order to download it needs this — it
-    // is a shared helper because it once lived inline in only one of the
-    // two, and "Whole series…" silently downloaded nothing for a
-    // previously deleted season.
-    //
-    // Returns nullopt for a real failure (the read failed or the PUT was
-    // refused); otherwise the number of episode ids actually monitored,
-    // which callers use to distinguish "nothing to do" from "suspiciously
-    // nothing" — the split contract, by call site:
-    //   - whole-series worker: 0 is tolerated (an announced-but-unaired
-    //     season legitimately has no episode records).
-    //   - start_season_download: 0 is suspicious. The season came from a
-    //     row the user can see, so an empty read is more likely
-    //     get_episodes_checked's documented engaged-but-empty
-    //     misclassification (malformed body, or a series id Sonarr no
-    //     longer knows) than a real absence of episodes.
-    std::optional<int> monitor_episodes_for_seasons(
-        int sonarr_id, const std::vector<int>& seasons);
+    // RENDER thread. "Add Season N" for a series not yet in the library.
+    // N == 1: add_series(monitor=true) — Sonarr's own firstSeason + search.
+    // N > 1: add_series(monitor=false) (nothing monitored, no search), then
+    // the worker publishes mut_start_season_ and drain_mutation runs
+    // start_season_download(N) on the settled record. Never monitors
+    // Season 1 when another season was chosen; an unsettled add stops with
+    // a "choose the season again" toast instead.
+    void start_add_at_season(int season);
+    // The worker BODIES behind start_season_download, start_add_at_season,
+    // Whole series… (both presses) and Remove — including the shared probe-P3
+    // episode re-monitor (monitor_episodes_for_seasons) and Quick Start's E1
+    // search — live in series_mutations.{h,cpp}, unit-tested. Each worker
+    // hands its SeriesMutationOutcome to publish_mutation, which copies it
+    // into the mut_* block below under mut_mtx_. WORKER thread.
+    void publish_mutation(SeriesMutationOutcome out);
 
     // ONE mutation at a time, on ONE reused worker thread (WatchdogSec=10:
     // add_series alone can take ~13.5 s — never on the render thread).
@@ -237,6 +257,11 @@ private:
     bool remove_pending_ = false;
     std::chrono::steady_clock::time_point remove_pending_at_{};
     static constexpr int kRemovePendingMs = 2000;
+    // Primary-button season chooser (season_choice.h). Render-thread only,
+    // same discipline as whole_armed_ / remove_pending_: opened by SELECT on
+    // the primary download button, closed by confirm, BTN4, a page flip,
+    // any action-row press, or the primary button losing focus.
+    SeasonChooser season_chooser_;
     // Drain-set, consumed by handle_input's relay at the top (DetailScreen's
     // drain_remove_result idiom). CLEARED when consumed and in fetch() —
     // a latched flag would return origin_ on every frame forever.
@@ -260,6 +285,12 @@ private:
     std::mutex mut_mtx_;
     std::string mut_toast_;                          // guarded by mut_mtx_
     std::optional<Series> mut_series_;               // guarded
+    // Season > 1 add: the season the user chose, to be started on the
+    // render thread once the added record is applied (drain_mutation).
+    std::optional<int> mut_start_season_;            // guarded
+    // Title of the show mut_start_season_ belongs to, so the leave-mid-add
+    // toast can name it (the user may be on a different show by then).
+    std::string mut_start_title_;                    // guarded
     bool mut_settled_ = true;                        // guarded
     bool mut_removed_ = false;                       // guarded
     // Per-season remove (Task 6). Deliberately SEPARATE from mut_removed_:
@@ -346,9 +377,48 @@ private:
     // Drain-set by start_playback_for, consumed by handle_input in the same
     // frame (the navigate_back_ idiom). Cleared in fetch().
     bool navigate_playback_ = false;
-    // See set_pending_intent_next_season(); consumed in enter(), cleared by
-    // fetch() (a full reload = a new world; the intent belonged to the old).
+    // See set_pending_intent_next_season(); consumed in enter() (which hands
+    // it to begin_deferred_season_start), cleared by fetch().
     std::optional<int> pending_intent_next_season_;
+
+    // ---- season-end card: deferred "Start Season N" ----
+    // RENDER thread. Replaces any earlier deferral, spawns the ServiceGate
+    // worker (into workers_, DoneFlag-reaped) that pings Sonarr until it
+    // answers, and records the intent. Never starts anything itself.
+    void begin_deferred_season_start(int season);
+    // RENDER thread, every update() after apply_pending(): reads the gate
+    // verdict, forces one fresh Sonarr answer once the gate is Ready, and
+    // acts on decide_deferred_season_start (series_detail_logic.h).
+    void step_deferred_season_start();
+    // RENDER thread. Cancels the gate worker and forgets the intent;
+    // `toast` (may be empty) tells the user what did not happen.
+    void drop_deferred_season_start(const std::string& toast);
+    struct DeferredSeasonStart {
+        int season = 0;
+        int tmdb_id = 0;
+        std::string title;
+        // Written by the gate worker: 0 pending, 1 ready, 2 timed out (a
+        // cancelled gate writes nothing). shared_ptr so a worker that
+        // outlives a replaced deferral writes into its OWN mailbox.
+        std::shared_ptr<std::atomic<int>> gate;
+        std::shared_ptr<std::atomic<bool>> cancel;
+        std::chrono::steady_clock::time_point began_at{};
+        bool announced = false;          // the "once services are back" toast
+        bool gate_seen_ready = false;
+        uint64_t answers_at_ready = 0;   // sonarr_answers_ when Ready was seen
+        std::chrono::steady_clock::time_point settle_deadline{};
+    };
+    std::optional<DeferredSeasonStart> deferred_start_;
+    // Count of APPLIED publishes that carried a real Sonarr answer
+    // (PendingLoad::sonarr_fresh). Render-thread only.
+    uint64_t sonarr_answers_ = 0;
+    // After the gate says Ready: how long a fresh, settled record may take
+    // to land before the intent is dropped (three 9 s polls).
+    static constexpr int kDeferredSettleMs = 30000;
+    // Only say "once services are back" if the start didn't happen almost
+    // at once — on a trickle box Sonarr never stopped, and the toast would
+    // just flash before "starting Season N…".
+    static constexpr int kDeferredAnnounceMs = 1500;
 
     SonarrClient& sonarr_;
     TmdbClient& tmdb_;

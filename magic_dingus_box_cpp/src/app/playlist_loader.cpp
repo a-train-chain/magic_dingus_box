@@ -52,7 +52,8 @@ std::vector<Playlist> PlaylistLoader::load_playlists(const std::string& director
 std::vector<Playlist> PlaylistLoader::filter_for_platform(
         std::vector<Playlist> playlists,
         const platform::PlatformProfile& profile) {
-    if (profile.unsupported_game_systems.empty()) {
+    if (profile.unsupported_game_systems.empty() &&
+        profile.unsupported_emulator_cores.empty()) {
         return playlists;  // Pi 5 / dev machines: nothing to hide
     }
 
@@ -63,9 +64,12 @@ std::vector<Playlist> PlaylistLoader::filter_for_platform(
         pl.items.erase(
             std::remove_if(pl.items.begin(), pl.items.end(),
                 [&profile](const PlaylistItem& item) {
+                    // System OR core: an N64 core behind a blank or
+                    // nonstandard emulator_system must still be hidden.
                     return item.source_type == "emulated_game" &&
-                           !platform::supports_game_system(
-                               profile, item.emulator_system);
+                           !platform::supports_game_item(
+                               profile, item.emulator_system,
+                               item.emulator_core);
                 }),
             pl.items.end());
 

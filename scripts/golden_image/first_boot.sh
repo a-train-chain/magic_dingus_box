@@ -68,6 +68,36 @@ log "=== Magic Dingus Box first-boot setup starting ==="
 log "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')"
 
 # ---------------------------------------------------------------------------
+# Source-box guard. prepare_for_cloning.sh enables this service on the
+# SOURCE box so the image carries it enabled. If the source reboots before
+# restore_after_cloning.sh disables it again (Mac slept mid-dd, trap never
+# ran, power cycle), this script would wipe the source's saves, pairings and
+# service config, and Step 6d would delete cloning_backup/ — the only copy of
+# what restore needs. Same card as prepare recorded => this is the source.
+# ---------------------------------------------------------------------------
+# Hardware serial (CID) of the SD card the root filesystem lives on.
+# prepare_for_cloning.sh records it; first_boot.sh compares against it so
+# a SOURCE box that reboots mid-clone is never mistaken for a fresh clone
+# (the marker alone cannot tell them apart — the image carries it too).
+# Prints nothing for non-SD roots (USB/NVMe expose no CID).
+root_card_cid() {
+    local src disk
+    src="$(findmnt -no SOURCE / 2>/dev/null)" || return 0
+    disk="$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)" || return 0
+    [[ -n "$disk" ]] && cat "/sys/block/${disk}/device/cid" 2>/dev/null || true
+}
+CLONE_BACKUP_DIR="/var/lib/magic-dingus-box/cloning_backup"
+if [[ -f "${CLONE_BACKUP_DIR}/in_progress" && -s "${CLONE_BACKUP_DIR}/source_card_cid" ]]; then
+    THIS_CID="$(root_card_cid)"
+    if [[ -n "$THIS_CID" && "$THIS_CID" == "$(cat "${CLONE_BACKUP_DIR}/source_card_cid")" ]]; then
+        log "=== This is the SOURCE card (a clone was in progress when it rebooted)."
+        log "=== NOT running first-boot. Run: sudo bash /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh"
+        systemctl disable magic-first-boot.service 2>/dev/null || true
+        exit 0
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Step 1: Regenerate SSH host keys
 # ---------------------------------------------------------------------------
 log "[1/7] Regenerating SSH host keys..."
@@ -117,9 +147,10 @@ fi
 #
 # Done here rather than in prepare_for_cloning.sh so the SOURCE box keeps its
 # identity: truncating it there would change the source's DHCP identity too.
-# Deliberately placed BEFORE the filesystem expand — the expand reboots on
-# some paths, and a duplicate machine-id must not survive even one DHCP
-# exchange.
+# Deliberately placed BEFORE the filesystem expand and everything after
+# it, so a duplicate machine-id cannot survive even one DHCP exchange that
+# a later step might trigger. (The expand itself grows the partition ONLINE
+# with growpart/resize2fs and never reboots.)
 log "[1b/7] Regenerating machine-id..."
 rm -f /etc/machine-id /var/lib/dbus/machine-id
 systemd-machine-id-setup >/dev/null 2>&1 || true
@@ -131,6 +162,59 @@ mkdir -p /var/lib/dbus 2>/dev/null || true
 ln -sf /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null \
     || log "[1b/7] WARNING: could not link /var/lib/dbus/machine-id — dbus may drift"
 log "[1b/7] machine-id regenerated: $(cut -c1-8 /etc/machine-id 2>/dev/null)..."
+
+# ---------------------------------------------------------------------------
+# Step 1c: Revoke the source box's VPN identity — EARLY, and never fatal
+# ---------------------------------------------------------------------------
+# Two VPN clients on one WireGuard private key knock each other off the
+# tunnel. Every unit boots holding the SOURCE box's key two ways:
+#   - services/.env (WIREGUARD_PRIVATE_KEY). Step 6 wipes it too, but Step 6
+#     is far down this script: on the 2026-08-04 image first boot died at
+#     Step 2, the wipe never ran, magic-dingus-services (ConditionPathExists=
+#     .env) brought the stack up, and every such unit dialled ProtonVPN on
+#     the source's key from then on.
+#   - Docker's own container state. config.v2.json embeds each container's
+#     environment, gluetun is `restart: unless-stopped`, and dockerd starts
+#     such a container by itself whenever dockerd starts — .env or no .env.
+#
+# So both go here, before the riskiest step, as the first thing after the
+# identity regeneration. Wrapped so a failure cannot abort first boot (every
+# later wipe matters as much) — but it is logged loudly, and verify_box.sh
+# FAILs a unit still holding the key (source_secret_fingerprints).
+log "[1c/7] Revoking the source box's VPN identity (services/.env + inherited containers)..."
+SOURCE_SECRETS_LIB="$(dirname "${BASH_SOURCE[0]}")/source_secrets_lib.sh"
+
+revoke_source_vpn_identity() {
+    local rc=0 env_file="${INSTALL_DIR}/services/.env"
+    if [[ -e "$env_file" ]]; then
+        if rm -f "$env_file"; then
+            log "[1c/7] Wiped services/.env (source box's WireGuard key, API keys, qBit password)"
+        else
+            log "[1c/7] ERROR: could not remove ${env_file}"
+            rc=1
+        fi
+    fi
+    if [[ -f "$SOURCE_SECRETS_LIB" ]]; then
+        # shellcheck source=source_secrets_lib.sh
+        source "$SOURCE_SECRETS_LIB" || return 1
+        mdb_purge_inherited_containers "$MDB_SOURCE_FP_FILE" || rc=1
+    else
+        log "[1c/7] ERROR: ${SOURCE_SECRETS_LIB} missing — inherited Docker containers NOT checked"
+        rc=1
+    fi
+    return "$rc"
+}
+if revoke_source_vpn_identity; then
+    log "[1c/7] Source VPN identity revoked"
+else
+    log "[1c/7] WARNING: =============================================================="
+    log "[1c/7] WARNING: could NOT fully remove the source box's VPN identity (above)."
+    log "[1c/7] WARNING: This unit may still dial ProtonVPN on the SOURCE box's WireGuard"
+    log "[1c/7] WARNING: key, knocking both boxes off the tunnel. Remove the stack's"
+    log "[1c/7] WARNING: containers (docker rm -f \$(docker ps -aq --filter name=mdb_))"
+    log "[1c/7] WARNING: and confirm with verify_box.sh. Continuing first boot."
+    log "[1c/7] WARNING: =============================================================="
+fi
 
 # ---------------------------------------------------------------------------
 # Step 2: Expand root filesystem to fill SD card
@@ -330,6 +414,15 @@ else
         || hostname "$NEW_HOSTNAME" 2>/dev/null \
         || log "[3/7] WARNING: runtime hostname not applied (takes effect on reboot)"
 
+    # avahi-daemon reads the hostname once at startup and keeps advertising
+    # it. Without a restart it keeps announcing the SOURCE box's name
+    # (magicpi.local / magicpi-XXXX.local) until the next reboot, colliding
+    # with the source on mDNS and making `<new-hostname>.local` unresolvable
+    # during the very first session — when the operator is most likely to
+    # try the Content Manager. try-restart: no-op if avahi is not running.
+    systemctl try-restart avahi-daemon.service 2>/dev/null \
+        || log "[3/7] WARNING: avahi-daemon restart failed (mDNS name updates on reboot)"
+
     # The gate record, LAST. DATA_DIR may not exist yet on a minimal image
     # (Step 4 normally creates it, but that runs after this): an unguarded
     # redirect into a missing directory would abort the whole script before
@@ -407,9 +500,25 @@ if [[ -d "$SERVICES_DIR" ]]; then
     # gluetun would have failed to come up (no WG creds in .env that
     # we're about to delete anyway), but other containers may have
     # entered a healthy-ish state. Compose down cleanly.
-    if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null; then
+    #
+    # ONLY when dockerd is already up. docker.socket socket-activates
+    # docker.service on the first client call, and docker.service is
+    # After=network-online.target — so on a unit that has no Wi-Fi yet
+    # (every unit, the first time a customer powers it on) this one
+    # `docker compose down` sat waiting on NetworkManager-wait-online's
+    # timeout, holding up first boot and, through our Before= ordering,
+    # the kiosk itself. Skipping is safe: prepare_for_cloning.sh already
+    # ran `compose down` on the source (the image carries no containers),
+    # and magic-dingus-services.service is ConditionPathExists=.env, which
+    # this step deletes below — so nothing brings the stack up afterwards.
+    # `is-active` is false for "activating" too, which is exactly the
+    # stall case.
+    if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null \
+       && systemctl is-active --quiet docker.service; then
         (cd "$SERVICES_DIR" && docker compose down 2>&1 | sed 's/^/    /' || true)
         log "[6/7] Stopped Docker stack (was inherited from source image)"
+    elif [[ -f "$SERVICES_DIR/docker-compose.yml" ]]; then
+        log "[6/7] docker.service not active — skipping compose down (image carries no running stack)"
     fi
 
     # Remove the .env (WG creds + API keys + qBit password)
@@ -525,12 +634,20 @@ fi
 # already wiped). The other files are transient state files that the kiosk
 # / Flask recreate on demand — safe to delete.
 log "[6/7] Wiping Phone Remote per-Pi state (paired phones, sessions, secrets)..."
-for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revocations.txt seek_request.json kiosk_status.json flask_secret.key; do
+# box_health_last.json is the Content Manager's cached Box health verdict —
+# the SOURCE box's, which a clone must not show as its own.
+for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revocations.txt seek_request.json kiosk_status.json flask_secret.key box_health_last.json; do
     if [[ -f "${DATA_DIR}/${f}" ]]; then
         rm -f "${DATA_DIR}/${f}"
         log "    wiped: ${f}"
     fi
 done
+# The VPN tunnel event log (gluetun_cascade_restart.sh) is the SOURCE box's
+# drop history; a clone must not report it on its own Box health card.
+if [[ -f /var/lib/magic-dingus/vpn_events.log ]]; then
+    rm -f /var/lib/magic-dingus/vpn_events.log /var/lib/magic-dingus/vpn_events.log.lock
+    log "    wiped: VPN tunnel event log"
+fi
 
 # Any *.jsonl left in the data dir. This is a GLOB, deliberately, not more
 # filenames added to the list above — that list is hand-maintained, and the
@@ -550,7 +667,7 @@ for d in "$DATA_DIR" "${CPP_DIR}/build/data"; do
     [[ -d "$d" ]] || continue
     while IFS= read -r -d '' f; do
         rm -f "$f"
-        log "    wiped: ${f#${INSTALL_DIR}/}"
+        log "    wiped: ${f#"${INSTALL_DIR}"/}"
     done < <(find "$d" -maxdepth 1 -name '*.jsonl' -print0 2>/dev/null)
 done
 
@@ -575,6 +692,19 @@ if [[ -d "$BUILD_DATA_DIR" ]]; then
     done
 fi
 
+# Debug screenshots (data/screenshots/*.bmp, from `touch
+# data/screenshot_request` — see debug/screenshot_capture.h). Pictures of the
+# source operator's TV: personal content. prepare_for_cloning.sh strips them
+# from the image; this is the on-unit safety net, same as the watch db below.
+for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
+    [[ -d "$d" ]] || continue
+    if [[ -d "${d}/screenshots" ]]; then
+        rm -rf "${d}/screenshots"
+        log "    wiped: ${d#"${INSTALL_DIR}"/}/screenshots/"
+    fi
+    rm -f "${d}/screenshot_request"
+done
+
 # Media Browser watch history. media_browser.db holds the source operator's
 # entire viewing record — every episode and movie watched, resume positions,
 # timestamps (watch_state table, schema v3) — plus their library cache. It is
@@ -592,7 +722,7 @@ for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
     shopt -u nullglob
     for f in "${WATCH_DB_FILES[@]}"; do
         rm -f "$f"
-        log "    wiped: ${f#${INSTALL_DIR}/} (watch history)"
+        log "    wiped: ${f#"${INSTALL_DIR}"/} (watch history)"
     done
 done
 
@@ -606,7 +736,7 @@ done
 # their own key through the Content Manager, so on a fresh box NO file in this
 # family should exist; deleting the whole set is the correct, safe behaviour.
 shopt -s nullglob
-# Leading-star glob, matching prepare_for_cloning.sh: admin.py stages atomic
+# Leading-star glob, matching prepare_for_cloning.sh: admin_common.py stages atomic
 # writes as `.tmdb_api_key.<rand>.tmp`, and the leading dot defeats a glob
 # that starts at the literal name — the one .tmp form this codebase actually
 # produces was the one the old pattern missed.
@@ -685,6 +815,24 @@ if [[ -d /var/log/audit ]]; then
     rm -f /var/log/audit/audit.log.* 2>/dev/null || true
     truncate -s 0 /var/log/audit/audit.log 2>/dev/null || true
 fi
+
+# Docker's per-container json-file logs. They hold the source operator's
+# Radarr/Sonarr/Prowlarr activity (search terms, titles, indexer URLs) and
+# Gluetun's VPN session detail (endpoint, forwarded port, public IP).
+# prepare_for_cloning.sh truncates them before the dd; this is the on-unit
+# net for a card cut by an older prepare. Truncated rather than deleted:
+# a container that still exists expects its log file to be there, and
+# truncating in place is safe even against a running dockerd. Glob covers
+# the rotated siblings (<id>-json.log.1 ...) that log rotation creates.
+shopt -s nullglob
+DOCKER_LOGS=(/var/lib/docker/containers/*/*-json.log*)
+shopt -u nullglob
+for f in "${DOCKER_LOGS[@]}"; do
+    truncate -s 0 "$f" 2>/dev/null || true
+done
+if [[ ${#DOCKER_LOGS[@]} -gt 0 ]]; then
+    log "[6/7] Truncated ${#DOCKER_LOGS[@]} inherited Docker container log(s)"
+fi
 log "[6/7] Inherited logs cleared (this unit's own history starts now)"
 
 # Step 6d: Wipe inherited cloning-backup state.
@@ -751,19 +899,27 @@ PI_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)"
 if [[ "$PI_MODEL" == "Raspberry Pi 4 "* ]]; then
     log "[6/7] Pi 4B detected — pruning Pi 5-only game content..."
     pruned_kb=0
-    for path in \
-        "${DATA_DIR}/roms/n64" \
-        "${DATA_DIR}/roms/dreamcast" \
-        "${DATA_DIR}/thumbnails/n64" \
-        "${DATA_DIR}/thumbnails/dreamcast" \
-        "${DATA_DIR}/playlists/games_n64.yaml" \
-        "${DATA_DIR}/playlists/games_dreamcast.yaml"; do
-        if [[ -e "$path" ]]; then
-            sz=$(du -sk "$path" 2>/dev/null | cut -f1) || sz=0
-            rm -rf "$path"
-            pruned_kb=$((pruned_kb + sz))
-            log "    pruned: ${path#${INSTALL_DIR}/} (${sz} KB)"
-        fi
+    # BOTH data/ AND build/data/ — the same dual-copy trap Step 6c and 6f
+    # document: build/data/ carries its own thumbnails and playlists (and on
+    # some source boxes its own roms/), so pruning only data/ left the Pi 5
+    # playlists on disk under the path a build-tree run reads, and left the
+    # space unreclaimed. BUILD_DATA_DIR is defined in Step 6 above.
+    for base in "$DATA_DIR" "$BUILD_DATA_DIR"; do
+        [[ -d "$base" ]] || continue
+        for path in \
+            "${base}/roms/n64" \
+            "${base}/roms/dreamcast" \
+            "${base}/thumbnails/n64" \
+            "${base}/thumbnails/dreamcast" \
+            "${base}/playlists/games_n64.yaml" \
+            "${base}/playlists/games_dreamcast.yaml"; do
+            if [[ -e "$path" ]]; then
+                sz=$(du -sk "$path" 2>/dev/null | cut -f1) || sz=0
+                rm -rf "$path"
+                pruned_kb=$((pruned_kb + sz))
+                log "    pruned: ${path#"${INSTALL_DIR}"/} (${sz} KB)"
+            fi
+        done
     done
     log "[6/7] Pi 5-only content pruned (~$((pruned_kb / 1024)) MB reclaimed for operator use)"
 else
@@ -799,7 +955,7 @@ for d in "${DATA_DIR}/saves" "${DATA_DIR}/states" \
         entry_count=$(find "$d" -mindepth 1 2>/dev/null | wc -l)
         if [[ "$entry_count" -gt 0 ]]; then
             find "$d" -mindepth 1 -delete 2>/dev/null || true
-            log "    wiped: ${d#${INSTALL_DIR}/} (${entry_count} entries)"
+            log "    wiped: ${d#"${INSTALL_DIR}"/} (${entry_count} entries)"
         fi
     fi
 done
@@ -853,11 +1009,13 @@ fi
 # Clones cut from a current donor image inherit all four artifacts (the
 # drop-ins and cmdline flags live on the image), making this a no-op.
 # It exists for clones cut from OLDER donor images: they get the
-# MemoryLow drop-ins, the zram tune, and the cmdline append here. A
+# MemoryLow drop-ins, the zram tune, the cmdline append, and (via
+# setup_audio_service.sh, which the script calls) PulseAudio's own unit,
+# magic-dingus-audio.service, plus the kiosk drop-in ordering after it. A
 # cmdline change on that path logs REBOOT_REQUIRED and simply arms on
-# the box's next natural power cycle — first_boot must not add another
-# reboot to the sequence (Step 2's expand may already have done one),
-# and the posture is inert-but-harmless until then. Best-effort like
+# the box's next natural power cycle — first_boot must not add a reboot
+# to the sequence (Step 2's online expand never reboots, and neither does
+# anything else here), and the posture is inert-but-harmless until then. Best-effort like
 # every other converge step: a failure must not stop first boot.
 MEMTUNE="/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh"
 if [[ -f "$MEMTUNE" ]]; then
@@ -867,6 +1025,40 @@ if [[ -f "$MEMTUNE" ]]; then
 else
     log "[6g/7] setup_memory_tuning.sh not on this image; skipping"
 fi
+
+# ---------------------------------------------------------------------------
+# Step 6h: OTA power-loss recovery
+# ---------------------------------------------------------------------------
+# A clone must never inherit the source box's "update in progress" marker
+# (or the backup it points at): magic-dingus-ota-recovery.service would
+# otherwise "restore" the source's pre-update tree over this unit at its
+# next boot. prepare_for_cloning.sh's secret tripwire already refuses to
+# clone while /home/magic/.magic_dingus_box_backup* exists; this is the
+# belt to that suspenders. Then make sure the recovery unit itself is
+# installed + enabled (clones cut from donor images that predate it).
+# Best-effort like every converge step: never fails first boot.
+rm -f /home/magic/.magic_dingus_box_backup.ota_in_progress \
+      /home/magic/.magic_dingus_box_backup.ota_in_progress.tmp 2>/dev/null || true
+OTA_RECOVERY="/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh"
+if [[ -f "$OTA_RECOVERY" ]]; then
+    log "[6h/7] Installing OTA power-loss recovery unit..."
+    bash "$OTA_RECOVERY" 2>&1 | while IFS= read -r line; do log "[6h/7] $line"; done \
+        || log "[6h/7] WARNING: OTA recovery unit install failed (the next OTA installs it)"
+else
+    log "[6h/7] setup_ota_recovery.sh not on this image; skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6i: Every clone starts on the STABLE update channel
+# ---------------------------------------------------------------------------
+# config/update_channel = "beta" opts a box into pre-release builds (the
+# owner's own boxes only — magic_dingus_box_cpp/docs/RELEASING.md). A
+# customer unit must never inherit it from the source box.
+# prepare_for_cloning.sh already refuses to clone a beta box; this is the
+# belt to those suspenders (and covers images cut any other way). Absence
+# IS stable, so deleting the file is the whole reset.
+rm -f "${INSTALL_DIR}/config/update_channel" "${INSTALL_DIR}/config/update_channel.tmp" 2>/dev/null || true
+log "[6i/7] Update channel reset to stable"
 
 # ---------------------------------------------------------------------------
 # Step 7: Disable this service (run once only)

@@ -279,6 +279,97 @@ esac
         assert data["ok"] is True
 
 
+SLOW_UPDATE_SCRIPT = '''#!/bin/bash
+case "$1" in
+    install)
+        echo '{"ok": true, "stage": "downloading", "progress": 10, "message": "Downloading..."}'
+        sleep "${SLOW_SECONDS:-1.5}"
+        echo '{"ok": true, "stage": "complete", "progress": 100, "message": "Update complete!", "new_version": "'"$2"'"}'
+        ;;
+    rollback)
+        sleep "${SLOW_SECONDS:-1.5}"
+        echo '{"ok": true, "stage": "complete", "progress": 100, "message": "Rollback complete!", "version": "1.0.6"}'
+        ;;
+esac
+'''
+
+GOOD_INSTALL = {
+    "version": "1.0.8",
+    "download_url": "https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/release.tar.gz",
+}
+
+
+class TestDetachedOtaJobs:
+    """The OTA job must outlive the web service and be reportable after it.
+
+    magic-dingus-web.service is KillMode=control-group + Restart=always, so a
+    restart kills every child — the old start_new_session=True did not help.
+    Job state now lives on disk, so a restarted Flask answers status polls.
+    """
+
+    @pytest.fixture
+    def slow_script(self, mock_update_script):
+        mock_update_script.write_text(SLOW_UPDATE_SCRIPT)
+        mock_update_script.chmod(0o755)
+        return mock_update_script
+
+    def _poll(self, client, job_id, timeout=10.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            r = client.get(f"/admin/update/status/{job_id}")
+            assert r.status_code == 200, r.get_json()
+            data = r.get_json()["data"]
+            if data["status"] != "running":
+                return data
+            time.sleep(0.1)
+        pytest.fail("job never left running")
+
+    def test_status_survives_a_flask_restart(self, client, slow_script,
+                                             temp_data_dir, auth_headers):
+        from admin import create_app
+
+        r = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r.status_code == 200
+        job_id = r.get_json()["data"]["job_id"]
+
+        # A brand-new app over the same data dir: no in-memory job at all.
+        restarted = create_app(temp_data_dir, config={"TESTING": True})
+        restarted.config["TESTING"] = True
+        data = self._poll(restarted.test_client(), job_id)
+        assert data["status"] == "complete"
+        assert data["progress"] == 100
+        assert data["new_version"] == "1.0.8"
+
+    def test_second_install_while_one_runs_is_409(self, client, slow_script, auth_headers):
+        r1 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r1.status_code == 200
+        r2 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r2.status_code == 409
+        assert "already running" in r2.get_json()["error"]["message"].lower()
+        # And it frees up once the first one finishes.
+        self._poll(client, r1.get_json()["data"]["job_id"])
+        r3 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r3.status_code == 200
+
+    def test_rollback_while_install_runs_is_409(self, client, slow_script, auth_headers):
+        r1 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r1.status_code == 200
+        r2 = client.post("/admin/update/rollback", headers=auth_headers)
+        assert r2.status_code == 409
+
+    def test_busy_is_also_seen_by_a_restarted_flask(self, client, slow_script,
+                                                    temp_data_dir, auth_headers):
+        from admin import create_app
+
+        r1 = client.post("/admin/update/install", json=GOOD_INSTALL, headers=auth_headers)
+        assert r1.status_code == 200
+        restarted = create_app(temp_data_dir, config={"TESTING": True})
+        restarted.config["TESTING"] = True
+        r2 = restarted.test_client().post("/admin/update/install", json=GOOD_INSTALL,
+                                          headers=auth_headers)
+        assert r2.status_code == 409
+
+
 class TestVersion:
     """Tests for /admin/update/version endpoint."""
 
@@ -299,10 +390,24 @@ class TestURLValidation:
     # (a-train-chain/magic_dingus_box), not "any github.com URL" — a bare
     # github.com prefix let a LAN device install an attacker-owned tarball.
     @pytest.mark.parametrize("url,expected_valid", [
-        # This project's own repo — accepted.
-        ("https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.0/file.tar.gz", True),
-        ("https://api.github.com/repos/a-train-chain/magic_dingus_box/tarball/v1.0.0", True),
-        ("https://codeload.github.com/a-train-chain/magic_dingus_box/tar.gz/refs/tags/v1.0.0", True),
+        # This project's own repo, at the tag named by `version` — accepted.
+        # (The URL must name the SAME tag as the version being installed:
+        # update.sh stamps VERSION from `version`, so a mismatched pair
+        # would install one release while reporting another.)
+        ("https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/file.tar.gz", True),
+        ("https://api.github.com/repos/a-train-chain/magic_dingus_box/tarball/v1.0.8", True),
+        ("https://codeload.github.com/a-train-chain/magic_dingus_box/tar.gz/refs/tags/v1.0.8", True),
+        ("https://github.com/a-train-chain/magic_dingus_box/archive/refs/tags/v1.0.8.tar.gz", True),
+        # Own repo, but a DIFFERENT tag than `version` — rejected.
+        ("https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.0/file.tar.gz", False),
+        # Own repo, but not a tagged release artifact (branch archive, bare
+        # repo page) — rejected: only tagged releases are installable.
+        ("https://github.com/a-train-chain/magic_dingus_box/archive/main.tar.gz", False),
+        ("https://codeload.github.com/a-train-chain/magic_dingus_box/tar.gz/refs/heads/main", False),
+        ("https://github.com/a-train-chain/magic_dingus_box", False),
+        # Query strings / encoded separators in the asset name — rejected.
+        ("https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/file.tar.gz?x=1", False),
+        ("https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.8/..%2F..%2Fx.tar.gz", False),
         # A DIFFERENT GitHub repo — now rejected (was the RCE hole).
         ("https://github.com/user/repo/releases/download/v1.0.0/file.tar.gz", False),
         ("https://api.github.com/repos/attacker/evil/tarball/v1.0.0", False),
@@ -334,3 +439,193 @@ class TestURLValidation:
             assert response.status_code == 200
         else:
             assert response.status_code == 400
+
+
+class TestVersionValidation:
+    """`version` is NOT an inert label: update.sh interpolates it into
+    https://api.github.com/repos/<repo>/releases/tags/v${version} to find
+    the pre-compiled binary, and curl normalizes dot-segments — so a
+    version like "1.0.8/../../../../attacker/evil/releases/tags/v1" made the
+    Pi fetch ANOTHER repo's release metadata and install its binary, while
+    download_url still pointed at a perfectly valid asset of our own repo.
+    It is also written verbatim into VERSION. Only plain X.Y.Z is accepted.
+    """
+
+    GOOD_URL = ("https://github.com/a-train-chain/magic_dingus_box/"
+                "releases/download/v1.0.8/release.tar.gz")
+
+    @pytest.mark.parametrize("version", [
+        "1.0.8/../../../../attacker/evil/releases/tags/v1",
+        "../../attacker/evil",
+        "1.0.8\n",
+        "1.0.8 ",
+        "v1.0.8",
+        "1.0",
+        "1.0.8-rc1",
+        "1.0.8;rm -rf /",
+        "١.0.8",  # Arabic-Indic digit: \d would accept it, [0-9] must not
+        "",
+    ])
+    def test_install_rejects_malformed_version(self, client, mock_update_script,
+                                               auth_headers, version):
+        response = client.post(
+            "/admin/update/install",
+            json={"version": version, "download_url": self.GOOD_URL},
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+        assert response.get_json()["ok"] is False
+
+    @pytest.mark.parametrize("version", [123, ["1.0.8"], {"v": "1.0.8"}])
+    def test_install_rejects_non_string_version(self, client, mock_update_script,
+                                                auth_headers, version):
+        response = client.post(
+            "/admin/update/install",
+            json={"version": version, "download_url": self.GOOD_URL},
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+
+    def test_install_accepts_plain_semver(self, client, mock_update_script, auth_headers):
+        response = client.post(
+            "/admin/update/install",
+            json={"version": "1.0.8", "download_url": self.GOOD_URL},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.parametrize("version", ["1.10.1-beta.1", "1.10.1-beta.12"])
+    def test_install_accepts_beta_version_with_its_own_tag(self, client, mock_update_script,
+                                                          auth_headers, version):
+        url = ("https://github.com/a-train-chain/magic_dingus_box/releases/download/"
+               f"v{version}/magic-dingus-box-{version}.tar.gz")
+        response = client.post("/admin/update/install",
+                               json={"version": version, "download_url": url},
+                               headers=auth_headers)
+        assert response.status_code == 200
+
+    @pytest.mark.parametrize("version", [
+        "1.10.1-beta", "1.10.1-beta.", "1.10.1-beta.x", "1.10.1-rc.1", "1.10.1-alpha.1",
+        "1.10.1-BETA.1", "1.10.1-beta.1.2", "1.10.1-beta.1\n", "1.10.1-beta.١",
+        "1.10.1-beta.1/../../x",
+    ])
+    def test_install_rejects_other_prerelease_shapes(self, client, mock_update_script,
+                                                     auth_headers, version):
+        response = client.post("/admin/update/install",
+                               json={"version": version, "download_url": self.GOOD_URL},
+                               headers=auth_headers)
+        assert response.status_code == 400
+
+    def test_beta_url_must_name_the_beta_tag(self, client, mock_update_script, auth_headers):
+        """A beta version paired with the STABLE tag's URL (or vice versa) is
+        refused: VERSION would claim one release while another was installed."""
+        stable_url = ("https://github.com/a-train-chain/magic_dingus_box/releases/download/"
+                      "v1.10.1/magic-dingus-box-1.10.1.tar.gz")
+        r = client.post("/admin/update/install",
+                        json={"version": "1.10.1-beta.1", "download_url": stable_url},
+                        headers=auth_headers)
+        assert r.status_code == 400
+        beta_url = ("https://github.com/a-train-chain/magic_dingus_box/releases/download/"
+                    "v1.10.1-beta.1/magic-dingus-box-1.10.1-beta.1.tar.gz")
+        r = client.post("/admin/update/install",
+                        json={"version": "1.10.1", "download_url": beta_url},
+                        headers=auth_headers)
+        assert r.status_code == 400
+
+
+class TestOtaVersionRegex:
+    """admin.py's version gate and update.sh's VERSION_RE accept the same
+    grammar: X.Y.Z or X.Y.Z-beta.N."""
+
+    @pytest.mark.parametrize("version,ok", [
+        ("1.10.0", True), ("1.10.1-beta.1", True), ("0.0.0", True),
+        ("1.10.1-beta.999999", True),
+        ("1.10", False), ("v1.10.0", False), ("1.10.0-rc.1", False),
+        ("1.10.0-beta", False), ("1.10.0-beta.1-beta.2", False),
+    ])
+    def test_regex(self, version, ok):
+        from admin import _OTA_VERSION_RE
+        assert bool(_OTA_VERSION_RE.fullmatch(version)) is ok
+
+
+REAL_UPDATE_SH = (Path(__file__).resolve().parents[3]
+                  / "magic_dingus_box_cpp" / "scripts" / "update.sh")
+
+
+class TestUpdateChannel:
+    """GET/POST /admin/update/channel. Both delegate to the REAL update.sh
+    (`update.sh channel [stable|beta]`), so these also pin the contract
+    between the two: one word on stdout, default stable, the file at
+    <install>/config/update_channel."""
+
+    @pytest.fixture
+    def real_update_script(self, temp_data_dir, monkeypatch):
+        import shutil
+        scripts_dir = temp_data_dir.parent / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        dst = scripts_dir / "update.sh"
+        shutil.copy(REAL_UPDATE_SH, dst)
+        dst.chmod(0o755)
+        # NOT temp_data_dir.parent.parent: in this fixture layout that is the
+        # system temp root, shared by every test run on the machine.
+        install_root = temp_data_dir.parent / "install"
+        install_root.mkdir()
+        monkeypatch.setenv("MAGIC_BASE_PATH", str(install_root))
+        return install_root / "config" / "update_channel"
+
+    def test_default_is_stable(self, client, real_update_script):
+        r = client.get("/admin/update/channel")
+        assert r.status_code == 200
+        assert r.get_json()["data"]["channel"] == "stable"
+        assert not real_update_script.exists()
+
+    def test_set_beta_then_back_to_stable(self, client, real_update_script, auth_headers):
+        r = client.post("/admin/update/channel", json={"channel": "beta"}, headers=auth_headers)
+        assert r.status_code == 200
+        assert r.get_json()["data"]["channel"] == "beta"
+        assert real_update_script.read_text().strip() == "beta"
+        assert client.get("/admin/update/channel").get_json()["data"]["channel"] == "beta"
+
+        r = client.post("/admin/update/channel", json={"channel": "stable"}, headers=auth_headers)
+        assert r.status_code == 200
+        assert r.get_json()["data"]["channel"] == "stable"
+        assert not real_update_script.exists()  # absence IS stable
+
+    def test_garbage_file_reads_as_stable(self, client, real_update_script):
+        real_update_script.parent.mkdir(parents=True, exist_ok=True)
+        real_update_script.write_text("nightly\n")
+        assert client.get("/admin/update/channel").get_json()["data"]["channel"] == "stable"
+
+    @pytest.mark.parametrize("body", [
+        {"channel": "nightly"}, {"channel": "Beta"}, {"channel": ""}, {"channel": None},
+        {"channel": ["beta"]}, {"channel": 1}, {}, ["beta"], "beta",
+    ])
+    def test_rejects_unknown_channel(self, client, real_update_script, auth_headers, body):
+        r = client.post("/admin/update/channel", json=body, headers=auth_headers)
+        assert r.status_code == 400
+        assert r.get_json()["ok"] is False
+        assert not real_update_script.exists()
+
+    def test_switch_invalidates_cached_check(self, client, mock_update_script,
+                                             auth_headers, temp_data_dir):
+        """A cached stable answer must not survive a switch to beta."""
+        calls = temp_data_dir.parent / "check_calls"
+        text = mock_update_script.read_text()
+        text = text.replace("    check)\n", f"    check)\n        echo x >> '{calls}'\n", 1)
+        text = text.replace("    version)\n",
+                            "    channel)\n        echo \"${2:-stable}\"\n        ;;\n"
+                            "    version)\n", 1)
+        mock_update_script.write_text(text)
+        assert client.get("/admin/update/check").status_code == 200
+        assert client.get("/admin/update/check").status_code == 200
+        assert calls.read_text().count("x") == 1  # the second answer was cached
+        r = client.post("/admin/update/channel", json={"channel": "beta"}, headers=auth_headers)
+        assert r.status_code == 200
+        assert client.get("/admin/update/check").status_code == 200
+        assert calls.read_text().count("x") == 2
+
+    def test_script_missing(self, client, temp_data_dir):
+        script = temp_data_dir.parent / "scripts" / "update.sh"
+        if script.exists():
+            script.unlink()
+        assert client.get("/admin/update/channel").status_code == 500

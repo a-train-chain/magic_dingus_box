@@ -32,8 +32,10 @@ std::string controller_type_name(ControllerType t);
 
 // One physical joystick node, as enumerated from /dev/input/js*.
 // `port` is the 0-based index in lexicographic js-node order (js0 -> 0,
-// js1 -> 1, ...) -- this is the same ordering RetroArch's udev driver uses
-// for joypad indices, so port N here corresponds to player N+1.
+// js1 -> 1, ...), phone remote skipped; port N here is player N+1. This is
+// NOT necessarily RetroArch's own joypad order (its udev driver enumerates
+// the udev DB in syspath order and counts the phone remote) -- the launcher
+// pins each player to its pad with write_port_reservations().
 struct DetectedPad {
     int port = 0;
     uint16_t vid = 0;

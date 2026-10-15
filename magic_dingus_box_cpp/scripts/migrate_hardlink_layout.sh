@@ -95,6 +95,18 @@ elif [ "${CUR_ROOT}" = "/library" ]; then
     BACKUP="${RADARR_DB}.pre-hardlink-${TS}.bak"
     # Stop Radarr first so the DB is quiescent during copy + edit (a running
     # Radarr holds SQLite locks and could write between our copy and edit).
+    # Hold the shared compose lock (same path/fd as gluetun_cascade_restart.sh
+    # and friends) from this stop until Radarr is started again in step 4:
+    # the cascade watcher's periodic convergence pass brings stopped
+    # dependents back up, and must not restart Radarr mid-rewrite. Bounded
+    # wait; the lock is released when this script exits at the latest.
+    MDB_COMPOSE_LOCK="${MDB_COMPOSE_LOCK:-/run/lock/mdb-compose.lock}"
+    if command -v flock >/dev/null 2>&1; then
+        [ -e "${MDB_COMPOSE_LOCK}" ] || (umask 000; : >> "${MDB_COMPOSE_LOCK}") 2>/dev/null || true
+        if [ -r "${MDB_COMPOSE_LOCK}" ] && exec 9<"${MDB_COMPOSE_LOCK}"; then
+            flock -w 60 9 || log "WARN: compose lock busy for 60s — proceeding without it"
+        fi
+    fi
     log "stopping radarr + qbittorrent for a consistent edit..."
     docker compose stop radarr qbittorrent >/dev/null
     db_cp "${RADARR_DB}" "${BACKUP}"
@@ -156,6 +168,8 @@ fi
 # --- 4. Bring Radarr back + verify ---------------------------------------
 log "starting radarr..."
 docker compose up -d radarr >/dev/null
+# Release the compose lock taken before the stop (no-op if never taken).
+flock -u 9 2>/dev/null || true
 RADARR_KEY="$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/radarr/config.xml" 2>/dev/null || true)"
 for _ in $(seq 1 30); do
     curl -sf -o /dev/null "http://localhost:7878/ping" && break || sleep 2

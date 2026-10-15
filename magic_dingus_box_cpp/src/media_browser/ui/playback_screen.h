@@ -2,11 +2,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "app/movie_quiet_mode.h"
 #include "media_browser/sonarr/sonarr_types.h"  // EpisodeInfo (stored by value)
 #include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
@@ -47,16 +51,10 @@ namespace media_browser::ui {
 //                                       deferred toast; cancels prefetch.
 class PlaybackScreen : public MbScreen {
 public:
-    // qbit pointer is optional. When provided, enter()/leave() quiet the
-    // torrent stack for the duration of playback — concurrent torrent
-    // writes contend with GStreamer's reads and cause scrubbing freezes.
-    // HOW they quiet it is per-board (state.platform_profile
-    // .trickle_torrents_during_video): Pi 5 engages qBit's alternative
-    // speed limits (~1.5 MB/s trickle — downloads keep progressing);
-    // Pi 4B / Unknown keep the full pause_all() (USB-flash media has no
-    // random-IO headroom to give away). When null, playback simply runs
-    // without managing qBit state (e.g., unit tests, devs running
-    // without the Docker stack).
+    // Torrent-stack quieting during playback (the contention guard) is
+    // delegated to an app::MovieQuietMode set via set_quiet_mode(); when
+    // none is set, playback simply runs without managing qBit/containers
+    // (unit tests, devs running without the Docker stack).
     //
     // tmdb is used by the PlaybackOverlay to fetch similar films in the
     // background when the user opens the overlay (rotary press).
@@ -65,13 +63,31 @@ public:
     // open) to quick-add the focused similar film via Radarr.
     PlaybackScreen(app::Controller& controller, app::AppState& state,
                    ::media_browser::TmdbClient& tmdb,
-                   ::media_browser::RadarrClient& radarr,
-                   QbittorrentClient* qbit = nullptr);
+                   ::media_browser::RadarrClient& radarr);
 
-    // The quick-add worker publishes into members — join before they
-    // die (a joinable std::thread member at destruction is terminate()).
+    // The contention guard's executor (owned by main.cpp, outlives this
+    // screen). enter() requests a pause in the per-session mode; leave()
+    // requests the matching resume only if enter() requested a pause. Both
+    // return immediately — the qBit round-trips and the docker stop/start
+    // script run on the executor's worker, never on the render thread.
+    void set_quiet_mode(app::MovieQuietMode* quiet) { quiet_ = quiet; }
+
+    // Builds the executor's actions: Trickle = qBit alternative speed
+    // limits; FullPause = qBit pause_all() + playback_services_pause.sh
+    // pause. Resume undoes exactly what the pause reported. `barrier` (may
+    // be empty) runs first on the worker before each action — main.cpp
+    // uses it to let a pending game quiet-mode transition finish first.
+    static app::MovieQuietMode::Actions make_quiet_actions(
+        QbittorrentClient* qbit, std::function<void()> barrier);
+
+    // The quick-add workers publish into members — join before they die
+    // (a joinable std::thread member at destruction is terminate()). The
+    // deferred-add worker may be inside a 90 s service gate: shutting_down_
+    // cancels it so the join costs at most one in-flight request.
     ~PlaybackScreen() override {
+        shutting_down_.store(true, std::memory_order_release);
         if (quickadd_worker_.joinable()) quickadd_worker_.join();
+        if (deferred_add_worker_.joinable()) deferred_add_worker_.join();
     }
 
     // Caller (main.cpp dispatcher, on Detail->Playback) sets these BEFORE
@@ -153,6 +169,23 @@ public:
     // ended" and bail out of playback) plus the on-TV scrub-bar flash.
     void notify_external_seek();
 
+    // Pipeline-error probe, wired by main.cpp to the shared GstPlayer's
+    // has_error() (the Controller does not expose it). Polled by update()
+    // BEFORE the natural-end edge detector: an errored file (corrupt,
+    // truncated, undecodable) exits playback with a toast and is never
+    // mistaken for end-of-stream — no watched mark, no next-episode
+    // countdown. Unset (tests, dev builds) = errors are not detected.
+    void set_error_probe(std::function<bool()> probe) {
+        error_probe_ = std::move(probe);
+    }
+
+    // True once this session was abandoned because of a pipeline error;
+    // reset by enter() / the in-place episode advance. main.cpp's exit
+    // sites skip the final watch-state flush for such a session, so an
+    // error near the end of a file cannot cross the watched threshold via
+    // the position write (a natural-end-only decision).
+    bool ended_on_error() const { return ended_on_error_; }
+
     void enter() override;
     void leave() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
@@ -164,20 +197,13 @@ private:
     app::AppState&                state_;
     ::media_browser::TmdbClient&  tmdb_;
     ::media_browser::RadarrClient& radarr_;
-    QbittorrentClient*            qbit_ = nullptr;  // optional; pause/resume during playback
-
-    // Tracks whether enter() asked qBit to pause. leave() only resumes
-    // if pause actually succeeded — avoids accidentally starting
-    // torrents that the operator manually paused before entering
-    // playback (we'd be flipping their state without consent).
-    bool qbit_was_paused_by_us_ = false;
-
-    // Trickle-branch mirror of the flag above: set when enter() engaged
-    // qBit's alternative speed limits, so leave() clears the cap only if
-    // WE set it — an operator who had alt limits on for their own
-    // reasons keeps them. Exactly one of these two flags can be set per
-    // session (the enter() branch is either/or on the platform profile).
-    bool qbit_alt_limited_by_us_ = false;
+    // Contention-guard executor (null = no quieting). The consent records
+    // (alt-limits engaged by us / torrents paused by us / containers
+    // stopped by us) live on its worker — see app::MovieQuietMode::Consent.
+    app::MovieQuietMode*          quiet_ = nullptr;
+    // True when this session's enter() requested a pause, so leave()
+    // requests the resume exactly once and only then.
+    bool quiet_requested_ = false;
 
     std::string movie_title_;
     std::string movie_path_;       // host-side path
@@ -250,18 +276,55 @@ private:
 
     bool was_video_active_ = false;
     bool exit_pending_ = false;
+    std::function<bool()> error_probe_;   // see set_error_probe()
+    bool ended_on_error_ = false;         // see ended_on_error()
     std::string deferred_toast_;
 
     // Async quick-add (overlay SELECT). get_quality_profiles + add_movie
     // are two 5s-timeout HTTP calls — run inline they froze the PLAYING
-    // MOVIE for up to ~10s (and on a Pi 4B, where the Radarr container is
-    // docker-paused during playback, the freeze was guaranteed and the
-    // add could never succeed until playback ended). The worker composes
-    // the result toast; update() drains it. One at a time.
+    // MOVIE for up to ~10s. The worker composes the result toast; update()
+    // drains it. One at a time. Only used when Radarr is up during the
+    // movie (trickle sessions) — a FullPause session stops the container,
+    // so its presses go to the deferred queue below instead.
     std::thread quickadd_worker_;
     std::atomic<bool> quickadd_in_flight_{false};
     std::atomic<bool> quickadd_done_{false};
     std::string quickadd_toast_;   // worker → render, ordered by quickadd_done_
+
+    // WORKER thread. The add itself, shared by the immediate and the
+    // deferred path: quality-profile pick + add_movie. Returns the outcome
+    // phrase ("Added — searching", "Already in library", ...).
+    std::string run_quick_add(int tmdb_id);
+
+    // Deferred quick-add (FullPause sessions). FullPause STOPS the Radarr
+    // container for the whole movie, so an add fired during playback could
+    // only burn its timeouts and say "Couldn't add". Such a press is queued
+    // instead ("Will add after the movie"); leave() hands the session's
+    // queue to deferred_add_worker_, which waits on a ServiceGate (the
+    // MovieQuietMode resume, then Radarr answering) and then adds each
+    // film, reporting through the thread-safe ::ui::Toast::post because the
+    // outcome lands after this screen stops receiving update() ticks.
+    struct DeferredAdd {
+        int tmdb_id = 0;
+        std::string title;
+    };
+    bool session_full_pause_ = false;                  // set by enter()
+    std::vector<DeferredAdd> session_deferred_adds_;   // render thread
+    void start_deferred_adds();                        // render thread (leave)
+    void run_deferred_adds();                          // worker
+    std::thread deferred_add_worker_;
+    std::mutex deferred_add_mtx_;
+    std::vector<DeferredAdd> deferred_add_queue_;      // guarded by the mutex
+    bool deferred_add_running_ = false;                // guarded by the mutex
+    std::atomic<bool> shutting_down_{false};
+    // FullPause session lifecycle as the deferred worker sees it. enter()
+    // bumps the counter and raises the flag for a FullPause session;
+    // leave() lowers the flag BEFORE start_deferred_adds() takes the
+    // mutex, and the worker reads both under that mutex — so a batch it
+    // requeues because a session is active is always restarted by that
+    // session's leave() (see decide_deferred_batch in service_gate.h).
+    std::atomic<bool> full_pause_session_active_{false};
+    std::atomic<std::uint64_t> full_pause_sessions_started_{0};
 
     // Frames remaining during which we suppress end-of-stream detection.
     // Counted down by update(). The state.video_active flag flickers

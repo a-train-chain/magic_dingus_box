@@ -1,13 +1,11 @@
 #include "wifi_manager.h"
+#include "subprocess.h"
 #include <iostream>
 #include <sstream>
 #include <algorithm>
 #include <set>
 #include <thread>
 #include <unistd.h>
-#include <sys/wait.h>
-#include <poll.h>
-#include <signal.h>
 #include <chrono>
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -34,6 +32,7 @@ WifiManager::~WifiManager() {
     if (scan_thread_.joinable()) scan_thread_.join();
     if (connect_thread_.joinable()) connect_thread_.join();
     if (status_thread_.joinable()) status_thread_.join();
+    if (forget_thread_.joinable()) forget_thread_.join();
 }
 
 bool WifiManager::initialize() {
@@ -123,6 +122,14 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
     // Atomic claim — see scan_networks_async() for rationale on CAS.
     bool expected = false;
     if (!is_connecting_.compare_exchange_strong(expected, true)) return;
+    // A forget is deleting profiles right now; connecting on top of it
+    // races the same NetworkManager state. Back off (the mirror check is in
+    // forget_network_async — if both lose the race, both back off: safe).
+    if (is_forgetting_) {
+        std::cout << "WifiManager: connect refused — forget in progress" << std::endl;
+        is_connecting_ = false;
+        return;
+    }
 
     // Capture the target SSID so the UI can render "Connecting to <SSID>..."
     // immediately, before the worker thread even fires off nmcli. Cleared at
@@ -454,102 +461,78 @@ bool WifiManager::forget_network(const std::string& ssid) {
     return deleted;
 }
 
+bool WifiManager::forget_network_async(const std::string& ssid) {
+    if (ssid.empty()) return false;
+    bool expected = false;
+    if (!is_forgetting_.compare_exchange_strong(expected, true)) return false;
+    if (is_connecting_) {
+        std::cout << "WifiManager: forget refused — connect in progress" << std::endl;
+        is_forgetting_ = false;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        forgetting_ssid_ = ssid;
+    }
+    // Instant join: the CAS above proves the previous worker finished.
+    if (forget_thread_.joinable()) forget_thread_.join();
+    try {
+        forget_thread_ = std::thread([this, ssid]() {
+            last_forget_ok_ = forget_network(ssid);
+            {
+                std::lock_guard<std::mutex> lock(error_mutex_);
+                forgetting_ssid_.clear();
+            }
+            // Released LAST so a reader that sees the falling edge also
+            // sees the result.
+            is_forgetting_.store(false, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        {
+            std::lock_guard<std::mutex> lock(error_mutex_);
+            forgetting_ssid_.clear();
+        }
+        is_forgetting_ = false;
+        return false;
+    }
+    return true;
+}
+
+std::string WifiManager::get_forgetting_ssid() const {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    return forgetting_ssid_;
+}
+
+void WifiManager::set_command_runner_for_tests(CommandRunner runner) {
+    std::lock_guard<std::mutex> lock(runner_mutex_);
+    command_runner_ = std::move(runner);
+}
+
 std::string WifiManager::exec_command_argv(const std::vector<std::string>& args, int timeout_seconds) {
     if (args.empty()) return "";
 
-    int pipefd[2];
-    if (pipe(pipefd) == -1) return "";
-
-    pid_t pid = fork();
-    if (pid == -1) {
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return "";
+    CommandRunner runner;
+    {
+        std::lock_guard<std::mutex> lock(runner_mutex_);
+        runner = command_runner_;
     }
+    if (runner) return runner(args, timeout_seconds);
 
-    if (pid == 0) {
-        // Child process
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
-        close(pipefd[1]);
-
-        std::vector<const char*> argv;
-        for (const auto& a : args) argv.push_back(a.c_str());
-        argv.push_back(nullptr);
-
-        execvp(argv[0], const_cast<char* const*>(argv.data()));
-        _exit(127);
+    // stderr merged into the result on purpose: callers match nmcli's
+    // "Error: ..." lines (forget_network's success heuristic). A
+    // non-positive timeout used to mean "block forever"; nothing passes one
+    // today, and an unbounded nmcli is exactly how a worker thread wedges,
+    // so it now means a generous 60 s instead.
+    utils::subprocess::Options opts;
+    opts.timeout = std::chrono::seconds(timeout_seconds > 0 ? timeout_seconds : 60);
+    opts.capture_stdout = true;
+    opts.stderr_mode = utils::subprocess::Stderr::MergeIntoStdout;
+    auto r = utils::subprocess::run(args, opts);
+    if (r.timed_out) {
+        std::cerr << "WifiManager: Command timed out after " << timeout_seconds << "s" << std::endl;
+        return "";  // Empty string signals timeout
     }
-
-    // Parent process
-    close(pipefd[1]);
-
-    std::string result;
-    char buffer[128];
-
-    if (timeout_seconds > 0) {
-        // Timeout-aware read using poll()
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
-        struct pollfd pfd;
-        pfd.fd = pipefd[0];
-        pfd.events = POLLIN;
-
-        bool timed_out = false;
-        while (true) {
-            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now());
-            if (remaining.count() <= 0) {
-                timed_out = true;
-                break;
-            }
-
-            int ret = poll(&pfd, 1, static_cast<int>(remaining.count()));
-            if (ret > 0 && (pfd.revents & POLLIN)) {
-                ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
-                if (n <= 0) break; // EOF or error
-                buffer[n] = '\0';
-                result += buffer;
-            } else if (ret == 0) {
-                timed_out = true;
-                break;
-            } else {
-                break; // poll error
-            }
-        }
-        close(pipefd[0]);
-
-        if (timed_out) {
-            // Kill the child process
-            kill(pid, SIGTERM);
-            // Brief wait for graceful shutdown
-            usleep(200000); // 200ms
-            int status;
-            if (waitpid(pid, &status, WNOHANG) == 0) {
-                // Still alive, force kill
-                kill(pid, SIGKILL);
-                waitpid(pid, &status, 0);
-            }
-            std::cerr << "WifiManager: Command timed out after " << timeout_seconds << "s" << std::endl;
-            return ""; // Empty string signals timeout
-        }
-
-        int status;
-        waitpid(pid, &status, 0);
-    } else {
-        // No timeout - blocking read
-        ssize_t n;
-        while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
-            buffer[n] = '\0';
-            result += buffer;
-        }
-        close(pipefd[0]);
-
-        int status;
-        waitpid(pid, &status, 0);
-    }
-
-    return result;
+    return r.out;
 }
 
 namespace {

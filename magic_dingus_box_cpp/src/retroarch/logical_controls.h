@@ -47,10 +47,12 @@ std::vector<LogicalControl> capture_steps(ControllerStyle style);
 // binds almost nothing does not degrade the pad -- it disables it, for both
 // players, with the file deliberately immune to OTA updates.
 //
-// The floor is "the pad can still drive a game and still reach a menu":
-// all four d-pad directions, plus the confirm and Start buttons. Everything
-// else stays genuinely optional, because pads legitimately differ (no
-// shoulders, no second stick, no Select).
+// The floor is "the pad can still drive a game and still LEAVE it": all
+// four d-pad directions, the confirm and Start buttons, and the exit
+// gesture's hotkey-enable modifier (N64 Z / PS Select -- see
+// SemanticMapping::exit_emulator). The kiosk ships no RetroArch menu, so a
+// profile without the modifier would strand the player in the game.
+// Everything else stays genuinely optional (no shoulders, no second stick).
 std::vector<LogicalControl> required_controls(ControllerStyle style);
 
 // On-screen prompt, e.g. "Press CROSS (bottom face button)" /

@@ -3,6 +3,7 @@
 #include "../utils/config.h"
 #include "../utils/fsync_util.h"
 #include "../utils/logger.h"
+#include "../utils/services_env.h"
 #include <json/json.h>
 #include <fstream>
 #include <iostream>
@@ -47,29 +48,15 @@ app::AppState::DisplaySettings::MbLibraryFilter mb_library_filter_from_string(co
     return R::All;
 }
 
-// Reads /opt/magic_dingus_box/services/.env if present and returns true
-// iff WIREGUARD_PRIVATE_KEY is set to a non-empty value. Failure-closed:
-// missing file or any I/O error returns false.
+#ifdef MEDIA_BROWSER_ENABLED
+// True iff services/.env sets WIREGUARD_PRIVATE_KEY to a non-empty value.
+// Failure-closed: a missing file or any I/O error reads as false. MB-only
+// caller, so guarded (the MB-OFF test build compiles this file with -Wextra).
 bool read_vpn_configured_from_services_env() {
-    static constexpr const char* kEnvPath = "/opt/magic_dingus_box/services/.env";
-    std::ifstream f(kEnvPath);
-    if (!f) return false;
-    std::string line;
-    while (std::getline(f, line)) {
-        // Match WIREGUARD_PRIVATE_KEY=<non-empty>. Ignore quoted/unquoted form.
-        constexpr std::string_view kKey = "WIREGUARD_PRIVATE_KEY=";
-        if (line.rfind(kKey, 0) != 0) continue;
-        std::string val = line.substr(kKey.size());
-        // Strip surrounding quotes and whitespace.
-        auto trim = [](std::string& s) {
-            while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '"' || s.front() == '\'')) s.erase(s.begin());
-            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t' || s.back()  == '"' || s.back()  == '\'')) s.pop_back();
-        };
-        trim(val);
-        return !val.empty();
-    }
-    return false;
+    return !utils::read_env_value(utils::kServicesEnvPath,
+                                  "WIREGUARD_PRIVATE_KEY").empty();
 }
+#endif
 
 }  // namespace
 
@@ -231,14 +218,40 @@ bool SettingsPersistence::peek_is_crt_native() {
     std::string errors;
     if (!Json::parseFromStream(builder, file, &root, &errors)) return true;
 
-    if (!root.isMember("display")) return true;
+    if (!root.isObject() || !root.isMember("display")) return true;
     const Json::Value& display = root["display"];
-    if (!display.isMember("mode")) return true;
+    if (!display.isObject() || !display.isMember("mode")) return true;
 
-    return display["mode"].asString() != "modern_tv";
+    try {
+        return display["mode"].asString() != "modern_tv";
+    } catch (const std::exception&) {
+        return true;  // wrong-typed mode: same safe default as unreadable
+    }
 }
 
+// jsoncpp's as*()/isMember() THROW on a type mismatch ("bezel_index":"2",
+// "display":[...]). settings.json arrives from web-admin restores and
+// hand edits, and an escaped exception here crashed the kiosk before the
+// first frame — then again on every systemd restart, a black screen that
+// only SSH could fix. A file that cannot be read is moved aside (kept for
+// diagnosis, never overwritten by the next save) and the box boots on
+// defaults plus whatever fields were applied before the bad one.
 utils::Result<> SettingsPersistence::load_settings(AppState& state) {
+    try {
+        return load_settings_unguarded(state);
+    } catch (const std::exception& e) {
+        const std::string path = get_settings_path();
+        const std::string quarantine = path + ".corrupt";
+        std::error_code ec;
+        std::filesystem::rename(path, quarantine, ec);
+        LOG_ERROR("settings.json unreadable ({}); moved to {}{} — using defaults",
+                  e.what(), quarantine,
+                  ec ? " FAILED: " + ec.message() : std::string());
+        return utils::Result<>::fail(std::string("settings.json unreadable: ") + e.what());
+    }
+}
+
+utils::Result<> SettingsPersistence::load_settings_unguarded(AppState& state) {
     std::string path = get_settings_path();
 
     std::ifstream file(path);

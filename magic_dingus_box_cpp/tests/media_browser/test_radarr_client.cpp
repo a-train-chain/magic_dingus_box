@@ -89,6 +89,15 @@ public:
         last_body = body;
         return R"({"id":42})";
     }
+    // grab_release classifies from the transport result, so it goes
+    // through this seam rather than http_post.
+    HttpPostResult http_post_result(const std::string& path,
+                                    const std::string& body) override {
+        HttpPostResult r;
+        r.body = http_post(path, body);
+        r.http_code = 200;
+        return r;
+    }
     // Stubs to satisfy other virtuals if needed:
     std::string http_get(const std::string&) override { return ""; }
     long http_delete(const std::string&) override { return 200; }
@@ -102,8 +111,7 @@ TEST_CASE("RadarrClient::grab_release POSTs the release object verbatim",
     release["guid"]      = "magnet:?xt=urn:btih:abc";
     release["indexerId"] = 7;
     release["title"]     = "Inception 2010 1080p WEB-DL x264-GROUPA";
-    bool ok = r.grab_release(release);
-    REQUIRE(ok);
+    REQUIRE(r.grab_release(release) == mb::GrabOutcome::Grabbed);
     REQUIRE(r.last_method == "POST");
     REQUIRE(r.last_path == "/api/v3/release");
     // Body should contain the indexerId we passed.
@@ -320,4 +328,93 @@ TEST_CASE("Radarr add reports the metadata cause and never POSTs after retry exh
     CHECK(radarr.last_error().find("HTTP 503") != std::string::npos);
     CHECK(radarr.last_error().find("unrelated shared queue error") ==
           std::string::npos);
+}
+
+TEST_CASE("Radarr add metadata retry stops as soon as the caller cancels",
+          "[radarr][add][retry]") {
+    // Shutdown must not sit out the 45 s VPN-recovery window: the kiosk's
+    // TimeoutStopSec is 20 s and the screen destructor joins this worker.
+    RetryingAddRadarr radarr(/*success_after_ms=*/40000,
+                             /*retry_window_ms=*/45000);
+    int checks = 0;
+    auto cancel_after_two = [&checks, &radarr] {
+        ++checks;
+        return radarr.lookup_calls >= 2;
+    };
+
+    CHECK_FALSE(radarr.add_movie(/*tmdb_id=*/558, /*quality_profile_id=*/7,
+                                 /*monitor=*/true, cancel_after_two));
+    CHECK(radarr.lookup_calls == 2);
+    CHECK(radarr.fake_elapsed_ms <= 1000);
+    CHECK(radarr.post_calls == 0);
+    CHECK(checks >= 1);
+    CHECK(radarr.last_error().find("cancelled") != std::string::npos);
+}
+
+TEST_CASE("Radarr add: a never-true cancel predicate changes nothing",
+          "[radarr][add][retry]") {
+    RetryingAddRadarr radarr(/*success_after_ms=*/2000,
+                             /*retry_window_ms=*/45000);
+    REQUIRE(radarr.add_movie(558, 7, true, [] { return false; }));
+    CHECK(radarr.post_calls == 1);
+}
+
+// ---- grab_release: refused vs. "may have started" ----
+//
+// A manual grab whose POST times out may still have reached Radarr and
+// queued the download. Reporting that as "Grab failed" invited the user to
+// pick again — a double grab. The outcome is classified IN-BAND from the
+// transport result, never from the shared last_error() afterwards.
+namespace {
+class ScriptedPostRadarr : public mb::RadarrClient {
+public:
+    explicit ScriptedPostRadarr(HttpPostResult r)
+        : RadarrClient(Config{}), result_(std::move(r)) {}
+    std::string last_path;
+
+protected:
+    HttpPostResult http_post_result(const std::string& path,
+                                    const std::string&) override {
+        last_path = path;
+        return result_;
+    }
+
+private:
+    HttpPostResult result_;
+};
+
+mb::RadarrClient::HttpPostResult post_result(long code, bool never_sent,
+                                             std::string body = {}) {
+    mb::RadarrClient::HttpPostResult r;
+    r.http_code = code;
+    r.never_sent = never_sent;
+    r.body = std::move(body);
+    return r;
+}
+}  // namespace
+
+TEST_CASE("grab_release: a 2xx answer is Grabbed", "[radarr][grab]") {
+    ScriptedPostRadarr r(post_result(200, false, R"({"guid":"x"})"));
+    Json::Value rel;
+    rel["guid"] = "x";
+    CHECK(r.grab_release(rel) == mb::GrabOutcome::Grabbed);
+    CHECK(r.last_path == "/api/v3/release");
+}
+
+TEST_CASE("grab_release: an HTTP error is a definite refusal", "[radarr][grab]") {
+    ScriptedPostRadarr r(post_result(400, false, "rejected"));
+    CHECK(r.grab_release(Json::Value{}) == mb::GrabOutcome::Refused);
+}
+
+TEST_CASE("grab_release: a request that never left the box is a refusal",
+          "[radarr][grab]") {
+    // Connection refused / unresolvable host: Radarr cannot have acted.
+    ScriptedPostRadarr r(post_result(0, /*never_sent=*/true));
+    CHECK(r.grab_release(Json::Value{}) == mb::GrabOutcome::Refused);
+}
+
+TEST_CASE("grab_release: a timeout after sending is Unknown, never Refused",
+          "[radarr][grab]") {
+    ScriptedPostRadarr r(post_result(0, /*never_sent=*/false));
+    CHECK(r.grab_release(Json::Value{}) == mb::GrabOutcome::Unknown);
 }

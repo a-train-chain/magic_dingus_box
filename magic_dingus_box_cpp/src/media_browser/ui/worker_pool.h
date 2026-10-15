@@ -1,12 +1,32 @@
 #pragma once
 
 #include <atomic>
+#include <exception>
 #include <memory>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include <spdlog/spdlog.h>
+
 namespace media_browser::ui {
+
+// Last-resort guard for a worker thread's body: an exception escaping a
+// std::thread's function is std::terminate — the whole kiosk dies. The
+// clients already turn unexpected JSON into their normal failure values;
+// this catches anything else (bad_alloc, a future parser slip) and logs it.
+// Screens whose result flags must still publish on failure do that in
+// their own bodies; this only guarantees the process survives.
+template <typename Fn>
+void run_guarded(const char* what, Fn&& fn) noexcept {
+    try {
+        fn();
+    } catch (const std::exception& e) {
+        spdlog::error("[media_browser] worker '{}' threw: {}", what, e.what());
+    } catch (...) {
+        spdlog::error("[media_browser] worker '{}' threw", what);
+    }
+}
 
 // Fire-and-track worker pool for screen background fetches. Each worker
 // flips its done flag as its LAST act, so reap() joins only workers
@@ -27,7 +47,7 @@ public:
         workers_.push_back(Worker{
             done,
             std::thread([done, f = std::forward<Fn>(fn)]() mutable {
-                f();
+                run_guarded("pool", f);
                 done->store(true, std::memory_order_release);
             })});
     }

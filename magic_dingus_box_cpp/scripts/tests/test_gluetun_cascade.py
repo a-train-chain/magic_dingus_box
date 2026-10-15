@@ -38,20 +38,42 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 CASCADE = SCRIPTS_DIR / "gluetun_cascade_restart.sh"
 PAUSE = SCRIPTS_DIR / "playback_services_pause.sh"
 
-# Must match both scripts and admin.py PLAYBACK_PAUSE_MARKER.
+# Must match both scripts and admin_media_browser.py PLAYBACK_PAUSE_MARKER.
 MARKER = Path("/tmp/mdb_playback_services_paused")
 
 DOCKER_STUB = """#!/bin/bash
 echo "$@" >> "$DOCKER_LOG"
 case "$1" in
     events)
-        printf '2026-07-31T00:00:00 start\\n'
+        printf '%s\\n' "${EVENTS_LINE:-2026-07-31T00:00:00 start}"
         ;;
     inspect)
-        # Pause script: bare `inspect NAME` (existence) and
-        # `inspect -f {{.State.Running}} NAME` (health). Cascade's
-        # unhealthy branch never runs in these tests.
-        echo "${INSPECT_RUNNING:-true}"
+        # Convergence pass: `inspect NAME --format '{{.State.Status}} ...'`
+        # answers from STATE_<name> ("running healthy" by default; the
+        # literal "absent" makes inspect fail like a missing container).
+        # Everything else — the pause script's bare `inspect NAME` and
+        # `inspect -f {{.State.Running}} NAME`, and gluetun's health — is
+        # INSPECT_RUNNING.
+        name=""; fmt=""
+        for a in "$@"; do
+            case "$a" in
+                mdb_*) name="$a" ;;
+                *State.Status*) fmt=status ;;
+            esac
+        done
+        if [ "$fmt" = status ]; then
+            var="STATE_${name}"
+            val="${!var:-running healthy}"
+            [ "$val" = absent ] && exit 1
+            echo "$val"
+        else
+            echo "${INSPECT_RUNNING:-true}"
+        fi
+        ;;
+    exec)
+        # The watcher's in-tunnel traffic probe (wget of Cloudflare's
+        # trace page inside gluetun). Empty output = no traffic.
+        [ -n "${EXEC_OUT:-}" ] && printf '%b\\n' "$EXEC_OUT"
         ;;
 esac
 exit 0
@@ -80,7 +102,16 @@ class StubDockerTestCase(unittest.TestCase):
             DOCKER_LOG=str(self.log),
             COMPOSE_DIR=str(self.compose_dir),
             STABILIZE_SLEEP="0",
+            # The periodic convergence loop would outlive the script and
+            # hold the captured pipes open; the healthy-event branch runs
+            # the same pass synchronously and is what these tests drive.
+            CONVERGE_INTERVAL_S="0",
+            CASCADE_STATE_DIR=str(tmp / "cascade_state"),
+            MDB_COMPOSE_LOCK=str(tmp / "compose.lock"),
+            VPN_EVENTS_FILE=str(tmp / "vpn" / "vpn_events.log"),
         )
+        self.events_file = tmp / "vpn" / "vpn_events.log"
+        self.state_dir = tmp / "cascade_state"
         MARKER.unlink(missing_ok=True)
         self.addCleanup(lambda: MARKER.unlink(missing_ok=True))
         self.addCleanup(self._tmp.cleanup)
@@ -196,6 +227,196 @@ class CascadeBlindStartTests(StubDockerTestCase):
         self.assertFalse(
             [l for l in self.log_lines() if l.startswith("restart ")],
             self.log_lines())
+
+
+class CascadeConvergeTests(StubDockerTestCase):
+    # Pre-2026-10 the healthy branch only logged, so a dependent that was
+    # removed, left "Created" by a boot whose `compose up` was killed by
+    # the unit timeout, or wedged unhealthy stayed down until a reboot.
+    HEALTHY = {"EVENTS_LINE": "2026-10-03T00:00:00 health_status: healthy",
+               "INSPECT_RUNNING": "healthy"}
+
+    def setUp(self):
+        super().setUp()
+        (self.compose_dir / ".env").write_text("X=1\n")
+
+    def converge(self, **states):
+        env = dict(self.HEALTHY)
+        env.update({f"STATE_mdb_{k}": v for k, v in states.items()})
+        result = self.run_script(CASCADE, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def test_recovery_clears_indexer_cooldowns(self):
+        # 2026-10-04: the tunnel dropped every ~10 min; each outage put the
+        # *arr indexers into cooldowns (up to 24 h) that only the boot-time
+        # oneshot cleared, so downloads stalled long after the tunnel was
+        # back. A healthy event now runs the cooldown clear.
+        marker = Path(self._tmp.name) / "cleared"
+        stub = Path(self._tmp.name) / "clear_stub.sh"
+        stub.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        stub.chmod(0o755)
+        env = dict(self.HEALTHY, COOLDOWN_CLEAR_CMD=str(stub),
+                   COOLDOWN_CLEAR_DELAY_S="0", COOLDOWN_CLEAR_SYNC="1")
+        result = self.run_script(CASCADE, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists(), result.stdout)
+
+    def test_start_event_does_not_clear_cooldowns(self):
+        marker = Path(self._tmp.name) / "cleared"
+        stub = Path(self._tmp.name) / "clear_stub.sh"
+        stub.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        stub.chmod(0o755)
+        env = {"COOLDOWN_CLEAR_CMD": str(stub), "COOLDOWN_CLEAR_DELAY_S": "0",
+               "COOLDOWN_CLEAR_SYNC": "1"}
+        self.run_script(CASCADE, extra_env=env)
+        self.assertFalse(marker.exists())
+
+    def test_missing_clear_helper_is_harmless(self):
+        env = dict(self.HEALTHY, COOLDOWN_CLEAR_CMD="/nonexistent/clear.py",
+                   COOLDOWN_CLEAR_DELAY_S="0", COOLDOWN_CLEAR_SYNC="1")
+        result = self.run_script(CASCADE, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_created_dependent_is_brought_up(self):
+        self.converge(radarr="created", byparr="absent")
+        ups = [l for l in self.compose_lines() if " up -d " in l]
+        self.assertEqual(len(ups), 1, self.compose_lines())
+        self.assertTrue(ups[0].endswith("up -d radarr byparr"), ups)
+
+    def test_all_running_is_a_no_op(self):
+        self.converge()
+        self.assertEqual(self.compose_lines(), [])
+        self.assertFalse(
+            [l for l in self.log_lines() if l.startswith("restart ")])
+
+    def test_marker_keeps_paused_containers_down(self):
+        MARKER.write_text("2026-10-03T00:00:00Z\n")
+        self.converge(radarr="exited", sonarr="exited",
+                      prowlarr="exited", byparr="exited",
+                      qbittorrent="exited")
+        ups = [l for l in self.compose_lines() if " up -d " in l]
+        self.assertEqual(len(ups), 1, self.compose_lines())
+        self.assertTrue(ups[0].endswith("up -d qbittorrent"), ups)
+
+    def test_newly_unhealthy_only_starts_the_clock(self):
+        self.converge(radarr="running unhealthy")
+        self.assertTrue((self.state_dir / "unhealthy_since.radarr").exists())
+        self.assertNotIn("restart mdb_radarr", self.log_lines())
+
+    def test_confirmed_unhealthy_is_restarted(self):
+        self.state_dir.mkdir()
+        (self.state_dir / "unhealthy_since.byparr").write_text("0\n")
+        self.converge(byparr="running unhealthy")
+        self.assertIn("restart mdb_byparr", self.log_lines())
+        self.assertFalse((self.state_dir / "unhealthy_since.byparr").exists())
+
+    def test_recovered_clears_the_clock(self):
+        self.state_dir.mkdir()
+        (self.state_dir / "unhealthy_since.radarr").write_text("0\n")
+        self.converge(radarr="running healthy")
+        self.assertFalse((self.state_dir / "unhealthy_since.radarr").exists())
+        self.assertNotIn("restart mdb_radarr", self.log_lines())
+
+    def test_paused_unhealthy_is_never_restarted(self):
+        MARKER.write_text("2026-10-03T00:00:00Z\n")
+        self.state_dir.mkdir()
+        (self.state_dir / "unhealthy_since.radarr").write_text("0\n")
+        self.converge(radarr="running unhealthy")
+        self.assertNotIn("restart mdb_radarr", self.log_lines())
+
+    def test_no_action_while_gluetun_unhealthy(self):
+        env = {"EVENTS_LINE": "2026-10-03T00:00:00 health_status: healthy",
+               "INSPECT_RUNNING": "starting", "STATE_mdb_radarr": "exited"}
+        result = self.run_script(CASCADE, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.compose_lines(), [])
+
+    def test_reset_stack_without_env_is_left_alone(self):
+        (self.compose_dir / ".env").unlink()
+        self.converge(radarr="absent")
+        self.assertEqual(self.compose_lines(), [])
+
+
+class VpnEventLogTests(StubDockerTestCase):
+    # ~170 tunnel drops over 2026-10-03/04 were only visible by digging
+    # through the journal. The watcher now appends each transition to a
+    # small log that verify_box.sh summarizes for the Box Health card.
+    def events(self):
+        deadline = time.time() + 3
+        while time.time() < deadline:   # the startup check is backgrounded
+            if self.events_file.exists():
+                break
+            time.sleep(0.05)
+        time.sleep(0.2)
+        if not self.events_file.exists():
+            return []
+        return [l.split() for l in self.events_file.read_text().splitlines()]
+
+    def test_start_records_watch(self):
+        result = self.run_script(CASCADE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("watch", [e[1] for e in self.events()])
+
+    def test_unhealthy_event_records_docker_time_and_tunnel_cause(self):
+        result = self.run_script(CASCADE, extra_env={
+            "EVENTS_LINE": "1800000000 health_status: unhealthy",
+            "UNHEALTHY_CONFIRM_S": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["1800000000", "unhealthy", "tunnel"], self.events())
+        self.assertIn("no traffic through the tunnel", result.stdout)
+
+    def test_unhealthy_with_working_tunnel_is_port_forwarding(self):
+        # 2026-10-05: all 9 full-stack restarts were Proton's NAT-PMP
+        # gateway dropping the forwarded port while the tunnel itself
+        # passed traffic the whole time.
+        result = self.run_script(CASCADE, extra_env={
+            "EVENTS_LINE": "1800000000 health_status: unhealthy",
+            "UNHEALTHY_CONFIRM_S": "0",
+            "EXEC_OUT": "fl=1\\nip=203.0.113.9\\nloc=NL"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["1800000000", "unhealthy", "portfwd"], self.events())
+        self.assertIn("forwarded port was lost", result.stdout)
+
+    def test_healthy_event_records(self):
+        (self.compose_dir / ".env").write_text("X=1\n")
+        result = self.run_script(CASCADE, extra_env={
+            "EVENTS_LINE": "1800000300 health_status: healthy",
+            "INSPECT_RUNNING": "healthy",
+            "COOLDOWN_CLEAR_CMD": "/nonexistent"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["1800000300", "healthy"], self.events())
+
+    def test_confirmed_unhealthy_records_restart(self):
+        result = self.run_script(CASCADE, extra_env={
+            "EVENTS_LINE": "1800000000 health_status: unhealthy",
+            "INSPECT_RUNNING": "unhealthy",
+            "UNHEALTHY_CONFIRM_S": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("restart", [e[1] for e in self.events()])
+
+    def test_log_is_bounded_by_age_and_lines(self):
+        self.events_file.parent.mkdir()
+        recent = int(time.time()) - 60
+        old = [f"{1000 + i} healthy" for i in range(5)]            # decades old
+        fresh = [f"{recent} healthy" for _ in range(30)]
+        self.events_file.write_text("\n".join(old + fresh) + "\n")
+        result = self.run_script(CASCADE, extra_env={"VPN_EVENTS_MAX_LINES": "10"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ev = self.events()
+        self.assertTrue(all(int(e[0]) >= recent for e in ev), ev)
+        self.assertLessEqual(len(ev), 10)
+        self.assertIn("watch", [e[1] for e in ev])
+
+    def test_unwritable_log_never_breaks_the_watcher(self):
+        blocker = Path(self._tmp.name) / "not_a_dir"
+        blocker.write_text("")
+        result = self.run_script(CASCADE, extra_env={
+            "VPN_EVENTS_FILE": str(blocker / "vpn_events.log"),
+            "EVENTS_LINE": "1800000000 health_status: unhealthy",
+            "UNHEALTHY_CONFIRM_S": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("recovered to", result.stdout)
 
 
 if __name__ == "__main__":

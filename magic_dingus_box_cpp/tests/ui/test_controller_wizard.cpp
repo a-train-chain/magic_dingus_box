@@ -675,10 +675,16 @@ TEST_CASE("can_save follows capture and redo", "[wizard][can_save]") {
 
     // Capture the whole required prefix (d-pad + Cross is steps 0..4)...
     for (uint16_t i = 0; i < 5; ++i) press_button(w, static_cast<uint16_t>(kBtn0 + i));
-    CHECK_FALSE(w.can_save());          // START still outstanding
-    CHECK(w.missing_required_line() == "Still needed: START");
+    CHECK_FALSE(w.can_save());          // START + SELECT still outstanding
+    // SELECT is required because it enables the exit gesture
+    // (Select+Start): a profile without it could never leave a game.
+    CHECK(w.missing_required_line() == "Still needed: START, SELECT");
 
-    // ...skip to START (step 13) and capture it.
+    // ...skip to SELECT (step 12), capture it, then START (step 13).
+    while (w.step_index() < 12) w.on_action(act(InputAction::PLAY_PAUSE));
+    press_button(w, kBtn0 + 12);
+    CHECK_FALSE(w.can_save());
+    CHECK(w.missing_required_line() == "Still needed: START");
     while (w.step_index() < 13) w.on_action(act(InputAction::PLAY_PAUSE));
     press_button(w, kBtn0 + 13);
     CHECK(w.can_save());

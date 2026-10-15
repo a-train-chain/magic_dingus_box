@@ -19,6 +19,11 @@ PlaybackStallWatchdog::Action PlaybackStallWatchdog::update(bool expect_playing,
     // Any movement at all — including backwards, which is a seek or a loop
     // back to the top of a trimmed clip — means the pipeline is alive.
     if (!armed_ || std::fabs(position_sec - last_position_) > kMovedEpsilon) {
+        if (armed_) {
+            // Genuine movement against a baseline: whatever recovery
+            // attempts came before worked, so the escalation count restarts.
+            recoveries_without_progress_ = 0;
+        }
         armed_ = true;
         last_position_ = position_sec;
         last_movement_sec_ = now_sec;
@@ -36,6 +41,15 @@ PlaybackStallWatchdog::Action PlaybackStallWatchdog::update(bool expect_playing,
         return Action::None;
     }
 
+    if (recoveries_without_progress_ >= kMaxRecoveriesBeforeAdvance) {
+        // play() has been tried enough times on this item. Re-arm from
+        // scratch so the NEXT item (or a caller that could not advance and
+        // retried instead) gets a full stall window and fresh attempts.
+        reset();
+        return Action::Advance;
+    }
+
+    ++recoveries_without_progress_;
     ever_recovered_ = true;
     last_recovery_sec_ = now_sec;
     return Action::Recover;
@@ -45,6 +59,7 @@ void PlaybackStallWatchdog::reset() {
     armed_ = false;
     ever_recovered_ = false;
     last_recovery_sec_ = 0.0;
+    recoveries_without_progress_ = 0;
 }
 
 }  // namespace app

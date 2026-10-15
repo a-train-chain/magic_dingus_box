@@ -34,6 +34,9 @@ ENV_FILE="${SERVICES_DIR}/.env"
 # scripts/data/prowlarr_indexers.json — keep in sync if that fixture
 # changes). Listed here explicitly so this script catches drift in
 # either direction (missing fixture entries OR sync-skipped indexers).
+# Reference copy only: check_radarr_indexers() passes the same five names
+# to its Python block inline — change both together.
+# shellcheck disable=SC2034  # reference list, see above
 EXPECTED_ENABLED_INDEXERS=(
     "LimeTorrents"
     "The Pirate Bay"
@@ -123,8 +126,10 @@ require_env() {
         echo "ERROR: ${ENV_FILE} not found. Has setup_services.sh been run?"
         exit 2
     fi
-    # shellcheck disable=SC1090
-    set -a; . "${ENV_FILE}"; set +a
+    set -a
+    # shellcheck disable=SC1090  # per-box .env; its path is only known at runtime
+    . "${ENV_FILE}"
+    set +a
     : "${RADARR_API_KEY:?RADARR_API_KEY missing from .env}"
     : "${PROWLARR_API_KEY:?PROWLARR_API_KEY missing from .env}"
     : "${QBITTORRENT_ADMIN_PASSWORD:?QBITTORRENT_ADMIN_PASSWORD missing from .env}"
@@ -147,7 +152,7 @@ require_env() {
 check_radarr_indexers() {
     header "Radarr indexers"
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${RADARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${RADARR_API_KEY}" \
         "http://localhost:7878/api/v3/indexer" 2>/dev/null) || {
         fail "Radarr /api/v3/indexer unreachable"
         return
@@ -197,7 +202,7 @@ PYEOF
 check_radarr_download_client() {
     header "Radarr → qBittorrent download client"
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${RADARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${RADARR_API_KEY}" \
         "http://localhost:7878/api/v3/downloadclient" 2>/dev/null) || {
         fail "Radarr /api/v3/downloadclient unreachable"
         return
@@ -235,7 +240,7 @@ PYEOF
 check_radarr_quality_profile() {
     header "Radarr quality profile (Any → ${EXPECTED_CUTOFF_QUALITY} cutoff)"
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${RADARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${RADARR_API_KEY}" \
         "http://localhost:7878/api/v3/qualityprofile" 2>/dev/null) || {
         fail "Radarr /api/v3/qualityprofile unreachable"
         return
@@ -316,7 +321,7 @@ PYEOF
 check_radarr_custom_formats() {
     header "Radarr Custom Formats"
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${RADARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${RADARR_API_KEY}" \
         "http://localhost:7878/api/v3/customformat" 2>/dev/null) || {
         fail "Radarr /api/v3/customformat unreachable"
         return
@@ -356,7 +361,7 @@ check_radarr_root_folder() {
         return
     fi
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${RADARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${RADARR_API_KEY}" \
         "http://localhost:7878/api/v3/rootfolder" 2>/dev/null) || {
         fail "Radarr /api/v3/rootfolder unreachable"
         return
@@ -378,7 +383,7 @@ check_sonarr_root_folder() {
         return
     fi
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/rootfolder" 2>/dev/null) || {
         fail "Sonarr /api/v3/rootfolder unreachable"
         return
@@ -401,7 +406,7 @@ check_sonarr_indexers() {
         return
     fi
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/indexer" 2>/dev/null) || {
         fail "Sonarr /api/v3/indexer unreachable"
         return
@@ -446,7 +451,7 @@ check_sonarr_download_client() {
         return
     fi
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/downloadclient" 2>/dev/null) || {
         fail "Sonarr /api/v3/downloadclient unreachable"
         return
@@ -484,7 +489,7 @@ check_sonarr_quality_profile() {
         return
     fi
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/qualityprofile" 2>/dev/null) || {
         fail "Sonarr /api/v3/qualityprofile unreachable"
         return
@@ -541,7 +546,7 @@ check_sonarr_custom_formats() {
         return
     fi
     local response
-    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+    response=$(curl -fsS --max-time 15 -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/customformat" 2>/dev/null) || {
         fail "Sonarr /api/v3/customformat unreachable"
         return
@@ -587,7 +592,7 @@ check_qbit_auth() {
 
     # Login with correct password — must succeed
     local login_ok=0
-    if curl -fsS -c "${cookie_jar}" -X POST \
+    if curl -fsS --max-time 15 -c "${cookie_jar}" -X POST \
         "http://localhost:8080/api/v2/auth/login" \
         -d "username=admin" \
         --data-urlencode "password=${QBITTORRENT_ADMIN_PASSWORD}" 2>/dev/null \
@@ -605,7 +610,7 @@ check_qbit_auth() {
     # We hit setPreferences with no auth cookie; if bypass were on, this
     # would return 200 even with no cookie.
     local bypass_disabled=0
-    if ! curl -fsS -X POST \
+    if ! curl -fsS --max-time 15 -X POST \
         "http://localhost:8080/api/v2/app/setPreferences" \
         --data-urlencode 'json={"web_ui_username":"admin"}' \
         >/dev/null 2>&1; then
@@ -641,8 +646,13 @@ check_live_search() {
     # the results. If our indexer chain is healthy, a popular query should
     # return MANY releases. <10 means most indexers are down or the
     # Newznab proxy URLs in the DB-injected indexers are wrong.
+    # 120 s bound (every other call here gets 15 s): Prowlarr answers only
+    # after its slowest indexer, and a Cloudflare-tagged one waits on a
+    # Byparr challenge solve. Bounded at all because a wedged *arr accepts
+    # the socket and never answers — without --max-time the weekly
+    # smoke-test unit hung forever (its TimeoutStartSec=300 is the backstop).
     local response
-    response=$(curl -fsS -G -H "X-Api-Key: ${PROWLARR_API_KEY}" \
+    response=$(curl -fsS --max-time 120 -G -H "X-Api-Key: ${PROWLARR_API_KEY}" \
         --data-urlencode "query=${SEARCH_QUERY}" \
         --data-urlencode "type=search" \
         "http://localhost:9696/api/v1/search" 2>/dev/null) || {

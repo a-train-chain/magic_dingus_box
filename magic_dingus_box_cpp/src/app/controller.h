@@ -27,11 +27,12 @@ public:
     GameSessionHooks* host_hooks() const { return hooks_; }
 
     // RetroArch session bracketing hooks — installed once from main().
-    // begin runs at the top of load_playlist_item's emulated_game branch;
-    // end is guaranteed to run when the branch exits, on every path
-    // (normal return, validation early-return, exception). They carry the
+    // begin runs in load_playlist_item's emulated_game branch right AFTER
+    // validate_game_launch passes (a launch that can't happen must not
+    // quiet the media stack); end is guaranteed to run once begin has, on
+    // every path (normal return, launch failure, exception). They carry the
     // side effects that must wrap EVERY game session — systemd watchdog
-    // disable/re-enable, phone-remote status writes, GPIO restart-button
+    // disable/re-enable around the teardown and restore phases, phone-remote status writes, GPIO restart-button
     // polling, media-stack quiet mode — so all five launch routes get
     // them (main-UI select on a mixed playlist, NEXT/PREV, auto-advance,
     // Master Shuffle, Settings game browser), not just the Settings
@@ -40,6 +41,13 @@ public:
                                 std::function<void()> end) {
         game_session_begin_ = std::move(begin);
         game_session_end_   = std::move(end);
+    }
+
+    // systemd watchdog control for the supervised play phase of a game
+    // (see retroarch::LaunchOptions::watchdog). Installed once from main();
+    // empty on dev machines / without libsystemd.
+    void set_session_watchdog(std::function<void(retroarch::SessionWatchdog)> fn) {
+        session_watchdog_ = std::move(fn);
     }
     
     // Playback control
@@ -79,6 +87,12 @@ public:
     
     // Play a random video from any playlist (Master Shuffle)
     void play_random_global_video(AppState& state, const std::string& playlist_directory, int depth = 0);
+    // Master Shuffle NEXT / auto-advance / failed-item skip: record the item
+    // being left in the PREV history, then play_random_global_video.
+    void master_shuffle_advance(AppState& state, const std::string& playlist_directory);
+    // Master Shuffle PREV: back to the most recent still-valid history
+    // entry, or a random pick when there is none (app/shuffle_queue.h).
+    void master_shuffle_back(AppState& state, const std::string& playlist_directory);
     
     // Audio recovery
     // Polled each main-loop tick. Reads data/seek_request.json if present,
@@ -118,7 +132,18 @@ public:
         kiosk_mode_h_ = h;
     }
 
+    // True once the kiosk has lost the display for good: DRM master could
+    // not be re-acquired after a game (5 retries). Nothing can be drawn and
+    // no in-process retry is known to recover, but the render loop would
+    // keep pinging the systemd watchdog in front of a black screen forever.
+    // main.cpp must check this after every load_playlist_item() and exit
+    // NON-ZERO so Restart=on-failure brings up a fresh kiosk that opens the
+    // display from scratch. Sticky: never cleared.
+    bool display_lost() const { return display_lost_; }
+
 private:
+    bool display_lost_ = false;
+
     // Poll until playback starts, up to max_ms. Ticks the player's state
     // machine (bus drain + non-blocking state poll) and the optional
     // progress callback every ~16ms, returning as soon as is_playing()
@@ -131,6 +156,7 @@ private:
     retroarch::RetroArchLauncher retroarch_launcher_;
     std::function<void(const app::PlaylistItem&)> game_session_begin_;
     std::function<void()> game_session_end_;
+    std::function<void(retroarch::SessionWatchdog)> session_watchdog_;
 
     // Mode to restore after RetroArch exits. 0 = never set (fall back to
     // the legacy 640x480 floor).
@@ -159,11 +185,7 @@ private:
     // to be skipped. See controller.cpp::update_state.
     int video_active_negative_count_ = 0;
 
-    // Shuffle queue helpers
-    void generate_shuffle_queue(AppState& state, int playlist_size);
-    void generate_master_shuffle_queue(AppState& state);
-    int get_next_shuffled_index(AppState& state, int playlist_size);
-    std::pair<int, int> get_next_master_shuffled_item(AppState& state);
+    // Shuffle ordering lives in app/shuffle_queue.h (pure, tested).
 };
 
 } // namespace app

@@ -114,10 +114,13 @@ set(PLATFORM_SOURCES
     src/platform/drm_display.cpp
     src/platform/gbm_context.cpp
     src/platform/egl_context.cpp
+    src/platform/frame_presenter.cpp
     src/platform/input_manager.cpp
     src/platform/gpio_manager.cpp
     src/platform/platform_profile.cpp
     src/platform/pi_game_session_hooks.cpp
+    src/platform/udev_wake.cpp
+    src/platform/input_mapping.cpp
 )
 
 # Media Browser unlock sequence detector — compiled into the kiosk binary
@@ -133,7 +136,17 @@ set(VIDEO_SOURCES
 )
 
 set(UI_SOURCES
+    # ui::Renderer is implemented across these TUs by responsibility
+    # (core / shaders / text / main menu / settings / Media Browser /
+    # CRT); shared private bits live in src/ui/renderer_internal.h.
     src/ui/renderer.cpp
+    src/ui/renderer_shaders.cpp
+    src/ui/renderer_text.cpp
+    src/ui/renderer_main_menu.cpp
+    src/ui/renderer_settings.cpp
+    src/ui/renderer_mb.cpp
+    src/ui/renderer_crt.cpp
+    src/ui/renderer_batch.cpp
     src/ui/controller_wizard.cpp
     src/ui/controller_wizard_renderer.cpp
     src/ui/pairing_screen.cpp
@@ -152,7 +165,9 @@ list(APPEND UI_SOURCES src/ui/toast.cpp)
 
 set(APP_SOURCES
     src/app/game_launch_recovery.cpp
+    src/app/game_launch_validation.cpp
     src/app/game_quiet_mode.cpp
+    src/app/movie_quiet_mode.cpp
     src/app/playlist_loader.cpp
     src/app/rom_title.cpp
     src/app/controller.cpp
@@ -163,18 +178,48 @@ set(APP_SOURCES
     src/app/status_writer.cpp
     src/app/status_snapshot.cpp
     src/app/playback_stall_watchdog.cpp
+    src/app/playback_reset.cpp
+    src/app/auto_advance.cpp
+    src/app/redraw_gate.cpp
+    src/app/post_game_gate.cpp
+    src/app/audio_router.cpp
+    src/app/shuffle_queue.cpp
+    src/app/playlist_cursor.cpp
+    src/app/playlist_playback.cpp
+    src/app/playlist_reload.cpp
+    src/app/game_handoff.cpp
+    # GL/DRM half of the game hand-off: kiosk-only, in no test target.
+    src/app/game_handoff_kiosk.cpp
+    # Boot intro video: pure decisions (unit-tested) + the GL/GStreamer/LED
+    # half (kiosk-only, in no test target).
+    src/app/intro_sequence.cpp
+    src/app/intro_sequence_kiosk.cpp
+    # Settings-menu input dispatch: pure decisions (unit-tested) + the
+    # dispatcher over the menu, keyboard and game hand-off (kiosk-only).
+    src/app/settings_input_logic.cpp
+    src/app/settings_input.cpp
 )
 
 set(UTILS_SOURCES
     src/utils/config.cpp
     src/utils/path_resolver.cpp
+    src/utils/services_env.cpp
     src/utils/stb_image_impl.cpp
     src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
+    src/utils/subprocess.cpp
+    src/utils/bmp_writer.cpp
+    src/utils/screenshot_store.cpp
+)
+
+# Kiosk-only debug hooks (GL readback). See debug/screenshot_capture.h.
+set(DEBUG_SOURCES
+    src/debug/screenshot_capture.cpp
 )
 
 set(RETROARCH_SOURCES
     src/retroarch/launch_contract.cpp
+    src/retroarch/game_session.cpp
     src/retroarch/retroarch_launcher.cpp
     src/retroarch/controller_detector.cpp
     src/retroarch/controller_mapping.cpp
@@ -201,6 +246,7 @@ set(RETROARCH_SOURCES
 # bind_token(), so joydev_index.cpp must ship to both targets too now.)
 set(RETROARCH_TESTABLE_SOURCES
     src/retroarch/launch_contract.cpp
+    src/retroarch/game_session.cpp
     src/retroarch/controller_detector.cpp
     src/retroarch/controller_mapping.cpp
     src/retroarch/logical_controls.cpp
@@ -217,6 +263,7 @@ set(ALL_SOURCES
     ${APP_SOURCES}
     ${UTILS_SOURCES}
     ${RETROARCH_SOURCES}
+    ${DEBUG_SOURCES}
 )
 
 if(BUILD_KIOSK)
@@ -247,6 +294,18 @@ if(BUILD_KIOSK)
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/mb_ui_utils.cpp
+            # Post-playback "services ready" gate + the movie Remove sequence.
+            # Renderer-free, so both are ALSO in MEDIA_BROWSER_SOURCES and
+            # unit-tested; the screens call into them, so the kiosk needs its
+            # own copies here (same dual-list arrangement as library_view).
+            src/media_browser/service_gate.cpp
+            src/media_browser/movie_remove.cpp
+            # SeriesDetail's Delete Season N sequence — same dual-list
+            # arrangement as movie_remove.cpp.
+            src/media_browser/season_delete.cpp
+            # SeriesDetail's other mutation-worker bodies (Download/Add
+            # Season N, Whole series, Remove) — same dual-list arrangement.
+            src/media_browser/series_mutations.cpp
             # Renderer-free, so it is ALSO in MEDIA_BROWSER_SOURCES and gets
             # unit-tested — but library_screen.cpp calls into it, so the kiosk
             # binary needs its own copy here or the link fails on an undefined
@@ -275,6 +334,16 @@ if(BUILD_KIOSK)
             src/media_browser/ui/mb_exit_modal.cpp
             src/media_browser/ui/stall_prompt_modal.cpp
             src/media_browser/ui/playback_overlay.cpp
+            # The kiosk side of the Media Browser: screens, dispatcher,
+            # render block and watch-state checkpoints, driven from
+            # main.cpp's frame loop. GL/EGL-dependent, so kiosk-only; its
+            # hand-off table (ui/mb_transition.h) is header-only and
+            # unit-tested in test_media_browser_unit.
+            src/media_browser/mb_host.cpp
+            # Service-client setup (Radarr/Sonarr/TMDB/Prowlarr/qBit, the VPN
+            # monitor start, the qBit alt-limit bootstrap). Renderer-free, so
+            # it is ALSO in MEDIA_BROWSER_TEST_SOURCES and unit-tested.
+            src/media_browser/mb_services.cpp
         )
         # libcurl is required by radarr_client.cpp.
         pkg_check_modules(CURL REQUIRED libcurl)
@@ -439,6 +508,10 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/prowlarr/prowlarr_client.cpp
         src/media_browser/qbittorrent/qbittorrent_client.cpp
         src/media_browser/qbittorrent/download_watchdog.cpp
+        src/media_browser/service_gate.cpp
+        src/media_browser/movie_remove.cpp
+        src/media_browser/season_delete.cpp
+        src/media_browser/series_mutations.cpp
         src/platform/sequence_detector.cpp
         # Pure UI helpers shared by every Marquee screen. Deliberately has no
         # ::ui::Renderer dependency (Renderer pulls in GLES, which does not
@@ -486,6 +559,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_filter_rows.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_series_detail_logic.cpp
+        tests/media_browser/test_season_choice.cpp
         tests/media_browser/test_episode_logic.cpp
         tests/media_browser/test_still_watching.cpp
         tests/media_browser/test_queue_groups.cpp
@@ -496,18 +570,39 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_sonarr_parsers.cpp
         tests/media_browser/test_sonarr_client.cpp
         tests/media_browser/test_artwork_cache.cpp
+        tests/media_browser/test_artwork_sizing.cpp
         tests/media_browser/test_prowlarr_client.cpp
         tests/media_browser/test_release_picker.cpp
         tests/media_browser/test_download_watchdog.cpp
         tests/media_browser/test_qbit_alt_speed.cpp
         tests/media_browser/test_vpn_health_monitor.cpp
         tests/media_browser/test_mb_ui_utils.cpp
+        tests/media_browser/test_tmdb_image.cpp
         tests/media_browser/test_library_view.cpp
         tests/media_browser/test_queue_screen.cpp
         tests/media_browser/test_mb_entry_gate.cpp
+        tests/media_browser/test_mb_transition.cpp
+        tests/media_browser/test_json_shapes.cpp
+        tests/media_browser/test_service_gate.cpp
+        tests/media_browser/test_movie_remove.cpp
+        tests/media_browser/test_season_delete.cpp
+        tests/media_browser/test_series_mutations.cpp
+        tests/media_browser/test_series_detail_view.cpp
+        tests/media_browser/test_detail_logic.cpp
+        tests/media_browser/test_browse_view.cpp
+        tests/media_browser/test_queue_view.cpp
+        tests/media_browser/test_playback_view.cpp
+        tests/media_browser/test_mb_services.cpp
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
+        # main()'s service-client setup (also in KIOSK_MEDIA_BROWSER_SOURCES).
+        # Test-list only, like vpn_health_monitor.cpp which it starts: the
+        # test_media_browser CLI links MEDIA_BROWSER_SOURCES without the
+        # monitor. Needs the services/.env reader, which the kiosk gets from
+        # UTILS_SOURCES.
+        src/media_browser/mb_services.cpp
+        src/utils/services_env.cpp
         # Renderer-free, jsoncpp-only mapping of the four per-mode filter sets
         # to/from settings.json. Lives in APP_SOURCES for the kiosk; listed
         # here so the legacy-key migration is unit-tested (BUILD_KIOSK=OFF
@@ -619,11 +714,25 @@ set(MDB_CORE_SOURCES
     src/app/status_writer.cpp
     src/app/status_snapshot.cpp
     src/app/playback_stall_watchdog.cpp
+    # controller.cpp's pure decisions, split out of it on main (2026-09/10).
+    src/app/game_launch_validation.cpp
+    src/app/playback_reset.cpp
+    src/app/auto_advance.cpp
+    src/app/playlist_cursor.cpp
+    src/app/shuffle_queue.cpp
+    # AudioSettings::apply_output (moved out of app_state.h on main).
+    src/app/audio_router.cpp
     src/utils/config.cpp
     src/utils/path_resolver.cpp
     src/utils/stb_image_impl.cpp
     src/utils/time_format.cpp
+    src/utils/subprocess.cpp
+    # settings_persistence reads services/.env through it.
+    src/utils/services_env.cpp
     src/platform/platform_profile.cpp
+    # retroarch_launcher's pad enumeration skips virtual devices with it;
+    # std::filesystem + utils::subprocess only (no libudev).
+    src/platform/udev_wake.cpp
     src/ui/virtual_keyboard.cpp
     src/ui/pairing_screen.cpp
     ${RETROARCH_SOURCES}
@@ -705,7 +814,16 @@ if(RETROARCH_TEST_SOURCES)
     add_executable(test_retroarch_unit
         ${RETROARCH_TEST_SOURCES}
         src/app/game_launch_recovery.cpp
+        # game_launch_validation resolves ROMs through the kiosk's real
+        # path resolver, hence path_resolver.cpp.
+        src/app/game_launch_validation.cpp
+        src/utils/path_resolver.cpp
         src/app/game_quiet_mode.cpp
+        src/app/movie_quiet_mode.cpp
+        # main.cpp's game-session bracketing, quiet-mode actions and
+        # torrent resume recovery (app/game_handoff.h).
+        src/app/game_handoff.cpp
+        src/app/playback_reset.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/utils/config.cpp
     )
@@ -749,6 +867,12 @@ if(UI_TEST_SOURCES)
         src/utils/config.cpp
         # controller_wizard.cpp stamps captured_at through this.
         src/utils/time_format.cpp
+        # settings_menu.cpp's open() re-probes WIREGUARD_PRIVATE_KEY.
+        src/utils/services_env.cpp
+        # wifi_manager.cpp runs nmcli through it.
+        src/utils/subprocess.cpp
+        # settings_menu.cpp's Audio Output row calls cycle_output().
+        src/app/audio_router.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -770,6 +894,38 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         ${APP_TEST_SOURCES}
         src/app/rom_title.cpp
         src/app/playback_stall_watchdog.cpp
+        # stop_to_menu + auto-advance decisions: main.cpp/controller.cpp are
+        # in no test target, so their end-of-item logic lives here.
+        src/app/playback_reset.cpp
+        src/app/auto_advance.cpp
+        # The main loop's redraw gate (draw vs skip per iteration).
+        src/app/redraw_gate.cpp
+        # The return-from-game input/status window.
+        src/app/post_game_gate.cpp
+        # PulseAudio routing (fake pactl runner in the tests) + its runner.
+        src/app/audio_router.cpp
+        src/utils/subprocess.cpp
+        # Shuffle / Master Shuffle / sequential next-previous decisions
+        # (controller.cpp is in no test target).
+        src/app/shuffle_queue.cpp
+        src/app/playlist_cursor.cpp
+        # main.cpp's playlist playback control (SELECT/NEXT/PREV, auto-
+        # advance, failed-item skip, stall watchdog) against a fake
+        # transport, and the web-admin playlist reload's re-anchoring.
+        src/app/playlist_playback.cpp
+        src/app/playlist_reload.cpp
+        # main.cpp's boot intro decisions (end detection, fade volume, the
+        # hand-off to the menu, the render-video decision).
+        src/app/intro_sequence.cpp
+        # main.cpp's Settings-menu input decisions (BTN4 hold/volume, the
+        # game browser's SELECT rows).
+        src/app/settings_input_logic.cpp
+        # settings.json load/save against real temp files (round-trip,
+        # wrong-typed quarantine). Pulls jsoncpp + spdlog, linked below.
+        src/app/settings_persistence.cpp
+        src/app/mb_filter_persistence.cpp
+        src/utils/config.cpp
+        src/utils/services_env.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp
@@ -784,7 +940,8 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
     )
     target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
-    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES} ${JSONCPP_LIBRARIES})
+    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES}
+        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only)
     target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
@@ -796,6 +953,12 @@ if(PLATFORM_TEST_SOURCES)
     add_executable(test_platform_unit
         ${PLATFORM_TEST_SOURCES}
         src/platform/platform_profile.cpp
+        # Controller-wake node selection (skips virtual/uinput devices).
+        src/platform/udev_wake.cpp
+        # Built-in button/key tables + phone-remote parity (parses the
+        # web remote's uinput_writer.py).
+        src/platform/input_mapping.cpp
+        src/utils/subprocess.cpp
     )
     target_include_directories(test_platform_unit PRIVATE src)
     target_link_libraries(test_platform_unit PRIVATE Catch2::Catch2WithMain)
@@ -819,7 +982,15 @@ endif()
 # other.
 file(GLOB UTILS_TEST_SOURCES "tests/utils/*.cpp")
 if(UTILS_TEST_SOURCES)
-    add_executable(test_utils_unit ${UTILS_TEST_SOURCES} src/utils/time_format.cpp)
+    add_executable(test_utils_unit ${UTILS_TEST_SOURCES}
+        src/utils/time_format.cpp
+        src/utils/services_env.cpp
+        # The one fork/exec/wait helper, tested against real processes.
+        src/utils/subprocess.cpp
+        # The debug screenshot hook's file side (BMP encode, naming,
+        # atomic write, retention).
+        src/utils/bmp_writer.cpp
+        src/utils/screenshot_store.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
@@ -860,6 +1031,9 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/app/controller_text_input.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/retroarch/retroarch_launcher.cpp
+        # retroarch_launcher.cpp's helpers (udevadm, pkill) run through these.
+        src/utils/subprocess.cpp
+        src/platform/udev_wake.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})

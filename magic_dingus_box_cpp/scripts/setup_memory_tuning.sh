@@ -10,6 +10,22 @@
 #        -> MemoryLow=512M: below this usage the kiosk's pages are
 #           exempt from reclaim, so service memory pressure swaps the
 #           latency-tolerant arr stack, never the video pipeline.
+#        -> OOMScoreAdjust=-500: if memory still runs out, the OOM killer
+#           takes a (self-restarting) container, not the kiosk.
+#   1a. the tree's systemd units, via converge_system_units.sh: installs
+#        the units that differ from the tree, removes the drop-ins that used
+#        to carry unit fixes (stop-timeout.conf + the three Media Browser
+#        timing drop-ins, until 2026-10), re-arms elapsed timers. Unit fixes
+#        ship as unit-file edits now, never as drop-ins written here.
+#   1d. magic-dingus-audio.service + its kiosk drop-in, via
+#        setup_audio_service.sh (PulseAudio out of the kiosk's cgroup) —
+#        same delivery reasoning as 1a
+#   1e. restart gluetun-cascade-restart.service when it runs an older copy
+#        of its script than /usr/local/bin holds, via
+#        restart_stale_cascade_watcher.sh — same delivery reasoning as 1a
+#   1f. services/config/gluetun/auth/config.toml via ensure_gluetun_auth.sh
+#        (the control-server routes the stack reads stay public after a
+#        gluetun bump) — same delivery reasoning as 1a
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -66,8 +82,75 @@ cat > "${ETC}/systemd/system/magic-dingus-box-cpp.service.d/memory-protect.conf"
 # the kernel cmdline carries cgroup_enable=memory (same installer).
 [Service]
 MemoryLow=512M
+# When memory does run out, the kernel OOM killer must pick a container
+# (restart: always brings it back) — never the kiosk, whose death drops
+# the picture and the game. -500 biases the choice without making the
+# kiosk unkillable; RetroArch, forked by the kiosk, inherits it.
+OOMScoreAdjust=-500
 EOF
-log "kiosk MemoryLow drop-in installed"
+log "kiosk MemoryLow + OOMScoreAdjust drop-in installed"
+
+# --- 1a. the tree's systemd units --------------------------------------------
+# This script is the root-run hook every delivery path executes (deploy,
+# OTA — including the OLD update.sh on the first OTA that ships a change —
+# first boot, source-box sync), so it is where the installed units converge
+# to the tree's. Until 2026-10 OTA never installed unit files and unit fixes
+# rode drop-ins written here; an empty OnBootSec= in one of them stopped
+# the missing-search timer for 10 days. The converge removes those drop-ins
+# once each unit matches the tree. Never fails this script.
+CONVERGE_UNITS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/converge_system_units.sh"
+if [[ -f "$CONVERGE_UNITS" ]]; then
+    bash "$CONVERGE_UNITS" 2>&1 | sed 's/^/  /' \
+        || log "WARNING: unit convergence reported failures (verify_box.sh names them)"
+else
+    log "converge_system_units.sh not found; skipping unit convergence"
+fi
+
+# --- 1d. PulseAudio as its own unit -----------------------------------------
+# Not memory posture either (though it does take PulseAudio out from under
+# the kiosk's MemoryLow/OOMScoreAdjust above): this script is the one
+# root-run hook every delivery path executes — including the OLD update.sh
+# on the OTA that first ships the audio unit — so setup_audio_service.sh
+# rides it. Placed before step 4, which can exit early. Best-effort: a
+# box without the unit still gets sound (init_audio.sh's legacy path).
+AUDIO_INSTALLER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup_audio_service.sh"
+if [[ -f "$AUDIO_INSTALLER" ]]; then
+    bash "$AUDIO_INSTALLER" 2>&1 | sed 's/^/  /' \
+        || log "WARNING: audio service install failed (init_audio.sh keeps starting PulseAudio itself)"
+else
+    log "setup_audio_service.sh not found; skipping audio service install"
+fi
+
+# --- 1e. restart a cascade watcher running a stale script -------------------
+# Same "only root hook the OLD update.sh runs" reasoning as 1d: v1.9.14's
+# update.sh copies a new gluetun_cascade_restart.sh into /usr/local/bin but
+# never restarts the long-running watcher, and the next update sees an
+# identical file and skips its restart too. The helper restarts the unit
+# only when the installed script is newer than the running process; it is a
+# no-op on games-only boxes and never fails. Before step 4 (early exit).
+CASCADE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/restart_stale_cascade_watcher.sh"
+if [[ "$SKIP_SYSTEMCTL" == "true" ]]; then
+    log "SKIP: cascade watcher staleness check (test mode)"
+elif [[ -f "$CASCADE_HELPER" ]]; then
+    bash "$CASCADE_HELPER" 2>&1 | sed 's/^/  /' || true
+else
+    log "restart_stale_cascade_watcher.sh not found; skipping cascade watcher check"
+fi
+
+# --- 1f. Gluetun control-server access file ---------------------------------
+# Same delivery reasoning as 1d: the routes the stack reads (forwarded port,
+# exit IP) must be explicitly public before any gluetun bump that makes
+# them private by default. Writes a file under services/config/gluetun only
+# (Media Browser boxes); restarts nothing. Never fails.
+GLUETUN_AUTH_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ensure_gluetun_auth.sh"
+if [[ -n "$TUNING_ROOT" ]]; then
+    log "SKIP: gluetun access file (test mode)"
+elif [[ -f "$GLUETUN_AUTH_HELPER" ]]; then
+    bash "$GLUETUN_AUTH_HELPER" "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/services" 2>&1 \
+        | sed 's/^/  /' || true
+else
+    log "ensure_gluetun_auth.sh not found; skipping gluetun access file"
+fi
 
 # --- 2. system.slice companion ----------------------------------------------
 install -d -m 0755 "${ETC}/systemd/system/system.slice.d"

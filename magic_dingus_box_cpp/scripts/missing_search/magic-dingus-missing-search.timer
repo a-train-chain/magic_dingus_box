@@ -3,11 +3,17 @@ Description=Run magic-dingus missing-movie re-search every 4 hours
 Requires=magic-dingus-missing-search.service
 
 [Timer]
-# 3 minutes after boot so a Pi that was off when a release dropped picks
-# it up promptly on next power-on, then every 4 hours thereafter. The
-# add-time auto-search still handles the common case instantly; this is
-# the backstop for titles that found nothing grabbable at add time.
-OnBootSec=3min
+# 11 minutes after boot so a Pi that was off when a release dropped picks
+# it up on next power-on, then every 4 hours thereafter. The add-time
+# auto-search still handles the common case instantly; this is the
+# backstop for titles that found nothing grabbable at add time.
+#
+# MUST be later than missing_search.py's 10-minute boot deferral
+# (in_boot_window). It was 3min: the first run always deferred, the next
+# came 4 h later, so a box powered on for under 4 h a day never retried
+# at all. Field boxes get the same value via the drop-in
+# setup_memory_tuning.sh writes (OTA never replaces installed units).
+OnBootSec=11min
 OnUnitActiveSec=4h
 Persistent=true
 

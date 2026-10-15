@@ -1,4 +1,5 @@
 #include "media_browser/radarr/radarr_parsers.h"
+#include "media_browser/tmdb_image.h"
 
 #include <json/json.h>
 #include <spdlog/spdlog.h>
@@ -21,6 +22,7 @@ bool parse_json(const std::string& text, Json::Value& out) {
 std::string pick_image(const Json::Value& images, const std::string& coverType) {
     if (!images.isArray()) return "";
     for (const auto& img : images) {
+        if (!img.isObject()) continue;  // operator[] on a non-object throws
         if (img["coverType"].asString() == coverType) {
             return RadarrParsers::normalize_tmdb_poster_url(img["remoteUrl"].asString());
         }
@@ -36,7 +38,10 @@ void fill_search_hit(const Json::Value& r, MovieSearchHit& h) {
     h.overview = r.get("overview", "").asString();
     h.year = r.get("year", 0).asInt();
     h.runtime_minutes = r.get("runtime", 0).asInt();
-    h.rating = r["ratings"]["tmdb"].get("value", 0.0).asDouble();
+    const auto& ratings = r["ratings"];
+    if (ratings.isObject() && ratings["tmdb"].isObject()) {
+        h.rating = ratings["tmdb"].get("value", 0.0).asDouble();
+    }
     h.poster_url = pick_image(r["images"], "poster");
     h.fanart_url = pick_image(r["images"], "fanart");
 }
@@ -79,14 +84,19 @@ void fill_library_fields(const Json::Value& r, Movie& m) {
     m.monitored = r.get("monitored", false).asBool();
     m.has_file = r.get("hasFile", false).asBool();
     m.status = r.get("status", "").asString();
-    if (r.isMember("movieFile")) {
+    if (r.isMember("movieFile") && r["movieFile"].isObject()) {
         const auto& f = r["movieFile"];
         m.file_path = f.get("relativePath", "").asString();
         m.file_container_path = f.get("path", "").asString();
-        m.file_quality = f["quality"]["quality"].get("name", "").asString();
+        const auto& q = f["quality"];
+        if (q.isObject() && q["quality"].isObject()) {
+            m.file_quality = q["quality"].get("name", "").asString();
+        }
         m.file_size_bytes = f.get("size", 0).asInt64();
-        m.file_runtime_minutes = parse_timeleft_to_seconds(
-            f["mediaInfo"].get("runTime", "").asString()) / 60;
+        if (f["mediaInfo"].isObject()) {
+            m.file_runtime_minutes = parse_timeleft_to_seconds(
+                f["mediaInfo"].get("runTime", "").asString()) / 60;
+        }
     }
     m.added_at = r.get("added", "").asString();
 }
@@ -110,16 +120,13 @@ void fill_library_fields(const Json::Value& r, Movie& m) {
 // directly — see tmdb_client.cpp kImageBase), so a movie's poster is
 // fetched once and reused everywhere. Non-TMDB / unrecognized URLs pass
 // through unchanged.
+//
+// Only http(s)://image.tmdb.org URLs are rewritten (tmdb_image.h); a
+// "/t/p/" substring on any other host is left alone. Grid cards further
+// downsize to w185 at draw time (tmdb_poster_url_for_card) — the data
+// layer keeps w500 so hero posters stay sharp.
 std::string RadarrParsers::normalize_tmdb_poster_url(const std::string& url) {
-    // Match ".../t/p/<size>/..." and replace <size> with w500. <size> is
-    // "original" or a "w###"/"h###" token; we only touch that one segment.
-    static const std::string kMarker = "/t/p/";
-    auto marker_pos = url.find(kMarker);
-    if (marker_pos == std::string::npos) return url;  // not a TMDB image URL
-    const std::size_t size_start = marker_pos + kMarker.size();
-    const auto size_end = url.find('/', size_start);
-    if (size_end == std::string::npos) return url;    // malformed — leave it
-    return url.substr(0, size_start) + "w500" + url.substr(size_end);
+    return tmdb_image_url_with_size(url, kTmdbHeroPosterSize);
 }
 
 std::vector<MovieSearchHit> RadarrParsers::parse_movie_lookup(const std::string& json) {
@@ -127,6 +134,7 @@ std::vector<MovieSearchHit> RadarrParsers::parse_movie_lookup(const std::string&
     Json::Value root;
     if (!parse_json(json, root) || !root.isArray()) return out;
     for (const auto& r : root) {
+        if (!r.isObject()) continue;
         MovieSearchHit h;
         fill_search_hit(r, h);
         out.push_back(std::move(h));
@@ -139,6 +147,7 @@ std::vector<Movie> RadarrParsers::parse_movie_list(const std::string& json) {
     Json::Value root;
     if (!parse_json(json, root) || !root.isArray()) return out;
     for (const auto& r : root) {
+        if (!r.isObject()) continue;
         Movie m;
         fill_search_hit(r, m);
         fill_library_fields(r, m);
@@ -159,10 +168,13 @@ std::optional<Movie> RadarrParsers::parse_movie(const std::string& json) {
 std::vector<QueueItem> RadarrParsers::parse_queue(const std::string& json) {
     std::vector<QueueItem> out;
     Json::Value root;
-    if (!parse_json(json, root)) return out;
+    // root["records"] on a non-object root (an array, a bare string from a
+    // proxy error page) throws Json::LogicError — gate the shape first.
+    if (!parse_json(json, root) || !root.isObject()) return out;
     const auto& records = root["records"];
     if (!records.isArray()) return out;
     for (const auto& r : records) {
+        if (!r.isObject()) continue;
         QueueItem q;
         q.id = r.get("id", 0).asInt();
         q.movie_id = r.get("movieId", 0).asInt();
@@ -212,6 +224,7 @@ std::vector<QualityProfile> RadarrParsers::parse_quality_profiles(const std::str
     Json::Value root;
     if (!parse_json(json, root) || !root.isArray()) return out;
     for (const auto& r : root) {
+        if (!r.isObject()) continue;
         QualityProfile p;
         p.id = r.get("id", 0).asInt();
         p.name = r.get("name", "").asString();
@@ -226,6 +239,7 @@ std::vector<RootFolder> RadarrParsers::parse_root_folders(const std::string& jso
     Json::Value root;
     if (!parse_json(json, root) || !root.isArray()) return out;
     for (const auto& r : root) {
+        if (!r.isObject()) continue;
         RootFolder f;
         f.id = r.get("id", 0).asInt();
         f.path = r.get("path", "").asString();
@@ -250,14 +264,19 @@ ActiveSearches RadarrParsers::parse_active_searches(const std::string& json) {
     Json::Value root;
     if (!parse_json(json, root) || !root.isArray()) return out;
     for (const auto& c : root) {
+        if (!c.isObject()) continue;
         const std::string status = c.get("status", "").asString();
         // Only in-flight commands count as "searching now".
         if (status != "started" && status != "queued") continue;
         const std::string name = c.get("name", "").asString();
         if (name == "MoviesSearch") {
-            const Json::Value& ids = c["body"]["movieIds"];
+            const Json::Value& body = c["body"];
+            const Json::Value& ids =
+                body.isObject() ? body["movieIds"] : Json::Value::nullSingleton();
             if (ids.isArray()) {
-                for (const auto& id : ids) out.movie_ids.insert(id.asInt());
+                for (const auto& id : ids) {
+                    if (id.isIntegral()) out.movie_ids.insert(id.asInt());
+                }
             }
         } else if (name == "MissingMoviesSearch") {
             // No per-movie ids — this sweeps the whole missing backlog.

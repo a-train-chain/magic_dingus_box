@@ -18,6 +18,12 @@ StandardError=journal
 # Don't restart on failure — the timer will re-trigger weekly. Failing
 # fast and loud is the whole point.
 Restart=no
+# Bounded: every curl in the script carries --max-time (15 s; 120 s for
+# the live indexer search), and this is the backstop. Without it a wedged
+# *arr that accepts the socket but never answers hung the run forever.
+# Field boxes get the same value via the drop-in setup_memory_tuning.sh
+# writes (OTA never replaces installed unit files).
+TimeoutStartSec=300
 
 [Install]
 WantedBy=multi-user.target

@@ -62,3 +62,15 @@ TEST_CASE("status snapshot reports a RetroArch session", "[app][status]") {
     REQUIRE(j["retroarch"]["rom_name"].asString() == "Zelda");
     REQUIRE(j["retroarch"]["core"].asString() == "nestopia_libretro");
 }
+
+TEST_CASE("status snapshot publishes the policy override state", "[app][status]") {
+    // verify_box.sh FAILS a box whose kiosk_status.json carries a non-null
+    // platform_policy_override, so the key lives in the shared document
+    // (not only in StatusWriter): present and null when unset.
+    app::AppState state;
+    Json::Value j = app::build_status_json(state);
+    REQUIRE(j.isMember("platform_policy_override"));
+    REQUIRE(j["platform_policy_override"].isNull());
+    state.platform_profile.policy_override = "pi4";
+    REQUIRE(app::build_status_json(state)["platform_policy_override"].asString() == "pi4");
+}

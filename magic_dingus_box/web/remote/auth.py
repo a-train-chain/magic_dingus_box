@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -203,27 +204,38 @@ def reap_revocations(data_dir: Path) -> int:
     if not paired.exists():
         rev_path.unlink(missing_ok=True)
         return 0
+    # Through devices.py: the shared lock (no lost update against a pairing
+    # or nickname save on another thread) and its fsync'd unique-tempfile
+    # save — this used a fixed "<name>.tmp" with no fsync, the exact pattern
+    # _save_atomic replaced everywhere else.
     try:
-        data = json.loads(paired.read_text())
-    except (OSError, json.JSONDecodeError):
+        removed = devices_mod.revoke_many(paired, ids)
+    except ValueError:
         # Malformed paired_remotes.json — leave the queue in place so the
         # operator can investigate; don't silently drop the revocation.
         return 0
-    before = len(data.get("devices", []))
-    data["devices"] = [d for d in data.get("devices", []) if d.get("id") not in ids]
-    removed = before - len(data["devices"])
-    if removed > 0:
-        tmp = paired.parent / (paired.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        os.replace(tmp, paired)
     # Save committed (or no-op if no matches) — now safe to consume the queue.
     rev_path.unlink(missing_ok=True)
     return removed
 
 
+# Serializes the pairing session's read-modify-write. The web admin runs on a
+# threaded server, so without this N concurrent wrong guesses could all read
+# attempts_remaining=5 and each write back 4 — turning a 5-guess budget into
+# an unbounded one for a parallel brute-forcer — and two concurrent correct
+# submissions could both register a device off one code. In-process only:
+# the kiosk (a separate process) only ever creates/replaces the file.
+_pair_lock = threading.Lock()
+
+
 def handle_pair_param(submitted_code: str):
     """Called from the admin index handler when ?pair= is present.
     Returns a Flask response, or None to indicate 'not pairing — pass through'."""
+    with _pair_lock:
+        return _handle_pair_param_locked(submitted_code)
+
+
+def _handle_pair_param_locked(submitted_code: str):
     session_path = _session_path()
     ip = request.remote_addr or "?"
 

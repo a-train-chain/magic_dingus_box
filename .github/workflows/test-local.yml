@@ -4,6 +4,10 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # release.yml calls this whole file and gates publishing on it: a tag
+  # push matches no branch filter, so without the call a release shipped
+  # with no suite having run on the tagged commit.
+  workflow_call:
 
 jobs:
   test:
@@ -23,14 +27,55 @@ jobs:
       - name: Run local test tier
         run: ./tests/run_local_tests.sh --tap
 
+  # BLOCKING ShellCheck gate over every tracked shell script (*.sh, *.bash,
+  # and extensionless sh/bash-shebang files) at -S info. Config and the
+  # three repo-wide exclusions live in .shellcheckrc; deliberate one-off
+  # patterns carry an inline reasoned disable. ShellCheck is PINNED (via
+  # the shellcheck-py wheel, which ships the upstream static binary):
+  # every release adds checks, so apt's version drifting under us would
+  # turn the gate red with no code change. Bump it deliberately, together
+  # with any new findings, and keep the Mac's version in step.
+  # release.yml calls this whole workflow, so a finding blocks a release.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ShellCheck 0.11.0 (pinned)
+        run: |
+          pip install shellcheck-py==0.11.0.1
+          shellcheck --version
+
+      - name: ShellCheck gate
+        run: tests/shellcheck_gate.sh
+
   # The C++ unit suites (Catch2/CTest — the same ones a dev runs from
   # build-test/ on a Mac). Until this job existed they ran in NO
   # workflow, so the drift they exist to catch was invisible unless
   # someone remembered a manual run. BUILD_KIOSK=OFF skips every
   # Linux-kiosk dependency (DRM/GStreamer/evdev) exactly like the Mac
   # configure does; Catch2 and spdlog arrive via FetchContent.
+  #
+  # Two legs. media_browser=OFF is the configure this job always ran (8
+  # suites). media_browser=ON adds the 9th, MediaBrowserUnit — which was
+  # never built in CI at all, even though every production box and the
+  # release binary are MB-ON — and also compiles the other 8 with
+  # MEDIA_BROWSER_ENABLED defined, i.e. the way they actually ship. Its
+  # extra apt deps are the Media Browser set from install_deps.sh /
+  # release.yml (CMake REQUIRED under ENABLE_MEDIA_BROWSER).
   cpp-unit:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        media_browser: ["OFF", "ON"]
+    name: cpp-unit (media browser ${{ matrix.media_browser }})
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,17 +83,94 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config git \
+          sudo apt-get install -y build-essential cmake pkg-config git tzdata \
             libjsoncpp-dev libyaml-cpp-dev
+          if [ "${{ matrix.media_browser }}" = "ON" ]; then
+            sudo apt-get install -y libcurl4-openssl-dev libsqlite3-dev \
+              libtorrent-rasterbar-dev libboost-dev
+          fi
 
       - name: Configure (tests only, no kiosk)
-        run: cmake -S magic_dingus_box_cpp -B build-ci -DBUILD_KIOSK=OFF
+        run: >
+          cmake -S magic_dingus_box_cpp -B build-ci
+          -DBUILD_KIOSK=OFF
+          -DENABLE_MEDIA_BROWSER=${{ matrix.media_browser }}
 
       - name: Build test suites
         run: cmake --build build-ci -j"$(nproc)"
 
       - name: Run suites
         run: ctest --test-dir build-ci --output-on-failure
+
+      # Guard against the MB leg silently degrading back to 8 suites (a
+      # CMake gate change that drops the MediaBrowserUnit registration would
+      # otherwise still exit green).
+      - name: Assert Media Browser suite ran
+        if: matrix.media_browser == 'ON'
+        run: ctest --test-dir build-ci -N | grep -q "MediaBrowserUnit"
+
+      # The same guard for the eight standalone suites, on BOTH legs: each
+      # is registered behind its own CMake condition (AppUnit is skipped
+      # with only a configure-time WARNING when yaml-cpp is missing), so a
+      # dropped suite would otherwise still exit green with one fewer.
+      - name: Assert every standalone suite ran
+        run: |
+          listing="$(ctest --test-dir build-ci -N)"
+          for suite in RetroArchUnit UiUnit AppUnit PlatformUnit DisplayUnit \
+                       UtilsUnit VideoUnit PhoneRemoteUnit; do
+            echo "$listing" | grep -qw "$suite" || { echo "FATAL: $suite not registered"; exit 1; }
+          done
+          want=8; [ "${{ matrix.media_browser }}" = "ON" ] && want=9
+          got="$(echo "$listing" | sed -n 's/^Total Tests: //p')"
+          echo "ctest suites: $got (want $want)"
+          [ "$got" = "$want" ]
+
+  # The real kiosk binary. Every other job builds with BUILD_KIOSK=OFF, so
+  # main.cpp, controller.cpp, the renderer and every Media Browser screen
+  # were first compiled at TAG time, under QEMU, in release.yml — a broken
+  # build surfaced only as a failed release. Native amd64 Trixie compiles
+  # the same sources in a few minutes; the strings checks mirror
+  # release.yml's release-blocking assertions (minus aarch64).
+  kiosk-build:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential cmake pkg-config git binutils \
+            libdrm-dev libgbm-dev libegl-dev libgles2-mesa-dev \
+            libevdev-dev libgpiod-dev \
+            libyaml-cpp-dev libjsoncpp-dev libcurl4-openssl-dev \
+            libtorrent-rasterbar-dev libsqlite3-dev libboost-dev \
+            libsystemd-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-gl
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build kiosk (Media Browser ON, as shipped)
+        run: |
+          cmake -S magic_dingus_box_cpp -B build-kiosk -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF
+          cmake --build build-kiosk -j"$(nproc)"
+
+      # mdb_core is EXCLUDE_FROM_ALL (the headless engine's library, never
+      # in a plain kiosk build); compile it here so a Linux-only header
+      # leaking into a shared source fails on Linux as well as on the Mac.
+      - name: Build mdb_core (the headless engine's library)
+        run: cmake --build build-kiosk -j"$(nproc)" --target mdb_core
+
+      - name: Assert release-blocking capabilities
+        run: |
+          B=build-kiosk/magic_dingus_box_cpp
+          strings "$B" | grep -q "READY=1" || { echo "FATAL: no sd_notify (libsystemd-dev?)"; exit 1; }
+          strings "$B" | grep -qi "prowlarr" || { echo "FATAL: Media Browser not compiled in"; exit 1; }
+          strings "$B" | grep -q "/connect?code=" || { echo "FATAL: pairing QR target missing"; exit 1; }
+          if strings "$B" | grep -q "compiled without HAVE_GPIOD"; then
+            echo "FATAL: GPIO compiled out (libgpiod-dev?)"; exit 1
+          fi
 
   # The Flask web-admin pytest suite (playlist CRUD, OTA endpoints,
   # pairing, backup/restore, storage eligibility, upload staging).
@@ -70,32 +192,3 @@ jobs:
 
       - name: Run web suite
         run: python -m pytest magic_dingus_box/web/tests/ -q
-
-  kiosk-compile:
-    name: Kiosk binary compiles (BUILD_KIOSK=ON, x86_64)
-    runs-on: ubuntu-24.04
-    # Noble's apt repo only has libgpiod-dev 1.6.3 (the legacy line-request
-    # API); gpio_manager.cpp uses the libgpiod 2.x API (gpiod_chip_get_info,
-    # gpiod_line_settings_new, gpiod_line_request_get_value, ...). Debian
-    # Trixie carries libgpiod 2.x, same reason release.yml cross-builds
-    # ARM64 inside a Trixie container. The GitHub-hosted runner is already
-    # amd64, so no QEMU is needed here — just run the steps in that container.
-    container: debian:trixie
-    steps:
-      - name: Install git (container has none for actions/checkout)
-        run: |
-          apt-get update
-          apt-get install -y git ca-certificates
-      - uses: actions/checkout@v4
-      - name: Install kiosk build dependencies
-        run: |
-          apt-get install -y build-essential cmake pkg-config \
-            libdrm-dev libgbm-dev libegl-dev libgles2-mesa-dev \
-            libevdev-dev libgpiod-dev libsystemd-dev \
-            libyaml-cpp-dev libjsoncpp-dev libcurl4-openssl-dev \
-            libtorrent-rasterbar-dev libsqlite3-dev libboost-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-      - name: Configure kiosk (Media Browser on, tests off)
-        run: cmake -S magic_dingus_box_cpp -B build-kiosk -DBUILD_KIOSK=ON -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF
-      - name: Compile
-        run: cmake --build build-kiosk -j"$(nproc)" --target magic_dingus_box_cpp mdb_core

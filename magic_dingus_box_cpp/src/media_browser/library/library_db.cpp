@@ -89,7 +89,7 @@ static const Migration MIGRATIONS[] = {
      "  applied_at INTEGER NOT NULL"
      ");"},
     {2, "phase1_core_tables",
-     "CREATE TABLE titles ("
+     "CREATE TABLE IF NOT EXISTS titles ("
      "  id INTEGER PRIMARY KEY,"
      "  tmdb_id INTEGER NOT NULL UNIQUE,"
      "  kind TEXT NOT NULL CHECK(kind IN ('movie','tv')),"
@@ -104,7 +104,7 @@ static const Migration MIGRATIONS[] = {
      "  added_at INTEGER NOT NULL,"
      "  updated_at INTEGER NOT NULL"
      ");"
-     "CREATE TABLE queue ("
+     "CREATE TABLE IF NOT EXISTS queue ("
      "  id INTEGER PRIMARY KEY,"
      "  title_id INTEGER NOT NULL REFERENCES titles(id),"
      "  state TEXT NOT NULL,"
@@ -114,7 +114,7 @@ static const Migration MIGRATIONS[] = {
      "  started_at INTEGER NOT NULL,"
      "  updated_at INTEGER NOT NULL"
      ");"
-     "CREATE TABLE history ("
+     "CREATE TABLE IF NOT EXISTS history ("
      "  id INTEGER PRIMARY KEY,"
      "  title_id INTEGER REFERENCES titles(id),"
      "  event TEXT NOT NULL,"
@@ -122,15 +122,21 @@ static const Migration MIGRATIONS[] = {
      "  detail TEXT,"
      "  occurred_at INTEGER NOT NULL"
      ");"
-     "CREATE INDEX idx_queue_state ON queue(state);"
-     "CREATE INDEX idx_history_title ON history(title_id);"},
+     "CREATE INDEX IF NOT EXISTS idx_queue_state ON queue(state);"
+     "CREATE INDEX IF NOT EXISTS idx_history_title ON history(title_id);"},
     // Watch state for TV + movies (Phase 3, spec
     // 2026-08-02-tv-playback-design.md). Keyed (kind, tmdb_id, season,
     // episode) because the TMDB movie and TV id spaces overlap completely;
-    // movies use season=episode=0. Bare CREATE is safe: version-gated,
-    // matching v2's convention.
+    // movies use season=episode=0.
+    //
+    // Every CREATE here is IF NOT EXISTS even though migrations are
+    // version-gated: before run_migrations() wrapped each migration in a
+    // transaction, a crash/power cut between a migration's statements (or
+    // between the schema SQL and the version bump) left tables created but
+    // the version unbumped — and a bare CREATE then failed on EVERY later
+    // open, forever. IF NOT EXISTS lets those half-migrated DBs heal.
     {3, "watch_state",
-     "CREATE TABLE watch_state("
+     "CREATE TABLE IF NOT EXISTS watch_state("
      "  id INTEGER PRIMARY KEY,"
      "  kind TEXT NOT NULL CHECK(kind IN ('movie','tv')),"
      "  tmdb_id INTEGER NOT NULL,"
@@ -142,7 +148,7 @@ static const Migration MIGRATIONS[] = {
      "  updated_at INTEGER NOT NULL,"
      "  UNIQUE(kind, tmdb_id, season, episode)"
      ");"
-     "CREATE INDEX idx_watch_lookup ON watch_state(kind, tmdb_id);"},
+     "CREATE INDEX IF NOT EXISTS idx_watch_lookup ON watch_state(kind, tmdb_id);"},
 };
 }  // namespace
 
@@ -153,19 +159,29 @@ bool LibraryDb::run_migrations() {
     if (!exec(MIGRATIONS[0].sql)) return false;
 
     int current = schema_version();
+    if (current < 0) return false;
     for (const auto& m : MIGRATIONS) {
         if (m.version <= current) continue;
         spdlog::info("[media_browser] applying migration {}: {}", m.version, m.name);
-        if (!exec(m.sql)) {
-            spdlog::error("[media_browser] migration {} failed", m.version);
-            return false;
-        }
+        // One transaction per migration: its schema SQL AND its version
+        // bump commit together or not at all. sqlite3_exec() runs a
+        // multi-statement string in autocommit mode otherwise — one commit
+        // per statement — so an interruption used to strand a DB with some
+        // tables created and the version unbumped. DDL is transactional in
+        // SQLite. IMMEDIATE takes the write lock up front so a concurrent
+        // writer fails here, before any statement runs.
+        if (!exec("BEGIN IMMEDIATE;")) return false;
         char insert[256];
         snprintf(insert, sizeof(insert),
                  "INSERT OR REPLACE INTO schema_version(version, name, applied_at) "
                  "VALUES (%d, '%s', strftime('%%s','now'));",
                  m.version, m.name);
-        if (!exec(insert)) return false;
+        if (!exec(m.sql) || !exec(insert) || !exec("COMMIT;")) {
+            spdlog::error("[media_browser] migration {} failed; rolled back",
+                          m.version);
+            exec("ROLLBACK;");
+            return false;
+        }
     }
     return true;
 }

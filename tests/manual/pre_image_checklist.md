@@ -110,7 +110,7 @@ Required if the golden image is shipping CRT mode support to clones. Skip only i
 - [ ] Launch a game (any core). It runs at 640×480 fullscreen **with no bezel overlay** (CRT_V has no bezel by design)
 - [ ] The generated RetroArch config on the Pi has the CRT-shape config (640×480, no custom viewport, no input_overlay). Verify:
   ```
-  ssh PI 'grep -E "^(video_fullscreen_[xy]|video_custom_viewport_enable|input_overlay )" /home/magic/retroarch_launcher.sh'
+  ssh PI 'grep -E "^(video_fullscreen_[xy]|video_custom_viewport_enable|input_overlay )" /tmp/retroarch_mdb.cfg'
   ```
   Expected: `video_fullscreen_x = "640"`, `video_fullscreen_y = "480"`, `video_custom_viewport_enable = "false"`, no `input_overlay` line.
 - [ ] Controls feel native (overclock still applies: the 2.0 GHz CPU + threaded video combo doesn't introduce CRT-mode regression vs. pre-bezel-feature behavior)

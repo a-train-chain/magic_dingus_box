@@ -1,6 +1,7 @@
 #include "media_browser/ui/mb_settings_screen.h"
 
 #include "media_browser/movie_drive.h"
+#include "media_browser/ui/indexer_toggle_logic.h"
 #include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
@@ -10,6 +11,7 @@
 
 #include <curl/curl.h>
 #include <json/json.h>
+#include <spdlog/spdlog.h>
 
 #include "app/settings_persistence.h"
 #include "media_browser/prowlarr/prowlarr_client.h"
@@ -231,6 +233,10 @@ void MbSettingsScreen::enter() {
     if (load_done_.load(std::memory_order_acquire)) {
         apply_load_results();
     }
+    toggle_worker_.reap();
+    if (toggle_done_.load(std::memory_order_acquire)) {
+        apply_toggle_result();
+    }
     //   full load on first entry; health-only re-ping on re-entry (the
     //   profile / root-folder / indexer lists rarely change on a kiosk, so
     //   the cached copies stand).
@@ -245,6 +251,10 @@ void MbSettingsScreen::update() {
     load_worker_.reap();
     if (load_done_.load(std::memory_order_acquire)) {
         apply_load_results();
+    }
+    toggle_worker_.reap();
+    if (toggle_done_.load(std::memory_order_acquire)) {
+        apply_toggle_result();
     }
 }
 
@@ -355,17 +365,25 @@ void MbSettingsScreen::start_async_load(bool full) {
             // Health is always refreshed. Radarr goes through the client
             // (correct API-key header); Prowlarr /ping and qBit version are
             // plain GETs — any HTTP response proves the daemon is up.
-            ServiceHealth h;
-            h.radarr = radarr_.is_reachable();
-            h.prowlarr = ping_http("http://localhost:9696/ping");
-            h.qbittorrent = ping_http("http://localhost:8080/api/v2/app/version");
-            h.fetched_at = std::chrono::steady_clock::now();
-            staged_health_ = h;
+            // An exception (malformed JSON from a half-up service) must
+            // become a degraded result, never std::terminate.
+            try {
+                ServiceHealth h;
+                h.radarr = radarr_.is_reachable();
+                h.prowlarr = ping_http("http://localhost:9696/ping");
+                h.qbittorrent = ping_http("http://localhost:8080/api/v2/app/version");
+                h.fetched_at = std::chrono::steady_clock::now();
+                staged_health_ = h;
 
-            if (full) {
-                staged_profiles_ = radarr_.get_quality_profiles();
-                staged_root_folders_ = radarr_.get_root_folders();
-                staged_indexer_rows_ = compute_indexer_rows();
+                if (full) {
+                    staged_profiles_ = radarr_.get_quality_profiles();
+                    staged_root_folders_ = radarr_.get_root_folders();
+                    staged_indexer_rows_ = compute_indexer_rows();
+                }
+            } catch (const std::exception& e) {
+                spdlog::error("[mb_settings] async load threw: {}", e.what());
+            } catch (...) {
+                spdlog::error("[mb_settings] async load threw");
             }
             // Release: publishes every staged_* write above to the main
             // thread's acquire-load in update().
@@ -445,14 +463,53 @@ MbSettingsScreen::compute_indexer_rows() const {
 
     // Sort: enabled-with-results first (by result count desc), then
     // enabled-without-stats, then disabled — most actionable at the top.
-    std::sort(rows.begin(), rows.end(),
-              [](const IndexerRow& a, const IndexerRow& b) {
-                  if (a.enabled != b.enabled) return a.enabled > b.enabled;
-                  if (a.has_stats != b.has_stats)
-                      return a.has_stats > b.has_stats;
-                  return a.result_count > b.result_count;
-              });
+    sort_indexer_rows(rows);
     return rows;
+}
+
+void MbSettingsScreen::start_indexer_toggle(const IndexerRow& row) {
+    toggle_id_ = row.id;
+    toggle_new_state_ = !row.enabled;
+    toggle_name_ = row.name;
+    toggle_done_.store(false, std::memory_order_relaxed);
+    toggle_in_flight_.store(true, std::memory_order_release);
+    try {
+        toggle_worker_.spawn([this, id = row.id, en = toggle_new_state_]() {
+            bool ok = false;
+            try {
+                ok = prowlarr_->set_indexer_enabled(id, en);
+            } catch (const std::exception& e) {
+                spdlog::error("[mb_settings] indexer toggle threw: {}", e.what());
+            } catch (...) {
+                spdlog::error("[mb_settings] indexer toggle threw");
+            }
+            staged_toggle_ok_ = ok;
+            toggle_done_.store(true, std::memory_order_release);
+        });
+    } catch (...) {
+        toggle_in_flight_.store(false, std::memory_order_release);
+        show_banner("Toggle skipped — box is low on memory; retry");
+    }
+}
+
+void MbSettingsScreen::apply_toggle_result() {
+    // Main thread; the toggle_done_ acquire published staged_toggle_ok_.
+    toggle_done_.store(false, std::memory_order_relaxed);
+    toggle_in_flight_.store(false, std::memory_order_release);
+    if (!staged_toggle_ok_) {
+        show_banner("Toggle failed — Prowlarr unreachable");
+        return;
+    }
+    show_banner(toggle_name_ + (toggle_new_state_ ? " enabled" : " disabled"));
+    // Keyed by id: a full reload may have replaced the list meanwhile.
+    // The cursor only follows when the Sources row is still focused.
+    const bool sources_focused =
+        cursor_ >= 0 && cursor_ < static_cast<int>(rows_.size()) &&
+        rows_[cursor_].kind == RowKind::IndexerToggles;
+    const int prev_cursor = indexer_cursor_;
+    int nc = apply_indexer_toggle(indexer_rows_, toggle_id_,
+                                  toggle_new_state_, kIndexerMaxVisible);
+    indexer_cursor_ = (sources_focused && nc >= 0) ? nc : prev_cursor;
 }
 
 // ---------------------------------------------------------------------------
@@ -743,42 +800,14 @@ Screen MbSettingsScreen::handle_input(
                             show_banner("Toggle unavailable — VPN tunnel down");
                             break;
                         }
-                        const bool new_state = !row.enabled;
-                        if (prowlarr_->set_indexer_enabled(row.id, new_state)) {
-                            row.enabled = new_state;
-                            show_banner(row.name +
-                                        (new_state ? " enabled"
-                                                   : " disabled"));
-                            // Re-sort so the toggled row migrates to the
-                            // correct section. We re-find the row after
-                            // sort so the cursor follows it, otherwise
-                            // pressing SELECT once would visually move
-                            // the cursor to a different indexer.
-                            const int prev_id = row.id;
-                            std::sort(indexer_rows_.begin(),
-                                      indexer_rows_.end(),
-                                      [](const IndexerRow& a,
-                                         const IndexerRow& b) {
-                                          if (a.enabled != b.enabled)
-                                              return a.enabled > b.enabled;
-                                          if (a.has_stats != b.has_stats)
-                                              return a.has_stats > b.has_stats;
-                                          return a.result_count >
-                                                 b.result_count;
-                                      });
-                            for (size_t k = 0;
-                                 k < indexer_rows_.size(); ++k) {
-                                if (indexer_rows_[k].id == prev_id) {
-                                    indexer_cursor_ = std::min<int>(
-                                        static_cast<int>(k),
-                                        kIndexerMaxVisible - 1);
-                                    break;
-                                }
-                            }
-                        } else {
-                            show_banner(
-                                "Toggle failed — Prowlarr unreachable");
+                        if (toggle_in_flight_.load(std::memory_order_acquire)) {
+                            show_banner("Still applying the last change...");
+                            break;
                         }
+                        // GET + PUT run on a worker (up to 10 s with
+                        // Prowlarr wedged — the whole watchdog budget).
+                        // The row shows "[...]" until update() applies it.
+                        start_indexer_toggle(row);
                     }
                     break;
                 case RowKind::RefreshLibrary:
@@ -1441,8 +1470,12 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     } else {
                         stats_str = "no search yet";
                     }
-                    const std::string state_str =
-                        irow.enabled ? "[on]" : "[off]";
+                    const bool toggle_pending =
+                        toggle_in_flight_.load(std::memory_order_acquire) &&
+                        irow.id == toggle_id_;
+                    const std::string state_str = toggle_pending
+                        ? "[...]"
+                        : (irow.enabled ? "[on]" : "[off]");
                     int state_tw = r.mb_text_width(state_str, small_sz);
                     int stats_tw = r.mb_text_width(stats_str, small_sz);
                     constexpr float kColGap = 14.0f;

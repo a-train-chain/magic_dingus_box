@@ -11,7 +11,8 @@ Magic Dingus Box has two halves:
 
 1. **Retro gaming + video playback** — always works, no internet
    required after setup. Plays NES / SNES / Genesis / PS1 / PCE /
-   Atari 7800 / Arcade games via RetroArch, plus local videos and
+   Atari 7800 / Arcade games via RetroArch (plus N64 / Dreamcast on
+   Pi 5), plus local videos and
    YouTube clips.
 
 2. **Movie Media Browser** — discovers and downloads movies via a
@@ -33,7 +34,7 @@ working WireGuard config (web admin) before the feature appears.
 | [`magic_dingus_box/web/`](magic_dingus_box/web/) | Flask Content Manager web admin (LAN-only). Playlist editing, video uploads, ROM management, OTA updates, Media Browser provisioning. |
 | [`scripts/golden_image/`](scripts/golden_image/) | Live SD-card cloning toolchain. Produces `.img.gz` files from a running source Pi without removing the SD card. Includes the on-Pi `first_boot.sh` that resets per-Pi state on flashed clones. |
 | [`tests/`](tests/) | Two-tier test suite (local-tier bats run anywhere; pi-tier bats run from a dev machine against a Pi over SSH). |
-| [`magic_dingus_box_cpp/services/`](magic_dingus_box_cpp/services/) | Media Browser companion-services compose stack (Radarr + Prowlarr + qBittorrent + Gluetun VPN + FlareSolverr). Optional, gated behind a chord-sequence unlock. |
+| [`magic_dingus_box_cpp/services/`](magic_dingus_box_cpp/services/) | Media Browser companion-services compose stack (Radarr + Sonarr + Prowlarr + qBittorrent + Gluetun VPN + Byparr). Optional, gated behind a chord-sequence unlock. |
 | [`CHANGELOG.md`](CHANGELOG.md) / [`VERSION`](VERSION) | Release history (Keep-a-Changelog format) and the single-source version pin used by OTA. |
 | [`OTA_UPDATE_GUARANTEES.md`](OTA_UPDATE_GUARANTEES.md) | The contract describing what an OTA update preserves vs. replaces — read before editing any rsync `--exclude` list. |
 | [`CLAUDE.md`](CLAUDE.md) | Architecture notes and project conventions (also serves as agent guidance). |
@@ -41,7 +42,7 @@ working WireGuard config (web admin) before the feature appears.
 ## What it does
 
 - **Plays curated video playlists** at full-screen with a configurable CRT-effect shader pipeline (scanlines, aperture-grille mask, RGB convergence + phosphor glow, luma-driven halation) — opt-in via `Settings → Display → CRT Engine: Enhanced`.
-- **Launches retro-game ROMs** via RetroArch with per-core controller mappings for 7 systems: NES, SNES, Genesis/Mega Drive, PC Engine, Atari 7800, PlayStation 1, and arcade (FBNeo). Auto-saves SRAM and save states on exit, auto-loads on next launch.
+- **Launches retro-game ROMs** via RetroArch with per-core controller mappings for 9 systems: NES, SNES, Genesis/Mega Drive, PC Engine, Atari 7800, PlayStation 1, arcade (FBNeo), plus Nintendo 64 and Dreamcast on Raspberry Pi 5 (hidden on a Pi 4B). Auto-saves SRAM and save states on exit, auto-loads on next launch.
 - **Routes input** from rotary encoder, GPIO buttons, and USB controllers (currently supports an N64-style USB adapter and PlayStation-style pads with an internal `controller_detector` distinguishing the two).
 - **Routes audio** through PulseAudio with selectable HDMI / 3.5mm headphone output and a per-game RetroArch volume offset.
 - **Updates over the air** from GitHub Releases via [`magic_dingus_box_cpp/scripts/update.sh`](magic_dingus_box_cpp/scripts/update.sh), with backup + rollback support and a documented preservation contract for operator content.
@@ -74,6 +75,26 @@ Tests:
 
 See [`tests/README.md`](tests/README.md) for tiers, helpers, and the pre-image gate.
 
+Shell lint (the same blocking gate CI runs — every tracked shell script at
+`shellcheck -S info`; config in [`.shellcheckrc`](.shellcheckrc)):
+
+```bash
+./tests/shellcheck_gate.sh
+```
+
+Fleet check — run every box's own `verify_box.sh` acceptance test in
+parallel and get one table (strictly read-only on the boxes):
+
+```bash
+./scripts/fleet_check.sh magic@10.0.0.227 magic@magicpi-ab12.local
+./scripts/fleet_check.sh --hosts fleet.txt --with-services -j 8   # one host per line, # comments
+```
+
+It prints host / board / version / update channel / uptime /
+pass-warn-fail counts / result / first failing check, and exits non-zero
+if any box is not shippable or unreachable. `--log-dir DIR` keeps each
+box's full output.
+
 ## Build & dependencies
 
 The kiosk engine must build and run on **both Raspberry Pi 4B and Raspberry Pi 5** — one golden image and one release artifact serve both board types, with per-board behavior resolved at runtime (`platform::PlatformProfile`) and Pi 5-only features (N64/Dreamcast emulation) gated off on the Pi 4. See the "Dual-board contract" section in [CLAUDE.md](CLAUDE.md) before adding features. The kiosk engine targets Raspberry Pi OS Lite 64-bit on **Trixie (Debian 13)**. Bookworm is no longer supported as of v1.7.0 — the Pi 5 groundwork (2026-07-20) moved `gpio_manager` to the libgpiod 2.x API, which Bookworm does not ship, and the CI release binary links Trixie's glibc. **v1.6.4 is the last Bookworm-compatible release**; Bookworm-era Pi 4B units cannot OTA past it (the update fails cleanly and rolls back) and need an OS migration to rejoin the release train. Required system packages — install via [`magic_dingus_box_cpp/scripts/install_deps.sh`](magic_dingus_box_cpp/scripts/install_deps.sh):
@@ -81,14 +102,16 @@ The kiosk engine must build and run on **both Raspberry Pi 4B and Raspberry Pi 5
 - `libdrm`, `libgbm`, `libegl`, `libgles2` — DRM/KMS + EGL + OpenGL ES rendering substrate
 - `libevdev` — input device events
 - `libgpiod` — power button and LED GPIO
-- `libsystemd` — sd_notify watchdog integration (optional, auto-detected)
+- `libsystemd` — sd_notify readiness + watchdog. **Load-bearing, not optional**: CMake only auto-detects it, but the kiosk's systemd unit is `Type=notify` with a watchdog, so a binary built without it never sends `READY=1` and systemd kills a healthy kiosk on every box (shipped once, v1.7.2). The release workflow asserts `READY=1` is in the binary.
 - `gstreamer-1.0` + `gstreamer-app-1.0` + `gstreamer-video-1.0` + `gstreamer-gl-1.0` + `gstreamer1.0-libav` — video pipeline
 - `yaml-cpp`, `jsoncpp` — config and playlist parsing
 - `libsqlite3` + the `sqlite3` CLI — Media Browser library/watch-state store (`media_browser.db`); the CLI backs the on-box acceptance checks (Media Browser builds only)
+- `libcurl` (`libcurl4-openssl-dev`) — TMDB / Radarr / Sonarr / Prowlarr / qBittorrent HTTP clients (Media Browser builds only; CMake `REQUIRED`)
+- `libtorrent-rasterbar` + `boost` headers (`libboost-dev`) — Media Browser torrent-session layer; Boost is a header dependency of libtorrent (Media Browser builds only; CMake `REQUIRED`)
 
 Plus header-only deps fetched at build time: `stb_truetype.h`, `stb_image.h`, `spdlog` (via CMake `FetchContent`), `Catch2` (test targets only).
 
-The web admin requires Python 3 + Flask only; service launched by [`magic_dingus_box_cpp/systemd/magic-dingus-web.service`](magic_dingus_box_cpp/systemd/magic-dingus-web.service).
+The web admin requires Python 3 with Flask, PyYAML, flask-sock (phone remote WebSocket), python3-evdev (phone remote virtual gamepad) and python3-gunicorn (production WSGI server, gthread worker; the launcher falls back to Werkzeug's server when it is absent, and OTA installs it via `update.sh`'s `ensure_web_server_dep`); service launched by [`systemd/magic-dingus-web.service`](systemd/magic-dingus-web.service).
 
 ## License
 

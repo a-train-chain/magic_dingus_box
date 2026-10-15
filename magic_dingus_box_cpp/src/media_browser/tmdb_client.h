@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -166,6 +167,24 @@ class TmdbClient {
 public:
     explicit TmdbClient(std::string api_key);
     ~TmdbClient();
+
+    // Per-THREAD cancellation for every call made on the current thread
+    // while the guard is alive. When *flag becomes true, an in-flight
+    // transfer aborts at libcurl's next progress tick (~1 s worst case,
+    // usually far sooner) and no further retry is attempted — so a worker
+    // that would otherwise sit in 3 x 25 s retries with the internet down
+    // exits promptly and its join() is short. Thread-local (not a member)
+    // because the client is shared by many screens' workers; each worker
+    // cancels only its own calls. `flag` must outlive the guard.
+    class ScopedCancel {
+    public:
+        explicit ScopedCancel(const std::atomic<bool>* flag);
+        ~ScopedCancel();
+        ScopedCancel(const ScopedCancel&) = delete;
+        ScopedCancel& operator=(const ScopedCancel&) = delete;
+    private:
+        const std::atomic<bool>* prev_;
+    };
 
     // Search (query-based).
     std::vector<TmdbSearchHit> search_movie(const std::string& query);

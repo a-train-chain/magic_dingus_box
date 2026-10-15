@@ -62,6 +62,10 @@ TEST_CASE("normalize_tmdb_poster_url: only rewrites the size segment",
     // non-TMDB URL passes through untouched
     REQUIRE(one("https://example.com/posters/abc.jpg")
             == "https://example.com/posters/abc.jpg");
+    // ...even when another host happens to use the same /t/p/ path shape:
+    // only image.tmdb.org URLs are rewritten.
+    REQUIRE(one("https://example.com/t/p/original/abc.jpg")
+            == "https://example.com/t/p/original/abc.jpg");
     // empty stays empty
     REQUIRE(one("") == "");
 }

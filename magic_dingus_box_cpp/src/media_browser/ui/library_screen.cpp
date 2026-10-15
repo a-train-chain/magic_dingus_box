@@ -1,4 +1,5 @@
 #include "media_browser/ui/library_screen.h"
+#include "media_browser/ui/worker_pool.h"
 #include <filesystem>
 #include <system_error>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "app/redraw_gate.h"
 #include "app/settings_persistence.h"
 #include "media_browser/library/watch_store.h"
 #include "media_browser/radarr/radarr_client.h"
@@ -243,6 +245,9 @@ void LibraryScreen::enter() {
     // visit stays visible until apply_pending() lands (~50-500ms), same
     // tradeoff as QueueScreen. The very first entry has no prior data, so
     // render() shows its "Loading library..." state until loaded_ flips.
+    // Re-entry follows Detail adds/removes, which the movie-list cache's
+    // queue-change trigger cannot see — ask for a fresh list.
+    force_movie_list_.store(true, std::memory_order_release);
     refresh_async();
 }
 
@@ -270,7 +275,16 @@ void LibraryScreen::refresh_async() {
     // Join a previous finished-but-not-joined worker before reusing the
     // handle (its result was already drained; this just reaps the thread).
     if (refresh_worker_.joinable()) refresh_worker_.join();
-    refresh_worker_ = std::thread(&LibraryScreen::run_refresh, this);
+    try {
+        refresh_worker_ = std::thread([this] {
+            run_guarded("library refresh", [this] { run_refresh(); });
+        });
+    } catch (const std::system_error& e) {
+        // An uncaught throw from the thread ctor is std::terminate. Release
+        // the CAS so the next update() tick simply tries again.
+        spdlog::warn("[LibraryScreen] refresh spawn failed: {}", e.what());
+        refresh_in_flight_.store(false, std::memory_order_release);
+    }
 }
 
 void LibraryScreen::run_refresh() {
@@ -279,29 +293,71 @@ void LibraryScreen::run_refresh() {
     // except pending_/result_ready_/refresh_in_flight_ — and NEVER
     // watch_store_, which is main/render-thread-only by its own contract
     // (apply_pending reads it at drain time).
+    //
+    // Clears refresh_in_flight_ on EVERY exit path: run_guarded swallows a
+    // throw, and a latched flag would stop all refreshes for the session
+    // with the grid frozen on its last snapshot.
+    struct InflightGuard {
+        std::atomic<bool>& flag;
+        ~InflightGuard() { flag.store(false, std::memory_order_release); }
+    } inflight_guard{refresh_in_flight_};
     PendingResult r;
-    r.library = radarr_.get_library();
 
-    std::unordered_map<int, int> radarr_to_tmdb;
-    for (const auto& m : r.library) {
-        if (m.tmdb_id > 0) radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
+    // ---- Movies (Radarr) — CHECKED reads throughout ----
+    // An unchecked read turned every Radarr blip, and the 20-40 s after
+    // each FullPause movie while the container restarts, into an EMPTY
+    // movie list ("Library is empty"). A failed read now publishes
+    // radarr_ok=false and apply_pending keeps the last good list.
+    auto queue = radarr_.get_queue_checked();
+    std::unordered_set<int> queue_ids;
+    if (queue.has_value()) {
+        for (const auto& qi : *queue) queue_ids.insert(qi.movie_id);
     }
-    // Classify each queue item into one of three badge buckets. Key the
-    // importing bucket off tracked_download_state ALONE (not state) — an
-    // importing item's primary state may still read "downloading" or
-    // "completed". Precedence when building: importBlocked → stuck;
-    // importing/importPending → importing; everything else → downloading.
-    for (const auto& qi : radarr_.get_queue()) {
-        auto it = radarr_to_tmdb.find(qi.movie_id);
-        if (it == radarr_to_tmdb.end()) continue;
-        const MediaRef ref{MediaKind::Movie, it->second};
-        const std::string& tds = qi.tracked_download_state;
-        if (tds == "importBlocked" || tds == "importFailed") {
-            r.stuck.insert(ref);
-        } else if (tds == "importing" || tds == "importPending") {
-            r.importing.insert(ref);
+    const auto now = std::chrono::steady_clock::now();
+    const bool list_stale =
+        force_movie_list_.exchange(false, std::memory_order_acq_rel) ||
+        !movie_list_cache_valid_ ||
+        now - movie_list_cache_at_ > std::chrono::milliseconds(kMovieListTtlMs) ||
+        !queue.has_value() || queue_ids != movie_list_cache_queue_ids_;
+    bool list_failed = false;
+    if (list_stale) {
+        if (auto lib = radarr_.get_library_checked()) {
+            movie_list_cache_ = std::move(*lib);
+            movie_list_cache_valid_ = true;
+            movie_list_cache_at_ = now;
+            movie_list_cache_queue_ids_ = queue_ids;
         } else {
-            r.downloading.insert(ref);
+            list_failed = true;
+            // Re-ask next tick rather than serving the cache as if fresh.
+            force_movie_list_.store(true, std::memory_order_release);
+        }
+    }
+    r.radarr_ok = movie_list_cache_valid_ && !list_failed;
+    if (r.radarr_ok) r.library = movie_list_cache_;  // COPY: the cache stays
+    r.radarr_queue_ok = r.radarr_ok && queue.has_value();
+
+    if (r.radarr_queue_ok) {
+        std::unordered_map<int, int> radarr_to_tmdb;
+        for (const auto& m : r.library) {
+            if (m.tmdb_id > 0) radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
+        }
+        // Classify each queue item into one of three badge buckets. Key the
+        // importing bucket off tracked_download_state ALONE (not state) — an
+        // importing item's primary state may still read "downloading" or
+        // "completed". Precedence when building: importBlocked → stuck;
+        // importing/importPending → importing; everything else → downloading.
+        for (const auto& qi : *queue) {
+            auto it = radarr_to_tmdb.find(qi.movie_id);
+            if (it == radarr_to_tmdb.end()) continue;
+            const MediaRef ref{MediaKind::Movie, it->second};
+            const std::string& tds = qi.tracked_download_state;
+            if (tds == "importBlocked" || tds == "importFailed") {
+                r.stuck.insert(ref);
+            } else if (tds == "importing" || tds == "importPending") {
+                r.importing.insert(ref);
+            } else {
+                r.downloading.insert(ref);
+            }
         }
     }
 
@@ -321,10 +377,10 @@ void LibraryScreen::run_refresh() {
             // both ids). Without this, the inclusion rule has no source
             // for a freshly-started 0-file season download — it would
             // never appear in the Library and no TV tile could ever show
-            // DOWNLOADING. A nullopt queue is treated as empty, same as
-            // the movie path's bare get_queue() above: the library
-            // answered, so the grid still shows; only the badge/inclusion
-            // signal for in-flight grabs is missing this cycle.
+            // DOWNLOADING. A nullopt queue is treated as empty: the
+            // library answered, so the grid still shows; only the
+            // badge/inclusion signal for in-flight grabs is missing this
+            // cycle.
             std::unordered_map<int, int> sonarr_to_tmdb;
             sonarr_to_tmdb.reserve(r.tv_library.size());
             for (const auto& s : r.tv_library) {
@@ -349,7 +405,7 @@ void LibraryScreen::run_refresh() {
         pending_ = std::move(r);
     }
     result_ready_.store(true);
-    refresh_in_flight_.store(false);
+    // refresh_in_flight_ is cleared by inflight_guard as this returns.
 }
 
 void LibraryScreen::apply_pending() {
@@ -367,11 +423,19 @@ void LibraryScreen::apply_pending() {
     // LibraryEntry* into entries_, and rebuild_view() reads
     // state_.display_settings and mutates grid_cursor_/scroll_row_ — so
     // all four containers are swapped+rebuilt atomically on one thread.
-    library_          = std::move(r.library);
+    // Movies: replaced only when Radarr answered — otherwise the LAST GOOD
+    // list stays (render() says Radarr is offline), never an empty one.
+    // Movie badge refs follow the same rule via carry_forward_movie_refs;
+    // TV refs always follow this cycle (Sonarr's own policy, above).
+    if (r.radarr_ok) library_ = std::move(r.library);
+    radarr_ok_        = r.radarr_ok;
     tv_library_       = std::move(r.tv_library);
-    downloading_refs_ = std::move(r.downloading);
-    stuck_refs_       = std::move(r.stuck);
-    importing_refs_   = std::move(r.importing);
+    downloading_refs_ = carry_forward_movie_refs(
+        std::move(r.downloading), downloading_refs_, r.radarr_queue_ok);
+    stuck_refs_       = carry_forward_movie_refs(
+        std::move(r.stuck), stuck_refs_, r.radarr_queue_ok);
+    importing_refs_   = carry_forward_movie_refs(
+        std::move(r.importing), importing_refs_, r.radarr_queue_ok);
     sonarr_ok_        = r.sonarr_ok;
     loaded_ = true;
 
@@ -390,6 +454,7 @@ void LibraryScreen::apply_pending() {
     entries_ = build_library_entries(library_, tv_library_, watched_movie_ids,
                                      tv_watched_counts, downloading_refs_,
                                      started_movie_ids);
+    stats_dirty_ = true;
     rebuild_view();
 }
 
@@ -637,6 +702,39 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
 // Rendering
 // ---------------------------------------------------------------------------
 
+uint64_t LibraryScreen::redraw_signature() const {
+    app::ContentSignature sig;
+    sig.add(static_cast<uint64_t>(loaded_));
+    sig.add(static_cast<uint64_t>(radarr_ok_));
+    sig.add(static_cast<uint64_t>(sonarr_ok_));
+    sig.add(static_cast<uint64_t>(entries_.size()));
+    sig.add(static_cast<uint64_t>(view_.size()));
+    sig.add(static_cast<uint64_t>(grid_cursor_));
+    sig.add(static_cast<uint64_t>(scroll_row_));
+    sig.add(static_cast<uint64_t>(overlay_state_));
+    // The visible page: 2 rows (render()'s kVisibleRows) of kGridCols.
+    const int first = scroll_row_ * kGridCols;
+    const int last = std::min(static_cast<int>(view_.size()),
+                              (scroll_row_ + 2) * kGridCols);
+    for (int i = std::max(0, first); i < last; ++i) {
+        const LibraryEntry* en = view_[static_cast<std::size_t>(i)];
+        if (en == nullptr) continue;
+        sig.add(static_cast<uint64_t>(en->ref.kind));
+        sig.add(static_cast<uint64_t>(en->ref.id));
+        sig.add(en->title);
+        sig.add(static_cast<uint64_t>(en->year));
+        sig.add(en->poster_url);
+        sig.add(static_cast<uint64_t>(en->file_count));
+        sig.add(static_cast<uint64_t>(en->downloading));
+        sig.add(static_cast<uint64_t>(en->started));
+        sig.add(static_cast<uint64_t>(stuck_refs_.count(en->ref)));
+        sig.add(static_cast<uint64_t>(importing_refs_.count(en->ref)));
+        sig.add(static_cast<uint64_t>(en->movie != nullptr &&
+                                      file_runtime_suspicious(*en->movie)));
+    }
+    return sig.value();
+}
+
 void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     tick_overlay_animation();
 
@@ -662,9 +760,10 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // swaps in a fresh library — well within the 2s refresh cadence).
     {
         const auto now = std::chrono::steady_clock::now();
-        if (stats_line_.empty() ||
+        if (stats_line_.empty() || stats_dirty_ ||
             now - last_stats_refresh_ >= std::chrono::seconds(5)) {
             last_stats_refresh_ = now;
+            stats_dirty_ = false;
             // Mixed basis: entries_ is the grid's truth (movies + included
             // TV), so the count and the used-bytes sum both read it. Movie
             // bytes come from the file, TV bytes from Sonarr's
@@ -682,11 +781,23 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             std::error_code ec;
             auto info = std::filesystem::space("/mnt/ssd/library", ec);
             if (!ec) free_bytes = static_cast<int64_t>(info.available);
+            // Shared format_bytes() covers bytes > 0 only; an empty
+            // library is a real zero and reads "0 B".
+            const std::string used_str = used_bytes > 0
+                                             ? format_bytes(used_bytes)
+                                             : std::string("0 B");
+            const std::string free_str = free_bytes > 0
+                                             ? format_bytes(free_bytes)
+                                             : std::string();
             stats_line_ =
                 std::to_string(entries_.size()) + " titles  ·  "
-                + (used_bytes > 0 ? format_bytes(used_bytes)
-                                  : std::string("0 B")) + " used  ·  "
-                + (free_bytes > 0 ? format_bytes(free_bytes) + " free" : "");
+                + used_str + " used  ·  "
+                + (free_str.empty() ? std::string() : free_str + " free");
+            // The overlay's stat lines (same numbers, its own layout).
+            stats_titles_str_ = std::to_string(entries_.size()) + " titles";
+            stats_used_str_ = used_str + " used";
+            stats_free_str_ = (free_str.empty() ? std::string("\xE2\x80\x94")
+                                                : free_str) + " free";
         }
     }
     const std::string& stats = stats_line_;
@@ -703,9 +814,20 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Right-aligned on the stats row so the layout below never shifts.
     // Drawn before the empty-state early-returns on purpose: a
     // movies-empty box mid-outage still needs the explanation.
-    if (sonarr_ && !sonarr_ok_) {
+    //
+    // The Radarr half joins it on the same row: on a failed read the movie
+    // grid keeps its LAST GOOD list (never an empty one), and this line is
+    // what says those tiles may be out of date. One combined string when
+    // both are down, so the two never overprint each other.
+    const bool tv_down = sonarr_ && !sonarr_ok_;
+    const bool movies_down = loaded_ && !radarr_ok_;
+    if (tv_down || movies_down) {
         const std::string warn_text =
-            "Sonarr offline \xE2\x80\x94 TV shows hidden";
+            tv_down && movies_down
+                ? "Radarr + Sonarr offline \xE2\x80\x94 TV hidden, movies "
+                  "may be stale"
+            : tv_down ? "Sonarr offline \xE2\x80\x94 TV shows hidden"
+                      : "Radarr offline \xE2\x80\x94 movies may be out of date";
         const int warn_w = r.mb_text_width(warn_text, 14);
         r.mb_draw_text(warn_text,
                        static_cast<float>(screen_w - chrome::kSafeInset_px
@@ -739,9 +861,11 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         return;
     }
     if (view_.empty()) {
-        const std::string msg = entries_.empty()
-            ? "Library is empty — add movies from Browse"
-            : "No matches for the current filter";
+        // Never "Library is empty" while Radarr is not answering — that is
+        // an outage (or a container still restarting after a movie), and
+        // the copy decision is library_view.cpp's, under Mac tests.
+        const std::string msg =
+            library_empty_message(!entries_.empty(), !radarr_ok_);
         const int tw = r.mb_text_width(msg, 18);
         r.mb_draw_text(msg,
                        static_cast<float>((screen_w - tw) / 2),
@@ -874,6 +998,39 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                static_cast<float>(chip_y + kTvChipPadY
                                                   + kTvChipFontPx - 2),
                                kTvChipFontPx, th.accent);
+            }
+
+            // Emptied show (every season deleted, nothing in flight): still in
+            // the Library by design, so say why it cannot play. Dim the poster
+            // and tag its bottom edge; the top-left slot belongs to the TV chip.
+            if (en->ref.kind == MediaKind::Tv && en->file_count == 0 &&
+                !en->downloading && !state_badge_shown) {
+                r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                               static_cast<float>(cell_w),
+                               static_cast<float>(poster_h),
+                               ::ui::Color(0, 0, 0, 150));
+                constexpr int kEmptyFontPx = 12;
+                constexpr int kEmptyPadX = 6;
+                constexpr int kEmptyPadY = 2;
+                const std::string empty_label = "NOTHING DOWNLOADED";
+                const int tw = r.mb_text_width(empty_label, kEmptyFontPx);
+                const int bw = tw + 2 * kEmptyPadX;
+                const int bh = kEmptyFontPx + 2 * kEmptyPadY;
+                const int bx = x + (cell_w - bw) / 2;
+                // Raised above the year pill (bottom-right) so they never overlap.
+                const int by = y + poster_h - bh - chrome::kPad1
+                             - chrome::kBadgeBoxH - chrome::kPad1;
+                r.mb_fill_rect(static_cast<float>(bx), static_cast<float>(by),
+                               static_cast<float>(bw), static_cast<float>(bh),
+                               th.bg);
+                r.mb_stroke_rect(static_cast<float>(bx), static_cast<float>(by),
+                                 static_cast<float>(bw), static_cast<float>(bh),
+                                 2.0f, th.dim);
+                r.mb_draw_text(empty_label,
+                               static_cast<float>(bx + kEmptyPadX),
+                               static_cast<float>(by + kEmptyPadY +
+                                                  kEmptyFontPx - 2),
+                               kEmptyFontPx, th.dim);
             }
 
             // Meta line below poster: title only, wrapped to 2 lines
@@ -1031,42 +1188,17 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // Three stat lines in cream body font, 14 px each.
         constexpr int kStatFontPx = 14;
         const int stat_y0 = title_baseline + 24;
-        char buf_titles[64], buf_used[64], buf_free[64];
-        std::snprintf(buf_titles, sizeof(buf_titles), "%zu titles",
-                      entries_.size());
-        int64_t used_bytes_ov = 0;
-        for (const LibraryEntry& en : entries_) {
-            if (en.movie) {
-                if (en.movie->has_file) used_bytes_ov += en.movie->file_size_bytes;
-            } else if (en.series) {
-                used_bytes_ov += en.series->size_on_disk_bytes;
-            }
-        }
-        // Shared format_bytes() covers bytes > 0 only; an empty library is a
-        // real zero and keeps the "0 B" the deleted local copy produced.
-        const std::string used_str = used_bytes_ov > 0
-                                         ? format_bytes(used_bytes_ov)
-                                         : std::string("0 B");
-        std::snprintf(buf_used, sizeof(buf_used), "%s used",
-                      used_str.c_str());
-        int64_t free_bytes_ov = 0;
-        {
-            std::error_code ec;
-            auto info = std::filesystem::space("/mnt/ssd/library", ec);
-            if (!ec) free_bytes_ov = static_cast<int64_t>(info.available);
-        }
-        std::snprintf(buf_free, sizeof(buf_free), "%s free",
-                      free_bytes_ov > 0 ? format_bytes(free_bytes_ov).c_str() : "—");
-
-        r.mb_draw_text(buf_titles,
+        // Cached with the header stats line above (refreshed on library
+        // change or every 5 s) — not recomputed per frame.
+        r.mb_draw_text(stats_titles_str_,
                        static_cast<float>(content_x),
                        static_cast<float>(stat_y0),
                        kStatFontPx, th.fg);
-        r.mb_draw_text(buf_used,
+        r.mb_draw_text(stats_used_str_,
                        static_cast<float>(content_x),
                        static_cast<float>(stat_y0 + 18),
                        kStatFontPx, th.fg);
-        r.mb_draw_text(buf_free,
+        r.mb_draw_text(stats_free_str_,
                        static_cast<float>(content_x),
                        static_cast<float>(stat_y0 + 36),
                        kStatFontPx, th.fg);

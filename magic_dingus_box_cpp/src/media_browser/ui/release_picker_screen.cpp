@@ -71,9 +71,10 @@ ReleasePickerScreen::~ReleasePickerScreen() {
     // before results land — load_state_ is already Idle by then so
     // there's nothing to race against.
     load_generation_.fetch_add(1);
-    for (auto& t : load_workers_) {
-        if (t.joinable()) t.join();
-    }
+    load_workers_.join_all();
+    // The grab worker publishes into members; bounded by the 5 s client
+    // timeout. A joinable std::thread member at destruction is terminate().
+    if (grab_worker_.joinable()) grab_worker_.join();
 }
 
 void ReleasePickerScreen::load_async(int radarr_movie_id,
@@ -104,21 +105,37 @@ void ReleasePickerScreen::load_async(int radarr_movie_id,
     spdlog::info("[release_picker] load_async movie_id={} title='{}' gen={}",
                  radarr_movie_id, movie_title_, gen);
 
-    // Opportunistically reap older workers so a spam-clicking user doesn't
-    // accumulate dozens of threads — Radarr's interactive search timeout
-    // is 45s, so the front workers in this vector are usually long-done
-    // and join() returns immediately. Same heuristic ProwlarrClient uses.
-    if (load_workers_.size() > 4) {
-        if (load_workers_.front().joinable()) load_workers_.front().join();
-        load_workers_.erase(load_workers_.begin());
-    }
+    // Reap finished workers (instant joins only — never wait on one that
+    // is still inside Radarr's up-to-45 s interactive search). A stale
+    // worker's result is discarded by the generation check, so letting it
+    // run to completion in the background costs nothing but a thread.
+    load_workers_.reap();
 
     // Tracked rather than detached: ~ReleasePickerScreen joins every
     // worker so a thread mid-CURL doesn't outlive the screen and segfault
-    // on result publication. Same pattern DetailScreen's tmdb_workers_
-    // uses.
-    load_workers_.emplace_back(&ReleasePickerScreen::run_load, this,
-                               gen, radarr_movie_id);
+    // on result publication. Any exception (e.g. a Json::LogicError on an
+    // odd-shaped release) becomes Failed instead of std::terminate.
+    try {
+        load_workers_.spawn([this, gen, radarr_movie_id]() {
+            try {
+                run_load(gen, radarr_movie_id);
+            } catch (const std::exception& e) {
+                if (gen == load_generation_.load()) {
+                    load_state_.store(LoadState::Failed);
+                }
+                spdlog::warn("[release_picker] load gen={} threw: {}",
+                             gen, e.what());
+            } catch (...) {
+                if (gen == load_generation_.load()) {
+                    load_state_.store(LoadState::Failed);
+                }
+                spdlog::warn("[release_picker] load gen={} threw", gen);
+            }
+        });
+    } catch (...) {
+        load_state_.store(LoadState::Failed);
+        spdlog::error("[release_picker] could not spawn load worker");
+    }
 }
 
 void ReleasePickerScreen::run_load(int gen, int radarr_movie_id) {
@@ -157,6 +174,7 @@ void ReleasePickerScreen::run_load(int gen, int radarr_movie_id) {
     std::vector<ReleaseCandidate> candidates;
     candidates.reserve(json_releases.size());
     for (const auto& r : json_releases) {
+        if (!r.isObject()) continue;  // .get() on a non-object throws
         ReleaseCandidate c;
         c.title        = r.get("title", "").asString();
         c.indexer      = r.get("indexer", "").asString();
@@ -206,6 +224,7 @@ void ReleasePickerScreen::run_load(int gen, int radarr_movie_id) {
 }
 
 void ReleasePickerScreen::update() {
+    load_workers_.reap();
     if (load_state_.load() != LoadState::Ready) return;
     std::vector<ReleaseCandidate> candidates;
     std::string title;
@@ -242,8 +261,58 @@ void ReleasePickerScreen::set_candidates(std::string movie_title,
     scroll_top_ = 0;
 }
 
+Screen ReleasePickerScreen::drain_grab_result() {
+    if (!grab_done_.exchange(false, std::memory_order_acq_rel)) {
+        return Screen::ReleasePicker;
+    }
+    // Register a stall watch so DownloadWatchdog can later surface a
+    // "Pick another" prompt if this manually-chosen release also stalls.
+    // No-op if main.cpp didn't wire the watchdog or if tmdb_id wasn't
+    // forwarded by the picker callback (defensive — both should be set in
+    // production). loading_movie_id_ is populated by load_async() with the
+    // radarr_movie_id passed in from the picker callback (Detail's "Pick a
+    // source" or the stall-modal "Pick another" deep-link); forwarding it
+    // lets a later stall event deep-link straight back into the picker.
+    const auto watch = [this] {
+        if (watchdog_ && tmdb_id_ > 0) {
+            watchdog_->watch(tmdb_id_, loading_movie_id_, movie_title_);
+        }
+    };
+    switch (grab_outcome_) {
+        case GrabOutcome::Grabbed:
+            ::ui::Toast::show("Grabbing release \xE2\x80\x94 see Queue");
+            watch();
+            return Screen::Detail;
+        case GrabOutcome::Unknown:
+            // Sent, no answer: Radarr may well have queued it. Saying
+            // "failed" here is what invites a second grab of a second
+            // release. Watched too: if it did start and stalls, the stall
+            // prompt is the remedy; if it never started, the same prompt
+            // ("no progress — pick another") is too.
+            ::ui::Toast::show("Grab may have started \xE2\x80\x94 check Queue "
+                              "before picking again");
+            watch();
+            return Screen::Detail;
+        case GrabOutcome::Refused:
+            break;
+    }
+    // Definite refusal: nothing was queued. Stay on the picker so the user
+    // can try a different row.
+    ::ui::Toast::show("Grab failed \xE2\x80\x94 Radarr refused it; try "
+                      "another release");
+    return Screen::ReleasePicker;
+}
+
 Screen ReleasePickerScreen::handle_input(
     const std::vector<platform::InputEvent>& events) {
+    // Async grab: its outcome decides the next screen, so it is drained
+    // before anything else; while it runs, every input is swallowed (see
+    // the header — bounded by the client's 5 s timeout).
+    if (Screen s = drain_grab_result(); s != Screen::ReleasePicker) return s;
+    if (grab_in_flight_.load(std::memory_order_acquire)) {
+        return Screen::ReleasePicker;
+    }
+
     // While loading or after a failed load, only BTN4 (back) is
     // interactive — there are no rows to navigate or grab. We also
     // bump the generation counter on back-out from Loading so an
@@ -310,33 +379,31 @@ Screen ReleasePickerScreen::handle_input(
                 ::ui::Toast::show("Can't grab \xE2\x80\x94 " + why);
                 continue;
             }
-            Json::Value payload = to_release_json(cand);
-            bool ok = radarr_.grab_release(payload);
-            if (ok) {
-                ::ui::Toast::show("Grabbing release \xE2\x80\x94 see Queue");
-                // Register a stall watch so DownloadWatchdog can later
-                // surface a "Pick another" prompt if this manually-chosen
-                // release also stalls. No-op if main.cpp didn't wire the
-                // watchdog or if tmdb_id wasn't forwarded by the picker
-                // callback (defensive — both should be set in production).
-                if (watchdog_ && tmdb_id_ > 0) {
-                    // loading_movie_id_ is populated by load_async() with
-                    // the radarr_movie_id passed in from the picker
-                    // callback (DetailScreen::do_pick_source or the
-                    // stall-modal "Pick another" deep-link). Forwarding
-                    // it lets the watchdog later raise a stall event
-                    // that carries radarr_movie_id, which the stall
-                    // modal uses to deep-link straight back into the
-                    // picker (skipping the Detail intermediate).
-                    watchdog_->watch(tmdb_id_, loading_movie_id_,
-                                     movie_title_);
-                }
-                return Screen::Detail;
-            } else {
-                ::ui::Toast::show("Grab failed \xE2\x80\x94 see Radarr logs");
-                // Stay on picker so the user can try a different row.
-                continue;
+            // The POST runs on grab_worker_ (5 s timeout — never on the
+            // render thread); drain_grab_result() reports and navigates.
+            // grab_in_flight_ was false to reach here (handle_input
+            // returns early while it is set), so the previous worker has
+            // finished and this join is instant.
+            if (grab_worker_.joinable()) grab_worker_.join();
+            grab_in_flight_.store(true, std::memory_order_release);
+            ::ui::Toast::show("Sending to Radarr\xE2\x80\xA6");
+            try {
+                grab_worker_ = std::thread(
+                    [this, payload = to_release_json(cand)]() {
+                        // A throw is reported as Unknown, never Refused:
+                        // the POST may already have gone out.
+                        GrabOutcome o = GrabOutcome::Unknown;
+                        run_guarded("release grab",
+                                    [&] { o = radarr_.grab_release(payload); });
+                        grab_outcome_ = o;
+                        grab_done_.store(true, std::memory_order_release);
+                        grab_in_flight_.store(false, std::memory_order_release);
+                    });
+            } catch (const std::system_error&) {
+                grab_in_flight_.store(false, std::memory_order_release);
+                ::ui::Toast::show("Couldn't start the grab \xE2\x80\x94 try again");
             }
+            return Screen::ReleasePicker;
         }
     }
     return Screen::ReleasePicker;

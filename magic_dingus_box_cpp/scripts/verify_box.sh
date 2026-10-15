@@ -64,11 +64,229 @@ esac
 PLAT=$(journalctl -u "$UNIT" -b --no-pager 2>/dev/null | grep -oE "Platform: Raspberry Pi [0-9].*" | tail -1)
 if [[ -n "$PLAT" ]]; then pass "detection: $PLAT"; else warn "no platform log line this boot"; fi
 
+# TEST-ONLY MDB_PLATFORM_POLICY_OVERRIDE (CLAUDE.md "Dual-board contract"):
+# a Pi 5 rehearsing Pi 4B software policy must NEVER be cloned or shipped,
+# so ANY non-empty value is a FAIL — even one the binaries ignore. Four
+# independent sources, because an override can arrive by any of them: the
+# kiosk and web units' Environment= (unit file + every drop-in, which is
+# what `systemctl show` merges), the kiosk's EnvironmentFile (services/.env,
+# which `systemctl show -p Environment` does NOT include), the RUNNING
+# processes' environment, and the kiosk's own report in kiosk_status.json.
+#
+# Pure parser, pinned by tests/local/verify_box_policy_override.bats:
+# prints the override's value from `systemctl show -p Environment --value`
+# output (space-separated, optionally quoted KEY=VAL) or env-file / environ
+# text (one per line, optional `export`). Prints nothing when unset/empty.
+policy_override_in_env() {
+  # shellcheck disable=SC2020  # deliberate: space AND tab each become a newline
+  tr ' \t' '\n\n' <<<"${1:-}" \
+    | sed -nE "s/^[\"']?MDB_PLATFORM_POLICY_OVERRIDE=[\"']?([^\"']*)[\"']?\$/\\1/p" \
+    | tail -1
+}
+OVR_HITS=()
+for _u in "$UNIT" magic-dingus-web.service; do
+  _v=$(policy_override_in_env "$(systemctl show -p Environment --value "$_u" 2>/dev/null)")
+  [[ -n "$_v" ]] && OVR_HITS+=("${_u} Environment=${_v}")
+  _pid=$(systemctl show -p MainPID --value "$_u" 2>/dev/null)
+  if [[ -n "$_pid" && "$_pid" != 0 && -r "/proc/${_pid}/environ" ]]; then
+    _v=$(policy_override_in_env "$(tr '\0' '\n' < "/proc/${_pid}/environ" 2>/dev/null)")
+    [[ -n "$_v" ]] && OVR_HITS+=("${_u} running process=${_v}")
+  fi
+done
+if [[ -r "${BASE}/services/.env" ]]; then
+  _v=$(policy_override_in_env "$(cat "${BASE}/services/.env" 2>/dev/null)")
+  [[ -n "$_v" ]] && OVR_HITS+=("services/.env=${_v}")
+fi
+_v=$(python3 -c "
+import json
+s=json.load(open('${DATA}/kiosk_status.json'))
+print(s.get('platform_policy_override') or '')" 2>/dev/null)
+[[ -n "$_v" ]] && OVR_HITS+=("kiosk_status.json platform_policy_override=${_v}")
+if (( ${#OVR_HITS[@]} )); then
+  fail "TEST-ONLY platform policy override is ON ($(IFS=';'; echo "${OVR_HITS[*]}")) — remove the drop-ins (CLAUDE.md 'Platform policy override'); this box must not be cloned or shipped"
+else
+  pass "no platform policy override (MDB_PLATFORM_POLICY_OVERRIDE unset)"
+fi
+
 ARM_MHZ=$(( $(vcgencmd measure_clock arm 2>/dev/null | cut -d= -f2) / 1000000 ))
 TEMP=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2)
 THROT=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
 if [[ "$THROT" == "0x0" ]]; then pass "clock ${ARM_MHZ}MHz, ${TEMP}, no throttling"
 else fail "THROTTLED (${THROT}) at ${TEMP} — check cooling/PSU"; fi
+
+# ---------------------------------------------------------------------
+header "First boot & boot config"
+# ---------------------------------------------------------------------
+# A clone that did not finish first_boot.sh still carries SOURCE-BOX state
+# (hostname, saves, pairing, credentials) while looking perfectly healthy —
+# the 2026-08-04 parted failure killed first boot at Step 2 on every unit
+# and nothing else in this script could see it.
+#
+# The log is APPENDED across runs and a clone inherits the source's copy, so
+# only the LAST run counts: from the final "starting" line to the end.
+FB_LOG=/var/log/magic-first-boot.log
+FB_START="=== Magic Dingus Box first-boot setup starting ==="
+FB_DONE="=== Magic Dingus Box first-boot setup complete ==="
+if [[ -r "$FB_LOG" ]]; then
+  FB_LAST=$(awk -v s="$FB_START" 'index($0, s) { buf = "" } { buf = buf $0 "\n" } END { printf "%s", buf }' "$FB_LOG")
+  if grep -qF "=== FAILED" <<<"$FB_LAST"; then
+    fail "first boot FAILED on its last run — $(grep -F '=== FAILED' <<<"$FB_LAST" | head -1 | sed 's/^[^ ]* //') (see ${FB_LOG})"
+  elif grep -qF "$FB_DONE" <<<"$FB_LAST"; then
+    pass "first boot completed (${FB_LOG})"
+  elif grep -qF "This is the SOURCE card" <<<"$FB_LAST"; then
+    # The source-card guard: this box is the clone SOURCE and correctly
+    # refused to run first boot on itself.
+    pass "first boot skipped by the source-card guard (this is the clone source)"
+  else
+    fail "first boot started but never logged completion — interrupted? (see ${FB_LOG})"
+  fi
+else
+  # The source box (or a hand-provisioned one) may never have run first boot.
+  # A clone that never ran it is caught by the enabled-unit check below.
+  pass "no first-boot log (source / hand-provisioned box)"
+fi
+
+# The unit self-disables as its final step; still enabled means first boot
+# has not completed, and it WILL run (wiping saves/pairing) on next boot.
+FB_STATE=$(systemctl is-enabled magic-first-boot.service 2>/dev/null)
+case "$FB_STATE" in
+  enabled|enabled-runtime)
+    fail "magic-first-boot.service is still ENABLED — first boot has not completed (or a clone left it on)" ;;
+  *) pass "magic-first-boot.service not enabled (${FB_STATE:-not installed})" ;;
+esac
+
+# Clone-source secrets. Two VPN clients on one WireGuard private key knock
+# each other off the tunnel — in bursts, on BOTH boxes, with nothing in
+# either box's logs naming the cause. prepare_for_cloning.sh records salted
+# fingerprints (never values) of the source box's secrets into every image;
+# a unit whose services/.env or any Docker container (running OR stopped:
+# the restart policy revives a stopped one) still holds one of them FAILs.
+# Read-only, and no value is ever printed — scripts/golden_image/
+# source_secrets_lib.sh hashes in-process from stdin.
+#
+# The SOURCE box never flags itself: restore_after_cloning.sh removes the
+# file there, and the file records the source BOARD's hardware serial, so a
+# leftover copy on that board is recognised and not compared.
+FP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../../scripts/golden_image/source_secrets_lib.sh"
+[[ -f "$FP_LIB" ]] || FP_LIB="${BASE}/scripts/golden_image/source_secrets_lib.sh"
+FP_FILE="${MDB_SOURCE_FP_FILE:-/etc/magic-dingus/source_secret_fingerprints}"
+
+# Root reads directly; a plain user goes through sudo -n (never prompts).
+_vb_docker() { if [[ $EUID -eq 0 ]]; then docker "$@"; else sudo -n docker "$@"; fi; }
+_vb_cat() { if [[ -r "$1" ]]; then cat "$1"; else sudo -n cat "$1"; fi; }
+
+# Pure-ish, pinned by tests/local/source_secret_fingerprints.bats: prints one
+# "LABEL<TAB>WHERE" line per recorded source secret found on this box, and
+# "?<TAB>WHERE" for a place it could not look. Never prints a value.
+_vb_tag() { local l; while IFS= read -r l; do [[ -n "$l" ]] && printf '%s\t%s\n' "$l" "$1"; done; return 0; }
+source_secret_hits() {
+  local fp="$1" envf="$2" ids id name l content
+  if [[ -e "$envf" ]]; then
+    if content=$(_vb_cat "$envf" 2>/dev/null); then
+      printf '%s\n' "$content" | mdb_fp_scan_env "$fp" | _vb_tag "services/.env"
+    else
+      printf '?\tservices/.env (unreadable — run with sudo)\n'
+    fi
+  fi
+  for l in "${@:3}"; do   # LABEL=PATH pairs (the Flask secret)
+    [[ -e "${l#*=}" ]] || continue
+    content=$(_vb_cat "${l#*=}" 2>/dev/null) || continue
+    [[ -n "$(mdb_fp_match_value "$fp" "$content")" ]] && printf '%s\t%s\n' "${l%%=*}" "${l#*=}"
+  done
+  command -v docker >/dev/null 2>&1 || return 0
+  if ! ids=$(_vb_docker ps -aq 2>/dev/null); then
+    printf '?\tDocker containers (docker not accessible — run with sudo)\n'
+    return 0
+  fi
+  for id in $ids; do
+    name=$(_vb_docker inspect -f '{{.Name}}' "$id" 2>/dev/null)
+    _vb_docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$id" 2>/dev/null \
+      | mdb_fp_scan_env "$fp" | _vb_tag "container ${name#/}"
+  done
+  return 0
+}
+
+# shellcheck source=/dev/null  # scripts/golden_image/source_secrets_lib.sh
+if [[ ! -f "$FP_FILE" ]]; then
+  pass "no clone-source fingerprints (source/hand-provisioned box, or a unit cloned before 2026-10 — CLONING.md shows how to audit those)"
+elif [[ ! -f "$FP_LIB" ]] || ! source "$FP_LIB" 2>/dev/null; then
+  warn "${FP_FILE} present but source_secrets_lib.sh is missing — source-box secret reuse NOT checked"
+elif mdb_fp_is_source_board "$FP_FILE"; then
+  pass "this board is the clone SOURCE recorded in ${FP_FILE} — its own secrets are not compared (restore_after_cloning.sh normally removes the file)"
+else
+  FP_HITS=$(source_secret_hits "$FP_FILE" "${BASE}/services/.env" \
+    "flask-secret=${DATA}/flask_secret.key" "flask-secret=${APP}/build/data/flask_secret.key")
+  FP_VPN=$(awk -F'\t' -v l="$MDB_FP_VPN_LABEL" '$1 == l { print $2 }' <<<"$FP_HITS" | sort -u | paste -sd, - | sed 's/,/, /g')
+  FP_OTHER=$(awk -F'\t' -v l="$MDB_FP_VPN_LABEL" '$1 != l && $1 != "?" && $1 != "" { print $1 " (" $2 ")" }' <<<"$FP_HITS" | sort -u | paste -sd, - | sed 's/,/, /g')
+  FP_BLIND=$(awk -F'\t' '$1 == "?" { print $2 }' <<<"$FP_HITS" | paste -sd, - | sed 's/,/, /g')
+  if [[ -n "$FP_VPN" ]]; then
+    fail "this unit is using the SOURCE box's WireGuard VPN key (${FP_VPN}) — the two boxes knock each other off the VPN. Generate THIS unit its own WireGuard config in the ProtonVPN dashboard (NAT-PMP on) and upload it in the Content Manager; remove the old containers first: sudo docker rm -f \$(sudo docker ps -aq --filter name=mdb_)"
+  fi
+  if [[ -n "$FP_OTHER" ]]; then
+    fail "this unit carries the SOURCE box's per-box secret(s): ${FP_OTHER} — .env/API keys: Content Manager > Media Browser > Reset Media Browser (movies on the drive are kept), then set it up again with this unit's own WireGuard config; flask-secret: delete the file, restart magic-dingus-web, re-pair phones"
+  fi
+  if [[ -z "$FP_VPN" && -z "$FP_OTHER" ]]; then
+    if [[ -n "$FP_BLIND" ]]; then
+      warn "no clone-source secret found, but NOT checked: ${FP_BLIND}"
+    else
+      pass "no clone-source secrets in use ($(mdb_fp_count "$FP_FILE") source fingerprint(s) checked against services/.env + every container)"
+    fi
+  fi
+fi
+
+# OTA update channel. The owner's own boxes may legitimately sit on beta
+# (early pre-release builds), so this is a WARN, not a FAIL — but a box
+# shipped to a customer must be on stable, and this line is what makes a
+# forgotten beta flag impossible to miss at pre-ship time. (Clones are
+# safe regardless: prepare_for_cloning.sh refuses a beta box and
+# first_boot.sh deletes the flag.)
+#
+# Pure, pinned by tests/local/verify_box_update_channel.bats: the SAME rule
+# as update.sh read_update_channel — only the exact word "beta" (whitespace
+# ignored) is beta; absent/unreadable/anything else is stable.
+update_channel_of() {
+  local c=""
+  [[ -r "${1:-}" ]] && c=$(head -c 64 "$1" 2>/dev/null | tr -d '[:space:]')
+  if [[ "$c" == "beta" ]]; then echo beta; else echo stable; fi
+}
+if [[ "$(update_channel_of "${BASE}/config/update_channel")" == "beta" ]]; then
+  warn "update channel is BETA — this box gets pre-release builds. Fine for the owner's own box; NEVER ship it: run '${APP}/scripts/update.sh channel stable'"
+else
+  pass "update channel: stable"
+fi
+
+# config.txt model-specific settings must live under [pi4]/[pi5], never
+# [all] — one image boots both boards. Filters stack in config.txt, so only
+# the MODEL filters ([piN]/[cmN]/[all]/[none]) change the context tracked
+# here; e.g. [HDMI:0] after [pi5] is still Pi 5-only.
+CFG=/boot/firmware/config.txt
+[[ -f "$CFG" ]] || CFG=/boot/config.txt
+if [[ -r "$CFG" ]]; then
+  CFG_KV=$(awk '
+    { sub(/#.*/, ""); gsub(/^[ \t]+|[ \t]+$/, "") }
+    /^\[.*\]$/ {
+      f = tolower(substr($0, 2, length($0) - 2))
+      if (f ~ /^(all|none|pi[0-9a-z]*|cm[0-9a-z]*)$/) ctx = f
+      next
+    }
+    /^(kernel|v3d_freq|gpu_mem)=/ { print (ctx == "" ? "all" : ctx) ":" $0 }
+  ' "$CFG")
+  grep -qx "pi5:kernel=kernel8.img" <<<"$CFG_KV" \
+    && pass "[pi5] kernel=kernel8.img (4 KB pages — flycast)" \
+    || fail "[pi5] kernel=kernel8.img missing from ${CFG} — flycast dies on the 16 KB-page kernel"
+  grep -q "^pi5:v3d_freq=" <<<"$CFG_KV" \
+    && pass "[pi5] $(grep '^pi5:v3d_freq=' <<<"$CFG_KV" | tail -1 | cut -d: -f2)" \
+    || fail "[pi5] v3d_freq missing from ${CFG}"
+  grep -qx "pi4:gpu_mem=76" <<<"$CFG_KV" \
+    && pass "[pi4] gpu_mem=76" \
+    || fail "[pi4] gpu_mem=76 missing from ${CFG}"
+  CFG_ALL=$(grep -E "^all:(kernel|v3d_freq|gpu_mem)=" <<<"$CFG_KV" | cut -d: -f2- | tr '\n' ' ')
+  [[ -z "$CFG_ALL" ]] \
+    && pass "no model-specific kernel/v3d_freq/gpu_mem under [all]" \
+    || fail "model-specific setting(s) under [all] in ${CFG}: ${CFG_ALL}— move them to [pi4]/[pi5]"
+else
+  warn "config.txt not found (not a Pi?)"
+fi
 
 # ---------------------------------------------------------------------
 header "Display"
@@ -116,6 +334,64 @@ if [[ -n "$SELECTED" ]]; then
     HZ=$(sed -E 's/.*@([0-9]+)Hz.*/\1/' <<<"$SELECTED")
     if (( HZ >= 50 )); then pass "refresh: ${SELECTED}"
     else fail "refresh ${HZ}Hz — kiosk frame rate is clamped to this"; fi
+fi
+
+# ---------------------------------------------------------------------
+header "Audio"
+# ---------------------------------------------------------------------
+# A box with a picture and no sound used to pass every check here — observed
+# live 2026-10-03: a udev rule hid HDMI1 from PulseAudio, the TV was on
+# HDMI1, the only sink was auto_null, and this script said SHIPPABLE.
+# A TV that takes audio lists short audio descriptors in its ELD
+# (sad_count > 0); each such port must have a PulseAudio sink.
+pa() {
+    if [[ $EUID -eq 0 ]]; then
+        local u; u="$(id -u magic 2>/dev/null)" || return 1
+        runuser -u magic -- env XDG_RUNTIME_DIR="/run/user/${u}" pactl "$@"
+    else
+        pactl "$@"
+    fi
+}
+TV_PORTS=0
+for eld in /proc/asound/vc4hdmi*/eld#0; do
+    [[ -r "$eld" ]] || continue
+    n="$(awk '$1=="sad_count"{print $2}' "$eld")"
+    [[ "${n:-0}" -gt 0 ]] && TV_PORTS=$((TV_PORTS+1))
+done
+SINKS="$(pa list short sinks 2>/dev/null || true)"
+HDMI_SINKS="$(grep -ci hdmi <<<"$SINKS" || true)"
+DEF_SINK="$(pa get-default-sink 2>/dev/null || true)"
+if [[ -e /etc/udev/rules.d/91-pulse-ignore-unused-hdmi.rules ]]; then
+    fail "udev rule hides an HDMI port from PulseAudio (91-pulse-ignore-unused-hdmi.rules) — restart magic-dingus-audio; its prepare step removes it"
+fi
+# PulseAudio must live in its OWN unit. Inside the kiosk's cgroup (the
+# pre-2026-10 layout, or init_audio.sh's legacy fallback) every kiosk
+# restart SIGKILLs it.
+AUDIO_UNIT=magic-dingus-audio.service
+PA_PID="$(pgrep -u magic -x pulseaudio 2>/dev/null | head -1 || true)"
+PA_CGROUP=""
+[[ -n "$PA_PID" ]] && PA_CGROUP="$(cat "/proc/${PA_PID}/cgroup" 2>/dev/null || true)"
+if [[ ! -f "/etc/systemd/system/${AUDIO_UNIT}" ]]; then
+    warn "${AUDIO_UNIT} not installed — PulseAudio runs inside the kiosk (legacy); run setup_memory_tuning.sh or OTA"
+elif ! systemctl is-active --quiet "$AUDIO_UNIT"; then
+    fail "${AUDIO_UNIT} is $(systemctl is-active "$AUDIO_UNIT" 2>/dev/null) — journalctl -u ${AUDIO_UNIT}"
+elif [[ "$PA_CGROUP" == *"magic-dingus-box-cpp.service"* ]]; then
+    fail "PulseAudio (pid ${PA_PID}) is in the kiosk's cgroup, not ${AUDIO_UNIT} — restart the kiosk"
+elif [[ -n "$PA_PID" && "$PA_CGROUP" != *"${AUDIO_UNIT}"* ]]; then
+    warn "PulseAudio (pid ${PA_PID}) is outside ${AUDIO_UNIT}: ${PA_CGROUP##*:}"
+else
+    pass "PulseAudio runs in ${AUDIO_UNIT}"
+fi
+if [[ -z "$SINKS" ]]; then
+    fail "PulseAudio not answering — no audio for videos, menus or games"
+elif [[ -z "$DEF_SINK" || "$DEF_SINK" == "auto_null" ]]; then
+    fail "default sink is '${DEF_SINK:-none}' — the box is SILENT (TV ports with audio: ${TV_PORTS})"
+elif (( TV_PORTS > HDMI_SINKS )); then
+    fail "${TV_PORTS} HDMI port(s) have a TV that takes audio but only ${HDMI_SINKS} HDMI sink(s) exist"
+elif (( TV_PORTS == 0 )); then
+    warn "no TV reporting audio on HDMI (TV off, or a CRT converter without audio EDID?) — default sink ${DEF_SINK}"
+else
+    pass "audio: default sink ${DEF_SINK}"
 fi
 
 # ---------------------------------------------------------------------
@@ -241,6 +517,13 @@ if grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null; then
 else
   fail "cgroup memory controller DISABLED (cmdline missing cgroup_enable=memory — run setup_memory_tuning.sh, then reboot)"
 fi
+# OOM bias (same drop-in): when memory runs out the kernel must kill a
+# self-restarting container, not the kiosk. Reads the unit's configured
+# value, so it passes as soon as setup_memory_tuning.sh + daemon-reload ran
+# (the running process picks it up at its next restart).
+KIOSK_OOM=$(systemctl show -p OOMScoreAdjust --value "$UNIT" 2>/dev/null)
+[[ "$KIOSK_OOM" == "-500" ]] && pass "kiosk OOMScoreAdjust=-500 (containers die first under OOM)" \
+  || fail "kiosk OOMScoreAdjust is '${KIOSK_OOM:-unset}', want -500 (run setup_memory_tuning.sh)"
 [[ "$(cat /proc/sys/vm/page-cluster 2>/dev/null)" == "0" ]] \
   && pass "zram page-cluster tuned (0)" \
   || warn "vm.page-cluster != 0 (zram swap-ins decompress 8x more than needed)"
@@ -275,7 +558,9 @@ if [[ "${NP%% *}" == "1" ]]; then
                       || fail "media playing but now_playing.title empty (phone remote shows '-')"
 fi
 
-ERRS=$(journalctl -u "$UNIT" -b --no-pager -p err 2>/dev/null \
+# -q: with no matching entries journalctl prints "-- No entries --",
+# which wc counted as an error — a clean box read "1 non-ALSA error line".
+ERRS=$(journalctl -q -u "$UNIT" -b --no-pager -p err 2>/dev/null \
         | grep -viE "alsa|pulseaudio|module-stream-restore" | wc -l | tr -d ' ')
 [[ "$ERRS" == 0 ]] && pass "no unexpected errors this boot" \
   || warn "${ERRS} non-ALSA error line(s) — review: journalctl -u ${UNIT} -b -p err"
@@ -326,14 +611,135 @@ else
   pass "no interrupted auto-redownload-guard marker"
 fi
 
+# The stack's self-healing runs on repeating timers (setup_services.sh
+# enables all five; nothing stops them on purpose). One that is 'elapsed'
+# has no future trigger and stays that way until reboot — hardware,
+# 2026-10-14: a drop-in's empty OnBootSec= wiped missing-search's 4 h
+# repeat, so it swept once per boot and the owner's box went 10 days with
+# no retry of missing movies while this script said SHIPPABLE. The list is
+# explicit because the broken timer's OWN config looked one-shot; every
+# in-tree .timer must be on it (tests/local/verify_box_timers.bats).
+#
+# Pure, pinned by that suite: classifies `systemctl show -p LoadState
+# -p ActiveState -p SubState` output as skip (not installed: games-only
+# box), armed, dormant (elapsed), stopped (inactive/failed/masked) or
+# unknown.
+timer_health_of() {
+  local load="" active="" sub="" line
+  while IFS= read -r line; do
+    case "$line" in
+      LoadState=*)   load=${line#*=} ;;
+      ActiveState=*) active=${line#*=} ;;
+      SubState=*)    sub=${line#*=} ;;
+    esac
+  done <<<"${1:-}"
+  if [[ -z "$load" || "$load" == not-found ]]; then echo skip
+  elif [[ "$load" == masked || "$active" == inactive || "$active" == failed ]]; then echo stopped
+  elif [[ "$active" == active && ( "$sub" == waiting || "$sub" == running ) ]]; then echo armed
+  elif [[ "$active" == active && "$sub" == elapsed ]]; then echo dormant
+  else echo unknown
+  fi
+}
+REPEATING_TIMERS=(qbit-port-sync.timer magic-dingus-auto-blocklist.timer magic-dingus-missing-search.timer magic-dingus-episode-priority.timer magic-dingus-smoke-test.timer)
+ARMED=0
+for _t in "${REPEATING_TIMERS[@]}"; do
+  case "$(timer_health_of "$(systemctl show -p LoadState -p ActiveState -p SubState "$_t" 2>/dev/null)")" in
+    armed)   ARMED=$((ARMED+1)) ;;
+    dormant) fail "${_t} is dormant: no future run scheduled (sudo systemctl restart ${_t}; if it goes dormant again its triggers are wrong: systemctl cat ${_t})" ;;
+    stopped) fail "${_t} is installed but not running (sudo systemctl enable --now ${_t})" ;;
+    unknown) warn "${_t} state unclear: $(systemctl show -p ActiveState -p SubState --value "$_t" 2>/dev/null | tr '\n' ' ')" ;;
+  esac
+done
+(( ARMED )) && pass "${ARMED} repeating timer(s) armed (next run scheduled)"
+
+# ---------------------------------------------------------------------
+# System units: the installed units must be the tree's. Every delivery
+# path converges them (setup_memory_tuning.sh -> converge_system_units.sh,
+# and every rollback run by an updater that has the converge), so a
+# mismatch means the converge is failing on this box or
+# /etc/systemd/system was edited by hand — the class that silenced
+# missing-search for 10 days (2026-10) while this script said SHIPPABLE.
+# Hence FAIL. A leftover fix drop-in on a converged unit only restates the
+# unit's own value: WARN. Customizations belong in other drop-ins, which
+# this never looks at.
+# ---------------------------------------------------------------------
+header "System units"
+# Pure, pinned by tests/local/verify_box_units.bats: one --check line ->
+# "<fail|warn><TAB><message>".
+unit_finding_verdict() {
+  local kind="${1%% *}" what="${1#* }"
+  case "$kind" in
+    DRIFT)   printf '%s\t%s\n' fail "${what}: the installed copy differs from the tree's" ;;
+    MISSING) printf '%s\t%s\n' fail "${what}: not installed, but this box should have it" ;;
+    STALE)   printf '%s\t%s\n' fail "${what}: still installed, but the tree no longer ships it" ;;
+    DROPIN)  printf '%s\t%s\n' warn "${what}: leftover fix drop-in on a converged unit" ;;
+    *)       printf '%s\t%s\n' warn "unexpected converge output: $1" ;;
+  esac
+}
+CONVERGE_UNITS="${BASE}/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+if [[ ! -f "$CONVERGE_UNITS" ]]; then
+  warn "converge_system_units.sh is not in this tree — installed units not compared"
+else
+  UNITS_OUT="$(bash "$CONVERGE_UNITS" --check 2>&1)"; UNITS_RC=$?
+  if [[ $UNITS_RC -eq 0 ]]; then
+    pass "installed systemd units match the tree"
+  elif [[ $UNITS_RC -eq 1 ]]; then
+    while IFS= read -r _line; do
+      [[ -n "$_line" ]] || continue
+      [[ "$_line" == "[units] note:"* ]] && continue  # stderr (2>&1 above), not a finding
+      IFS=$'\t' read -r _verdict _msg <<<"$(unit_finding_verdict "$_line")"
+      if [[ "$_verdict" == fail ]]; then
+        fail "${_msg} (fix: sudo bash ${CONVERGE_UNITS})"
+      else
+        warn "${_msg} (fix: sudo bash ${CONVERGE_UNITS})"
+      fi
+    done <<<"$UNITS_OUT"
+  else
+    warn "could not compare installed units: $(printf '%s' "$UNITS_OUT" | tail -1)"
+  fi
+fi  # System units
+
+# ---------------------------------------------------------------------
+# VPN tunnel reliability (Media Browser boxes only — nothing to report
+# without a tunnel, so an unprovisioned box gets no section at all).
+# The owner's tunnel dropped ~170 times over 2026-10-03/04, every ~11 min
+# in bursts, and nothing on any screen said so: the only trace was the
+# cascade watcher's journal. gluetun_cascade_restart.sh now appends each
+# transition to VPN_EVENTS; vpn_events_summary.py turns the last 24 h into
+# one plain-language PASS/WARN line (thresholds and wording live there and
+# are unit-tested in scripts/tests/test_vpn_events_summary.py). Never a
+# FAIL: a flaky VPN does not make a box unshippable. Gluetun's CURRENT
+# health is passed in so an outage whose recovery went unrecorded (watcher
+# restarted mid-outage) is not reported as still running.
+# ---------------------------------------------------------------------
+VPN_EVENTS="${MDB_VPN_EVENTS_FILE:-/var/lib/magic-dingus/vpn_events.log}"
+if [[ -f "${BASE}/services/.env" ]]; then
+  header "VPN tunnel"
+  G_HEALTH=$(docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null \
+             || sudo -n docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null)
+  VPN_LINE=$(python3 "${APP}/scripts/vpn_events_summary.py" --file "$VPN_EVENTS" \
+               --current-health "${G_HEALTH:-}" 2>/dev/null)
+  case "${VPN_LINE%%$'\t'*}" in
+    pass) pass "${VPN_LINE#*$'\t'}" ;;
+    warn) warn "${VPN_LINE#*$'\t'}" ;;
+    *)    warn "VPN tunnel history could not be summarized (${APP}/scripts/vpn_events_summary.py, ${VPN_EVENTS})" ;;
+  esac
+fi
+
 # ---------------------------------------------------------------------
 if (( RUN_SERVICES )); then
   header "Service stack (verify_services.sh)"
-  if bash "${APP}/scripts/verify_services.sh" >/tmp/vs.log 2>&1; then
+  # A fresh file per run: a fixed /tmp/vs.log left root-owned by one
+  # `sudo verify_box.sh` made every later NON-sudo run fail this check
+  # before verify_services.sh even started (the redirect itself failed),
+  # while the stale log said "All 15 checks PASSED" (2026-10-04).
+  VS_LOG="$(mktemp "${TMPDIR:-/tmp}/verify_services.XXXXXX")" || VS_LOG=/dev/null
+  if bash "${APP}/scripts/verify_services.sh" >"$VS_LOG" 2>&1; then
     pass "verify_services.sh passed"
+    [[ "$VS_LOG" == /dev/null ]] || rm -f "$VS_LOG"
   else
-    fail "verify_services.sh failed — see /tmp/vs.log"
-    tail -12 /tmp/vs.log | sed 's/^/         /'
+    fail "verify_services.sh failed — see $VS_LOG"
+    tail -12 "$VS_LOG" | sed 's/^/         /'
   fi
 fi
 

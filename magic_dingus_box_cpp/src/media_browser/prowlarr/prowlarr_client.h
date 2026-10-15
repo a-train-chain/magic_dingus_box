@@ -51,14 +51,12 @@ public:
         // entry or indexer toggles. The toggle path is also gated on
         // vpn_healthy in mb_settings_screen, so 5s is plenty.
         int timeout_secs = 5;
-        // Worker-thread search uses search_timeout_secs (much longer)
-        // because Prowlarr fans out to all indexers in parallel and a
-        // single Cloudflare-protected one (Byparr solving a challenge)
-        // can push the overall response past 10s. 30s leaves room
-        // without keeping the spinner up forever if all indexers are
-        // genuinely down. search_async runs on a worker thread so the
-        // UI never blocks.
-        int search_timeout_secs = 30;
+        // Per-indexer availability timeout. The worker launches one Prowlarr
+        // request per enabled indexer concurrently, so a slow upstream cannot
+        // hold healthy results hostage. 15s still leaves room for a Byparr
+        // challenge while keeping the informational wait bounded. This does
+        // not affect Radarr's actual add/search path.
+        int search_timeout_secs = 15;
     };
 
     explicit ProwlarrClient(Config cfg);
@@ -157,17 +155,26 @@ public:
     void cancel();
 
 protected:
+    struct HttpGetResult {
+        std::string body;
+        std::string error;
+    };
+
+    // Body + error travel together for concurrent availability calls. This
+    // method never mutates the shared UI error channel; only a generation-
+    // checked terminal publisher may commit an availability error.
+    virtual HttpGetResult http_get_result(const std::string& path,
+                                          int timeout_secs);
+
     // Virtual for unit tests. Default implementation does a real curl
     // GET with cfg_.timeout_secs (5s — UI-thread budget). Returns the
     // response body, or empty string on transport failure (with
     // last_error_ populated).
     virtual std::string http_get(const std::string& path);
 
-    // Long-timeout variant for the worker-thread search call. Same
-    // implementation as http_get but with an explicit timeout (search
-    // uses cfg_.search_timeout_secs = 30s because Prowlarr fans out
-    // to all indexers in parallel and a single Cloudflare-protected
-    // one can push the overall response past 10s).
+    // Explicit-timeout variant used by worker-thread calls. Availability
+    // launches one of these per enabled indexer with
+    // cfg_.search_timeout_secs; UI-thread calls keep cfg_.timeout_secs.
     virtual std::string http_get_long(const std::string& path, int timeout_secs);
 
     // Virtual for unit tests. Default implementation does a real curl
@@ -186,6 +193,14 @@ private:
     // again before this one finishes) silently drops its result rather
     // than overwriting the new search's state.
     void run_search(uint64_t gen, std::string title, int year);
+
+    // Terminal publication is serialized with search_async's reset. The
+    // generation is rechecked while holding result_mtx_, closing the race
+    // where an older worker passed a stale check just before a newer search
+    // became active and then overwrote its Searching/Ready state.
+    bool publish_failure(uint64_t gen, std::string error);
+    bool publish_ready(uint64_t gen, ReleaseSummary summary,
+                       std::vector<IndexerStats> stats);
 
     std::atomic<State>    state_{State::Idle};
     std::atomic<bool>     abort_{false};

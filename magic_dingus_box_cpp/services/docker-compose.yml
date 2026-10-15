@@ -3,10 +3,25 @@
 # Managed by magic-dingus-services.service (systemd).
 # All images pinned to known-good versions for reproducibility.
 
+# Container log rotation for EVERY service. Docker's json-file driver
+# never rotates by default, so each container log grew without bound on
+# the SD card (and carried the operator's activity into golden images).
+# Set here rather than in /etc/docker/daemon.json because this file rides
+# every OTA to every box, and needs no dockerd restart: compose sees the
+# changed config and recreates each container on the next `compose up -d`
+# (magic-dingus-services runs one at every boot). Every service below
+# MUST carry `logging: *default-logging`.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   radarr:
     image: lscr.io/linuxserver/radarr:5.14.0
     container_name: mdb_radarr
+    logging: *default-logging
     # Behind Gluetun: shares VPN netns. Even Radarr's TMDB metadata
     # fetches now exit via VPN (was direct via Comcast residential IP).
     # No per-service ports: block — Radarr's :7878 must be exposed via
@@ -73,6 +88,7 @@ services:
   sonarr:
     image: lscr.io/linuxserver/sonarr:4.0.19.2979-ls320
     container_name: mdb_sonarr
+    logging: *default-logging
     # Behind Gluetun: shares VPN netns beside Radarr. Sonarr's TMDB/TVDB
     # metadata fetches exit via the VPN like the rest of the stack.
     # No per-service ports: block — Sonarr's :8989 is exposed via
@@ -119,6 +135,7 @@ services:
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:2.3.5
     container_name: mdb_prowlarr
+    logging: *default-logging
     # Behind Gluetun: shares VPN netns. DNS handled by gluetun, no
     # per-service dns: block needed. No per-service ports: block —
     # Prowlarr's :9696 must be exposed via gluetun's ports: section
@@ -147,8 +164,34 @@ services:
       start_interval: 3s
 
   gluetun:
-    image: qmcgaw/gluetun:v3
+    # Pinned to the exact build the production box runs (was the floating
+    # `v3` tag, which silently moved every box to whatever gluetun shipped
+    # next on its first fresh pull — and the whole stack shares this netns).
+    # Tag kept for readability; the digest is what Docker actually resolves
+    # (the multi-arch index digest — it includes linux/arm64).
+    # admin.py's WireGuard-parse tests were validated against v3.41.1; the
+    # v3.41.x patch releases change no configuration surface.
+    #
+    # v3.41.1 -> v3.41.3 (2026-10-05) for a port-forwarding bug, captured
+    # live on the owner's box 18:00-20:15 that day: every one of 9
+    # consecutive full-stack restarts was PORT FORWARDING, not the tunnel.
+    # Proton's NAT-PMP gateway refused a renewal minutes after granting a
+    # port (`[port forwarding] adding port mapping: ... read udp
+    # 10.2.0.2:x->10.2.0.1:5351: recvfrom: connection refused`, once
+    # `external port changed: 60551 changed to 35802`); v3.41.1's loop then
+    # logged `[port forwarding] starting` and never obtained a port again.
+    # The healthcheck below requires a port once one was seen, so ~5 min
+    # later gluetun went unhealthy and the cascade watcher restarted it and
+    # all five dependents ~5 min after that — while the tunnel passed
+    # traffic the whole time (in-tunnel ping 1.1.1.1 ~170 ms, handshakes
+    # answered). v3.41.2: "VPN port forwarding: no longer stuck after failed
+    # port forwarding"; v3.41.3: "fixes a VPN server port forwarding
+    # deadlock bug introduced whilst back-porting a fix". gluetun should now
+    # re-acquire the port itself; the healthcheck's port requirement stays
+    # as the backstop.
+    image: qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027
     container_name: mdb_gluetun
+    logging: *default-logging
     cap_add:
       - NET_ADMIN
     devices:
@@ -177,6 +220,14 @@ services:
       # admin.py writes it blank for those.
       - WIREGUARD_ENDPOINT_PORT=${WIREGUARD_ENDPOINT_PORT:-}
       - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:-}
+      # Send a keepalive every 25 s, as every ProtonVPN-generated .conf asks
+      # (`PersistentKeepalive = 25`). Gluetun ignores that line in an
+      # uploaded config and defaults to 0 (off), so an idle tunnel relied on
+      # the NAT mappings between the box and Proton staying open on their
+      # own. A Go duration (gluetun reads it with time.ParseDuration — a bare
+      # `25` is rejected); applies to every provider, `custom` included.
+      # Hardcoded rather than .env-driven: no operator should need to tune it.
+      - WIREGUARD_PERSISTENT_KEEPALIVE_INTERVAL=25s
       # NOTE the `-` and not `:-`. This default must apply only when
       # VPN_COUNTRIES is UNSET, never when it is set-and-empty.
       # `VPN_SERVICE_PROVIDER=custom` — the bring-your-own-VPN default — has
@@ -236,7 +287,14 @@ services:
       # doesn't really change: the only observer of the DNS traffic
       # would be ProtonVPN itself, which can already see all our DNS
       # via DoT anyway (it's the upstream resolver).
-      - DOT=off
+      # Spelled DNS_SERVER=off since gluetun v3.40 deprecated DOT ("You are
+      # using the old environment variable DOT, please consider changing it
+      # to DNS_SERVER" — logged on every start in v3.41.1). DOT=off already
+      # mapped to exactly this: built-in DoT forwarder off, plaintext DNS
+      # to 1.1.1.1 ("[dns] using plaintext DNS at address 1.1.1.1"). Using
+      # the new name keeps that behavior if a future gluetun drops the
+      # alias — falling back to the DoT default would bring the wedge back.
+      - DNS_SERVER=off
       - TZ=${TZ}
     ports:
       # qBittorrent web UI + peer ports are exposed via Gluetun.
@@ -315,7 +373,12 @@ services:
       #
       # Net effect: a lease that DIES is caught and auto-recovered (the case
       # that actually bit us); a lease that never existed is left alone.
-      test: ["CMD-SHELL", "wget -qO- --tries=1 --timeout=5 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip=' && { wget -qO- --tries=1 --timeout=3 http://localhost:8000/v1/openvpn/portforwarded 2>/dev/null | grep -qE '\"port\":[1-9]' && touch /tmp/.pf_seen || [ ! -f /tmp/.pf_seen ]; }"]
+      #
+      # GET /v1/portforward must stay listed in ensure_gluetun_auth.sh's
+      # access file: current gluetun makes control-server routes private by
+      # default, and a 401 here after /tmp/.pf_seen exists = unhealthy
+      # forever = a full-stack restart every ~10 minutes.
+      test: ["CMD-SHELL", "wget -qO- --tries=1 --timeout=5 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip=' && { wget -qO- --tries=1 --timeout=3 http://localhost:8000/v1/portforward 2>/dev/null | grep -qE '\"port\":[1-9]' && touch /tmp/.pf_seen || [ ! -f /tmp/.pf_seen ]; }"]
       interval: 60s
       timeout: 10s
       # 5 consecutive failures (~5 min) before unhealthy, not 3. A NAT-PMP
@@ -336,6 +399,12 @@ services:
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:5.0.3
     container_name: mdb_qbittorrent
+    logging: *default-logging
+    # Second in line after Byparr. Its 1 GB measured peak is almost all
+    # reclaimable page cache (anon ~6 MB), so it is rarely the real
+    # culprit — but a killed qBittorrent resumes its torrents on restart,
+    # where a killed kiosk drops whatever the viewer was watching.
+    oom_score_adj: 300
     network_mode: "service:gluetun"
     depends_on:
       gluetun:
@@ -366,6 +435,15 @@ services:
     # byparr now.
     image: ghcr.io/thephaseless/byparr@sha256:01a46a2865d9a6db5eb8ead04ec0dd33b8fbe233e8565ae70b50d4cc0af4cfb0
     container_name: mdb_byparr
+    logging: *default-logging
+    # First to go under memory pressure. Idles at ~10 MB but its headless
+    # browser peaked at 762 MB solving a challenge (measured on a 2 GB
+    # Pi 5, 2026-10-03) — the only large ANONYMOUS allocation in the stack.
+    # A mem_limit would make challenges fail (and the Cloudflare-fronted
+    # indexers with them); ranking it for the OOM killer instead lets it
+    # spike, and costs one in-flight challenge if the box truly runs out
+    # (restart: always brings it straight back). Kiosk is -500.
+    oom_score_adj: 800
     network_mode: "service:gluetun"
     depends_on:
       gluetun:

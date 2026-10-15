@@ -1,28 +1,102 @@
 #include "media_browser/ui/playback_screen.h"
+#include "media_browser/ui/playback_view.h"
 
+#include <algorithm>
 #include <cstdlib>  // std::system — used to call playback_services_pause.sh
+#include <system_error>
 #include <filesystem>  // exists() guard before the in-place episode advance
 #include <spdlog/spdlog.h>
 
 #include "app/app_state.h"
+#include "app/torrent_pause_marker.h"
 #include "app/controller.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/service_gate.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_chrome.h"
+#include "media_browser/ui/worker_pool.h"  // run_guarded
 #include "platform/input_manager.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
+#include "utils/config.h"
 #include "utils/result.h"
+#include "video/playback_error_policy.h"
 
 namespace media_browser::ui {
 
 PlaybackScreen::PlaybackScreen(app::Controller& controller, app::AppState& state,
                                 ::media_browser::TmdbClient& tmdb,
-                                ::media_browser::RadarrClient& radarr,
-                                QbittorrentClient* qbit)
-    : controller_(controller), state_(state), tmdb_(tmdb), radarr_(radarr), qbit_(qbit) {}
+                                ::media_browser::RadarrClient& radarr)
+    : controller_(controller), state_(state), tmdb_(tmdb), radarr_(radarr) {}
+
+app::MovieQuietMode::Actions PlaybackScreen::make_quiet_actions(
+        QbittorrentClient* qbit, std::function<void()> barrier) {
+    using Mode = app::MovieQuietMode::Mode;
+    using Consent = app::MovieQuietMode::Consent;
+    app::MovieQuietMode::Actions a;
+    // Runs on the MovieQuietMode worker thread — never the render thread.
+    a.pause = [qbit, barrier](Mode mode) -> Consent {
+        if (barrier) barrier();
+        Consent c;
+        if (qbit != nullptr) {
+            if (mode == Mode::Trickle) {
+                c.alt_limited = qbit->set_alt_speed_limits_enabled(true);
+                if (!c.alt_limited) {
+                    spdlog::warn("[playback] qbit trickle cap failed; "
+                                 "downloads run uncapped during playback");
+                }
+            } else {
+                c.qbit_paused = qbit->pause_all();
+                if (c.qbit_paused) {
+                    app::mark_torrents_paused_by_kiosk(
+                        config::get_data_path() + "/qbit_paused_by_kiosk", true);
+                }
+                if (!c.qbit_paused) {
+                    spdlog::warn("[playback] qbit pause_all failed; "
+                                 "playback may stutter on USB-flash media");
+                }
+            }
+        }
+        if (mode == Mode::FullPause) {
+            // Best-effort; fixed path, no user input in the command. The
+            // script is idempotent (no-op without Docker/containers).
+            (void)std::system(
+                "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
+            c.services_paused = true;
+        }
+        return c;
+    };
+    // Undo ONLY what the pause reported — the consent records: never
+    // resume a torrent the operator had stopped, never clear an alt-limits
+    // cap the operator engaged, never start containers we did not stop.
+    // (A cap WE set that fails to clear is additionally covered by the
+    // unconditional clear at kiosk startup; stranded containers by the
+    // startup unpause — both crash recovery in main.cpp.)
+    a.resume = [qbit, barrier](const Consent& c) {
+        if (barrier) barrier();
+        if (qbit != nullptr && c.alt_limited &&
+            !qbit->set_alt_speed_limits_enabled(false)) {
+            spdlog::warn("[playback] qbit trickle cap clear failed; "
+                         "downloads stay capped until the next kiosk start");
+        }
+        if (qbit != nullptr && c.qbit_paused) {
+            if (qbit->resume_all()) {
+                app::mark_torrents_paused_by_kiosk(
+                    config::get_data_path() + "/qbit_paused_by_kiosk", false);
+            } else {
+                spdlog::warn("[playback] qbit resume_all failed; retried at "
+                             "next kiosk start");
+            }
+        }
+        if (c.services_paused) {
+            (void)std::system(
+                "/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1");
+        }
+    };
+    return a;
+}
 
 void PlaybackScreen::bump_hud_visibility() {
     hud_visible_until_ = std::chrono::steady_clock::now()
@@ -32,11 +106,13 @@ void PlaybackScreen::bump_hud_visibility() {
 float PlaybackScreen::hud_alpha(bool paused) const {
     if (paused) return 1.0f;
     auto now = std::chrono::steady_clock::now();
-    if (now >= hud_visible_until_) return 0.0f;
-    auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        hud_visible_until_ - now).count();
-    if (remaining_ms > kHudFadeMs) return 1.0f;
-    return static_cast<float>(remaining_ms) / static_cast<float>(kHudFadeMs);
+    const bool expired = now >= hud_visible_until_;
+    const long long remaining_ms =
+        expired ? 0
+                : static_cast<long long>(
+                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                          hud_visible_until_ - now).count());
+    return hud_alpha_for(paused, expired, remaining_ms, kHudFadeMs);
 }
 
 void PlaybackScreen::set_movie(std::string host_path, std::string title) {
@@ -56,31 +132,17 @@ void PlaybackScreen::publish_now_playing_status() {
     // identity-less TV file (shouldn't happen via SeriesDetail, which
     // always sets both) degrades to the movie shape below — movie_title_
     // is the full display_title there, so nothing is lost.
-    const bool tv = watch_identity_.has_value() &&
-                    watch_identity_->ref.kind == MediaKind::Tv &&
-                    !series_title_.empty();
-    if (tv) {
-        state_.now_playing_kind  = "tv";
-        state_.now_playing_title = series_title_;
-        // Episode title looked up from the session's episode vector; an
-        // absent match still yields the bare "SxEy" code.
-        std::string ep_title;
-        for (const auto& e : episodes_) {
-            if (e.season_number == watch_identity_->season &&
-                e.episode_number == watch_identity_->episode) {
-                ep_title = e.title;
-                break;
-            }
-        }
-        state_.now_playing_subtitle = format_now_playing_episode(
-            watch_identity_->season, watch_identity_->episode, ep_title);
-    } else {
-        state_.now_playing_kind  = "movie";
-        state_.now_playing_title = movie_title_;
-        state_.now_playing_subtitle =
-            overlay_meta_.year > 0 ? std::to_string(overlay_meta_.year)
-                                   : std::string{};
-    }
+    // Episode title looked up from the session's episode vector; an absent
+    // match still yields the bare "SxEy" code (now_playing_status).
+    const bool tv_identity = watch_identity_.has_value() &&
+                             watch_identity_->ref.kind == MediaKind::Tv;
+    NowPlayingStatus np = now_playing_status(
+        tv_identity, tv_identity ? watch_identity_->season : 0,
+        tv_identity ? watch_identity_->episode : 0, episodes_, series_title_,
+        movie_title_, overlay_meta_.year);
+    state_.now_playing_kind     = std::move(np.kind);
+    state_.now_playing_title    = std::move(np.title);
+    state_.now_playing_subtitle = std::move(np.subtitle);
     // MB playback has no playlist context; a stale name/count from the
     // last main-menu playlist would otherwise ride along in the JSON.
     // (current_item_index is already -1 — main.cpp resets it at MB entry —
@@ -121,9 +183,8 @@ void PlaybackScreen::set_episode_context(std::vector<EpisodeInfo> episodes,
 
 void PlaybackScreen::enter() {
     exit_pending_ = false;
+    ended_on_error_ = false;
     deferred_toast_.clear();
-    qbit_was_paused_by_us_ = false;
-    qbit_alt_limited_by_us_ = false;
     // EOS latch pair resets TOGETHER here and in advance_to_next_episode()
     // — the two session starts — so each playback session gets exactly one
     // consume-once report from take_eos_watched().
@@ -144,6 +205,17 @@ void PlaybackScreen::enter() {
     // edge detection. Starts false; update() needs to see false→true (play
     // started) before a later true→false transition reads as natural EOS.
     was_video_active_ = false;
+    // Decided below with the quiet mode; reset first so an early return
+    // never inherits the previous session's verdict.
+    session_full_pause_ = false;
+    // A quick-add outcome that landed after the previous session's last
+    // update() belongs to that session — never toast it over this movie.
+    // Only when no worker is running: in_flight_ drops after the worker's
+    // last write, so the string is safe to touch exactly then.
+    if (!quickadd_in_flight_.load(std::memory_order_acquire)) {
+        quickadd_done_.store(false, std::memory_order_release);
+        quickadd_toast_.clear();
+    }
 
     if (movie_path_.empty()) {
         deferred_toast_ = "No movie file path";
@@ -171,54 +243,22 @@ void PlaybackScreen::enter() {
     // the trickle on the MemAvailable actually measured right now (see
     // platform_profile.h for the stale-measurement history).
     //
-    // Best-effort either way: a qBit failure here doesn't abort playback
-    // — we just log and continue with whatever performance the disk can
-    // give us. Same rationale as the controller_.load_file fallback
-    // path below.
+    // Best-effort either way: a qBit failure doesn't abort playback.
+    //
+    // NON-BLOCKING: the work (qBit round-trips at 5 s each plus a possible
+    // 403 re-login, and the docker stop script) runs on the MovieQuietMode
+    // worker. It used to run right here on the render thread and could
+    // exceed WatchdogSec=10 with a wedged service. The cost is that the
+    // pipeline's first reads may overlap the pause by a second or two.
+    //
+    // Session-gated via quiet_mode: boards that pause by profile (Pi 4B)
+    // always pay the cost, and a trickle-profile board pays it only when
+    // MemAvailable at this instant is below the floor (the 2026-08-11
+    // zram freeze history lives in platform_profile.h). The 20-40s
+    // container restart on exit is the known cost of a FullPause session.
     const long mem_avail_kib = platform::read_mem_available_kib();
     const auto quiet_mode = platform::service_quiet_mode(
         state_.platform_profile, mem_avail_kib);
-    if (qbit_ != nullptr) {
-        if (quiet_mode == platform::ServiceQuietMode::Trickle) {
-            if (qbit_->set_alt_speed_limits_enabled(true)) {
-                qbit_alt_limited_by_us_ = true;
-            } else {
-                spdlog::warn("[playback] qbit trickle cap failed; "
-                             "downloads run uncapped during playback");
-            }
-        } else {
-            if (qbit_->pause_all()) {
-                qbit_was_paused_by_us_ = true;
-            } else {
-                spdlog::warn("[playback] qbit pause_all failed; "
-                             "playback may stutter on USB-flash media");
-            }
-        }
-    }
-
-    // Also pause the Radarr/Prowlarr/Byparr containers — frees ~300 MB
-    // RAM and ~6% CPU for the duration of the movie so the kiosk's
-    // video pipeline isn't competing with metadata syncs / indexer
-    // queries / Cloudflare-challenge solving. The helper is best-effort
-    // (no-op if Docker isn't installed, the user isn't in the docker
-    // group, or the containers don't exist on this Pi). Resumed on
-    // leave() via the symmetric "unpause" call. Output is logged via
-    // shell, not spdlog, so we discard the return code here.
-    //
-    // std::system() is acceptable for this fire-and-forget shell call
-    // because (a) the script is fixed-path / not derived from any
-    // user-controllable input, (b) we don't care about the exit code
-    // beyond a debug log line, (c) the script itself is idempotent.
-    //
-    // Session-gated via quiet_mode (computed above): boards that pause by
-    // profile (Pi 4B) always pay the cost, and a trickle-profile board
-    // pays it only when MemAvailable at this instant is below the floor.
-    // The old static skip trusted a 2026-07-26 measurement ("1122MB
-    // free") that the stack outgrew — by 2026-08-11 the same board sat
-    // 768MB into zram swap and the kiosk took 300k major faults during
-    // one movie. The 20-40s container restart on exit (the false "tunnel
-    // down" toast, the blank grid) is the known cost of a FullPause
-    // session; the marker-aware cascade keeps it merely cosmetic.
     if (quiet_mode == platform::ServiceQuietMode::FullPause) {
         if (state_.platform_profile.pause_services_during_movie) {
             spdlog::info("[playback] full service pause (profile)");
@@ -228,12 +268,29 @@ void PlaybackScreen::enter() {
                          mem_avail_kib / 1024,
                          platform::kServiceQuietMemFloorKiB / 1024);
         }
-        (void)std::system(
-            "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
     } else {
-        spdlog::info("[playback] skipping service pause "
-                     "(memory headroom: {} MiB available)",
+        spdlog::info("[playback] trickle (no service pause; memory "
+                     "headroom: {} MiB available)",
                      mem_avail_kib / 1024);
+    }
+    if (quiet_ != nullptr && !quiet_requested_) {
+        quiet_->request_pause(quiet_mode == platform::ServiceQuietMode::Trickle
+                                  ? app::MovieQuietMode::Mode::Trickle
+                                  : app::MovieQuietMode::Mode::FullPause);
+        quiet_requested_ = true;
+    }
+    // Radarr's container is stopped for this whole session exactly when a
+    // FullPause was requested — the overlay's quick-add then defers to
+    // after the movie instead of firing into it (see DeferredAdd).
+    session_full_pause_ =
+        quiet_ != nullptr && quiet_mode == platform::ServiceQuietMode::FullPause;
+    session_deferred_adds_.clear();
+    if (session_full_pause_) {
+        // Tell a deferred-add worker still gating on the PREVIOUS movie's
+        // resume that Radarr is about to be stopped again (counter first:
+        // the worker treats "active" as the stronger signal).
+        full_pause_sessions_started_.fetch_add(1, std::memory_order_acq_rel);
+        full_pause_session_active_.store(true, std::memory_order_release);
     }
 
     // Empty playlist_dir disables the playlist-dir-relative resolution
@@ -299,8 +356,8 @@ void PlaybackScreen::enter() {
     // Start pre-fetching similar films in the background so they are ready
     // by the time the user presses the rotary to open the overlay.
     // Idempotent for the same tmdb_id; no-op when tmdb_id == 0.
-    // The fetch runs on a detached std::thread inside PlaybackOverlay; the
-    // overlay's destructor joins it, so lifetime is safe.
+    // The fetch runs on a worker owned by PlaybackOverlay; a superseded
+    // one is cancelled and reaped without ever blocking this thread.
     overlay_.start_prefetch(tmdb_, overlay_meta_);
 }
 
@@ -309,10 +366,10 @@ void PlaybackScreen::leave() {
     // the user long-presses BTN4 and the dispatcher hard-exits to MainMenu.
     controller_.stop();
 
-    // Cancel any in-flight similar-films prefetch so its thread doesn't
-    // outlive the screen's use of tmdb_ after we've left. The thread checks
-    // cancel_requested_ and exits early; join happens in PlaybackOverlay's
-    // destructor (or on the next start_prefetch call).
+    // Cancel any in-flight similar-films prefetch. Non-blocking: the cancel
+    // flag aborts the worker's curl transfer (TmdbClient::ScopedCancel) and
+    // the retired thread is reaped once finished, or joined in
+    // PlaybackOverlay's destructor — never waited on here.
     overlay_.cancel_prefetch();
     overlay_.close();
 
@@ -343,27 +400,26 @@ void PlaybackScreen::leave() {
         deferred_toast_.clear();
     }
 
-    // Undo whatever torrent quieting enter() did — and ONLY what enter()
-    // did. The two flags are the consent records: never resume a torrent
-    // the operator had manually stopped before entering playback, and
-    // never clear an alt-limits cap the operator engaged for their own
-    // reasons. (A cap WE set that fails to clear here is additionally
-    // covered by the unconditional clear at kiosk startup — crash
-    // recovery in main.cpp's qBit init.)
-    if (qbit_ != nullptr && qbit_alt_limited_by_us_) {
-        if (!qbit_->set_alt_speed_limits_enabled(false)) {
-            spdlog::warn("[playback] qbit trickle cap clear failed; "
-                         "downloads stay capped until the next kiosk start");
-        }
-        qbit_alt_limited_by_us_ = false;
+    // Undo whatever quieting enter() did — and ONLY what it did. The
+    // resume is queued behind enter()'s pause on the MovieQuietMode worker
+    // (a resume can never overtake it; a pause that has not started yet is
+    // simply cancelled), and the worker undoes exactly what that pause
+    // reported. Non-blocking: see enter().
+    if (quiet_ != nullptr && quiet_requested_) {
+        quiet_->request_resume();
     }
-    if (qbit_ != nullptr && qbit_was_paused_by_us_) {
-        if (!qbit_->resume_all()) {
-            spdlog::warn("[playback] qbit resume_all failed; "
-                         "operator may need to manually resume from web UI");
-        }
-        qbit_was_paused_by_us_ = false;
-    }
+    quiet_requested_ = false;
+
+    // Quick-adds deferred during a FullPause session run now — AFTER the
+    // resume was queued, so the gate's quiet-idle wait covers it. Never
+    // blocks: the worker waits on the gate, not this thread.
+    // Lower the session flag FIRST: start_deferred_adds() then takes the
+    // worker mutex, so a worker that requeued its batch because this
+    // session was active is restarted here (it also runs with nothing new
+    // queued this session — the queue may hold such a requeued batch).
+    full_pause_session_active_.store(false, std::memory_order_release);
+    start_deferred_adds();
+    session_full_pause_ = false;
 
     // One-shot watch-state carriers die with the session. start_position_
     // must not leak into a later playback that never called
@@ -387,16 +443,6 @@ void PlaybackScreen::leave() {
     series_title_.clear();
     current_index_ = -1;
     end_overlay_ = {};
-
-    // Symmetric un-pause for the Radarr/Prowlarr/Byparr containers we
-    // froze in enter(). Deliberately left UNCONDITIONAL even though
-    // enter() is now platform-gated: the helper is idempotent (a no-op
-    // for un-paused or missing containers), and keeping it unconditional
-    // means a box that was paused by an older build — or by the game
-    // quiet-mode path — always gets recovered. The worst case
-    // (un-pausing something already running) is harmless.
-    (void)std::system(
-        "/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1");
 
     spdlog::info("[playback] left playback screen");
 }
@@ -423,7 +469,9 @@ Screen PlaybackScreen::handle_input(
             // card primary -> fire the Start-Season intent; plain "Done"
             // card -> dismiss back to where we came from.
             if (e.action == platform::InputAction::SELECT) {
-                if (end_overlay_.kind == EndOverlayKind::Countdown) {
+                const EndOverlaySelect pick = decide_end_overlay_select(
+                    end_overlay_.kind, end_overlay_.has_primary);
+                if (pick == EndOverlaySelect::PlayNext) {
                     // "Play now" is a PRESS, not a countdown expiry — the
                     // user just proved presence, so the still-watching
                     // streak restarts (only the silent expiry in update()
@@ -434,7 +482,7 @@ Screen PlaybackScreen::handle_input(
                     // toast; the fast-return above exits next frame.
                     return Screen::Playback;
                 }
-                if (end_overlay_.kind == EndOverlayKind::StillWatching) {
+                if (pick == EndOverlaySelect::Continue) {
                     // "Continue" — they're awake. Streak restarts at zero
                     // and the stored next_index plays, exactly what the
                     // countdown's expiry would have started. MUST be
@@ -446,7 +494,7 @@ Screen PlaybackScreen::handle_input(
                     advance_to_next_episode();
                     return Screen::Playback;
                 }
-                if (end_overlay_.has_primary) {
+                if (pick == EndOverlaySelect::StartSeason) {
                     // "Start Season N" — the dispatcher consumes the intent
                     // on the Playback->SeriesDetail transition (Task 6).
                     pending_next_season_ = end_overlay_.card.next_season;
@@ -510,6 +558,24 @@ Screen PlaybackScreen::handle_input(
                 return Screen::Playback;
             }
 
+            // FullPause session: Radarr's container is stopped until this
+            // movie ends, so an add now could only time out and say
+            // "Couldn't add". Queue it for after the movie instead (see
+            // DeferredAdd in the header); leave() starts the worker.
+            if (session_full_pause_) {
+                const int id = film->tmdb_id;
+                const bool queued = std::any_of(
+                    session_deferred_adds_.begin(),
+                    session_deferred_adds_.end(),
+                    [id](const DeferredAdd& d) { return d.tmdb_id == id; });
+                if (!queued) {
+                    session_deferred_adds_.push_back(
+                        DeferredAdd{id, film->title});
+                }
+                overlay_.show_toast("Will add after the movie");
+                return Screen::Playback;
+            }
+
             // Quick-add runs on a worker — get_quality_profiles +
             // add_movie are two 5s-timeout HTTP calls, and this handler
             // runs while a MOVIE IS PLAYING (see the header note on
@@ -526,39 +592,11 @@ Screen PlaybackScreen::handle_input(
             try {
                 quickadd_worker_ = std::thread([this, add_tmdb_id]() {
                     std::string toast;
-                    // Profile pick mirrors detail_screen.cpp's
-                    // pick_quality_profile_id heuristic: prefer "Any" so
-                    // we don't block on a profile mismatch.
-                    int qp = 0;
-                    auto profiles = radarr_.get_quality_profiles();
-                    for (const auto& p : profiles) {
-                        if (p.name == "Any") { qp = p.id; break; }
-                    }
-                    if (qp == 0) {
-                        for (const auto& p : profiles) {
-                            if (p.name == "HD - 720p/1080p") { qp = p.id; break; }
-                        }
-                    }
-                    if (qp == 0 && !profiles.empty()) qp = profiles.front().id;
-
-                    if (qp == 0) {
-                        toast = "No quality profile";
-                    } else if (radarr_.add_movie(add_tmdb_id, qp,
-                                                 /*monitor=*/true)) {
-                        toast = "Added \xe2\x80\x94 searching";
-                    } else {
-                        const std::string err = radarr_.last_error();
-                        // Radarr returns HTTP 400 with "This movie has
-                        // already been added" in the body when the title is
-                        // already in the library; the error string is
-                        // "HTTP 400: <json body>".
-                        if (err.find("already") != std::string::npos ||
-                            err.find("Already") != std::string::npos) {
-                            toast = "Already in library";
-                        } else {
-                            toast = "Couldn\xe2\x80\x99t add \xe2\x80\x94 try again";
-                        }
-                    }
+                    run_guarded("playback quick-add", [&] {
+                        toast = run_quick_add(add_tmdb_id);
+                    });
+                    if (toast.empty())
+                        toast = "Couldn\xe2\x80\x99t add \xe2\x80\x94 try again";
                     quickadd_toast_ = std::move(toast);
                     quickadd_done_.store(true, std::memory_order_release);
                     quickadd_in_flight_.store(false, std::memory_order_release);
@@ -649,8 +687,8 @@ Screen PlaybackScreen::handle_input(
                 overlay_.on_rotate(e.delta);
                 continue;
             }
-            double velocity = static_cast<double>(e.velocity);
-            double seek_seconds = 5.0 + 115.0 * (velocity * velocity);
+            double seek_seconds =
+                rotary_seek_seconds(static_cast<double>(e.velocity));
             controller_.seek(seek_seconds * e.delta);
             state_.show_seek_bar = true;
             state_.seek_bar_timer = kSeekBarVisibleSec;
@@ -677,6 +715,27 @@ void PlaybackScreen::update() {
     // briefly went PAUSED for the seek" as "movie ended."
     if (eos_suppress_frames_ > 0) {
         --eos_suppress_frames_;
+    }
+
+    // Pipeline error -> leave playback with a toast. Checked BEFORE the
+    // natural-end edge below and returns early, so an error can never be
+    // latched as EOS: no take_eos_watched() report (nothing marked
+    // watched) and no end-of-episode countdown. Without this an errored
+    // pipeline froze on its last frame forever (it often stays PLAYING
+    // with a stuck position, so video_active never drops) — or, errored
+    // before preroll, sat on a black screen.
+    if (error_probe_ &&
+        ::video::mb_should_abort_on_error(error_probe_(), eos_latched_,
+                                          exit_pending_)) {
+        spdlog::error("[playback] pipeline error while playing '{}' "
+                      "(path='{}') — leaving playback", movie_title_,
+                      movie_path_);
+        deferred_toast_ = "Couldn't play this file";  // surfaced by leave()
+        end_overlay_ = {};
+        ended_on_error_ = true;
+        exit_pending_ = true;
+        was_video_active_ = state_.video_active;
+        return;
     }
 
     // Edge-detect natural end-of-stream: state.video_active flips
@@ -763,21 +822,8 @@ void PlaybackScreen::begin_end_overlay() {
     // Locate the finished episode: trust current_index_ only after
     // re-validating it against the identity; otherwise linear-search for
     // (season, episode). No match -> movie-style exit.
-    int idx = -1;
-    if (current_index_ >= 0 &&
-        current_index_ < static_cast<int>(episodes_.size()) &&
-        episodes_[current_index_].season_number == id.season &&
-        episodes_[current_index_].episode_number == id.episode) {
-        idx = current_index_;
-    } else {
-        for (size_t i = 0; i < episodes_.size(); ++i) {
-            if (episodes_[i].season_number == id.season &&
-                episodes_[i].episode_number == id.episode) {
-                idx = static_cast<int>(i);
-                break;
-            }
-        }
-    }
+    const int idx =
+        finished_episode_index(episodes_, current_index_, id.season, id.episode);
     if (idx < 0) {
         exit_pending_ = true;
         return;
@@ -851,10 +897,7 @@ void PlaybackScreen::advance_to_next_episode() {
     controller_.stop();
 
     // "<series> — S<season>E<episode> · <title>" (em dash / middle dot).
-    const std::string new_title =
-        series_title_ + " \xE2\x80\x94 S" +
-        std::to_string(next.season_number) + "E" +
-        std::to_string(next.episode_number) + " \xC2\xB7 " + next.title;
+    const std::string new_title = series_episode_display_title(series_title_, next);
 
     // set_movie() RESETS overlay_meta_ (see its definition) — save the
     // series meta across the call and restore it with the new title so
@@ -878,6 +921,7 @@ void PlaybackScreen::advance_to_next_episode() {
     // contract), and the edge detector needs a fresh false→true→false.
     eos_latched_ = false;
     eos_reported_ = false;
+    ended_on_error_ = false;
     was_video_active_ = false;
     eos_suppress_frames_ = 60;
     end_overlay_ = {};
@@ -925,14 +969,9 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     if (now < title_marquee_until_) {
         auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             title_marquee_until_ - now).count();
-        float alpha = 1.0f;
-        if (remaining_ms < 500) {
-            alpha = static_cast<float>(remaining_ms) / 500.0f;
-        }
-        std::string heading = "NOW PLAYING";
-        if (!movie_title_.empty()) {
-            heading += " — " + movie_title_;
-        }
+        const float alpha =
+            title_marquee_alpha(static_cast<long long>(remaining_ms));
+        const std::string heading = now_playing_heading(movie_title_);
         const float kPaddingX  = 60.0f;   // matches chrome::kSafeInset_px
         const float kBaselineY = 70.0f;   // below the 40 px wood top band
         r.mb_draw_title_text(heading, kPaddingX, kBaselineY,
@@ -993,14 +1032,8 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // bezel-inset bottom — their position is already correct.
             if (alpha > 0.05f) {
                 namespace mc = ::media_browser::ui::chrome;
-                mc::draw_footer_hints(r, screen_w, screen_h, {
-                    {mc::HintIcon::Btn1Yellow,  "\xE2\x88\x92" "10s"},  // −10s
-                    {mc::HintIcon::Btn2Red,     "Pause/Play"},
-                    {mc::HintIcon::Btn3Green,   "+10s"},
-                    {mc::HintIcon::Btn4Black,   "Back"},
-                    {mc::HintIcon::RotaryNav,   "Scrub"},
-                    {mc::HintIcon::RotaryPress, "Open Menu"},
-                });
+                mc::draw_footer_hints(r, screen_w, screen_h,
+                                      playback_footer_hints());
             }
         }
     }
@@ -1032,8 +1065,6 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
 
     // Centered card — same chrome as the exit modal / overlay panels:
     // bg_lift fill, 2 px gold border on all four sides.
-    const bool is_card = (end_overlay_.kind == EndOverlayKind::Card);
-    const bool is_prompt = (end_overlay_.kind == EndOverlayKind::StillWatching);
     const bool has_body = !end_overlay_.body_line.empty();
     // Interior insets come from the shared overlay contract (theme.h) —
     // these were the card's own 32/26 magic numbers, now named. The
@@ -1048,14 +1079,7 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
     // area (button ~44 for cards, hint row ~24 for the countdown). The
     // still-watching prompt stacks body ("Next: …"), its own "Stopping
     // in N…" line, AND the Continue button.
-    int card_h;
-    if (is_card) {
-        card_h = kPadY + 30 + (has_body ? 28 : 0) + 16 + 44 + kPadY;
-    } else if (is_prompt) {
-        card_h = kPadY + 30 + (has_body ? 28 : 0) + 28 + 16 + 44 + kPadY;
-    } else {
-        card_h = kPadY + 30 + 28 + 16 + 24 + kPadY;
-    }
+    const int card_h = end_card_height(end_overlay_.kind, has_body, kPadY);
     const int cx = (screen_w - card_w) / 2;
     const int cy = (screen_h - card_h) / 2;
     const float fcx = static_cast<float>(cx);
@@ -1085,9 +1109,9 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - countdown_started_at_)
                 .count();
-        int remaining = kNextUpCountdownSeconds
-                      - static_cast<int>(elapsed_ms / 1000);
-        if (remaining < 1) remaining = 1;  // update() advances at expiry
+        // update() advances at expiry, so never below 1.
+        const int remaining = countdown_remaining_seconds(
+            kNextUpCountdownSeconds, static_cast<long long>(elapsed_ms));
         y += 28.0f + 16.0f;
         r.mb_draw_text("Starting in " + std::to_string(remaining)
                            + "\xE2\x80\xA6",
@@ -1128,9 +1152,9 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - countdown_started_at_)
                 .count();
-        int remaining = kStillWatchingTimeoutSeconds
-                      - static_cast<int>(elapsed_ms / 1000);
-        if (remaining < 1) remaining = 1;  // update() stops at expiry
+        // update() stops at expiry, so never below 1.
+        const int remaining = countdown_remaining_seconds(
+            kStillWatchingTimeoutSeconds, static_cast<long long>(elapsed_ms));
         y += 28.0f + 8.0f;
         r.mb_draw_text("Stopping in " + std::to_string(remaining)
                            + "\xE2\x80\xA6",
@@ -1169,6 +1193,168 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
                     end_overlay_.has_primary ? mc::ButtonKind::Ok
                                              : mc::ButtonKind::Neutral,
                     /*focused=*/true);
+}
+
+std::string PlaybackScreen::run_quick_add(int tmdb_id) {
+    // WORKER thread. Profile pick mirrors detail_screen.cpp's
+    // pick_quality_profile_id heuristic: prefer "Any" so we don't block on
+    // a profile mismatch.
+    const int qp = pick_quick_add_profile_id(radarr_.get_quality_profiles());
+
+    if (qp == 0) return "No quality profile";
+    // Cancellable: add_movie's metadata lookup may retry for up to 45 s
+    // (VPN recovery), and the destructor joins this worker under a 20 s
+    // TimeoutStopSec.
+    if (radarr_.add_movie(tmdb_id, qp, /*monitor=*/true, [this] {
+            return shutting_down_.load(std::memory_order_acquire);
+        })) {
+        return "Added \xe2\x80\x94 searching";
+    }
+    // Radarr returns HTTP 400 with "This movie has already been added" in
+    // the body when the title is already in the library; the error string
+    // is "HTTP 400: <json body>" (quick_add_failure_toast).
+    return quick_add_failure_toast(radarr_.last_error());
+}
+
+void PlaybackScreen::start_deferred_adds() {
+    // RENDER thread (leave()). Hand this session's queue to the worker. One
+    // worker at a time: if it is still running (a previous session's batch
+    // is mid-gate) the new items join its queue and it picks them up on its
+    // next round; otherwise the finished thread is reaped — it cleared
+    // deferred_add_running_ as its last act under the mutex, so the join is
+    // near-instant — and a new one starts.
+    bool spawn = false;
+    {
+        std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+        for (auto& d : session_deferred_adds_) {
+            const int id = d.tmdb_id;
+            // A batch requeued by the worker may already hold this film.
+            const bool dup = std::any_of(
+                deferred_add_queue_.begin(), deferred_add_queue_.end(),
+                [id](const DeferredAdd& q) { return q.tmdb_id == id; });
+            if (!dup) deferred_add_queue_.push_back(std::move(d));
+        }
+        if (!deferred_add_queue_.empty() && !deferred_add_running_) {
+            deferred_add_running_ = true;
+            spawn = true;
+        }
+    }
+    session_deferred_adds_.clear();
+    if (!spawn) return;
+    if (deferred_add_worker_.joinable()) deferred_add_worker_.join();
+    try {
+        deferred_add_worker_ = std::thread([this] {
+            bool finished = false;
+            run_guarded("playback deferred quick-add", [&] {
+                run_deferred_adds();
+                finished = true;
+            });
+            // Backstop for a throw out of the body ONLY: never leave the
+            // running flag latched (every later deferral would queue into
+            // a worker that no longer exists). On the normal path the body
+            // already cleared it under the mutex — clearing it again here
+            // could clobber a newer worker's claim made in between.
+            if (!finished) {
+                std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+                deferred_add_running_ = false;
+            }
+        });
+    } catch (const std::system_error&) {
+        std::vector<DeferredAdd> dropped;
+        {
+            std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+            dropped.swap(deferred_add_queue_);
+            deferred_add_running_ = false;
+        }
+        for (const auto& d : dropped) {
+            ::ui::Toast::show("Couldn\xe2\x80\x99t add " + d.title +
+                              " \xe2\x80\x94 add it from Browse");
+        }
+    }
+}
+
+void PlaybackScreen::run_deferred_adds() {
+    // WORKER thread. Gate, take the batch, add, repeat until the queue is
+    // empty. The gate is re-run per round so items queued by a LATER
+    // session (which stopped Radarr again) also wait for it to come back.
+    for (;;) {
+        const std::uint64_t sessions_at_gate_start =
+            full_pause_sessions_started_.load(std::memory_order_acquire);
+        ServiceGateHooks hooks;
+        if (quiet_ != nullptr) {
+            // quiet_ is owned by main.cpp and outlives this screen.
+            hooks.wait_quiet_idle = [q = quiet_](std::chrono::milliseconds d) {
+                return q->wait_until_idle_for(d);
+            };
+        }
+        hooks.ping = [this] { return radarr_.get_status().has_value(); };
+        hooks.cancelled = [this] {
+            return shutting_down_.load(std::memory_order_acquire);
+        };
+        const GateResult gate = wait_for_service(hooks);
+
+        std::vector<DeferredAdd> batch;
+        DeferredBatchAction action = DeferredBatchAction::Abandon;
+        {
+            std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+            // Read under the mutex — leave() lowers the flag before taking
+            // it, so a Requeue here is always seen by that leave().
+            const bool active =
+                full_pause_session_active_.load(std::memory_order_acquire);
+            const bool began =
+                full_pause_sessions_started_.load(std::memory_order_acquire) !=
+                sessions_at_gate_start;
+            action = decide_deferred_batch(gate, active, began);
+            if (deferred_add_queue_.empty() ||
+                action == DeferredBatchAction::Abandon) {
+                deferred_add_running_ = false;
+                return;
+            }
+            if (action == DeferredBatchAction::Requeue) {
+                // The next movie stopped Radarr again: keep the batch
+                // queued; that session's leave() restarts this worker.
+                spdlog::info("[playback] deferred quick-add: {} item(s) "
+                             "requeued — another movie paused the services",
+                             deferred_add_queue_.size());
+                deferred_add_running_ = false;
+                return;
+            }
+            if (action != DeferredBatchAction::Regate) {
+                batch.swap(deferred_add_queue_);
+            }
+        }
+        if (action == DeferredBatchAction::Regate) {
+            spdlog::info("[playback] deferred quick-add: a movie paused the "
+                         "services during the gate — waiting again");
+            continue;
+        }
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            const auto& d = batch[i];
+            if (shutting_down_.load(std::memory_order_acquire)) {
+                // Kiosk stopping: each add can cost seconds and the
+                // destructor is joining us under TimeoutStopSec.
+                spdlog::info("[playback] deferred quick-add: shutting down, "
+                             "{} item(s) not added", batch.size() - i);
+                std::lock_guard<std::mutex> lk(deferred_add_mtx_);
+                deferred_add_running_ = false;
+                return;
+            }
+            const std::string name =
+                d.title.empty() ? std::string("Movie") : d.title;
+            if (action == DeferredBatchAction::Drop) {
+                spdlog::warn("[playback] deferred quick-add of tmdb:{} "
+                             "dropped: Radarr didn't come back", d.tmdb_id);
+                ::ui::Toast::post("Couldn\xe2\x80\x99t add " + name +
+                                  " \xe2\x80\x94 Radarr didn't come back; "
+                                  "add it from Browse");
+                continue;
+            }
+            const std::string outcome = run_quick_add(d.tmdb_id);
+            spdlog::info("[playback] deferred quick-add of tmdb:{}: {}",
+                         d.tmdb_id, outcome);
+            ::ui::Toast::post(name + ": " + outcome);
+        }
+    }
 }
 
 }  // namespace media_browser::ui

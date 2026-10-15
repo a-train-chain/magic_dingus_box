@@ -79,6 +79,17 @@ public:
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). The only animation is the sort/filter
+    // overlay's slide — and that one only advances inside render()
+    // (tick_overlay_animation), so it MUST keep drawing until it lands.
+    // The 2 s refresh rebuilds entries_ even when nothing changed, so the
+    // signature hashes what the visible page actually shows.
+    bool wants_continuous_redraw() const override {
+        return overlay_state_ == OverlayState::SlidingIn ||
+               overlay_state_ == OverlayState::SlidingOut;
+    }
+    uint64_t redraw_signature() const override;
+
     // MediaRef of the poster most recently selected by the user. Consumed
     // by the dispatcher in main.cpp on transition: Detail takes ref.id when
     // kind == Movie, SeriesDetail takes it when kind == Tv (the kind also
@@ -159,6 +170,12 @@ private:
     // "Sonarr offline" warning line so the gap is explained rather than
     // silently reading as "your shows vanished".
     bool sonarr_ok_ = true;
+    // False when Radarr did not answer the last refresh's library read.
+    // library_ then still holds the LAST GOOD movie list (never an empty
+    // one — a failed read used to paint "Library is empty" on every blip
+    // and for the 20-40 s after every FullPause movie), and render() says
+    // so on the stats row.
+    bool radarr_ok_ = true;
     // Latch so the "could not format the 30-day cutoff" warning logs once
     // rather than on every rebuild_view() — which runs ~every 2s while this
     // screen is open. See rebuild_view().
@@ -202,6 +219,12 @@ private:
         std::unordered_set<MediaRef> stuck;
         std::unordered_set<MediaRef> importing;
         bool sonarr_ok = false;
+        // Radarr answered the library read (`library` is real). False =>
+        // apply_pending keeps the previous library_.
+        bool radarr_ok = false;
+        // ...and the queue read too, so the movie badge refs are real.
+        // False => carry_forward_movie_refs keeps the previous movie refs.
+        bool radarr_queue_ok = false;
     };
     std::mutex            pending_mtx_;
     PendingResult         pending_;
@@ -211,11 +234,36 @@ private:
     std::chrono::steady_clock::time_point last_refresh_at_{};
     static constexpr int  kRefreshIntervalMs = 2000;  // library churns slowly
 
+    // Full-movie-list cache — WORKER-thread only (one refresh worker at a
+    // time, serialized by refresh_in_flight_), QueueScreen's lib_cache_
+    // pattern. The 2 s cadence used to re-download and re-parse the
+    // heaviest Radarr response every tick. Now the light queue read runs
+    // every tick and the list is refetched only when: the cache is older
+    // than kMovieListTtlMs, the set of queued movie ids changed since the
+    // last fetch (an item LEAVING the queue is an import finishing — the
+    // case the live cadence exists for), or enter() asked for a fresh one
+    // (force_movie_list_ — the user may have just added/removed a movie).
+    std::vector<Movie>    movie_list_cache_;
+    bool                  movie_list_cache_valid_ = false;
+    std::chrono::steady_clock::time_point movie_list_cache_at_{};
+    std::unordered_set<int> movie_list_cache_queue_ids_;
+    std::atomic<bool>     force_movie_list_{true};
+    static constexpr int  kMovieListTtlMs = 10000;
+
     // Header stats line cache ("N titles · X GB used · Y GB free").
     // Rebuilt at most every 5s in render() — computing it per frame cost a
     // statvfs syscall + O(library) sum + string concats at 60fps.
     std::string stats_line_;
     std::chrono::steady_clock::time_point last_stats_refresh_{};
+    // The Sort+Filter overlay's three stat lines, built in the same
+    // refresh as stats_line_ (the overlay used to redo the sum, the
+    // statvfs and three snprintf+format_bytes every frame it was open).
+    std::string stats_titles_str_;
+    std::string stats_used_str_;
+    std::string stats_free_str_;
+    // Set when entries_ is rebuilt so the counts never lag a library
+    // change by the full 5 s.
+    bool stats_dirty_ = true;
 
     // Slide-in overlay state machine (v1.6.x). The overlay is a 480 px
     // panel that slides in from the right edge on BTN4 press, holding

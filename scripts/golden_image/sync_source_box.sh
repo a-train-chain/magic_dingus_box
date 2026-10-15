@@ -61,11 +61,12 @@ push() {
     fi
     local base; base=$(basename "$dest")
     scp "${SSH_OPTS[@]}" -q "${REPO}/${src}" "${PI_HOST}:/tmp/${base}" 2>/dev/null
-    ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    # -n: a caller may be looping over stdin, and ssh would drain it.
+    ssh "${SSH_OPTS[@]}" -n "$PI_HOST" \
         "sudo install -D -m ${mode} -o root -g root /tmp/${base} '${dest}' && rm -f /tmp/${base}" 2>/dev/null
     local l r
     l=$(shasum -a 256 "${REPO}/${src}" | cut -c1-16)
-    r=$(ssh "${SSH_OPTS[@]}" "$PI_HOST" "sha256sum '${dest}' | cut -c1-16" 2>/dev/null)
+    r=$(ssh "${SSH_OPTS[@]}" -n "$PI_HOST" "sha256sum '${dest}' | cut -c1-16" 2>/dev/null)
     if [[ "$l" == "$r" ]]; then
         echo -e "  ${GREEN}OK${NC}      ${label}"
     else
@@ -83,6 +84,15 @@ push scripts/golden_image/prepare_for_cloning.sh \
 push scripts/golden_image/restore_after_cloning.sh \
      /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh 755 \
      "restore_after_cloning  (starts containerd+docker before the stack)"
+# Sourced by BOTH scripts above — without it neither can run.
+push scripts/golden_image/clone_stash_lib.sh \
+     /opt/magic_dingus_box/scripts/golden_image/clone_stash_lib.sh 644 \
+     "clone_stash_lib.sh     (reboot-safe secret stash on the movie drive)"
+# Sourced by prepare (fingerprints), restore (removes them), first_boot
+# (Step 1c purge) and verify_box.sh — prepare refuses to start without it.
+push scripts/golden_image/source_secrets_lib.sh \
+     /opt/magic_dingus_box/scripts/golden_image/source_secrets_lib.sh 644 \
+     "source_secrets_lib.sh  (source VPN-key fingerprints + inherited-container purge)"
 
 echo
 echo -e "${BOLD}[2/5] Pushing service scripts${NC}"
@@ -111,6 +121,39 @@ if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
 else
     echo -e "  ${RED}FAILED${NC}  network hardening installer did not complete"; FAILED=1
 fi
+# PulseAudio as its own unit (magic-dingus-audio.service). setup_memory_tuning
+# below installs it via setup_audio_service.sh, so every file the unit and
+# the kiosk's ExecStartPre execute must be on the box FIRST.
+push magic_dingus_box_cpp/scripts/audio_service.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/audio_service.sh 755 \
+     "audio_service.sh       (PulseAudio prepare/run/set-sink for its own unit)"
+push magic_dingus_box_cpp/scripts/init_audio.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/init_audio.sh 755 \
+     "init_audio.sh          (kiosk ExecStartPre: sink only; legacy fallback)"
+push magic_dingus_box_cpp/scripts/resolve_audio_sink.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/resolve_audio_sink.sh 755 \
+     "resolve_audio_sink.sh  (default-sink resolver)"
+push magic_dingus_box_cpp/scripts/setup_audio_service.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_audio_service.sh 755 \
+     "setup_audio_service.sh (installs the audio unit + kiosk drop-in)"
+push magic_dingus_box_cpp/systemd/magic-dingus-audio.service \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/systemd/magic-dingus-audio.service 644 \
+     "magic-dingus-audio.service (repo copy)"
+push magic_dingus_box_cpp/scripts/restart_stale_cascade_watcher.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/restart_stale_cascade_watcher.sh 755 \
+     "restart_stale_cascade_watcher.sh (setup_memory_tuning step 1e)"
+# The unit converge (setup_memory_tuning.sh step 1a) installs the box TREE's
+# unit files, so the tree must hold the repo's: an image cut from a box
+# whose /opt units are stale would ship those to every unit.
+push magic_dingus_box_cpp/scripts/converge_system_units.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/converge_system_units.sh 755 \
+     "converge_system_units.sh (installed units = the tree's; setup_memory_tuning step 1a)"
+# The source box must already run THIS checkout's release: this loop pushes
+# every tracked unit into the box tree, and a unit whose script is not on the
+# box would ship broken.
+while IFS= read -r unit_file; do
+    push "$unit_file" "/opt/magic_dingus_box/${unit_file}" 644 "${unit_file} (repo copy)"
+done < <(cd "$REPO" && git ls-files '*.service' '*.timer')
 push magic_dingus_box_cpp/scripts/setup_memory_tuning.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh 755 \
      "setup_memory_tuning.sh (kiosk MemoryLow + zram tune + cgroup cmdline)"
@@ -126,6 +169,46 @@ if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
     echo -e "  ${GREEN}OK${NC}      memory posture applied live (MemoryLow + zram + cmdline)"
 else
     echo -e "  ${RED}FAILED${NC}  memory tuning installer did not complete"; FAILED=1
+fi
+# The image must carry converged units: every installed tree unit equal to
+# the tree, nothing MISSING or STALE, no leftover fix drop-in.
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    "bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/converge_system_units.sh --check" 2>&1 | sed 's/^/          /'; then
+    echo -e "  ${GREEN}OK${NC}      installed systemd units match the tree"
+else
+    echo -e "  ${RED}FAILED${NC}  installed systemd units differ from the tree (lines above)"; FAILED=1
+fi
+# The image must carry the audio unit ENABLED with the kiosk ordered after
+# it — otherwise every clone boots with PulseAudio back in the kiosk's
+# cgroup (init_audio.sh's legacy fallback).
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    "systemctl is-enabled --quiet magic-dingus-audio.service && test -f /etc/systemd/system/magic-dingus-box-cpp.service.d/audio-service.conf" 2>/dev/null; then
+    echo -e "  ${GREEN}OK${NC}      magic-dingus-audio.service enabled + kiosk drop-in installed"
+else
+    echo -e "  ${RED}FAILED${NC}  magic-dingus-audio.service not enabled or kiosk drop-in missing"; FAILED=1
+fi
+# OTA power-loss recovery: the update.sh that writes the in-progress
+# marker, the unit that acts on it at boot, and its installer. The image
+# must carry the unit ENABLED (live), not just the repo copy — same
+# present-but-not-correct trap as above. The helper setup_services.sh now
+# calls for the Phone Remote uinput step travels with it.
+push magic_dingus_box_cpp/scripts/update.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/update.sh 755 \
+     "update.sh              (atomic build swap, power-loss marker, headless OK)"
+push magic_dingus_box_cpp/scripts/setup_ota_recovery.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh 755 \
+     "setup_ota_recovery.sh  (installs the boot-time OTA recovery unit)"
+push magic_dingus_box_cpp/systemd/magic-dingus-ota-recovery.service \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/systemd/magic-dingus-ota-recovery.service 644 \
+     "magic-dingus-ota-recovery.service (repo copy)"
+push magic_dingus_box_cpp/scripts/setup_phone_remote_uinput.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_phone_remote_uinput.sh 755 \
+     "setup_phone_remote_uinput.sh (uinput rule + input group; called by setup_services.sh)"
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    "sudo bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh && systemctl is-enabled --quiet magic-dingus-ota-recovery.service" 2>&1 | sed 's/^/          /'; then
+    echo -e "  ${GREEN}OK${NC}      OTA recovery unit installed + enabled live"
+else
+    echo -e "  ${RED}FAILED${NC}  OTA recovery unit not installed/enabled"; FAILED=1
 fi
 push magic_dingus_box_cpp/scripts/verify_services.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/verify_services.sh 755 \

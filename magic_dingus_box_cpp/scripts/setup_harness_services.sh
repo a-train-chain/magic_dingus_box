@@ -53,20 +53,23 @@ echo "=== Magic Dingus Box harness services setup ==="
 # ---------------------------------------------------------------------------
 # Step 1: Install unit files
 # ---------------------------------------------------------------------------
+# Through converge_system_units.sh --only, the one writer of unit files: it
+# writes each unit that is absent or differs and daemon-reloads if it wrote.
 UNITS=(
     kiosk-standby-watcher.service
     led-boot-sequence.service
     led-shutdown-animation.service
     power-switch-check.service
 )
+ONLY_ARGS=()
 for u in "${UNITS[@]}"; do
     if [ ! -f "${SYSTEMD_SRC}/${u}" ]; then
         echo "ERROR: ${SYSTEMD_SRC}/${u} not found — run from a synced checkout" >&2
         exit 1
     fi
-    sudo install -m 0644 "${SYSTEMD_SRC}/${u}" "/etc/systemd/system/${u}"
+    ONLY_ARGS+=(--only "$u")
 done
-sudo systemctl daemon-reload
+sudo bash "${SCRIPT_DIR}/converge_system_units.sh" "${ONLY_ARGS[@]}"
 echo "Installed ${#UNITS[@]} unit files."
 
 # ---------------------------------------------------------------------------

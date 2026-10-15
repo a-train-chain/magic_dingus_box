@@ -14,6 +14,7 @@
 #include "media_browser/prowlarr/prowlarr_client.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/detail_logic.h"
 #include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/release_picker_screen.h"
@@ -72,6 +73,11 @@ namespace media_browser::ui {
 //     with a [Retry] button. Radarr being unreachable does NOT enter the
 //     error state — DetailScreen still renders TMDB metadata and only
 //     surfaces a banner warning that library actions may fail.
+//
+// The decisions above (modes, button rows, profile pick, drain verdicts,
+// every composed string) live in detail_logic.h, pure and Mac-tested; the
+// Remove sequence is ../movie_remove.h. This class is thread plumbing,
+// I/O and paint.
 class DetailScreen : public MbScreen {
 public:
     // prowlarr is optional — pass nullptr when Prowlarr is unconfigured
@@ -193,35 +199,21 @@ public:
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // Redraw gate (mb_screen.h). Detail has no animation (the old blink
+    // is computed but unused); everything changes on input, in update()
+    // (fetch drains, 9 s library poll, banner / confirm expiry) or via
+    // three values render() reads live (Prowlarr state, VPN health, TMDB
+    // key) — all in the signature.
+    bool wants_continuous_redraw() const override { return false; }
+    uint64_t redraw_signature() const override;
+
 private:
-    // What the Detail screen is currently showing. Drives which action
-    // buttons are rendered and how SELECT resolves.
-    enum class Mode {
-        Loading,                // Fetching movie + profiles.
-        Error,                  // Lookup failed — show Retry.
-        NoTmdb,                 // tmdb_id == 0; no movie selected.
-        NotInLibrary,           // [Add to Library]
-        InLibraryNoFile,        // [Search Again] [Remove]
-        InLibraryWithFile,      // [Play] [Remove]
-    };
-
-    // Abstract button id — one enum covers all modes. Only a subset is
-    // present in the button row at a time, determined by the current Mode.
-    enum class Action {
-        AddToLibrary,
-        SearchAgain,
-        Remove,
-        ConfirmRemove,   // Transient — Remove's second stage.
-        Play,
-        Retry,
-        MoreInfo,        // Placeholder — future sub-screen with full trivia.
-        PickSource,      // Manual release-picker (only when in library).
-    };
-
-    struct Button {
-        Action action;
-        std::string label;
-    };
+    // The mode / action / button vocabulary lives in detail_logic.h so the
+    // decisions built on it (decide_detail_buttons and friends) are
+    // Mac-testable; these aliases keep the screen's spelling.
+    using Mode = DetailMode;
+    using Action = DetailAction;
+    using Button = DetailButton;
 
     // Rebuild buttons_ based on mode_ and remove_pending_. Resets focus_ if
     // it falls outside the new range.
@@ -246,10 +238,6 @@ private:
         std::optional<TmdbMovieDetail> detail;
         std::vector<Movie>             library;
         std::vector<QualityProfile>    profiles;
-        // Captured from radarr_.last_error() at the time get_library()
-        // returned an empty list. Mirrors the sync path's reachability
-        // heuristic (empty + clean error == empty library, not failure).
-        std::string                    radarr_library_error;
         bool detail_ok   = false;
         bool library_ok  = false;
         bool profiles_ok = false;
@@ -325,6 +313,17 @@ private:
     std::atomic<bool> add_done_{false};
     bool add_ok_ = false;
     int add_tmdb_id_ = -1;                 // render-thread only
+
+    // Async Search Again — same shape again. trigger_search is a 5 s-
+    // timeout POST that ran on the render thread (WatchdogSec=10). The
+    // outcome is banner'd when the same movie is still on screen, and a
+    // failure is toasted either way.
+    void drain_search_result();
+    std::thread search_worker_;
+    std::atomic<bool> search_in_flight_{false};
+    std::atomic<bool> search_done_{false};
+    bool search_ok_ = false;
+    int search_radarr_id_ = -1;            // render-thread only
     Screen do_play();
     Screen do_retry();
     Screen do_more_info();
@@ -333,8 +332,9 @@ private:
     // Brief toast messages (e.g. "Search triggered", "Added to library").
     void show_banner(std::string text);
 
-    // Pick the HD-1080p quality profile id. Falls back to the first profile
-    // if none matches, or 0 if no profiles are available.
+    // The quality profile for Add — pick_movie_quality_profile_id
+    // (detail_logic.h) over profiles_: "Any" first, then the HD fallbacks,
+    // the first profile, or 0 if no profiles are available.
     int pick_quality_profile_id() const;
 
     RadarrClient& radarr_;

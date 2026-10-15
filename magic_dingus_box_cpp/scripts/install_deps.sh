@@ -16,6 +16,13 @@ done
 
 echo "Installing C++ Kiosk Engine dependencies..."
 
+# The -dev packages here (and in the Media Browser block below) must match
+# release.yml's apt list and what CMakeLists.txt asks for —
+# tests/local/system_deps_parity.bats fails on any difference. libegl-dev,
+# not libegl1-mesa-dev: on Trixie egl.pc ships in libegl-dev, and the Mesa
+# package only adds two extension headers nothing includes.
+# libgstreamer-plugins-bad1.0-dev was dropped the same way: no CMake module
+# or header uses it (the runtime plugins are gstreamer1.0-plugins-bad).
 sudo apt update
 sudo apt install -y \
   build-essential \
@@ -24,7 +31,7 @@ sudo apt install -y \
   pkg-config \
   libdrm-dev \
   libgbm-dev \
-  libegl1-mesa-dev \
+  libegl-dev \
   libgles2-mesa-dev \
   libevdev-dev \
   libgpiod-dev \
@@ -35,7 +42,6 @@ sudo apt install -y \
   libjsoncpp-dev \
   libgstreamer1.0-dev \
   libgstreamer-plugins-base1.0-dev \
-  libgstreamer-plugins-bad1.0-dev \
   gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad \
@@ -43,6 +49,7 @@ sudo apt install -y \
   gstreamer1.0-gl \
   gstreamer1.0-libav \
   python3-evdev \
+  python3-gunicorn \
   python3-pip \
   auditd \
   dnsmasq \
@@ -54,6 +61,13 @@ sudo apt install -y \
 # stock Raspberry Pi OS image happens to ship it; nothing else kept that
 # true for a future base image, and the failure is silent (first boot falls
 # back to a weaker path).
+
+# python3-gunicorn is the Content Manager's production web server (gthread
+# worker — the server flask-sock documents for the Phone Remote WebSocket).
+# magic_dingus_box/web/serve.py falls back to Werkzeug's development server
+# when it is missing, so it is not fatal — but fielded boxes get it from
+# update.sh's ensure_web_server_dep, not from here (an OTA does not re-run
+# this script once flask-sock is present).
 
 # auditd powers the library-deletion tripwire (scripts/data/
 # audit-mdb-sweeper.rules, installed by setup_services.sh). It earned its
@@ -97,12 +111,12 @@ fi
 # Lets the operator type `magicpi.local` (or `10.55.0.1`, or the Pi's
 # Wi-Fi IP) without remembering the port number — landing on the
 # Content Manager directly.
+# The unit goes through converge_system_units.sh --only, the one writer of
+# unit files (it daemon-reloads when it wrote).
 REDIRECT_UNIT_SRC="$(cd "${SCRIPT_DIR}/.." && pwd)/systemd/content-manager-redirect.service"
 if [[ -f "$REDIRECT_UNIT_SRC" ]]; then
     echo "Installing content-manager-redirect service..."
-    sudo cp "$REDIRECT_UNIT_SRC" /etc/systemd/system/content-manager-redirect.service
-    sudo chmod 644 /etc/systemd/system/content-manager-redirect.service
-    sudo systemctl daemon-reload
+    sudo bash "${SCRIPT_DIR}/converge_system_units.sh" --only content-manager-redirect.service
     sudo systemctl enable content-manager-redirect.service
     sudo systemctl restart content-manager-redirect.service
     echo "  ✓ port-80 → :5000 redirect running"
@@ -114,12 +128,18 @@ if [[ $INCLUDE_MEDIA_BROWSER -eq 1 ]]; then
     echo "Installing Media Browser dependencies..."
     # sqlite3 is the CLI binary — libsqlite3-dev ships only headers/libs,
     # and the watch-state acceptance checks shell out to `sqlite3` on the box.
+    # libboost-dev: CMakeLists.txt has find_package(Boost REQUIRED) for the
+    # Media Browser build (libtorrent's headers need it). It was only ever
+    # present transitively; named here to match release.yml and the README.
+    # libpugixml-dev was dropped: nothing in src/ or CMakeLists.txt uses
+    # pugixml, and release.yml never installed it, so it was a stale entry
+    # that made on-Pi builds and CI disagree about the dependency set.
     sudo apt install -y \
       libtorrent-rasterbar-dev \
+      libboost-dev \
       libsqlite3-dev \
       sqlite3 \
-      libcurl4-openssl-dev \
-      libpugixml-dev
+      libcurl4-openssl-dev
 fi
 
 # --- Persistent journal -------------------------------------------------------

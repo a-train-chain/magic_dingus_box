@@ -49,15 +49,15 @@ std::vector<LibraryEntry> build_library_entries(
         entries.push_back(std::move(e));
     }
 
-    // ---- TV: included when the series-level stat says any file exists OR a
-    // download is active. The series-level statistics.episodeFileCount is
-    // correct HERE (a specials-only series still owns real disk content) and
-    // ONLY here — the counts and the watched math below use the
+    // ---- TV: every series is included; counts below use the
     // season-0-excluded sums, matching WatchStore::tv_watched_counts. ----
     for (const Series& s : tv) {
         const MediaRef ref{MediaKind::Tv, s.tmdb_id};
         const bool is_downloading = downloading_refs.count(ref) > 0;
-        if (s.episode_file_count <= 0 && !is_downloading) continue;
+        // Every series Sonarr holds is an entry, files or not — the same rule
+        // movies have always had. A show emptied by per-season deletes used to
+        // vanish here and read as removed (Game of Thrones, 2026-08-22); Remove
+        // is the only thing that takes a show out of the Library.
 
         int file_count = 0;
         int total_count = 0;
@@ -163,6 +163,33 @@ std::vector<const LibraryEntry*> build_library_view(
     }
 
     return view;
+}
+
+std::unordered_set<MediaRef> carry_forward_movie_refs(
+        std::unordered_set<MediaRef> fresh,
+        const std::unordered_set<MediaRef>& prev,
+        bool movie_half_ok) {
+    if (movie_half_ok) return fresh;
+    // Drop whatever movie refs this cycle has (none can be trusted), keep
+    // its TV refs, and restore the last good cycle's movie refs.
+    for (auto it = fresh.begin(); it != fresh.end();) {
+        if (it->kind == MediaKind::Movie) {
+            it = fresh.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (const auto& r : prev) {
+        if (r.kind == MediaKind::Movie) fresh.insert(r);
+    }
+    return fresh;
+}
+
+const char* library_empty_message(bool any_entries, bool movies_offline) {
+    if (any_entries) return "No matches for the current filter";
+    if (movies_offline)
+        return "Movie service offline \xE2\x80\x94 retrying\xE2\x80\xA6";
+    return "Library is empty \xE2\x80\x94 add movies from Browse";
 }
 
 }  // namespace media_browser::ui

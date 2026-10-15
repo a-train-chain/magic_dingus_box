@@ -16,14 +16,16 @@ public:
     std::vector<Movie> get_library() override;
     std::optional<std::vector<Movie>> get_library_checked() override;
     std::optional<Movie> get_movie(int radarr_id) override;
-    bool add_movie(int tmdb_id, int quality_profile_id, bool monitor) override;
+    bool add_movie(int tmdb_id, int quality_profile_id, bool monitor,
+                   const std::function<bool()>& cancelled) override;
     bool remove_movie(int radarr_id, bool delete_files) override;
     bool trigger_search(int radarr_id) override;
     std::optional<std::vector<QueueItem>> get_queue_checked() override;
     std::vector<QueueItem> get_queue() override;
     bool cancel_queue_item(int queue_id) override;
     ActiveSearches get_active_searches() override { return {}; }
-    std::vector<std::string> get_movie_download_hashes(int movie_id) override;
+    std::optional<std::vector<std::string>>
+    get_movie_download_hashes_checked(int movie_id) override;
     std::vector<QualityProfile> get_quality_profiles() override;
     std::vector<RootFolder> get_root_folders() override;
 

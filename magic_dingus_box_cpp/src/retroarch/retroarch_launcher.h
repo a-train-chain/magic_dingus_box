@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "launch_contract.h"
+#include "game_session.h"
 
 namespace retroarch {
 
@@ -28,6 +29,13 @@ public:
     // Check if RetroArch is available
     bool is_available() const { return retroarch_available_; }
 
+    // Directory holding the core's .so (system libretro dir first, then the
+    // user core dir -- the order launch_drm uses), or nullopt when the core
+    // is not installed. Pure filesystem lookup, no side effects: call it
+    // BEFORE tearing down video/DRM/input so a missing core is a clean,
+    // showable error instead of a dark screen after the handoff.
+    static std::optional<std::string> find_core_dir(const std::string& core_name);
+
 private:
     // Find RetroArch executable
     std::optional<std::string> find_retroarch();
@@ -38,8 +46,9 @@ private:
     // Release controllers before launch
     void release_controllers();
     
-    // Detect ALSA device for audio
-    std::string detect_alsa_device();
+    // ALSA device for game audio given the user's audio_output setting
+    // (0=AUTO, 1=HDMI, 2=HEADPHONE) — see retroarch::pick_game_alsa_device.
+    std::string detect_alsa_device(int audio_output);
     
     // Stop GStreamer and cleanup audio resources
     void stop_gstreamer_and_cleanup();

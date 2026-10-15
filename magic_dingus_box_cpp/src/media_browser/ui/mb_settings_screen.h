@@ -220,6 +220,25 @@ private:
     std::vector<RootFolder>     staged_root_folders_;
     std::vector<IndexerRow>     staged_indexer_rows_;
 
+    // --- Async indexer enable/disable (Sources panel SELECT) ---
+    // set_indexer_enabled() is GET + PUT at 5 s each — 10 s on the render
+    // thread with Prowlarr wedged, i.e. exactly WatchdogSec. Same shape as
+    // the load above: main thread fills toggle_id_/toggle_new_state_/
+    // toggle_name_ BEFORE spawning; the worker writes ONLY
+    // staged_toggle_ok_, then releases toggle_done_ as its last act.
+    // One toggle at a time; the row shows "[...]" while it is pending.
+    std::atomic<bool> toggle_in_flight_{false};
+    std::atomic<bool> toggle_done_{false};
+    int               toggle_id_ = 0;
+    bool              toggle_new_state_ = false;
+    std::string       toggle_name_;
+    bool              staged_toggle_ok_ = false;
+    void start_indexer_toggle(const IndexerRow& row);
+    void apply_toggle_result();
+
+    // Declared after every member its worker touches (see load_worker_).
+    WorkerPool        toggle_worker_;
+
     // MUST be the last member: members destruct in reverse declaration
     // order, and ~WorkerPool joins any in-flight worker — declaring the
     // pool last means that join happens BEFORE the staged_* members (and

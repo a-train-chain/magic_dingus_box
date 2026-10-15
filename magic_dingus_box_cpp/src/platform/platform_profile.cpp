@@ -70,6 +70,14 @@ PlatformProfile profile_for(PiModel model) {
             // Pi 5-only systems (see header). Tokens must already be in
             // normalize_game_system() form.
             p.unsupported_game_systems = {"n64", "dreamcast"};
+            // Same gate keyed on the core, for items whose system string
+            // is blank/nonstandard. Normalized form (normalize_emulator_core).
+            p.unsupported_emulator_cores = {"mupen64plus_next_libretro",
+                                            "parallel_n64_libretro",
+                                            "flycast_libretro"};
+            // 1.5 GB envelope board: posters get the smallest budget
+            // (see header — ~230 w185 grid posters).
+            p.artwork_cache_budget_bytes = 64u * 1024u * 1024u;
             break;
         case PiModel::Pi5:
             p.has_analog_audio = false;
@@ -85,6 +93,7 @@ PlatformProfile profile_for(PiModel model) {
             // the IO/CPU headroom, so downloads keep moving during films.
             // Pi 4 / Unknown keep the full pause (struct default false).
             p.trickle_torrents_during_video = true;
+            p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
             break;
         case PiModel::Mac:
             p.has_analog_audio = true;         // CoreAudio always has an output
@@ -92,6 +101,9 @@ PlatformProfile profile_for(PiModel model) {
             p.rotary_events_per_detent = 2;
             p.pause_services_during_movie = false;
             p.trickle_torrents_during_video = false;
+            // Unread on a Mac: the headless engine serves posters from its
+            // own artwork store and never builds the kiosk's GL cache.
+            p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
             break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on
@@ -100,23 +112,102 @@ PlatformProfile profile_for(PiModel model) {
             p.has_analog_audio = false;
             p.gpiochip_labels = {"pinctrl-rp1", "pinctrl-bcm2711",
                                  "pinctrl-bcm2835"};
+            p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
             break;
     }
     return p;
 }
 
-PlatformProfile detect_platform(const std::string& model_path) {
-#ifdef __APPLE__
-    (void)model_path;
-    return profile_for(PiModel::Mac);
-#endif
+namespace {
+
+PlatformProfile detect_hardware(const std::string& model_path) {
     std::ifstream f(model_path, std::ios::binary);
     if (!f.is_open()) {
+        // Dev-VM impersonation (dev/pisim/README.md): with no device tree
+        // to read, MDB_PI_MODEL_OVERRIDE supplies a model string so a Linux
+        // VM can exercise the Pi 4B / Pi 5 profile paths. Honored ONLY when
+        // the real file is absent — a stray env var can never re-profile an
+        // actual board.
+        if (const char* o = std::getenv("MDB_PI_MODEL_OVERRIDE"); o && *o) {
+            PlatformProfile p = profile_for(parse_pi_model(o));
+            p.model_string = strip_trailing_junk(o);
+            return p;
+        }
         return profile_for(PiModel::Unknown);
     }
     std::stringstream ss;
     ss << f.rdbuf();
-    return profile_for(parse_pi_model(ss.str()));
+    PlatformProfile p = profile_for(parse_pi_model(ss.str()));
+    p.model_string = strip_trailing_junk(ss.str());
+    return p;
+}
+
+} // namespace
+
+PlatformProfile detect_platform(const std::string& model_path) {
+    return apply_policy_override(detect_hardware(model_path),
+                                 std::getenv(kPolicyOverrideEnv));
+}
+
+PlatformProfile detect_platform() {
+#ifdef __APPLE__
+    // The headless engine's host (mdb_headless): there is no device tree,
+    // and a Mac is never a board. The override is still applied so a stray
+    // MDB_PLATFORM_POLICY_OVERRIDE is logged as ignored, as on Unknown.
+    return apply_policy_override(profile_for(PiModel::Mac),
+                                 std::getenv(kPolicyOverrideEnv));
+#else
+    return detect_platform("/proc/device-tree/model");
+#endif
+}
+
+PlatformProfile apply_policy_override(PlatformProfile detected,
+                                      const char* env_value) {
+    if (env_value == nullptr || *env_value == '\0') return detected;
+    const std::string value(env_value);
+    if (value != "pi4") {
+        detected.policy_override_ignored_reason =
+            "unrecognized value '" + value + "' (only 'pi4' is accepted)";
+        return detected;
+    }
+    if (detected.model == PiModel::Pi4) {
+        detected.policy_override_ignored_reason =
+            "board is already a Pi 4B, so the override is a no-op here";
+        return detected;
+    }
+    if (detected.model != PiModel::Pi5) {
+        detected.policy_override_ignored_reason =
+            "board is not a Pi 5; the override applies only on a Pi 5";
+        return detected;
+    }
+    // POLICY fields only — see the classification table in the header.
+    // Hardware facts (model, model_string, has_analog_audio,
+    // gpiochip_labels, rotary_events_per_detent) stay the real Pi 5's.
+    const PlatformProfile pi4 = profile_for(PiModel::Pi4);
+    detected.pause_services_during_movie = pi4.pause_services_during_movie;
+    detected.trickle_torrents_during_video = pi4.trickle_torrents_during_video;
+    detected.unsupported_game_systems = pi4.unsupported_game_systems;
+    detected.unsupported_emulator_cores = pi4.unsupported_emulator_cores;
+    detected.artwork_cache_budget_bytes = pi4.artwork_cache_budget_bytes;
+    detected.policy_override = "pi4";
+    return detected;
+}
+
+std::string policy_override_log_line(const PlatformProfile& profile) {
+    if (!profile.policy_override.empty()) {
+        const std::string real = profile.model_string.empty()
+            ? std::string("Raspberry Pi 5")
+            : profile.model_string;
+        return "PLATFORM POLICY OVERRIDE ACTIVE: running Pi 4B policies on " +
+               real + " (" + kPolicyOverrideEnv +
+               "=pi4 is TEST-ONLY: never ship; verify_box.sh fails while set)";
+    }
+    if (!profile.policy_override_ignored_reason.empty()) {
+        return std::string(kPolicyOverrideEnv) + " IGNORED: " +
+               profile.policy_override_ignored_reason +
+               " (remove it from the unit environment)";
+    }
+    return "";
 }
 
 std::string normalize_game_system(const std::string& emulator_system) {
@@ -137,6 +228,45 @@ bool supports_game_system(const PlatformProfile& profile,
     return std::find(profile.unsupported_game_systems.begin(),
                      profile.unsupported_game_systems.end(),
                      key) == profile.unsupported_game_systems.end();
+}
+
+std::string normalize_emulator_core(const std::string& emulator_core) {
+    std::string out;
+    out.reserve(emulator_core.size() + 9);
+    for (char c : emulator_core) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '"' ||
+            c == '\'' || c == '\0') {
+            continue;
+        }
+        out.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (out.size() > 3 && out.compare(out.size() - 3, 3, ".so") == 0) {
+        out.resize(out.size() - 3);
+    }
+    if (out.empty() || out == "auto") return out;
+    static const std::string kSuffix = "_libretro";
+    if (out.size() < kSuffix.size() ||
+        out.compare(out.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0) {
+        out += kSuffix;
+    }
+    return out;
+}
+
+bool supports_emulator_core(const PlatformProfile& profile,
+                            const std::string& emulator_core) {
+    const std::string key = normalize_emulator_core(emulator_core);
+    if (key.empty() || key == "auto") return true;
+    return std::find(profile.unsupported_emulator_cores.begin(),
+                     profile.unsupported_emulator_cores.end(),
+                     key) == profile.unsupported_emulator_cores.end();
+}
+
+bool supports_game_item(const PlatformProfile& profile,
+                        const std::string& emulator_system,
+                        const std::string& emulator_core) {
+    return supports_game_system(profile, emulator_system) &&
+           supports_emulator_core(profile, emulator_core);
 }
 
 std::optional<std::string> find_hdmi_sink(const std::string& pactl_short_sinks) {

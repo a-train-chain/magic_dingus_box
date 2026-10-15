@@ -172,11 +172,14 @@ rsync -avz --checksum \
     --exclude 'data/pairing_session.json' \
     --exclude 'data/pairing_audit.log' \
     --exclude 'data/pending_revocations.txt' \
+    --exclude 'data/qbit_paused_by_kiosk' \
     --exclude 'data/flask_secret.key' \
     --exclude 'data/kiosk_status.json' \
     --exclude 'data/seek_request.json' \
     --exclude 'data/text_input_queue.jsonl' \
     --exclude 'data/media_browser.db*' \
+    --exclude 'data/upload_temp' \
+    --exclude 'data/screenshots' \
     --filter 'P data/thumbnails/ps1' \
     --filter 'P data/thumbnails/nes' \
     --filter 'P data/thumbnails/snes' \
@@ -201,9 +204,17 @@ echo "  ✓ Code synced"
 # bench deploy, 2026-07-22.
 ssh "${PI_HOST}" "mkdir -p ${PI_DIR}/magic_dingus_box/web ${PI_DIR}/scripts/golden_image ${PI_DIR}/services ${PI_DIR}/systemd"
 echo "Step 1.5: Syncing Web UI to ${PI_HOST}:${PI_DIR}/magic_dingus_box/web"
+# venv/.pytest_cache are the Mac dev environment (macOS binaries,
+# symlinks into /opt/homebrew): the box runs /usr/bin/python3 and never
+# uses them, but they were copied onto every deployed box and from there
+# into every golden image. Excluded paths are not deleted from the box by
+# --delete, so an existing copy stays until removed by hand.
 rsync -avz --checksum \
     --delete \
     --exclude '__pycache__' \
+    --exclude 'venv' \
+    --exclude '.venv' \
+    --exclude '.pytest_cache' \
     "${CPP_DIR}/../magic_dingus_box/web/" \
     "${PI_HOST}:${PI_DIR}/magic_dingus_box/web/"
     
@@ -217,12 +228,57 @@ rsync -avz --checksum \
 
 # Make update.sh executable on Pi
 ssh "${PI_HOST}" "chmod +x ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh" 2>/dev/null || true
-# resolve_audio_sink.sh is invoked directly by path from init_audio.sh
+# resolve_audio_sink.sh is invoked directly by path from audio_service.sh
 # (not via `bash ...`), so it must keep its executable bit — a lost mode
-# bit would silently disable sink resolution (init_audio's `|| true`
+# bit would silently disable sink resolution (the caller's `|| true`
 # swallows the failure) and boot every Pi with no default audio sink.
 ssh "${PI_HOST}" "chmod +x ${PI_DIR}/magic_dingus_box_cpp/scripts/resolve_audio_sink.sh" 2>/dev/null || true
 echo "  ✓ VERSION file and update script synced"
+
+# Step 1.56: Sync the repo's root systemd/ units into the box tree.
+# converge_system_units.sh is the one writer of unit files: every unit step
+# below installs through its --only mode, and setup_memory_tuning.sh (1.68)
+# runs it in full. It reads the box TREE, so the tree must hold the repo's
+# current units. Only git-tracked files go — the release tarball carries
+# exactly those.
+#
+# It also removes the copies earlier deploys STAGED here: until 2026-10,
+# Steps 1.7/1.7b rsynced magic-dingus-box-cpp.service and
+# magic-cpu-performance.service into ${PI_DIR}/systemd/ and installed them
+# from there, leaving untracked shadows of magic_dingus_box_cpp/systemd/
+# units on every deployed box (an OTA's rsync --delete drops them; a deploy
+# never did). A magic_dingus_box_cpp/systemd/ unit that git does not track
+# under the root systemd/ is such a shadow. Explicit file arguments, not
+# --files-from: macOS ships openrsync.
+echo "Step 1.56: Syncing root systemd/ unit files..."
+REPO_DIR="$(cd "${CPP_DIR}/.." && pwd)"
+CONVERGE_UNITS="${PI_DIR}/magic_dingus_box_cpp/scripts/converge_system_units.sh"
+ROOT_UNIT_FILES=()
+while IFS= read -r f; do
+    ROOT_UNIT_FILES+=("${REPO_DIR}/${f}")
+done < <(git -C "$REPO_DIR" ls-files -- systemd/)
+if [ "${#ROOT_UNIT_FILES[@]}" -eq 0 ]; then
+    echo "  ✗ git lists no files under ${REPO_DIR}/systemd/ — deploy from a git checkout" >&2
+    exit 1
+fi
+rsync -avz --checksum "${ROOT_UNIT_FILES[@]}" "${PI_HOST}:${PI_DIR}/systemd/"
+ROOT_UNIT_NAMES="$(git -C "$REPO_DIR" ls-files -- systemd/ | sed 's#^systemd/##')"
+STAGED_COPIES=""
+for u in $(git -C "$REPO_DIR" ls-files -- 'magic_dingus_box_cpp/systemd/*.service' \
+               'magic_dingus_box_cpp/systemd/*.timer' | sed 's#.*/##'); do
+    case $'\n'"${ROOT_UNIT_NAMES}"$'\n' in
+        *$'\n'"${u}"$'\n'*) ;;
+        *) STAGED_COPIES="${STAGED_COPIES} ${u}" ;;
+    esac
+done
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} and the names expand on THIS side
+ssh "${PI_HOST}" bash <<EOF
+for u in ${STAGED_COPIES}; do
+    [ -f "${PI_DIR}/systemd/\$u" ] || continue
+    sudo rm -f "${PI_DIR}/systemd/\$u" && echo "  removed staged copy ${PI_DIR}/systemd/\$u"
+done
+EOF
+echo "  ✓ root systemd/ units synced; no staged copies left"
 
 # Step 1.57: Sync golden_image clone tooling.
 #
@@ -281,15 +337,28 @@ rsync -avz --checksum \
     "${PI_HOST}:${PI_DIR}/services/"
 echo "  ✓ Compose file + .env template synced"
 
-# Step 1.6: Install Web UI Service
-echo "Step 1.6: Installing Web UI Service..."
-rsync -avz --checksum \
-    "${CPP_DIR}/../systemd/magic-dingus-web.service" \
-    "${PI_HOST}:${PI_DIR}/systemd/"
+# Step 1.59: Refresh the service helpers installed OUTSIDE the tree
+# (/usr/local/bin/*, /etc/dnsmasq.d/usb0.conf). The systemd units run those
+# copies, not the ones Step 1 just synced, so before this step a deploy
+# left every service-script fix inert on the box until the next OTA or
+# setup_services.sh run (observed 2026-10-03: the cascade watcher kept
+# running a weeks-old copy). Calls update.sh's own function so the helper
+# list lives in exactly one place.
+echo "Step 1.59: Refreshing out-of-tree service helpers..."
+ssh "${PI_HOST}" "bash -c 'source ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh && refresh_out_of_tree_files'" 2>&1 \
+    | sed 's/^/  /'
+echo "  ✓ service helpers current"
 
+# Step 1.6: Install Web UI Service (unit synced to the tree by Step 1.56)
+echo "Step 1.6: Installing Web UI Service..."
+# The Content Manager runs under gunicorn when python3-gunicorn is
+# installed (Werkzeug fallback otherwise — see web/serve.py). Same
+# installer the OTA uses, so the two paths cannot disagree.
+ssh "${PI_HOST}" "bash -c 'source ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh && ensure_web_server_dep'" 2>&1 \
+    | sed 's/^/  /'
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
-sudo cp ${PI_DIR}/systemd/magic-dingus-web.service /etc/systemd/system/
-sudo systemctl daemon-reload
+sudo bash ${CONVERGE_UNITS} --only magic-dingus-web.service || exit 1
 sudo systemctl enable magic-dingus-web.service
 sudo systemctl restart magic-dingus-web.service
 EOF
@@ -308,21 +377,11 @@ echo ""
 # disabled (first_boot.sh would wipe WiFi creds + MB state); only
 # prepare_for_cloning.sh enables it, and restore/first_boot re-disable.
 echo "Step 1.65: Installing first-boot service unit (disabled)..."
-# Stage via /tmp, not directly into ${PI_DIR}/systemd/: the /opt copy
-# can be root-owned (the pre-2026 golden-image tooling created it as
-# root), and rsync-as-magic then exits 23 ("failed to set times"),
-# which kills the whole deploy under set -euo pipefail — observed live
-# 2026-07-22, aborting the deploy before the build step ever ran.
-rsync -avz --checksum \
-    "${CPP_DIR}/../systemd/magic-first-boot.service" \
-    "${PI_HOST}:/tmp/magic-first-boot.service"
-
-ssh "${PI_HOST}" bash <<EOF
-sudo install -m 644 -o magic -g magic /tmp/magic-first-boot.service ${PI_DIR}/systemd/magic-first-boot.service
-sudo cp /tmp/magic-first-boot.service /etc/systemd/system/magic-first-boot.service
-sudo systemctl daemon-reload
-rm -f /tmp/magic-first-boot.service
-EOF
+# The unit reached ${PI_DIR}/systemd/ in Step 1.56 (it used to be staged
+# via /tmp because a root-owned /opt copy made rsync exit 23; Step 0.9's
+# chown has normalized that ownership since).
+ssh "${PI_HOST}" "sudo bash ${CONVERGE_UNITS} --only magic-first-boot.service" \
+    | sed 's/^/  /'
 echo "  ✓ First-boot service unit installed (stays disabled until cloning)"
 echo ""
 
@@ -355,21 +414,15 @@ echo ""
 # video or a playlist pack over the power cable is several times faster than
 # over the network, and needs no network at all.
 echo "Step 1.66: Installing USB-gadget network unit..."
-rsync -avz --checksum \
-    "${CPP_DIR}/../systemd/usb-gadget-network.service" \
-    "${PI_HOST}:/tmp/usb-gadget-network.service"
-
+# shellcheck disable=SC2087  # deliberate: ${CONVERGE_UNITS} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
-sudo install -m 644 -o magic -g magic /tmp/usb-gadget-network.service ${PI_DIR}/systemd/usb-gadget-network.service
-sudo cp /tmp/usb-gadget-network.service /etc/systemd/system/usb-gadget-network.service
-sudo systemctl daemon-reload
+sudo bash ${CONVERGE_UNITS} --only usb-gadget-network.service || exit 1
 sudo systemctl enable usb-gadget-network.service 2>/dev/null || true
 # Bring it up now if usb0 already exists, so the box does not need a reboot
 # to gain the feature. Harmless when the address is already assigned.
 if [ -e /sys/class/net/usb0 ]; then
     sudo systemctl start usb-gadget-network.service 2>/dev/null || true
 fi
-rm -f /tmp/usb-gadget-network.service
 EOF
 echo "  ✓ USB-gadget network unit installed + enabled (usb0 -> 10.55.0.1)"
 echo ""
@@ -389,17 +442,36 @@ echo ""
 # half). Idempotent; on a box whose cmdline gains the cgroup flags here
 # the script prints REBOOT_REQUIRED and the posture arms on the next
 # reboot — deploys never power-cycle the box themselves.
-echo "Step 1.68: Converging playback memory posture (MemoryLow + zram + cgroup cmdline)..."
+#
+# This also installs + enables magic-dingus-audio.service (PulseAudio in
+# its own unit) and the kiosk drop-in that orders the kiosk after it —
+# setup_memory_tuning.sh calls setup_audio_service.sh, so the OTA path
+# and this one share one installer. Nothing is started here: the kiosk
+# restart below (or after --build) stops the old kiosk, taking its
+# kiosk-cgroup PulseAudio with it, and its start pulls the audio unit in.
+echo "Step 1.68: Converging playback memory posture (MemoryLow + zram + cgroup cmdline + audio unit)..."
 ssh "${PI_HOST}" "sudo ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh" \
     | sed 's/^/  /'
-echo "  ✓ memory posture converged"
+if ssh "${PI_HOST}" "systemctl is-enabled --quiet magic-dingus-audio.service"; then
+    echo "  ✓ memory posture converged; magic-dingus-audio.service enabled"
+else
+    echo "  ⚠ memory posture converged, but magic-dingus-audio.service is NOT enabled —"
+    echo "    the kiosk falls back to starting PulseAudio itself (init_audio.sh legacy path)"
+fi
 echo ""
 
-# Step 1.7: Install C++ App Service
+# Step 1.69: OTA power-loss recovery unit. update.sh also installs it at
+# the start of every OTA; installing it here means a freshly provisioned
+# box (and every golden image cut from it) already has it.
+echo "Step 1.69: Installing OTA power-loss recovery unit..."
+ssh "${PI_HOST}" "sudo bash ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh" \
+    | sed 's/^/  /'
+echo "  ✓ OTA recovery unit installed"
+echo ""
+
+# Step 1.7: Install C++ App Service (unit synced by Step 1 with the rest of
+# magic_dingus_box_cpp/; installed from there, never staged elsewhere)
 echo "Step 1.7: Installing C++ App Service..."
-rsync -avz --checksum \
-    "${CPP_DIR}/systemd/magic-dingus-box-cpp.service" \
-    "${PI_HOST}:${PI_DIR}/systemd/"
 
 # Restart policy:
 #   - If --build is set: SKIP the restart here (Step 3 hasn't run yet, the
@@ -415,8 +487,9 @@ rsync -avz --checksum \
 # Restart the kiosk the careful way: stop, WAIT for the process to actually
 # exit, then start and confirm it came up.
 #
-# `systemctl restart` is not safe here. The kiosk holds DRM master, an
-# exclusive grab on every input device, and a PulseAudio child; systemd's stop
+# `systemctl restart` is not safe here. The kiosk holds DRM master and an
+# exclusive grab on every input device (and, before magic-dingus-audio
+# existed, a PulseAudio child); systemd's stop
 # can return before all of that is released, so the replacement instance races
 # the corpse of the old one and dies. Worse, Restart=always then retries
 # immediately, trips systemd's start-rate limiter, and the unit latches into
@@ -427,6 +500,7 @@ rsync -avz --checksum \
 #
 # So: stop, poll for inactive, settle, clear any latched failure, start, then
 # poll for active and surface the journal if it did not make it.
+# shellcheck disable=SC2016  # single-quoted on purpose: runs on the Pi; only PI_DIR is spliced in here
 RESTART_CMD='if [ -x "'"${PI_DIR}"'/magic_dingus_box_cpp/build/magic_dingus_box_cpp" ]; then
     sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
     for i in $(seq 1 30); do
@@ -451,9 +525,9 @@ RESTART_CMD='if [ -x "'"${PI_DIR}"'/magic_dingus_box_cpp/build/magic_dingus_box_
 else
     echo "  Skipping kiosk restart (binary not yet built — run with --build to compile)"
 fi'
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
-sudo cp ${PI_DIR}/systemd/magic-dingus-box-cpp.service /etc/systemd/system/
-sudo systemctl daemon-reload
+sudo bash ${CONVERGE_UNITS} --only magic-dingus-box-cpp.service || exit 1
 sudo systemctl enable magic-dingus-box-cpp.service
 EOF
 if [ "$BUILD" = true ]; then
@@ -466,13 +540,9 @@ echo ""
 
 # Step 1.7b: Install CPU Performance Governor Service
 echo "Step 1.7b: Installing CPU Performance Governor Service..."
-rsync -avz --checksum \
-    "${CPP_DIR}/systemd/magic-cpu-performance.service" \
-    "${PI_HOST}:${PI_DIR}/systemd/"
-
+# shellcheck disable=SC2087  # deliberate: ${CONVERGE_UNITS} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
-sudo cp ${PI_DIR}/systemd/magic-cpu-performance.service /etc/systemd/system/
-sudo systemctl daemon-reload
+sudo bash ${CONVERGE_UNITS} --only magic-cpu-performance.service || exit 1
 sudo systemctl enable magic-cpu-performance.service
 sudo systemctl start magic-cpu-performance.service
 EOF
@@ -489,21 +559,14 @@ echo ""
 if [ "${MEDIA_BROWSER:-false}" = "true" ]; then
     echo "Step 1.7c: Installing Media Browser services..."
 
-    rsync -avz --checksum \
-        "${CPP_DIR}/systemd/magic-dingus-services.service" \
-        "${PI_HOST}:/tmp/magic-dingus-services.service"
-
-    rsync -avz --checksum \
-        "${CPP_DIR}/scripts/setup_services.sh" \
-        "${PI_HOST}:/tmp/setup_services.sh"
-
-    ssh "${PI_HOST}" "sudo cp /tmp/magic-dingus-services.service /etc/systemd/system/
-                      sudo systemctl daemon-reload
-                      sudo systemctl enable magic-dingus-services.service
-                      chmod +x /tmp/setup_services.sh"
+    # Unit and setup_services.sh were synced by Step 1. setup_services.sh
+    # runs from the tree: it reads data/ fixtures and the unit dirs next to
+    # it (a /tmp copy, which this step used to stage, found neither).
+    ssh "${PI_HOST}" "sudo bash ${CONVERGE_UNITS} --only magic-dingus-services.service &&
+                      sudo systemctl enable magic-dingus-services.service"
 
     echo "  ✓ Services unit installed and enabled"
-    echo "  → To initialize services, run on the Pi: sudo /tmp/setup_services.sh"
+    echo "  → To initialize services, run on the Pi: sudo ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_services.sh"
 fi
 echo ""
 
@@ -522,6 +585,7 @@ echo ""
 
 # Step 2: Download stb_truetype.h (always update to ensure it's the real file)
 echo "Step 2: Ensuring stb_truetype.h is present..."
+# shellcheck disable=SC2087  # deliberate: ${PI_DIR} expands on THIS side
 ssh "${PI_HOST}" bash <<EOF
 cd ${PI_DIR}/magic_dingus_box_cpp/src/ui
 
@@ -558,11 +622,12 @@ cd "${PI_DIR}/magic_dingus_box_cpp"
 echo "  Checking dependencies..."
 MISSING_DEPS=()
 
-# Map pkg-config names to apt package names
+# Map pkg-config names to apt package names (must match install_deps.sh —
+# tests/local/system_deps_parity.bats checks it)
 declare -A PKG_MAP=(
     ["libdrm"]="libdrm-dev"
     ["gbm"]="libgbm-dev"
-    ["egl"]="libegl1-mesa-dev"
+    ["egl"]="libegl-dev"
     ["glesv2"]="libgles2-mesa-dev"
     ["libevdev"]="libevdev-dev"
     ["libgpiod"]="libgpiod-dev"
@@ -571,15 +636,19 @@ declare -A PKG_MAP=(
     ["libtorrent-rasterbar"]="libtorrent-rasterbar-dev"
     ["sqlite3"]="libsqlite3-dev"
     ["libcurl"]="libcurl4-openssl-dev"
-    ["pugixml"]="libpugixml-dev"
+    ["libsystemd"]="libsystemd-dev"
 )
 
-# Base dependency set
-CHECK_PKGS=(libdrm gbm egl glesv2 libevdev libgpiod yaml-cpp jsoncpp)
+# Base dependency set. libsystemd is here because it is load-bearing even
+# though CMake only auto-detects it: without it sd_notify compiles out and
+# systemd kills the healthy Type=notify kiosk (v1.7.2). pugixml was dropped —
+# nothing links it (install_deps.sh / README agree).
+CHECK_PKGS=(libdrm gbm egl glesv2 libevdev libgpiod yaml-cpp jsoncpp libsystemd)
 
-# Add Media Browser deps when requested
+# Add Media Browser deps when requested. Boost (CMake REQUIRED) has no
+# pkg-config file; libtorrent-rasterbar-dev pulls its headers in.
 if [ "${MEDIA_BROWSER}" = "true" ]; then
-    CHECK_PKGS+=(libtorrent-rasterbar sqlite3 libcurl pugixml)
+    CHECK_PKGS+=(libtorrent-rasterbar sqlite3 libcurl)
 fi
 
 # Check each dependency

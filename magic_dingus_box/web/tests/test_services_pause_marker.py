@@ -29,6 +29,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import admin as admin_module
+# PLAYBACK_PAUSE_MARKER lives (and is read) in admin_media_browser; patch it
+# there — admin deliberately does not re-export it (a rebound copy would be
+# silently ignored).
+import admin_media_browser
 
 REPO_ROOT = Path(__file__).parents[3]
 PAUSE_SCRIPT = (
@@ -79,7 +83,7 @@ def unlocked_mb(temp_data_dir, monkeypatch):
 def pause_marker(temp_data_dir, monkeypatch):
     """Point the endpoint at a temp marker path; yield it (not yet created)."""
     marker = temp_data_dir / "mdb_playback_services_paused"
-    monkeypatch.setattr(admin_module, "PLAYBACK_PAUSE_MARKER", marker)
+    monkeypatch.setattr(admin_media_browser, "PLAYBACK_PAUSE_MARKER", marker)
     return marker
 
 

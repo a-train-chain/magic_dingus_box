@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -74,10 +75,6 @@ TEST_CASE("Unknown profile is conservative: no analog audio, tries all known lab
 // detect_platform (file-based)
 // ---------------------------------------------------------------
 
-// Only used by the two device-tree-file tests below, which are themselves
-// #ifndef __APPLE__ (detect_platform() short-circuits to PiModel::Mac under
-// __APPLE__, so this helper would otherwise be unused there).
-#ifndef __APPLE__
 namespace {
 std::string write_temp_model_file(const std::string& contents) {
     auto path = std::filesystem::temp_directory_path() /
@@ -87,12 +84,7 @@ std::string write_temp_model_file(const std::string& contents) {
     return path.string();
 }
 } // namespace
-#endif
 
-// These two assume device-tree-file-based detection, which only applies
-// off Apple hosts: detect_platform() short-circuits to PiModel::Mac under
-// __APPLE__ regardless of model_path (see the Mac host TEST_CASEs below).
-#ifndef __APPLE__
 TEST_CASE("detect_platform reads a device-tree model file") {
     std::string dt("Raspberry Pi 5 Model B Rev 1.0\0", 31);
     auto path = write_temp_model_file(dt);
@@ -106,7 +98,156 @@ TEST_CASE("detect_platform returns Unknown profile when file is missing") {
     PlatformProfile p = detect_platform("/nonexistent/dt/model");
     REQUIRE(p.model == PiModel::Unknown);
 }
-#endif
+
+TEST_CASE("MDB_PI_MODEL_OVERRIDE impersonates a board only when the device tree is absent") {
+    setenv("MDB_PI_MODEL_OVERRIDE", "Raspberry Pi 4 Model B Rev 1.5", 1);
+
+    // No device tree (dev VM): the override picks the profile.
+    PlatformProfile vm = detect_platform("/nonexistent/dt/model");
+    CHECK(vm.model == PiModel::Pi4);
+    CHECK_FALSE(supports_game_system(vm, "n64"));
+
+    // Real device tree present: the override is ignored.
+    auto path = std::filesystem::temp_directory_path() / "mdb_dt_model_override";
+    { std::ofstream(path, std::ios::binary) << std::string("Raspberry Pi 5 Model B Rev 1.0\0", 31); }
+    CHECK(detect_platform(path.string()).model == PiModel::Pi5);
+    std::filesystem::remove(path);
+
+    unsetenv("MDB_PI_MODEL_OVERRIDE");
+    CHECK(detect_platform("/nonexistent/dt/model").model == PiModel::Unknown);
+}
+
+// ---------------------------------------------------------------
+// TEST-ONLY policy override (MDB_PLATFORM_POLICY_OVERRIDE)
+// ---------------------------------------------------------------
+
+namespace {
+// Every HARDWARE field (see the classification table in the header).
+void require_same_hardware(const PlatformProfile& a, const PlatformProfile& b) {
+    REQUIRE(a.model == b.model);
+    REQUIRE(a.model_string == b.model_string);
+    REQUIRE(a.has_analog_audio == b.has_analog_audio);
+    REQUIRE(a.gpiochip_labels == b.gpiochip_labels);
+    REQUIRE(a.rotary_events_per_detent == b.rotary_events_per_detent);
+}
+// Every POLICY field.
+void require_same_policy(const PlatformProfile& a, const PlatformProfile& b) {
+    REQUIRE(a.pause_services_during_movie == b.pause_services_during_movie);
+    REQUIRE(a.trickle_torrents_during_video == b.trickle_torrents_during_video);
+    REQUIRE(a.unsupported_game_systems == b.unsupported_game_systems);
+    REQUIRE(a.unsupported_emulator_cores == b.unsupported_emulator_cores);
+    REQUIRE(a.artwork_cache_budget_bytes == b.artwork_cache_budget_bytes);
+}
+PlatformProfile real_pi5() {
+    PlatformProfile p = profile_for(PiModel::Pi5);
+    p.model_string = "Raspberry Pi 5 Model B Rev 1.1";
+    return p;
+}
+} // namespace
+
+TEST_CASE("policy override unset or empty leaves the profile unchanged") {
+    for (const char* v : {static_cast<const char*>(nullptr), ""}) {
+        PlatformProfile p = apply_policy_override(real_pi5(), v);
+        require_same_hardware(p, real_pi5());
+        require_same_policy(p, real_pi5());
+        REQUIRE(p.policy_override.empty());
+        REQUIRE(p.policy_override_ignored_reason.empty());
+        REQUIRE(policy_override_log_line(p).empty());
+    }
+}
+
+TEST_CASE("policy override pi4 on a Pi 5 switches exactly the policy fields") {
+    PlatformProfile p = apply_policy_override(real_pi5(), "pi4");
+
+    // Hardware stays the real Pi 5's: RP1 GPIO, no jack, 1 event/detent.
+    require_same_hardware(p, real_pi5());
+    REQUIRE(p.model == PiModel::Pi5);
+    REQUIRE(p.gpiochip_labels.front() == "pinctrl-rp1");
+    REQUIRE_FALSE(p.has_analog_audio);
+    REQUIRE(p.rotary_events_per_detent == 1);
+
+    // Policy becomes the Pi 4B's.
+    require_same_policy(p, profile_for(PiModel::Pi4));
+    REQUIRE_FALSE(supports_game_system(p, "n64"));
+    REQUIRE_FALSE(supports_game_system(p, "dreamcast"));
+    REQUIRE_FALSE(supports_emulator_core(p, "flycast_libretro"));
+    REQUIRE(supports_game_system(p, "psx"));
+    REQUIRE(p.artwork_cache_budget_bytes == 64u * 1024u * 1024u);
+    REQUIRE(p.pause_services_during_movie);
+    REQUIRE_FALSE(p.trickle_torrents_during_video);
+
+    REQUIRE(p.policy_override == "pi4");
+    REQUIRE(p.policy_override_ignored_reason.empty());
+}
+
+TEST_CASE("policy override pi4 forces FullPause even with plenty of memory") {
+    // Without the override a Pi 5 with >= 1.5 GiB available trickles;
+    // with it, service_quiet_mode must behave like a Pi 4B (always pause).
+    const long plenty = 3L * 1024 * 1024;  // 3 GiB in KiB
+    REQUIRE(service_quiet_mode(real_pi5(), plenty) == ServiceQuietMode::Trickle);
+    PlatformProfile p = apply_policy_override(real_pi5(), "pi4");
+    REQUIRE(service_quiet_mode(p, plenty) == ServiceQuietMode::FullPause);
+    REQUIRE(service_quiet_mode(p, -1) == ServiceQuietMode::FullPause);
+}
+
+TEST_CASE("policy override with an invalid value is ignored, loudly") {
+    for (const char* v : {"pi5", "PI4", " pi4", "pi4 ", "1", "true"}) {
+        PlatformProfile p = apply_policy_override(real_pi5(), v);
+        require_same_hardware(p, real_pi5());
+        require_same_policy(p, real_pi5());
+        REQUIRE(p.policy_override.empty());
+        REQUIRE_FALSE(p.policy_override_ignored_reason.empty());
+        const std::string line = policy_override_log_line(p);
+        REQUIRE(line.find("IGNORED") != std::string::npos);
+        REQUIRE(line.find("ACTIVE") == std::string::npos);
+    }
+}
+
+TEST_CASE("policy override on an actual Pi 4B is a no-op") {
+    PlatformProfile pi4 = profile_for(PiModel::Pi4);
+    PlatformProfile p = apply_policy_override(pi4, "pi4");
+    require_same_hardware(p, pi4);
+    require_same_policy(p, pi4);
+    REQUIRE(p.policy_override.empty());
+    REQUIRE_FALSE(p.policy_override_ignored_reason.empty());
+}
+
+TEST_CASE("policy override on an unknown board is ignored") {
+    PlatformProfile unk = profile_for(PiModel::Unknown);
+    PlatformProfile p = apply_policy_override(unk, "pi4");
+    require_same_hardware(p, unk);
+    require_same_policy(p, unk);
+    REQUIRE(p.policy_override.empty());
+    REQUIRE_FALSE(p.policy_override_ignored_reason.empty());
+}
+
+TEST_CASE("policy override log line names the real board") {
+    PlatformProfile p = apply_policy_override(real_pi5(), "pi4");
+    const std::string line = policy_override_log_line(p);
+    REQUIRE(line.rfind("PLATFORM POLICY OVERRIDE ACTIVE: running Pi 4B "
+                       "policies on Raspberry Pi 5 Model B Rev 1.1", 0) == 0);
+}
+
+TEST_CASE("detect_platform honors MDB_PLATFORM_POLICY_OVERRIDE on a Pi 5 device tree") {
+    auto path = std::filesystem::temp_directory_path() / "mdb_dt_model_policy";
+    { std::ofstream(path, std::ios::binary) << std::string("Raspberry Pi 5 Model B Rev 1.1\0", 31); }
+
+    unsetenv(kPolicyOverrideEnv);
+    PlatformProfile off = detect_platform(path.string());
+    CHECK(off.policy_override.empty());
+    CHECK(off.model_string == "Raspberry Pi 5 Model B Rev 1.1");
+    CHECK(supports_game_system(off, "n64"));
+
+    setenv(kPolicyOverrideEnv, "pi4", 1);
+    PlatformProfile on = detect_platform(path.string());
+    unsetenv(kPolicyOverrideEnv);
+    std::filesystem::remove(path);
+
+    CHECK(on.model == PiModel::Pi5);
+    CHECK(on.policy_override == "pi4");
+    CHECK_FALSE(supports_game_system(on, "n64"));
+    CHECK(on.gpiochip_labels == off.gpiochip_labels);
+}
 
 // ---------------------------------------------------------------
 // PulseAudio sink resolution
@@ -362,6 +503,56 @@ TEST_CASE("Pi 5 and Unknown profiles hide nothing") {
     REQUIRE(supports_game_system(profile_for(PiModel::Pi5), "Dreamcast"));
 }
 
+TEST_CASE("normalize_emulator_core canonicalizes playlist core strings") {
+    REQUIRE(normalize_emulator_core("flycast_libretro") == "flycast_libretro");
+    REQUIRE(normalize_emulator_core("Flycast") == "flycast_libretro");
+    REQUIRE(normalize_emulator_core(" \"mupen64plus_next\" ") ==
+            "mupen64plus_next_libretro");
+    REQUIRE(normalize_emulator_core("parallel_n64_libretro.so") ==
+            "parallel_n64_libretro");
+    REQUIRE(normalize_emulator_core("") == "");
+    REQUIRE(normalize_emulator_core("auto") == "auto");
+}
+
+TEST_CASE("Pi 4 profile gates the N64 and Dreamcast CORES too") {
+    PlatformProfile p = profile_for(PiModel::Pi4);
+    REQUIRE(p.unsupported_emulator_cores.size() == 3);
+    for (const char* core : {"mupen64plus_next_libretro",
+                             "parallel_n64_libretro", "flycast_libretro",
+                             "mupen64plus_next", "Flycast"}) {
+        INFO("core: " << core);
+        REQUIRE_FALSE(supports_emulator_core(p, core));
+        // Blank / nonstandard system strings no longer smuggle them in.
+        REQUIRE_FALSE(supports_game_item(p, "", core));
+        REQUIRE_FALSE(supports_game_item(p, "Nintendo 64", core));
+        REQUIRE_FALSE(supports_game_item(p, "sega-dc", core));
+    }
+    // Either gate alone is enough to reject.
+    REQUIRE_FALSE(supports_game_item(p, "N64", "some_future_core"));
+    // The original seven cores stay supported.
+    for (const char* core : {"nestopia_libretro", "snes9x2010_libretro",
+                             "genesis_plus_gx_libretro", "pcsx_rearmed_libretro",
+                             "mednafen_pce_fast_libretro", "prosystem_libretro",
+                             "fbneo_libretro"}) {
+        INFO("core: " << core);
+        REQUIRE(supports_emulator_core(p, core));
+    }
+    // Never hide what the gate doesn't understand.
+    REQUIRE(supports_emulator_core(p, ""));
+    REQUIRE(supports_emulator_core(p, "auto"));
+    REQUIRE(supports_emulator_core(p, "dosbox_pure_libretro"));
+    REQUIRE(supports_game_item(p, "SNES", "snes9x2010_libretro"));
+}
+
+TEST_CASE("Pi 5 and Unknown profiles gate no cores") {
+    for (auto m : {PiModel::Pi5, PiModel::Unknown}) {
+        PlatformProfile p = profile_for(m);
+        REQUIRE(p.unsupported_emulator_cores.empty());
+        REQUIRE(supports_game_item(p, "", "mupen64plus_next_libretro"));
+        REQUIRE(supports_game_item(p, "Dreamcast", "flycast_libretro"));
+    }
+}
+
 // ---------------------------------------------------------------
 // service_quiet_mode — memory-gated pause-vs-trickle decision
 // ---------------------------------------------------------------
@@ -464,11 +655,54 @@ TEST_CASE("host_model_name is stable wire vocabulary") {
     REQUIRE(std::string(host_model_name(PiModel::Unknown)) == "unknown");
 }
 
-#ifdef __APPLE__
-TEST_CASE("detect_platform reports Mac on an Apple host even with a Pi model file") {
+// The host check lives in the no-argument form only: with a path,
+// detect_platform reads that file on every host, so the Pi's own detection
+// tests above also run in the Mac suites.
+TEST_CASE("detect_platform(path) reads the model file even on an Apple host") {
     const auto tmp = std::filesystem::temp_directory_path() / "mdb_model_pi5.txt";
     { std::ofstream f(tmp); f << "Raspberry Pi 5 Model B Rev 1.0"; }
-    REQUIRE(detect_platform(tmp.string()).model == PiModel::Mac);
+    REQUIRE(detect_platform(tmp.string()).model == PiModel::Pi5);
     std::filesystem::remove(tmp);
 }
+
+#ifdef __APPLE__
+TEST_CASE("detect_platform() reports Mac on an Apple host") {
+    REQUIRE(detect_platform().model == PiModel::Mac);
+}
 #endif
+
+// ---------------------------------------------------------------
+// Media Browser poster-texture budget
+// ---------------------------------------------------------------
+
+TEST_CASE("artwork cache budget is 64 MB on Pi 4 (1.5 GB envelope)") {
+    REQUIRE(profile_for(PiModel::Pi4).artwork_cache_budget_bytes ==
+            64u * 1024u * 1024u);
+}
+
+TEST_CASE("artwork cache budget is 128 MB on Pi 5") {
+    REQUIRE(profile_for(PiModel::Pi5).artwork_cache_budget_bytes ==
+            128u * 1024u * 1024u);
+}
+
+TEST_CASE("artwork cache budget is 128 MB on the Mac host") {
+    REQUIRE(profile_for(PiModel::Mac).artwork_cache_budget_bytes ==
+            128u * 1024u * 1024u);
+}
+
+TEST_CASE("artwork cache budget is 128 MB on unknown boards") {
+    REQUIRE(profile_for(PiModel::Unknown).artwork_cache_budget_bytes ==
+            128u * 1024u * 1024u);
+}
+
+TEST_CASE("artwork cache budget never exceeds the old fixed 256 MB and "
+          "stays above the 32 MB playback trim") {
+    for (PiModel m : {PiModel::Pi4, PiModel::Pi5, PiModel::Mac, PiModel::Unknown}) {
+        const auto b = profile_for(m).artwork_cache_budget_bytes;
+        CHECK(b <= 256u * 1024u * 1024u);
+        CHECK(b > 32u * 1024u * 1024u);
+    }
+    // The envelope board never gets more than the roomy one.
+    CHECK(profile_for(PiModel::Pi4).artwork_cache_budget_bytes <=
+          profile_for(PiModel::Pi5).artwork_cache_budget_bytes);
+}
