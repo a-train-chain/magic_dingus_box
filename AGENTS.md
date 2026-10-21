@@ -266,7 +266,7 @@ The Media Browser is a sub-mode of the kiosk that provides movie discovery, down
 
 1. **Quality profile "Any"** — only allows 720p/1080p HDTV/WEB/Bluray (no SD, no 4K, no Remux)
 2. **Custom Format scoring** (sums vs `minFormatScore = -200`):
-   - AV1: -1000 / Remux: -500 / HEVC 1080p+: -250 / HDR: -200 (all rejected)
+   - AV1: -1000 / Remux: -500 / HEVC 1080p+: -500 / HDR: -500 (all rejected even with the full +80 preference bonus)
    - x264: +50 / Trusted groups (YIFY/GalaxyRG/RARBG/SURGE): +30 (preferred)
 3. **Quality definition size limits**: 720p ≤60 MB/min, 1080p ≤100 MB/min
 

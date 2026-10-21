@@ -148,10 +148,13 @@ BASE = "http://localhost:7878/api/v3"
 # Desired Any-profile score map. Keep this in lockstep with the
 # CLAUDE.md "Quality configuration" section — it's the source of truth
 # the script enforces, mirrored on disk for human review.
+# Rejections must remain STRICTLY below -200 after all positive bonuses.
+# x264 (+50) + quality group (+30) can coexist in misleading release titles;
+# -500 leaves the total at most -420. The old HEVC -250 / HDR -200 did not.
 SCORE_MAP = {
     "AV1 codec (UNWATCHABLE on Pi 4)": -1000,
-    "x265/HEVC 1080p+":                -250,
-    "HDR / Dolby Vision":              -200,
+    "x265/HEVC 1080p+":                -500,
+    "HDR / Dolby Vision":              -500,
     "Remux / Raw-HD":                  -500,
     "x264 codec (BONUS)":               50,
     # Release-group policy, RETUNED FOR PI 5 (2026-07-26).
@@ -463,10 +466,13 @@ import json, sys, urllib.request, urllib.error
 cf_data_path, api_key = sys.argv[1], sys.argv[2]
 BASE = "http://localhost:8989/api/v3"
 
+# Rejections must remain STRICTLY below -200 after all positive bonuses.
+# x264 (+50) + quality group (+30) can coexist in misleading release titles;
+# -500 leaves the total at most -420. The old HEVC -250 / HDR -200 did not.
 SCORE_MAP = {
     "AV1 codec (UNWATCHABLE on Pi 4)": -1000,
-    "x265/HEVC 1080p+":                -250,
-    "HDR / Dolby Vision":              -200,
+    "x265/HEVC 1080p+":                -500,
+    "HDR / Dolby Vision":              -500,
     "Remux / Raw-HD":                  -500,
     "x264 codec (BONUS)":               50,
     "Quality release groups":           30,

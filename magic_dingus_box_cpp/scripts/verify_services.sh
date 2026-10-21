@@ -268,6 +268,19 @@ got_min = prof.get("minFormatScore")
 if got_min != expected_min:
     problems.append(f"minFormatScore={got_min} (want {expected_min})")
 
+# Custom-format presence alone cannot prove rejection: scores add together,
+# and equality with minFormatScore is eligible. Include ALL live bonuses so
+# an operator-added preference cannot silently undo the playback guard.
+format_scores = {f.get("name"): f.get("score", 0) for f in prof.get("formatItems", [])}
+positive_total = sum(max(0, score) for score in format_scores.values())
+for rejected in ("AV1 codec (UNWATCHABLE on Pi 4)", "x265/HEVC 1080p+",
+                 "HDR / Dolby Vision", "Remux / Raw-HD"):
+    score = format_scores.get(rejected)
+    if score is None:
+        problems.append("missing-score=" + rejected)
+    elif score + positive_total >= prof.get("minFormatScore", -200):
+        problems.append(f"unsafe-score={rejected} ({score}+{positive_total} bonuses)")
+
 # Walk items[] flat: items can have nested `items` for grouped tiers
 # (Radarr models "Bluray-720p" and "WEBDL-720p" inside a "720p" group
 # in some profiles). Allowed quality is determined by the leaf.
@@ -508,6 +521,19 @@ if not prof:
 problems = []
 if prof.get("minFormatScore") != -200:
     problems.append(f"minFormatScore={prof.get('minFormatScore')} (want -200)")
+# Custom-format presence alone cannot prove rejection: scores add together,
+# and equality with minFormatScore is eligible. Include ALL live bonuses so
+# an operator-added preference cannot silently undo the playback guard.
+format_scores = {f.get("name"): f.get("score", 0) for f in prof.get("formatItems", [])}
+positive_total = sum(max(0, score) for score in format_scores.values())
+for rejected in ("AV1 codec (UNWATCHABLE on Pi 4)", "x265/HEVC 1080p+",
+                 "HDR / Dolby Vision", "Remux / Raw-HD"):
+    score = format_scores.get(rejected)
+    if score is None:
+        problems.append("missing-score=" + rejected)
+    elif score + positive_total >= prof.get("minFormatScore", -200):
+        problems.append(f"unsafe-score={rejected} ({score}+{positive_total} bonuses)")
+
 def walk(items):
     for it in items:
         q = it.get("quality")

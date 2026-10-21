@@ -124,6 +124,10 @@ TRIPWIRE_HITS=(
     /home/magic/*.env.backup* /home/magic/.env.backup*
     /home/magic/*.env.bak* /home/magic/env-backup*
     /home/magic/state_backup*
+    # Maintenance rollback bundles can contain the entire old services/.env
+    # inside code-and-config.tgz. The raw-image scanner cannot inspect nested
+    # compressed archives; keep these backups OFF the SD before cloning.
+    /home/magic/rollback-* /root/rollback-*
     # Also matches update.sh's power-loss marker
     # (.magic_dingus_box_backup.ota_in_progress): an image carrying it
     # would make every clone "restore" this box's pre-update tree at its

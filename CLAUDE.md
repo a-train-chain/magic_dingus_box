@@ -653,7 +653,7 @@ catch-up).
 
 1. **Quality profile "Any"** — only allows 720p/1080p HDTV/WEB/Bluray (no SD, no 4K, no Remux)
 2. **Custom Format scoring** (sums vs `minFormatScore = -200`):
-   - AV1: -1000 / Remux: -500 / HEVC 1080p+: -250 / HDR: -200 (all rejected)
+   - AV1: -1000 / Remux: -500 / HEVC 1080p+: -500 / HDR: -500 (all rejected even with the full +80 preference bonus)
    - **Release groups, RETUNED FOR PI 5 (2026-07-26)**: split into
      `Quality release groups` (+30: RARBG/SURGE/EVO/FGT/TGx) and
      `Low-bitrate size-optimized groups` (**-30**: YIFY/YTS/GalaxyRG/
