@@ -138,7 +138,7 @@ That runs `first_boot.sh`, which does:
 
 | Step | What | Cloned Pi behavior |
 |------|------|-------------------|
-| 1 | Regenerate SSH host keys | Old keys removed, `ssh-keygen -A`, sshd restarted — every unit gets its own |
+| 1 | Regenerate SSH host keys | Old keys removed, `ssh-keygen -A`; SSH starts after first boot, including recovery of an enabled-but-failed service — every unit gets its own |
 | 1b | Regenerate machine-id | New DHCP DUID so clones don't fight the source box for a lease |
 | 1c | **Revoke the source's VPN identity** | `services/.env` deleted and every inherited Docker container removed (`docker rm -f`, or straight from `/var/lib/docker/containers` when dockerd is down) — BEFORE the risky expand, and never fatal |
 | 2 | Expand root FS to fill SD | `growpart` + `resize2fs` (non-fatal on failure — the wipes below always run) |

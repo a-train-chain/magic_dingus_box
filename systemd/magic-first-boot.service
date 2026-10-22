@@ -6,6 +6,8 @@ After=local-fs.target systemd-udev-settle.service
 # start FIRST — briefly dialling ProtonVPN on the source operator's key.
 # docker.service is deliberately NOT listed: Step 6 runs `docker compose down`
 # itself, and ordering before docker would deadlock that call.
+# Generate host keys before sshd validates them on a fresh card.
+Before=ssh.service sshd.service
 Before=magic-dingus-box-cpp.service magic-dingus-web.service magic-dingus-services.service
 ConditionPathExists=/opt/magic_dingus_box/scripts/golden_image/first_boot.sh
 

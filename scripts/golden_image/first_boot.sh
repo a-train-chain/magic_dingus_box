@@ -123,17 +123,20 @@ rm -f /etc/ssh/ssh_host_*
 ssh-keygen -A
 log "[1/7] SSH host keys rotated (fresh per-unit identity)"
 
-# Restart sshd so the running daemon serves the new keys immediately rather
-# than at next boot. Debian names the unit ssh.service; some images use sshd.
-if systemctl is-active sshd.service &>/dev/null; then
-    systemctl restart sshd.service
-    log "[1/7] sshd restarted with new host keys"
-elif systemctl is-active ssh.service &>/dev/null; then
-    systemctl restart ssh.service
-    log "[1/7] ssh restarted with new host keys"
-else
-    log "[1/7] Warning: sshd not running, keys will be used on next start"
-fi
+# Restart sshd so the daemon uses the freshly generated host keys. SSH can
+# already be failed (sshd -t ran while keys were absent), so is-active alone
+# misses exactly the new-card case. Preserve intentionally disabled services.
+# Queue without waiting: this unit is Before=ssh.service, so a synchronous
+# start/restart would deadlock waiting for first boot itself to finish.
+for SSH_UNIT in ssh.service sshd.service; do
+    if systemctl is-enabled "$SSH_UNIT" &>/dev/null \
+        || systemctl is-active "$SSH_UNIT" &>/dev/null; then
+        systemctl reset-failed "$SSH_UNIT" 2>/dev/null || true
+        systemctl --no-block restart "$SSH_UNIT"
+        log "[1/7] $SSH_UNIT queued to start with fresh host keys after first boot"
+        break
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # Step 1b: Regenerate /etc/machine-id
