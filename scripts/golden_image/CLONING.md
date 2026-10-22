@@ -584,3 +584,46 @@ this is a "click Yes once by reflex" failure, not a deliberate one:
 answer **NO** to "Would you like to apply OS customisation settings?".
 Customers join Wi-Fi from the kiosk's own Settings screen; a golden card
 must ship with no network configured.
+
+
+## Final artifact checks after a live capture
+
+A live `dd` is not an atomic filesystem snapshot. Even after service shutdown
+and `sync`, the captured ext4 journal can require recovery and its allocation
+bitmap can lag writes. Do not distribute a candidate solely because capture
+and source restoration completed.
+
+Before accepting a live-captured image:
+
+1. Keep the original candidate private. Extract its root partition into an
+   unmounted regular file on the operator's drive, using the image's partition
+   table offsets (never assume an offset from another image).
+2. Run `e2fsck -fy` on that extracted filesystem to replay the journal and
+   reconcile allocation counts. Exit 1 means corrections were made; other
+   nonzero statuses require investigation. Run `e2fsck -fn` afterwards and
+   require exit 0.
+3. Run `zerofree` on the unmounted extracted filesystem. It uses ext4's
+   allocation bitmap to clear deleted-file remnants that a live free-space
+   fill can miss. Run `e2fsck -fn` again and require exit 0.
+4. Reassemble a NEW image, preserving the partition table, boot partition,
+   partition offsets, and total byte length. Never modify the donor block
+   device or overwrite the original capture during repair.
+5. Run `scan_image_for_secrets.sh` on the complete reassembled artifact with
+   the restored source Pi and `--expect-bytes` set to the source device's exact
+   size. Require a clean result, then calculate the final SHA-256 checksum.
+6. Boot a newly flashed card on both boards before declaring the image
+   production accepted. Donor validation does not replace this test.
+
+The operator-side tools are e2fsprogs (`e2fsck`) and zerofree; these are image
+maintenance tools, not kiosk runtime dependencies. On macOS, Homebrew supplies
+e2fsprogs; zerofree can be built from its upstream/Debian source against that
+installation's libext2fs. Do not substitute blind byte replacement for filesystem
+repair or bitmap-aware free-space clearing.
+
+The 2026-10-21 capture exposed another source of remnants: an inactive legacy
+`/var/swap`. Free-space fills cannot touch allocated swap. Preparation now
+rejects active disk swap (zram is allowed), validates standard/fstab swap paths,
+and clears inactive root-filesystem swap before recreating its header with the
+same UUID and size. A failed credential scan always quarantines the candidate;
+never waive a VPN/API-key finding because the corresponding live file was
+removed successfully.
