@@ -268,7 +268,8 @@ kill_leftover_games() {
 
 kiosk_restart_wait() {
     local t
-    t="$(date +%s)"
+    # Do not accept the old process's final status from this same second.
+    t="$(date +%s.%N)"
     mut sudo -n systemctl start "$UNIT" || return 1
     (( DRY_RUN )) && return 0
     lib wait-menu --after "$t" --timeout 120
