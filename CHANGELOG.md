@@ -106,6 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resetting it.
 
 ### Changed
+- **Big playlist packages are no longer refused for their size.** Uploads
+  used to stop at 8 GB, and a package could unpack at most 10 GB — an
+  11 GB package was turned away, and a 12 GB one failed on its last video
+  after the whole upload. Now the only limit is free space: the box checks
+  before anything is sent that the package fits with room to spare, and
+  still stops an import that would fill the card.
 - **The menus use less power and run cooler.** The box now redraws the
   main menu, Settings and the Movies browsing screens only when something
   on them changes (with the CRT look on, the menu draws at the effect's own
@@ -437,6 +443,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through a whole film is now written at most every 5 seconds.
 
 ### For operators
+- **`MAGIC_MAX_UPLOAD_MB` and `MAGIC_MAX_EXTRACT_MB` are now opt-in caps.**
+  Unset (the default), zero or unparseable means no fixed limit; free
+  space still applies. A box that had a temporary
+  `magic-dingus-web.service.d/zz-upload-limit.conf` to raise the old
+  limits can delete it once it runs this release.
 - **This update is installed by each box's previous updater.** The new
   safeguards (power-cut recovery, TV-off updates, keeping the TV on while
   the box builds, the faster web server package) protect every update
