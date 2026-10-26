@@ -395,8 +395,8 @@ def test_precheck_answers_with_no_file_body(client, temp_data_dir):
     assert data["existing_item_count"] is None
     assert isinstance(data["free_gb"], float)
     assert data["enough_space"] is True
-    assert isinstance(data["max_upload_mb"], int)
-    assert data["max_upload_mb"] > 0
+    # 0 = no fixed cap (the default); the client skips its size alert on 0.
+    assert data["max_upload_mb"] == 0
 
 
 def test_precheck_creates_nothing(client, temp_data_dir):
@@ -543,6 +543,71 @@ def test_unknown_free_space_does_not_block_the_upload(client, temp_data_dir,
     resp = _post_package(client, _package_bytes("Mix", ["a.mp4"]))
 
     assert resp.status_code == 200, resp.get_data(as_text=True)
+
+
+# ===== D5b: free space is the limit, not a fixed size =======================
+#
+# The fixed 8 GB upload cap and 10 GB unpack cap refused a genuine 11 GB /
+# 12.2 GB Nickelodeon package on a box with 28 GB free (2026-10-26) — the
+# unpack cap only after the whole upload and 19 of its 20 videos. The free-
+# space checks above are what protect the card; the env vars remain as an
+# opt-in cap for an operator who wants one.
+
+@pytest.mark.parametrize("value", [None, "", "0", "-5", "lots"])
+def test_upload_has_no_fixed_size_cap_unless_set(temp_data_dir, monkeypatch,
+                                                 value):
+    if value is None:
+        monkeypatch.delenv("MAGIC_MAX_UPLOAD_MB", raising=False)
+    else:
+        monkeypatch.setenv("MAGIC_MAX_UPLOAD_MB", value)
+
+    app = admin.create_app(temp_data_dir, config={"TESTING": True})
+
+    assert app.config["MAX_CONTENT_LENGTH"] is None
+
+
+def test_an_explicit_upload_cap_is_still_honoured(temp_data_dir, monkeypatch):
+    monkeypatch.setenv("MAGIC_MAX_UPLOAD_MB", "100")
+
+    app = admin.create_app(temp_data_dir, config={"TESTING": True})
+
+    assert app.config["MAX_CONTENT_LENGTH"] == 100 * 1024 * 1024
+
+
+def _big_entry_package(size: int) -> io.BytesIO:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("playlist.yaml", yaml.safe_dump({
+            "title": "Big", "items": [
+                {"title": "v", "source_type": "local", "path": "media/big.mp4"}]}))
+        zf.writestr("media/big.mp4", b"\0" * size)
+    buf.seek(0)
+    return buf
+
+
+def test_package_unpacks_with_no_fixed_cap_when_space_allows(client,
+                                                             temp_data_dir,
+                                                             monkeypatch):
+    monkeypatch.delenv("MAGIC_MAX_EXTRACT_MB", raising=False)
+    monkeypatch.setattr(admin, "get_free_bytes", lambda _p: 64 * 1024 ** 3)
+
+    resp = _post_package(client, _big_entry_package(2 * 1024 * 1024))
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert (temp_data_dir / "media" / "big.mp4").stat().st_size == 2 * 1024 * 1024
+
+
+def test_an_explicit_unpack_cap_is_still_honoured(client, temp_data_dir,
+                                                  monkeypatch):
+    monkeypatch.setenv("MAGIC_MAX_EXTRACT_MB", "1")
+    monkeypatch.setattr(admin, "get_free_bytes", lambda _p: 64 * 1024 ** 3)
+
+    resp = _post_package(client, _big_entry_package(2 * 1024 * 1024))
+
+    assert resp.status_code == 413, resp.get_data(as_text=True)
+    assert "maximum extraction size (1MB)" in resp.get_json()["error"]["message"]
+    assert not (temp_data_dir / "media" / "big.mp4").exists()
+    assert not list((temp_data_dir / "playlists").glob("*.yaml"))
 
 
 # Routes whose oversize body actually reaches the 413 handler.

@@ -24,7 +24,7 @@ try:
     from admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
         _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
-        success_response,
+        optional_size_cap_mb, success_response,
     )
     from admin_playlists import (
         _emulator_core_error, _playlist_filename_for_title, _playlist_summary,
@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
         _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
-        success_response,
+        optional_size_cap_mb, success_response,
     )
     from .admin_playlists import (
         _emulator_core_error, _playlist_filename_for_title, _playlist_summary,
@@ -423,13 +423,17 @@ def register(app, ctx) -> None:
                             rom_files.append((name, parts[1], parts[-1]))
 
                     # Guard against ZIP bombs: limit total extracted size to
-                    # the configured cap (default 10GB) AND to what the card
-                    # can actually take. The fixed 10 GB alone let a bomb fill
-                    # a box with 3 GB free to the last byte — and the kiosk's
-                    # settings.json, RetroArch saves and paired-remote state
-                    # live on the same volume. Measured NOW, after the ZIP is
-                    # staged, and keeping the same reserve every upload keeps.
-                    MAX_EXTRACT_BYTES = int(os.getenv("MAGIC_MAX_EXTRACT_MB", "10240")) * 1024 * 1024
+                    # what the card can actually take, measured NOW (after the
+                    # ZIP is staged) and keeping the same reserve every upload
+                    # keeps — the kiosk's settings.json, RetroArch saves and
+                    # paired-remote state live on the same volume. Bytes are
+                    # counted as they are written, so a lying central
+                    # directory cannot get past it. There is no fixed cap by
+                    # default: the old 10 GB one stopped a genuine 12.2 GB
+                    # Nickelodeon package on its last video with 17 GB free
+                    # (2026-10-26). MAGIC_MAX_EXTRACT_MB still adds one.
+                    _cap_mb = optional_size_cap_mb("MAGIC_MAX_EXTRACT_MB")
+                    MAX_EXTRACT_BYTES = _cap_mb * 1024 * 1024 if _cap_mb else sys.maxsize
                     _free_now = [
                         fb for fb in (get_free_bytes(d) for d in (
                             media_dir if media_dir.exists() else data_dir,
