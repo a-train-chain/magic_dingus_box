@@ -25,9 +25,15 @@ setup() {
 }
 
 plant_legacy() { printf '%s' "$LEGACY_NETWORK" > "$NET/10-usb-gadget.network"; }
+# The replacement DHCP server's config, as install_deps.sh leaves it.
+plant_dnsmasq_conf() {
+    mkdir -p "$MAGIC_USB_ROOT/etc/dnsmasq.d"
+    cp "$CPP_DIR/scripts/data/dnsmasq-usb0.conf" "$MAGIC_USB_ROOT/etc/dnsmasq.d/usb0.conf"
+}
 
 @test "--retire-legacy moves the legacy networkd file aside, content intact" {
     plant_legacy
+    plant_dnsmasq_conf
     run bash "$SCRIPT" --retire-legacy
     [ "$status" -eq 0 ]
     [ ! -e "$NET/10-usb-gadget.network" ]
@@ -35,6 +41,18 @@ plant_legacy() { printf '%s' "$LEGACY_NETWORK" > "$NET/10-usb-gadget.network"; }
     [ "${#backups[@]}" -eq 1 ] && [ -f "${backups[0]}" ]
     [ "$(cat "${backups[0]}")" = "$(printf '%s' "$LEGACY_NETWORK")" ]
     [[ "$output" == *"retired legacy usb0 DHCP server"* ]]
+}
+
+@test "--retire-legacy keeps the legacy file when dnsmasq's usb0 config is missing" {
+    # A box that never ran install_deps.sh: the legacy server is the only
+    # DHCP server on the cable, so retiring it would leave laptops with no
+    # address at all.
+    plant_legacy
+    run bash "$SCRIPT" --retire-legacy
+    [ "$status" -eq 0 ]
+    [ -f "$NET/10-usb-gadget.network" ]
+    [ ! -e "$RETIRED" ]
+    [[ "$output" == *"still the cable's only DHCP server"* ]]
 }
 
 @test "--retire-legacy on a clean box is a silent no-op" {
@@ -60,6 +78,7 @@ plant_legacy() { printf '%s' "$LEGACY_NETWORK" > "$NET/10-usb-gadget.network"; }
 
 @test "--retire-legacy never fails, even when the file cannot be moved" {
     plant_legacy
+    plant_dnsmasq_conf
     mkdir -p "$(dirname "$RETIRED")"
     : > "$RETIRED"      # a FILE where the backup directory should go
     run bash "$SCRIPT" --retire-legacy

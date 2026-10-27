@@ -79,6 +79,15 @@ retire_legacy_network() {
         log "$LEGACY_NETWORK does not match usb0; leaving it alone"
         return 0
     fi
+    # Only retire it once its replacement is in place. On a box that never
+    # got dnsmasq's usb0 config (install_deps.sh never ran there), the
+    # legacy server is the cable's ONLY DHCP server: moving it aside would
+    # leave a plugged-in laptop with no address at all, which is worse than
+    # the missing DNS. Install mode writes the config first, so it passes.
+    if [[ ! -f "$DNSMASQ_DEST" ]]; then
+        log "$LEGACY_NETWORK kept: ${DNSMASQ_DEST} is not installed, so it is still the cable's only DHCP server"
+        return 0
+    fi
     local backup
     backup="${RETIRED_DIR}/10-usb-gadget.network.$(date +%Y%m%d%H%M%S)"
     if ! install -d -m 0755 "$RETIRED_DIR" || ! mv "$LEGACY_NETWORK" "$backup"; then
