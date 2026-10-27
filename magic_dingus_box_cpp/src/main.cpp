@@ -510,6 +510,9 @@ int main(int /* argc */, char* /* argv */[]) {
 
     // Phone-remote status writer — writes kiosk_status.json at 5 Hz so the
     // companion app always has a fresh snapshot of screen / playback state.
+    // write_now() only serializes; the tmp+rename runs on the writer's own
+    // thread, so a saturated SD card can never stall this loop's watchdog
+    // ping (status_writer.h).
     app::StatusWriter status_writer(config::get_data_path() + "/kiosk_status.json");
     auto last_status_write = std::chrono::steady_clock::now();
     constexpr auto STATUS_PERIOD = std::chrono::milliseconds(200); // 5 Hz

@@ -1,4 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <filesystem>
 #include <fstream>
 #include <json/json.h>
@@ -20,6 +26,7 @@ TEST_CASE("status_writer emits required schema fields", "[remote][status]") {
 
     app::StatusWriter w(tmp.string());
     w.write_now(state);
+    w.flush();
 
     REQUIRE(fs::exists(tmp));
 
@@ -44,6 +51,7 @@ TEST_CASE("status_writer atomic write — never leaves partial files", "[remote]
 
     app::StatusWriter w(tmp.string());
     w.write_now(state);
+    w.flush();
 
     // Verify no leftover .tmp file in the directory
     fs::path tmp_dir = tmp.parent_path();
@@ -66,6 +74,7 @@ TEST_CASE("status_writer emits text_input.active=false when no keyboard", "[remo
 
     app::StatusWriter w(tmp.string());
     w.write_now(state);
+    w.flush();
 
     std::ifstream f(tmp);
     Json::Value root;
@@ -88,6 +97,7 @@ TEST_CASE("status_writer emits text_input block when keyboard active", "[remote]
 
     app::StatusWriter w(tmp.string());
     w.write_now(state);
+    w.flush();
 
     std::ifstream f(tmp);
     Json::Value root;
@@ -118,6 +128,7 @@ TEST_CASE("status_writer publishes the TEST-ONLY platform policy override",
         app::AppState state;
         app::StatusWriter w(tmp.string());
         w.write_now(state);
+        w.flush();
         Json::Value root = read_root();
         REQUIRE(root.isMember("platform_policy_override"));
         REQUIRE(root["platform_policy_override"].isNull());
@@ -128,7 +139,129 @@ TEST_CASE("status_writer publishes the TEST-ONLY platform policy override",
         state.platform_profile.policy_override = "pi4";
         app::StatusWriter w(tmp.string());
         w.write_now(state);
+        w.flush();
         Json::Value root = read_root();
         REQUIRE(root["platform_policy_override"].asString() == "pi4");
     }
+}
+
+// ── Off-thread file I/O ─────────────────────────────────────────────────
+// 2026-10-26, 1 GB Pi 4B: an 11 GB package import saturated the SD card
+// and the status tmp+rename sat in ext4 for up to ~6 s per call ON THE
+// RENDER THREAD, which pings the systemd watchdog — five SIGABRTs in
+// fifteen minutes. These pin the contract that fixed it: write_now never
+// waits for a write, the newest snapshot wins, and nothing is lost.
+
+namespace {
+
+// A FileSink that can be held mid-write, standing in for an SD card stuck
+// behind a writeback queue. Records every body it is handed.
+struct StalledSink {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool released = false;
+    bool entered = false;
+    std::vector<std::string> bodies;
+    int fail_next = 0;
+
+    app::StatusWriter::FileSink sink() {
+        return [this](const std::string&, const std::string&, const std::string& body) {
+            std::unique_lock<std::mutex> lk(mu);
+            entered = true;
+            cv.notify_all();
+            cv.wait(lk, [this] { return released; });
+            bodies.push_back(body);
+            if (fail_next > 0) { --fail_next; return false; }
+            return true;
+        };
+    }
+    void wait_entered() {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [this] { return entered; });
+    }
+    void release() {
+        std::lock_guard<std::mutex> lk(mu);
+        released = true;
+        cv.notify_all();
+    }
+};
+
+double position_of(const std::string& body) {
+    std::istringstream in(body);
+    Json::Value root;
+    in >> root;
+    return root["playback"]["position_sec"].asDouble();
+}
+
+} // namespace
+
+TEST_CASE("status_writer: write_now never waits for a stalled write",
+          "[remote][status][io]") {
+    StalledSink stalled;
+    app::StatusWriter w("/nonexistent/kiosk_status.json", stalled.sink());
+    app::AppState state;
+
+    state.set_position(1.0);
+    w.write_now(state);
+    stalled.wait_entered();  // the writer is now stuck "on the card"
+
+    // Many frames' worth of changing state while the write is stuck. With
+    // the old synchronous writer each call would block for the stall.
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 2; i <= 50; ++i) {
+        state.set_position(static_cast<double>(i));
+        w.write_now(state);
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    REQUIRE(elapsed < std::chrono::milliseconds(500));
+
+    stalled.release();
+    w.flush();
+    // Latest wins: the in-flight write, then ONLY the newest snapshot — not
+    // a 49-write backlog the card would then have to work through.
+    REQUIRE(stalled.bodies.size() == 2);
+    REQUIRE(position_of(stalled.bodies[0]) == 1.0);
+    REQUIRE(position_of(stalled.bodies[1]) == 50.0);
+}
+
+TEST_CASE("status_writer: a failed write is resent on the next call",
+          "[remote][status][io]") {
+    StalledSink sink;
+    sink.release();
+    sink.fail_next = 1;
+    app::StatusWriter w("/nonexistent/kiosk_status.json", sink.sink());
+    app::AppState state;
+    state.set_position(7.0);
+
+    w.write_now(state);
+    w.flush();
+    REQUIRE(sink.bodies.size() == 1);  // failed
+
+    // Same content, well inside the 2 s heartbeat: without the failure it
+    // would be skipped as unchanged.
+    w.write_now(state);
+    w.flush();
+    REQUIRE(sink.bodies.size() == 2);
+    REQUIRE(position_of(sink.bodies[1]) == 7.0);
+
+    // Succeeded — an unchanged state is skipped again.
+    w.write_now(state);
+    w.flush();
+    REQUIRE(sink.bodies.size() == 2);
+}
+
+TEST_CASE("status_writer: destruction publishes the final snapshot",
+          "[remote][status][io]") {
+    fs::path tmp = fs::temp_directory_path() / "mdb_status_final.json";
+    fs::remove(tmp);
+    {
+        app::StatusWriter w(tmp.string());
+        app::AppState state;
+        state.screen_mode = app::ScreenMode::RetroArch;
+        w.write_now(state);
+    }  // no flush(): the destructor must not drop the pending write
+    std::ifstream f(tmp);
+    Json::Value root;
+    f >> root;
+    REQUIRE(root["screen"].asString() == "retroarch");
 }
