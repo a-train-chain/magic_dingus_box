@@ -93,36 +93,20 @@ sudo pip3 install --break-system-packages 'flask-sock>=0.7.0'
 # except-interface=lo) and serves a catch-all "any hostname →
 # 10.55.0.1" DNS there, so a cabled laptop can type http://dingus.box;
 # Wi-Fi/loopback DNS (systemd-resolved) is never touched.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USB_DNSMASQ_CONF="${SCRIPT_DIR}/data/dnsmasq-usb0.conf"
-if [[ -f "$USB_DNSMASQ_CONF" ]]; then
-    echo "Configuring dnsmasq for USB-Gadget DHCP..."
-    sudo cp "$USB_DNSMASQ_CONF" /etc/dnsmasq.d/usb0.conf
-    sudo chmod 644 /etc/dnsmasq.d/usb0.conf
-    sudo systemctl enable dnsmasq.service
-    sudo systemctl restart dnsmasq.service
-    echo "  ✓ dnsmasq configured and running on usb0"
-else
-    echo "  ⚠ ${USB_DNSMASQ_CONF} not found — skipping dnsmasq config"
-fi
-
+#
 # Content Manager port-80 redirect: tiny Python service that 302s any
 # request from port 80 to port 5000 (where Flask actually listens).
-# Lets the operator type `magicpi.local` (or `10.55.0.1`, or the Pi's
-# Wi-Fi IP) without remembering the port number — landing on the
+# Lets the operator type `dingus.box` over the cable, `magicpi.local` (or
+# the Pi's Wi-Fi IP) without remembering the port number — landing on the
 # Content Manager directly.
-# The unit goes through converge_system_units.sh --only, the one writer of
-# unit files (it daemon-reloads when it wrote).
-REDIRECT_UNIT_SRC="$(cd "${SCRIPT_DIR}/.." && pwd)/systemd/content-manager-redirect.service"
-if [[ -f "$REDIRECT_UNIT_SRC" ]]; then
-    echo "Installing content-manager-redirect service..."
-    sudo bash "${SCRIPT_DIR}/converge_system_units.sh" --only content-manager-redirect.service
-    sudo systemctl enable content-manager-redirect.service
-    sudo systemctl restart content-manager-redirect.service
-    echo "  ✓ port-80 → :5000 redirect running"
-else
-    echo "  ⚠ ${REDIRECT_UNIT_SRC} not found — skipping redirect service"
-fi
+#
+# Both, plus retiring the legacy systemd-networkd DHCP server an old
+# `deploy_cpp.sh --usb-gadget` left on usb0, live in setup_usb_gadget_dns.sh
+# so this script and the deploy's --usb-gadget cannot disagree.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "Configuring USB-cable DHCP/DNS (dnsmasq) + port-80 redirect..."
+sudo bash "${SCRIPT_DIR}/setup_usb_gadget_dns.sh"
+echo "  ✓ dnsmasq on usb0 + port-80 → :5000 redirect running"
 
 if [[ $INCLUDE_MEDIA_BROWSER -eq 1 ]]; then
     echo "Installing Media Browser dependencies..."

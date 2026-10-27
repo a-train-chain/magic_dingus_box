@@ -1338,10 +1338,12 @@ refresh_out_of_tree_files() {
             || log_warn "could not refresh /usr/local/bin/qbit-port-sync.sh"
     fi
 
-    # usb0 gadget DNS. install_deps.sh is the only writer of this file and
-    # it is invoked from exactly one place (the Phone Remote bootstrap
-    # above), so this is the ONLY delivery path it has. Reload dnsmasq only
-    # when the content actually changed.
+    # usb0 gadget DNS. setup_usb_gadget_dns.sh is the only writer of this
+    # file and it runs only at provisioning (install_deps.sh, invoked from
+    # the Phone Remote bootstrap above, and deploy_cpp.sh --usb-gadget), so
+    # this is the ONLY OTA delivery path it has. Reload dnsmasq only when
+    # the content actually changed. (The legacy 10-usb-gadget.network that
+    # broke dingus.box is retired by setup_memory_tuning.sh step 1g.)
     src="${script_dir}/data/dnsmasq-usb0.conf"
     dest="/etc/dnsmasq.d/usb0.conf"
     if [ -f "$dest" ] && [ -f "$src" ] && ! cmp -s "$src" "$dest"; then

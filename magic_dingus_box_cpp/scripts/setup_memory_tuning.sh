@@ -26,6 +26,9 @@
 #   1f. services/config/gluetun/auth/config.toml via ensure_gluetun_auth.sh
 #        (the control-server routes the stack reads stay public after a
 #        gluetun bump) — same delivery reasoning as 1a
+#   1g. moves a legacy /etc/systemd/network/10-usb-gadget.network aside via
+#        setup_usb_gadget_dns.sh --retire-legacy (its DHCP server on usb0
+#        broke http://dingus.box) — same delivery reasoning as 1a
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -150,6 +153,20 @@ elif [[ -f "$GLUETUN_AUTH_HELPER" ]]; then
         | sed 's/^/  /' || true
 else
     log "ensure_gluetun_auth.sh not found; skipping gluetun access file"
+fi
+
+# --- 1g. retire the legacy usb0 networkd DHCP server ------------------------
+# Same delivery reasoning as 1d: a box that once ran the old
+# `deploy_cpp.sh --usb-gadget` keeps /etc/systemd/network/10-usb-gadget.network,
+# a second DHCP server on usb0 that hands laptops 192.168.7.x with no DNS, so
+# http://dingus.box never resolves over the cable. The helper moves it aside
+# (refresh-only: it provisions nothing) and never fails.
+USB_DNS_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup_usb_gadget_dns.sh"
+if [[ -f "$USB_DNS_HELPER" ]]; then
+    MAGIC_USB_ROOT="$TUNING_ROOT" MAGIC_SKIP_SYSTEMCTL="$SKIP_SYSTEMCTL" \
+        bash "$USB_DNS_HELPER" --retire-legacy 2>&1 | sed 's/^/  /' || true
+else
+    log "setup_usb_gadget_dns.sh not found; skipping legacy usb0 networkd check"
 fi
 
 # --- 2. system.slice companion ----------------------------------------------

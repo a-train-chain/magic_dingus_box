@@ -833,15 +833,21 @@ if [ "$SETUP_USB_GADGET" = true ]; then
     echo "Step 5: Setting up USB Ethernet Gadget mode..."
     echo ""
     echo "  This enables direct laptop-to-Pi USB connections for faster uploads."
-    echo "  The Pi will need to reboot after setup."
+    echo "  The Pi needs a reboot the first time gadget mode is enabled."
     echo ""
 
-    # Run the setup script on the Pi
+    # The gadget itself (dwc2 overlay + g_ether), then the current USB-C
+    # design: usb-gadget-network.service (10.55.0.1 on usb0, installed by
+    # Step 1.66 on every deploy) + dnsmasq's usb0.conf (DHCP 10.55.0.10-100
+    # and the catch-all DNS behind http://dingus.box) + the port-80
+    # redirect. Until 2026-10 this step wrote a systemd-networkd
+    # 10-usb-gadget.network instead (192.168.7.1, DHCPServer=yes,
+    # EmitDNS=no): a second DHCP server on usb0 that handed laptops a lease
+    # with no DNS, so dingus.box never resolved on any box that ran it.
+    # setup_usb_gadget_dns.sh installs the current design and moves that
+    # file aside (setup_memory_tuning.sh retires it on every other path).
     ssh "${PI_HOST}" PI_DIR="${PI_DIR}" bash <<'USBEOF'
-cd "${PI_DIR}/magic_dingus_box_cpp/scripts"
-chmod +x setup_usb_gadget.sh
-
-# Run non-interactively (don't prompt for reboot)
+set -e
 sudo bash -c '
 set -e
 
@@ -879,37 +885,16 @@ if ! grep -q "^g_ether" /etc/modules; then
     echo "g_ether" >> /etc/modules
     echo "  ✓ Added g_ether module"
 fi
-
-# Configure static IP for usb0
-mkdir -p /etc/systemd/network
-cat > /etc/systemd/network/10-usb-gadget.network << NETEOF
-[Match]
-Name=usb0
-
-[Network]
-Address=192.168.7.1/24
-DHCPServer=yes
-
-[DHCPServer]
-PoolOffset=100
-PoolSize=20
-EmitDNS=no
-NETEOF
-
-echo "  ✓ Configured static IP 192.168.7.1"
-
-# Enable systemd-networkd
-systemctl enable systemd-networkd 2>/dev/null || true
-
+'
+sudo bash "${PI_DIR}/magic_dingus_box_cpp/scripts/setup_usb_gadget_dns.sh"
 echo ""
 echo "=== USB Gadget Setup Complete ==="
-'
 USBEOF
 
     echo ""
     echo "  ✓ USB Ethernet Gadget mode configured"
     echo ""
-    echo "  ⚠️  REBOOT REQUIRED: Run 'ssh ${PI_HOST} sudo reboot' to activate USB mode"
+    echo "  ⚠️  If gadget mode was just enabled, REBOOT to activate it: ssh ${PI_HOST} sudo reboot"
     echo ""
 fi
 
@@ -919,12 +904,13 @@ echo ""
 if [ "$SETUP_USB_GADGET" = true ]; then
     echo "🔌 USB Ethernet Gadget mode configured!"
     echo ""
-    echo "   After rebooting the Pi:"
+    echo "   After rebooting the Pi (only needed the first time):"
     echo "   1. Connect USB-C cable from laptop to Pi"
     echo "   2. Wait 5-10 seconds"
-    echo "   3. Open browser to: http://192.168.7.1:5000"
+    echo "   3. Open browser to: http://dingus.box"
+    echo "      (or http://10.55.0.1:5000 if a VPN on the laptop owns DNS)"
     echo ""
-    echo "   WiFi access continues to work at: http://magicpi.local:5000"
+    echo "   WiFi access continues to work at: http://<hostname>.local:5000"
     echo ""
 fi
 
