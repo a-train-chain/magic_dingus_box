@@ -412,14 +412,39 @@ while read -r kind a b; do
   esac
 done < <(python3 - "$APP" <<'PY'
 import glob, os, re, sys
+try:
+    import yaml
+except ImportError:
+    yaml = None
 app = sys.argv[1]; data = os.path.join(app, "data")
 def resolve(p):
     return (os.path.exists(p) if p.startswith("/")
             else os.path.exists(os.path.join(app, p)) or os.path.exists(os.path.join(data, p)))
+# Parse the YAML: PyYAML writes an apostrophe in a single-quoted path as ''
+# and a regex kept it doubled, FAILing a video the kiosk plays (2026-10-26).
+# The regex is only the fallback for a box without python3-yaml or a file
+# PyYAML refuses, and it undoes the quoting itself.
+def yaml_paths(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "path" and isinstance(v, (str, int, float)): yield str(v)
+            else: yield from yaml_paths(v)
+    elif isinstance(node, list):
+        for v in node: yield from yaml_paths(v)
+def regex_path(v):
+    v = v.strip()
+    if len(v) > 1 and v[0] == v[-1] == "'": return v[1:-1].replace("''", "'")
+    if len(v) > 1 and v[0] == v[-1] == '"': return v[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return v
+def playlist_paths(txt):
+    if yaml is not None:
+        try: return list(yaml_paths(yaml.safe_load(txt)))
+        except yaml.YAMLError: pass
+    return [regex_path(v) for v in re.findall(r"^[ \t]*-?[ \t]*path:[ \t]*(\S.*?)[ \t]*$", txt, re.M)]
 vid_ok = vid_tot = game_ok = game_tot = 0; bad = []
 for f in sorted(glob.glob(os.path.join(data, "playlists", "*.yaml"))):
     txt = open(f, encoding="utf-8", errors="replace").read()
-    paths = re.findall(r"^\s*path:\s*['\"]?(.+?)['\"]?\s*$", txt, re.M)
+    paths = playlist_paths(txt)
     ok = sum(1 for p in paths if resolve(p)); miss = len(paths) - ok
     if "source_type: emulated_game" in txt: game_ok += ok; game_tot += len(paths)
     else: vid_ok += ok; vid_tot += len(paths)
