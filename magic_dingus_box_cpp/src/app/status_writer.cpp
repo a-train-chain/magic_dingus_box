@@ -1,6 +1,7 @@
 #include "status_writer.h"
 
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -12,10 +13,75 @@
 
 namespace app {
 
+namespace {
+
+bool write_file_atomically(const std::string& tmp_path,
+                           const std::string& path,
+                           const std::string& body) {
+    {
+        std::ofstream f(tmp_path, std::ios::binary | std::ios::trunc);
+        f.write(body.data(), static_cast<std::streamsize>(body.size()));
+        if (!f.good()) {
+            LOG_WARN("StatusWriter: failed to write tmp file {}", tmp_path);
+            std::remove(tmp_path.c_str());
+            return false;
+        }
+    }
+    if (std::rename(tmp_path.c_str(), path.c_str()) != 0) {
+        LOG_WARN("StatusWriter: rename {} -> {} failed (errno {})",
+                 tmp_path, path, errno);
+        std::remove(tmp_path.c_str());
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
 StatusWriter::StatusWriter(std::string path)
+    : StatusWriter(std::move(path), write_file_atomically) {}
+
+StatusWriter::StatusWriter(std::string path, FileSink sink)
     : path_(std::move(path)),
       tmp_path_(path_ + ".tmp"),
-      owning_thread_(std::this_thread::get_id()) {}
+      sink_(std::move(sink)),
+      owning_thread_(std::this_thread::get_id()) {
+    writer_ = std::thread([this] { writer_loop(); });
+}
+
+StatusWriter::~StatusWriter() {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        stop_ = true;
+    }
+    cv_.notify_all();
+    if (writer_.joinable()) writer_.join();
+}
+
+void StatusWriter::writer_loop() {
+    std::unique_lock<std::mutex> lk(mu_);
+    for (;;) {
+        cv_.wait(lk, [this] { return has_pending_ || stop_; });
+        if (!has_pending_) break;  // stopping, and the final state is out
+        std::string body = std::move(pending_);
+        has_pending_ = false;
+        writing_ = true;
+        // The sink runs WITHOUT the lock: it is the part that can take
+        // seconds, and write_now() must be able to replace pending_ (and
+        // see write_failed_) the whole time.
+        lk.unlock();
+        const bool ok = sink_(tmp_path_, path_, body);
+        lk.lock();
+        writing_ = false;
+        if (!ok) write_failed_ = true;
+        cv_.notify_all();  // flush()
+    }
+}
+
+void StatusWriter::flush() {
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [this] { return !has_pending_ && !writing_; });
+}
 
 void StatusWriter::write_now(const AppState& state) {
     assert(std::this_thread::get_id() == owning_thread_ &&
@@ -131,7 +197,15 @@ void StatusWriter::write_now(const AppState& state) {
     // session begin/end) still write immediately.
     const std::string body = Json::writeString(b, root);
     const auto mono_now = std::chrono::steady_clock::now();
-    if (body == last_body_ &&
+    bool resend = false;
+    {
+        // Held only for flag/mailbox swaps — the writer never holds mu_
+        // across a write, so this cannot wait on the SD card.
+        std::lock_guard<std::mutex> lk(mu_);
+        resend = write_failed_;
+        write_failed_ = false;
+    }
+    if (!resend && body == last_body_ &&
         mono_now - last_write_ < std::chrono::seconds(2)) {
         return;
     }
@@ -142,20 +216,14 @@ void StatusWriter::write_now(const AppState& state) {
     std::string out = Json::writeString(b, root);
 
     {
-        std::ofstream f(tmp_path_, std::ios::binary | std::ios::trunc);
-        f.write(out.data(), static_cast<std::streamsize>(out.size()));
-        if (!f.good()) {
-            LOG_WARN("StatusWriter: failed to write tmp file {}", tmp_path_);
-            std::remove(tmp_path_.c_str());
-            return;
-        }
+        std::lock_guard<std::mutex> lk(mu_);
+        pending_ = std::move(out);
+        has_pending_ = true;
     }
-    if (std::rename(tmp_path_.c_str(), path_.c_str()) != 0) {
-        LOG_WARN("StatusWriter: rename {} -> {} failed (errno {})",
-                 tmp_path_, path_, errno);
-        std::remove(tmp_path_.c_str());
-        return;  // failed write: leave last_body_ stale so the next tick retries
-    }
+    cv_.notify_all();
+    // A failed write is reported back through write_failed_ and resent on
+    // the next call (the old synchronous code left last_body_ stale for the
+    // same effect).
     last_body_ = body;
     last_write_ = mono_now;
 }
