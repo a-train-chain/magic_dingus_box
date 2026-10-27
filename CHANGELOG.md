@@ -112,6 +112,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the whole upload. Now the only limit is free space: the box checks
   before anything is sent that the package fits with room to spare, and
   still stops an import that would fill the card.
+- **The USB-C address is now `http://10.55.0.1`.** The TV's Connect a
+  Device screen, the Content Manager and the guides used to say
+  `http://dingus.box`, which only opens when the computer's Wi-Fi is off —
+  with Wi-Fi on, the computer looks the name up on the Wi-Fi network, which
+  has never heard of it. `http://10.55.0.1` needs no lookup, so it opens
+  every time. `dingus.box` still works with Wi-Fi off.
 - **The menus use less power and run cooler.** The box now redraws the
   main menu, Settings and the Movies browsing screens only when something
   on them changes (with the CRT look on, the menu draws at the effect's own

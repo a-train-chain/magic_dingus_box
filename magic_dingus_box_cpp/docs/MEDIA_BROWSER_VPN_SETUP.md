@@ -29,7 +29,7 @@ connects to a single VPN endpoint."
 - **Network access to the Pi's Content Manager**
   (`http://<your-box>.local:5000` — each unit is named `magicpi-XXXX` at
   first boot; the kiosk's Settings → Connect a Device screen shows the
-  exact address — or `http://dingus.box` / `http://10.55.0.1:5000` over
+  exact address — or `http://10.55.0.1` over
   the USB-C cable).
 
 ## Step-by-step

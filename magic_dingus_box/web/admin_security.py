@@ -236,7 +236,7 @@ def register(app, ctx) -> None:
         return error_response(
             "FORBIDDEN_HOST",
             "Open the Content Manager by the box's address (its IP, "
-            "<name>.local, or http://dingus.box over USB).",
+            "<name>.local, or http://10.55.0.1 over USB).",
             status=403)
 
     # Cross-site request defence — the half the Host check cannot cover.

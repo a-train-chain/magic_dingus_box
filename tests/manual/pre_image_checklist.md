@@ -149,9 +149,9 @@ Required if the golden image is shipping CRT mode support to clones. Skip only i
 ### Kiosk-side QR code (the merged "Connect a Device" screen)
 - [ ] On TV, open Settings → **Connect a Device**. One screen shows: QR code, large 6-digit code, "Code refreshes in M:SS"
 - [ ] Typed address line reads `http://<hostname>.local:5000  (or <lan-ip>:5000)`
-- [ ] USB line reads "Or: plug a USB-C cable into a computer and open  http://dingus.box"
+- [ ] USB line reads "Or: plug a USB-C cable into a computer and open  http://10.55.0.1"
 - [ ] Scan the QR with a phone camera — URL decodes as `http://<lan-ip>:5000/connect?code=NNNNNN` and opens the "Connect a Device" web page
-- [ ] From a laptop connected via USB-C: `http://dingus.box` opens the content manager successfully
+- [ ] From a laptop connected via USB-C **with its Wi-Fi still on**: `http://10.55.0.1` opens the content manager successfully
 - [ ] There is NO separate "Content Manager" or "Connect Phone / Computer" row in Settings — "Connect a Device" is the only connection entry
 
 ### WiFi (alternate path)

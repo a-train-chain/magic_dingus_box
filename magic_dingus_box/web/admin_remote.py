@@ -147,8 +147,8 @@ CONNECT_PAGE_HTML = """
   <p class="hint">Pairing a remote needs the 6-digit code from
      Settings &rarr; Connect a Device on the kiosk.</p>
   {% endif %}
-  <p class="hint">On a laptop with a USB-C cable? Any address works &mdash;
-     try <strong>http://dingus.box</strong></p>
+  <p class="hint">On a laptop with a USB-C cable? Open
+     <strong>http://10.55.0.1</strong></p>
 </div>
 </body></html>
 """
