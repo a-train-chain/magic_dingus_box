@@ -161,6 +161,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
+- **Videos no longer hitch every three seconds.** The box looks for
+  newly plugged-in controllers every three seconds, and each look
+  reopened the TV-connection sensors and the power button it had
+  already decided to ignore. Closing each one takes a moment, so the
+  picture froze for about a third of a second, every three seconds, on
+  both the Pi 4B and the Pi 5. The box now remembers what it has
+  already checked; a controller plugged in later is still picked up.
 - **The menu comes back when a playlist ends.** A playlist set not to
   loop (the default for new playlists) used to leave the TV black when it
   finished, with the menu invisible until the box was restarted. The same
