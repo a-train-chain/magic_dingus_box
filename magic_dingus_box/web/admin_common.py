@@ -117,6 +117,22 @@ def get_free_bytes(path) -> Optional[int]:
         return None
 
 
+def optional_size_cap_mb(env_name: str) -> Optional[int]:
+    """An operator-set size cap in MB from `env_name`, or None for "no cap".
+
+    Upload and unpack sizes have no fixed limit by default: free space is the
+    limit, and the storage preconditions enforce it. Unset, blank, zero,
+    negative or unparseable all mean no cap, so a typo in a unit file can
+    never stop the web admin from starting.
+    """
+    raw = (os.getenv(env_name) or "").strip()
+    try:
+        mb = int(raw)
+    except ValueError:
+        return None
+    return mb if mb > 0 else None
+
+
 def get_cpu_usage() -> Optional[float]:
     """Get CPU usage percentage."""
     try:

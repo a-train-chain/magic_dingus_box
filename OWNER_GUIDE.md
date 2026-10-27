@@ -64,9 +64,9 @@ where the movie setup happens.
    **Manage movies & playlists** to reach the **Content Manager**.
 
 **No Wi-Fi, or want faster uploads?** Plug a USB-C cable from the box
-into your computer, then open **`http://dingus.box`** in a browser —
-over the cable, any address you type reaches the box, with no network
-settings to configure.
+into your computer, then open **`http://10.55.0.1`** in a browser. No
+network settings to configure, and it works even while your computer is
+on Wi-Fi.
 
 ## 5. Pair your phone as a remote (optional, recommended)
 

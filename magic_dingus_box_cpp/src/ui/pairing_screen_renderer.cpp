@@ -146,12 +146,15 @@ void Renderer::render_pairing_screen(const PairingScreen& ps,
             draw_text(addr, ax, ay, theme_->font_small_size, theme_->fg);
         }
 
-        // The cabled-laptop path. usb0 runs its own DHCP + catch-all DNS,
-        // so over the cable ANY typed hostname reaches the box —
-        // http://dingus.box is the advertised name.
+        // The cabled-laptop path. usb0 runs its own DHCP, and the box is
+        // always 10.55.0.1 on it; port 80 redirects to the Content Manager.
+        // Show the number, not http://dingus.box: a laptop that is also on
+        // Wi-Fi sends name lookups to the Wi-Fi network first, so the name
+        // never reaches the box's catch-all DNS (tested on macOS
+        // 2026-10-27). A numeric address needs no lookup at all.
         usb_top = addr_top + 26.0f * s;
         const std::string usb_line =
-            "Or: plug a USB-C cable into a computer and open  http://dingus.box";
+            "Or: plug a USB-C cable into a computer and open  http://10.55.0.1";
         int uw = body_font_manager_->get_text_width(usb_line, theme_->font_small_size);
         float ux = (vw - static_cast<float>(uw)) / 2.0f;
         float uy = usb_top + body_font_manager_->get_baseline_at_size(theme_->font_small_size);

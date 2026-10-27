@@ -81,6 +81,9 @@ push scripts/golden_image/first_boot.sh \
 push scripts/golden_image/prepare_for_cloning.sh \
      /opt/magic_dingus_box/scripts/golden_image/prepare_for_cloning.sh 755 \
      "prepare_for_cloning.sh (reserve+boot zerofill, HUP trap, curation, fstab)"
+push scripts/golden_image/clone_swap_cleanup.py \
+     /opt/magic_dingus_box/scripts/golden_image/clone_swap_cleanup.py 644 \
+     "clone_swap_cleanup.py (active-swap gate and inactive-swap sanitation)"
 push scripts/golden_image/restore_after_cloning.sh \
      /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh 755 \
      "restore_after_cloning  (starts containerd+docker before the stack)"

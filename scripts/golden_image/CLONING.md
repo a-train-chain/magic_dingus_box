@@ -138,16 +138,37 @@ That runs `first_boot.sh`, which does:
 
 | Step | What | Cloned Pi behavior |
 |------|------|-------------------|
-| 1 | Regenerate SSH host keys | Old keys removed, `ssh-keygen -A`, sshd restarted — every unit gets its own |
-| 1b | Regenerate machine-id | New DHCP DUID so clones don't fight the source box for a lease |
+| 1 | Regenerate SSH host keys | Old keys removed, `ssh-keygen -A`; SSH starts after first boot, including recovery of an enabled-but-failed service — every unit gets its own |
+| 1b | Regenerate machine-id | New DHCP DUID so clones don't fight the source box for a lease; then **restarts journald** so it writes under the new id (see below) |
 | 1c | **Revoke the source's VPN identity** | `services/.env` deleted and every inherited Docker container removed (`docker rm -f`, or straight from `/var/lib/docker/containers` when dockerd is down) — BEFORE the risky expand, and never fatal |
 | 2 | Expand root FS to fill SD | `growpart` + `resize2fs` (non-fatal on failure — the wipes below always run) |
 | 3 | Generate device identity | New UUID + new hostname `magicpi-XXXX` (hostname files first, gate record last) |
 | 4 | Create required directories | (idempotent) |
 | 5 | Fix ownership | (idempotent) |
-| 6 | **Wipe every per-unit state class** | `services/.env`, all *arr/qBittorrent config + DBs, watch history, paired phones, RetroArch saves/states + history (both `data/` and `build/data/`), Wi-Fi profiles, TMDB key, browse filters, MB re-lock, logs/journal |
+| 6 | **Wipe every per-unit state class** | `services/.env`, all *arr/qBittorrent config + DBs, watch history, paired phones, RetroArch saves/states + history (both `data/` and `build/data/`), Wi-Fi profiles, TMDB key, browse filters, MB re-lock, logs/journal (incl. the image's old machine-id journal directory) |
 | 6e | Pi 4B pruning | N64/Dreamcast ROMs + playlists deleted on a Pi 4B (runtime gate hides them anyway; this reclaims disk) |
 | 7 | Self-disable | Won't run again (a FAILED run leaves it enabled, so it retries next boot) |
+
+**Journal on first boot (2026-10-26).** journald names its directory after
+the machine-id it read at startup (`/var/log/journal/<id>/`) and never
+re-reads it, while `journalctl` only reads the current id's directory. Before
+this fix a unit's whole first boot was logged under the IMAGE's id, so every
+`journalctl -b` said "No journal files were found" until the first reboot
+(`verify_box.sh` WARNed "no platform log line", "mode: … -> unknown" and
+"logical canvas canary: not logged"; Box health showed an empty journal), and
+the old-id directory — the source box's last entries — stayed on the card
+forever, out of reach of Step 6c-2's vacuum. Step 1b now runs `systemctl
+restart systemd-journald` (`journalctl --flush`/`--rotate` do not move it —
+measured on systemd 257) and Step 6c-2 deletes every journal directory named
+for another id, unless a process still holds it open (then it WARNs and keeps
+it). The journal of a first boot starts at Step 6c-2; Steps 1–6 are in
+`/var/log/magic-first-boot.log`. Units cloned before this fix still carry
+the old directory; after their first reboot (so journald is off it) this
+removes it:
+
+```bash
+sudo bash -c 'id=$(cat /etc/machine-id); for d in /var/log/journal/*/; do d=${d%/}; n=${d##*/}; [[ ${n%%.*} =~ ^[0-9a-f]{32}$ && ${n%%.*} != "$id" ]] && rm -rfv "$d"; done; true'
+```
 
 After ~90 seconds, the kiosk is up in default mode (RetroArch + your
 default playlists work). Media Browser is locked because there's no
@@ -584,3 +605,46 @@ this is a "click Yes once by reflex" failure, not a deliberate one:
 answer **NO** to "Would you like to apply OS customisation settings?".
 Customers join Wi-Fi from the kiosk's own Settings screen; a golden card
 must ship with no network configured.
+
+
+## Final artifact checks after a live capture
+
+A live `dd` is not an atomic filesystem snapshot. Even after service shutdown
+and `sync`, the captured ext4 journal can require recovery and its allocation
+bitmap can lag writes. Do not distribute a candidate solely because capture
+and source restoration completed.
+
+Before accepting a live-captured image:
+
+1. Keep the original candidate private. Extract its root partition into an
+   unmounted regular file on the operator's drive, using the image's partition
+   table offsets (never assume an offset from another image).
+2. Run `e2fsck -fy` on that extracted filesystem to replay the journal and
+   reconcile allocation counts. Exit 1 means corrections were made; other
+   nonzero statuses require investigation. Run `e2fsck -fn` afterwards and
+   require exit 0.
+3. Run `zerofree` on the unmounted extracted filesystem. It uses ext4's
+   allocation bitmap to clear deleted-file remnants that a live free-space
+   fill can miss. Run `e2fsck -fn` again and require exit 0.
+4. Reassemble a NEW image, preserving the partition table, boot partition,
+   partition offsets, and total byte length. Never modify the donor block
+   device or overwrite the original capture during repair.
+5. Run `scan_image_for_secrets.sh` on the complete reassembled artifact with
+   the restored source Pi and `--expect-bytes` set to the source device's exact
+   size. Require a clean result, then calculate the final SHA-256 checksum.
+6. Boot a newly flashed card on both boards before declaring the image
+   production accepted. Donor validation does not replace this test.
+
+The operator-side tools are e2fsprogs (`e2fsck`) and zerofree; these are image
+maintenance tools, not kiosk runtime dependencies. On macOS, Homebrew supplies
+e2fsprogs; zerofree can be built from its upstream/Debian source against that
+installation's libext2fs. Do not substitute blind byte replacement for filesystem
+repair or bitmap-aware free-space clearing.
+
+The 2026-10-21 capture exposed another source of remnants: an inactive legacy
+`/var/swap`. Free-space fills cannot touch allocated swap. Preparation now
+rejects active disk swap (zram is allowed), validates standard/fstab swap paths,
+and clears inactive root-filesystem swap before recreating its header with the
+same UUID and size. A failed credential scan always quarantines the candidate;
+never waive a VPN/API-key finding because the corresponding live file was
+removed successfully.

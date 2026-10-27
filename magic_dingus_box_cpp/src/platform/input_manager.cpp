@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <cerrno>
 #include <cstring>
 #include <iostream>
@@ -204,6 +205,18 @@ bool InputManager::initialize() {
     return !devices_.empty();
 }
 
+// Identity of a /dev/input node for InputProbeCache. stat() never opens the
+// device, so it is cheap enough to run on every node of every rescan.
+static bool input_node_id(const std::string& path, platform::InputNodeId* out) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return false;
+    out->rdev = static_cast<uint64_t>(st.st_rdev);
+    out->ino = static_cast<uint64_t>(st.st_ino);
+    out->ctime_sec = static_cast<int64_t>(st.st_ctim.tv_sec);
+    out->ctime_nsec = static_cast<int64_t>(st.st_ctim.tv_nsec);
+    return true;
+}
+
 bool InputManager::open_joystick_devices() {
     const char* input_dir = "/dev/input";
     DIR* dir = opendir(input_dir);
@@ -221,6 +234,9 @@ bool InputManager::open_joystick_devices() {
         
         std::string path = std::string(input_dir) + "/" + entry->d_name;
         if (is_path_open(path)) continue;
+        platform::InputNodeId node_id;
+        const bool have_id = input_node_id(path, &node_id);
+        if (have_id && !joystick_probe_cache_.should_probe(path, node_id)) continue;
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
         if (fd < 0) {
             continue;
@@ -242,6 +258,7 @@ bool InputManager::open_joystick_devices() {
             
             const char* dev_name = libevdev_get_name(dev);
             if (!dev_name) {
+                if (have_id) joystick_probe_cache_.remember_rejected(path, node_id);
                 libevdev_free(dev);
                 close(fd);
                 continue;
@@ -296,6 +313,7 @@ bool InputManager::open_joystick_devices() {
             found = true;
             std::cout << "  Found joystick: " << device_name << " at " << path << std::endl;
         } else {
+            if (have_id) joystick_probe_cache_.remember_rejected(path, node_id);
             libevdev_free(dev);
             close(fd);
         }
@@ -367,6 +385,9 @@ void InputManager::reprobe_phone_remote() {
         if (strncmp(entry->d_name, "event", 5) != 0) continue;
         std::string path = std::string(input_dir) + "/" + entry->d_name;
         if (is_path_open(path)) continue;
+        platform::InputNodeId node_id;
+        const bool have_id = input_node_id(path, &node_id);
+        if (have_id && !phone_probe_cache_.should_probe(path, node_id)) continue;
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
         if (fd < 0) continue;
         struct libevdev* dev = nullptr;
@@ -402,6 +423,7 @@ void InputManager::reprobe_phone_remote() {
             closedir(dir);
             return;
         }
+        if (have_id) phone_probe_cache_.remember_rejected(path, node_id);
         libevdev_free(dev);
         close(fd);
     }
@@ -425,6 +447,9 @@ bool InputManager::open_keyboard_devices() {
         
         std::string path = std::string(input_dir) + "/" + entry->d_name;
         if (is_path_open(path)) continue;
+        platform::InputNodeId node_id;
+        const bool have_id = input_node_id(path, &node_id);
+        if (have_id && !keyboard_probe_cache_.should_probe(path, node_id)) continue;
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
         if (fd < 0) {
             continue;
@@ -445,6 +470,7 @@ bool InputManager::open_keyboard_devices() {
             
             const char* dev_name = libevdev_get_name(dev);
             if (!dev_name) {
+                if (have_id) keyboard_probe_cache_.remember_rejected(path, node_id);
                 libevdev_free(dev);
                 close(fd);
                 continue;
@@ -468,6 +494,7 @@ bool InputManager::open_keyboard_devices() {
             found = true;
             std::cout << "  Found keyboard: " << device_name << " at " << path << std::endl;
         } else {
+            if (have_id) keyboard_probe_cache_.remember_rejected(path, node_id);
             libevdev_free(dev);
             close(fd);
         }

@@ -59,7 +59,7 @@ try:  # noqa: E402
         _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB,
         check_service_status, error_response, get_cpu_temperature,
         get_cpu_usage, get_disk_info, get_free_bytes, get_memory_info,
-        get_uptime, strip_ansi, success_response,
+        get_uptime, optional_size_cap_mb, strip_ansi, success_response,
     )
     import admin_security
     from admin_security import (
@@ -106,7 +106,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
         _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB,
         check_service_status, error_response, get_cpu_temperature,
         get_cpu_usage, get_disk_info, get_free_bytes, get_memory_info,
-        get_uptime, strip_ansi, success_response,
+        get_uptime, optional_size_cap_mb, strip_ansi, success_response,
     )
     from . import admin_security
     from .admin_security import (
@@ -293,9 +293,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
         queue_path=data_dir / "text_input_queue.jsonl"
     )
 
-    # Limit upload sizes; default 8GB (can override via MAGIC_MAX_UPLOAD_MB)
-    max_mb = int(os.getenv("MAGIC_MAX_UPLOAD_MB", "8192"))
-    app.config["MAX_CONTENT_LENGTH"] = max_mb * 1024 * 1024
+    # No fixed upload size cap by default. Free space is the real limit and
+    # every upload route checks it before the body moves
+    # (_storage_precondition). The old 8 GB default refused an 11 GB
+    # playlist package on a box with 28 GB free (2026-10-26).
+    # MAGIC_MAX_UPLOAD_MB still sets an explicit cap when an operator wants one.
+    max_mb = optional_size_cap_mb("MAGIC_MAX_UPLOAD_MB")
+    app.config["MAX_CONTENT_LENGTH"] = max_mb * 1024 * 1024 if max_mb else None
     
     # Use a temp directory on the SD card instead of /tmp (which is limited tmpfs)
     # This prevents "No space left on device" errors for large file uploads
@@ -387,7 +391,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # ===== STORAGE PRECONDITIONS =====
     #
     # TMPDIR is redirected onto the SD card above (the tmpfs /tmp is far too
-    # small for an 8 GB upload), so an import stages the whole ZIP there and
+    # small for a multi-GB upload), so an import stages the whole ZIP there and
     # then extracts it into data/media — peak footprint roughly twice the ZIP.
     # Nothing checked whether that fit, and ENOSPC surfaced as a raw 500.
     #

@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
+from fractions import Fraction
 from pathlib import Path
 from typing import Optional
 
@@ -462,11 +463,15 @@ def register(app, ctx) -> None:
 
         # Build FFmpeg command with the framing filter resolved above
         # (crop = fill the frame, fit = whole frame + black bars).
-        ffmpeg_cmd = [
-            'ffmpeg', '-y',
-            '-i', str(input_path),
-            '-vf', vf,
-        ]
+        ffmpeg_cmd = ['ffmpeg', '-y']
+        if _PI_MODEL != 'pi5':
+            # A one-job semaphore still lets FFmpeg consume every core.
+            # Bound decoding, filters and encoding independently so uploads
+            # leave CPU/RAM for Pi 4 playback. Pi 5 retains auto threading.
+            ffmpeg_cmd.extend(['-threads', '1', '-filter_threads', '1'])
+        ffmpeg_cmd.extend(['-i', str(input_path), '-vf', vf])
+        if _PI_MODEL != 'pi5':
+            ffmpeg_cmd.extend(['-threads:v', '1'])
         
         # Audio normalization via FFmpeg's loudnorm filter (EBU R128).
         # Matches the Retro Ripper companion tool's settings exactly so a
@@ -491,6 +496,13 @@ def register(app, ctx) -> None:
             # ultrafast/28.
             '-preset', _X264_PRESET,
             '-crf', _X264_CRF,
+            # Shared masters must remain inside the Pi 4 H.264 envelope.
+            # fpsmax preserves 24/25/29.97 cadence instead of duplicating
+            # every source to 30 fps. VBV also constrains bitrate peaks.
+            '-pix_fmt', 'yuv420p',
+            '-profile:v', 'high', '-level:v', '4.1',
+            '-maxrate', '20M', '-bufsize', '25M',
+            '-fpsmax', '30',
             '-c:a', 'aac',
             # 192k matches the Retro Ripper's AAC bitrate (was 128k here —
             # the one audio setting that diverged between the pipelines).
@@ -741,7 +753,7 @@ def register(app, ctx) -> None:
             probe_cmd = [
                 'ffprobe', '-v', 'error',
                 '-select_streams', 'v:0',
-                '-show_entries', 'stream=width,height,codec_name',
+                '-show_entries', 'stream=width,height,codec_name,pix_fmt,profile,level,avg_frame_rate,r_frame_rate',
                 '-show_entries', 'format=format_name',
                 '-of', 'json',
                 str(file_path)
@@ -785,7 +797,24 @@ def register(app, ctx) -> None:
             is_correct_resolution = fits_target and same_aspect
             is_h264 = codec in ('h264', 'libx264')
 
-            if is_correct_resolution and is_h264 and is_mp4:
+            # FFprobe names full-range 8-bit 4:2:0 yuvj420p; both are
+            # hardware-compatible, including our own full-range encodes.
+            is_8bit_420 = stream.get('pix_fmt') in ('yuv420p', 'yuvj420p')
+            supported_profile = stream.get('profile') in (
+                'Constrained Baseline', 'Baseline', 'Main', 'High')
+            level = stream.get('level', 0)
+            supported_level = isinstance(level, int) and 0 < level <= 41
+            try:
+                # Check both rates: a low average alone can hide a higher
+                # nominal cadence. Missing/invalid metadata is re-encoded.
+                supported_rate = all(
+                    0 < Fraction(stream.get(key, '0/1')) <= 30
+                    for key in ('avg_frame_rate', 'r_frame_rate'))
+            except (ValueError, TypeError, ZeroDivisionError):
+                supported_rate = False
+
+            if (is_correct_resolution and is_h264 and is_mp4 and
+                    is_8bit_420 and supported_profile and supported_level and supported_rate):
                 return {
                     'needs_transcode': False,
                     'width': width,
@@ -803,6 +832,12 @@ def register(app, ctx) -> None:
                     reasons.append(f'Codec {codec} is not H.264')
                 if not is_mp4:
                     reasons.append('Not MP4 container')
+                if not is_8bit_420:
+                    reasons.append('Video must be 8-bit YUV 4:2:0')
+                if not supported_profile or not supported_level:
+                    reasons.append('H.264 profile/level exceeds hardware compatibility or is unknown')
+                if not supported_rate:
+                    reasons.append('Frame rate exceeds 30 fps or is unknown')
 
                 return {
                     'needs_transcode': True,

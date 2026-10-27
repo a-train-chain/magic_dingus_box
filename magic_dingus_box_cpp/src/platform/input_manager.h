@@ -14,6 +14,7 @@
 // without pulling this whole class in; including it here keeps every existing
 // user of platform::InputAction working unchanged.
 #include "menu_nav_overlay.h"
+#include "input_probe_cache.h"
 
 namespace platform {
 
@@ -133,6 +134,13 @@ public:
 
 private:
     bool is_path_open(const std::string& path) const;
+    // Nodes each hotplug scan already opened and turned down, so the 3 s
+    // rescan does not reopen them (every evdev close() stalls the render
+    // loop ~20–47 ms on a Pi 4B). One per scan: a node the phone-remote
+    // probe rejects may still be a pad or keyboard. See input_probe_cache.h.
+    InputProbeCache joystick_probe_cache_;
+    InputProbeCache keyboard_probe_cache_;
+    InputProbeCache phone_probe_cache_;
     struct Device;
     std::vector<std::unique_ptr<Device>> devices_;
     

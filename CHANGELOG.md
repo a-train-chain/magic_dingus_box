@@ -106,6 +106,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resetting it.
 
 ### Changed
+- **Big playlist packages are no longer refused for their size.** Uploads
+  used to stop at 8 GB, and a package could unpack at most 10 GB — an
+  11 GB package was turned away, and a 12 GB one failed on its last video
+  after the whole upload. Now the only limit is free space: the box checks
+  before anything is sent that the package fits with room to spare, and
+  still stops an import that would fill the card.
+- **The USB-C address is now `http://10.55.0.1`.** The TV's Connect a
+  Device screen, the Content Manager and the guides used to say
+  `http://dingus.box`, which only opens when the computer's Wi-Fi is off —
+  with Wi-Fi on, the computer looks the name up on the Wi-Fi network, which
+  has never heard of it. `http://10.55.0.1` needs no lookup, so it opens
+  every time. `dingus.box` still works with Wi-Fi off.
 - **The menus use less power and run cooler.** The box now redraws the
   main menu, Settings and the Movies browsing screens only when something
   on them changes (with the CRT look on, the menu draws at the effect's own
@@ -161,6 +173,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
+- **Videos no longer hitch every three seconds.** The box looks for
+  newly plugged-in controllers every three seconds, and each look
+  reopened the TV-connection sensors and the power button it had
+  already decided to ignore. Closing each one takes a moment, so the
+  picture froze for about a third of a second, every three seconds, on
+  both the Pi 4B and the Pi 5. The box now remembers what it has
+  already checked; a controller plugged in later is still picked up.
+- **The USB-cable address works on boxes set up with the old developer
+  USB option.** A box that was ever set up that way kept a second, older
+  address server on its USB-C port that gave the laptop the wrong address
+  and no way to look up names, so neither `http://10.55.0.1` nor
+  `dingus.box` opened. The update removes the old setup (keeping a backup
+  copy) and the cable address works again. Developer deploys with `--usb-gadget` now set up
+  the same thing new boxes ship with, and `verify_box.sh` warns if the old
+  setup is still there.
 - **The menu comes back when a playlist ends.** A playlist set not to
   loop (the default for new playlists) used to leave the TV black when it
   finished, with the menu invisible until the box was restarted. The same
@@ -437,6 +464,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through a whole film is now written at most every 5 seconds.
 
 ### For operators
+- **`MAGIC_MAX_UPLOAD_MB` and `MAGIC_MAX_EXTRACT_MB` are now opt-in caps.**
+  Unset (the default), zero or unparseable means no fixed limit; free
+  space still applies. A box that had a temporary
+  `magic-dingus-web.service.d/zz-upload-limit.conf` to raise the old
+  limits can delete it once it runs this release.
 - **This update is installed by each box's previous updater.** The new
   safeguards (power-cut recovery, TV-off updates, keeping the TV on while
   the box builds, the faster web server package) protect every update
