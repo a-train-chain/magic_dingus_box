@@ -161,12 +161,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
-- **`http://dingus.box` works over the USB cable on boxes set up with the
-  old developer USB option.** A box that was ever set up that way kept a
-  second, older address server on its USB-C port that gave the laptop an
-  address but no way to look up names, so `dingus.box` never opened. The
-  update removes the old setup (keeping a backup copy) and the cable
-  address works again. Developer deploys with `--usb-gadget` now set up
+- **The USB-cable address works on boxes set up with the old developer
+  USB option.** A box that was ever set up that way kept a second, older
+  address server on its USB-C port that gave the laptop the wrong address
+  and no way to look up names, so neither `http://10.55.0.1` nor
+  `dingus.box` opened. The update removes the old setup (keeping a backup
+  copy) and the cable address works again. Developer deploys with `--usb-gadget` now set up
   the same thing new boxes ship with, and `verify_box.sh` warns if the old
   setup is still there.
 - **The menu comes back when a playlist ends.** A playlist set not to

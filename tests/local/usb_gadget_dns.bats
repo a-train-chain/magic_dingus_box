@@ -104,11 +104,14 @@ plant_legacy() { printf '%s' "$LEGACY_NETWORK" > "$NET/10-usb-gadget.network"; }
     ! grep -n '192\.168\.7\.1:5000' "$DEPLOY"
 }
 
-@test "deploy --usb-gadget converges through setup_usb_gadget_dns.sh and points at dingus.box" {
+@test "deploy --usb-gadget converges through setup_usb_gadget_dns.sh and points at 10.55.0.1" {
     usb_block="$(sed -n '/^# Step 5: Setup USB Gadget/,/^echo "=== Deployment Complete ==="/p' "$DEPLOY")"
     [ -n "$usb_block" ]
     [[ "$usb_block" == *'scripts/setup_usb_gadget_dns.sh"'* ]]
-    grep -q 'Open browser to: http://dingus.box' "$DEPLOY"
+    # The owner-facing cable address is the IP: with the laptop's Wi-Fi on,
+    # macOS resolves through Wi-Fi first and dingus.box never answers
+    # (Pi 4B, 2026-10-27). The name stays an extra.
+    grep -q 'Open browser to: http://10.55.0.1"' "$DEPLOY"
 }
 
 @test "install_deps.sh delegates the dnsmasq conf + redirect to the shared script" {
