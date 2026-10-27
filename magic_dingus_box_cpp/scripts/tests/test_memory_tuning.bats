@@ -285,3 +285,17 @@ refute() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIP: cascade watcher staleness check (test mode)"* ]]
 }
+
+@test "usb0: a legacy 10-usb-gadget.network is moved aside (dingus.box fix)" {
+    net="$MAGIC_TUNING_ROOT/etc/systemd/network"
+    mkdir -p "$net"
+    printf '[Match]\nName=usb0\n\n[Network]\nAddress=192.168.7.1/24\nDHCPServer=yes\n' \
+        > "$net/10-usb-gadget.network"
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    [ ! -e "$net/10-usb-gadget.network" ]
+    ls "$MAGIC_TUNING_ROOT/var/lib/magic-dingus/retired/10-usb-gadget.network."*
+    [[ "$output" == *"retired legacy usb0 DHCP server"* ]]
+    # Refresh-only: the hook never provisions the dnsmasq conf.
+    [ ! -e "$MAGIC_TUNING_ROOT/etc/dnsmasq.d/usb0.conf" ]
+}

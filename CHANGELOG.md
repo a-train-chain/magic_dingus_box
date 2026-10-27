@@ -180,6 +180,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picture froze for about a third of a second, every three seconds, on
   both the Pi 4B and the Pi 5. The box now remembers what it has
   already checked; a controller plugged in later is still picked up.
+- **The USB-cable address works on boxes set up with the old developer
+  USB option.** A box that was ever set up that way kept a second, older
+  address server on its USB-C port that gave the laptop the wrong address
+  and no way to look up names, so neither `http://10.55.0.1` nor
+  `dingus.box` opened. The update removes the old setup (keeping a backup
+  copy) and the cable address works again. Developer deploys with `--usb-gadget` now set up
+  the same thing new boxes ship with, and `verify_box.sh` warns if the old
+  setup is still there.
 - **The menu comes back when a playlist ends.** A playlist set not to
   loop (the default for new playlists) used to leave the TV black when it
   finished, with the menu invisible until the box was restarted. The same

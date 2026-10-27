@@ -678,6 +678,40 @@ done
 (( ARMED )) && pass "${ARMED} repeating timer(s) armed (next run scheduled)"
 
 # ---------------------------------------------------------------------
+# USB cable: http://dingus.box needs dnsmasq to be the ONLY DHCP server on
+# usb0 (its leases point the laptop at its catch-all DNS). A systemd-networkd
+# .network matching usb0 — the 10-usb-gadget.network the old
+# `deploy_cpp.sh --usb-gadget` wrote — runs a second one that hands out
+# 192.168.7.x with no DNS, so the name never resolves (found live on a Pi 4B,
+# 2026-10-27). setup_memory_tuning.sh retires the known file on every update;
+# this names any that remain. WARN, not FAIL: the box still works over Wi-Fi.
+# ---------------------------------------------------------------------
+header "USB cable"
+# Pure, pinned by tests/local/verify_box_usb_networkd.bats: prints each
+# *.network in <dir> whose [Match] names usb0.
+usb0_networkd_files() {
+  local f
+  for f in "$1"/*.network; do
+    [[ -f "$f" ]] || continue
+    grep -qE '^[[:space:]]*Name=([^#]*[[:space:]])?usb0([[:space:]]|$)' "$f" && printf '%s\n' "$f"
+  done
+  return 0
+}
+USB0_NETWORKD="$(usb0_networkd_files /etc/systemd/network)"
+if [[ -z "$USB0_NETWORKD" ]]; then
+  pass "no systemd-networkd DHCP server competing with dnsmasq on usb0"
+else
+  while IFS= read -r _f; do
+    if [[ "${_f##*/}" == 10-usb-gadget.network ]]; then
+      _fix="sudo bash ${APP}/scripts/setup_usb_gadget_dns.sh --retire-legacy"
+    else
+      _fix="move it out of /etc/systemd/network, then sudo networkctl reload"
+    fi
+    warn "${_f} configures usb0 — a second DHCP server with no DNS, so http://dingus.box fails over the cable (fix: ${_fix})"
+  done <<<"$USB0_NETWORKD"
+fi
+
+# ---------------------------------------------------------------------
 # System units: the installed units must be the tree's. Every delivery
 # path converges them (setup_memory_tuning.sh -> converge_system_units.sh,
 # and every rollback run by an updater that has the converge), so a
