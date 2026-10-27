@@ -44,9 +44,9 @@ TEST_CASE("N64 games on the legacy N64 adapter use native semantic slots",
         CHECK(map.r_y_minus_btn.empty());
 
         // Z (6) held + Start (12) = direct QUIT; menu toggle dropped.
-        CHECK(map.enable_hotkey_btn == "6");
+        CHECK(map.enable_hotkey_btn == "12");
         CHECK(map.menu_toggle_btn.empty());
-        CHECK(map.exit_emulator_btn == "12");
+        CHECK(map.exit_emulator_btn == "6");
     }
 }
 
@@ -96,9 +96,9 @@ TEST_CASE("N64 adapter uses the universal layer-free PS1 layout",
         CHECK(map.r_y_minus_btn.empty());
         CHECK(map.l3_btn.empty());
         CHECK(map.r3_btn.empty());
-        CHECK(map.enable_hotkey_btn == "6");
+        CHECK(map.enable_hotkey_btn == "12");
         CHECK(map.menu_toggle_btn.empty());
-        CHECK(map.exit_emulator_btn == "12");
+        CHECK(map.exit_emulator_btn == "6");
 
         for (int player : {1, 2}) {
             INFO("player=" << player);
@@ -151,9 +151,9 @@ TEST_CASE("N64-style controllers use physical Z+Start on every core",
         INFO("core=" << core);
         const auto map =
             get_mapping(ControllerType::N64_ADAPTER, core);
-        CHECK(map.enable_hotkey_btn == "6");
+        CHECK(map.enable_hotkey_btn == "12");
         CHECK(map.menu_toggle_btn.empty());
-        CHECK(map.exit_emulator_btn == "12");
+        CHECK(map.exit_emulator_btn == "6");
     }
 }
 
@@ -169,8 +169,8 @@ TEST_CASE("N64-style hotkeys serialize as a direct exit chord, no menu",
     std::ostringstream out;
     retroarch::write_hotkey_binds(out, map);
     CHECK(out.str() ==
-          "input_enable_hotkey_btn = \"6\"\n"
-          "input_exit_emulator_btn = \"12\"\n");
+          "input_enable_hotkey_btn = \"12\"\n"
+          "input_exit_emulator_btn = \"6\"\n");
     CHECK(out.str().find("input_menu_toggle_btn") ==
           std::string::npos);
 }
@@ -211,9 +211,9 @@ TEST_CASE("N64 adapter uses the role-consistent Dreamcast layout",
     CHECK(map.l_y_plus == "+1");
     CHECK(map.l_y_minus == "-1");
 
-    CHECK(map.enable_hotkey_btn == "6");
+    CHECK(map.enable_hotkey_btn == "12");
     CHECK(map.menu_toggle_btn.empty());
-        CHECK(map.exit_emulator_btn == "12");
+        CHECK(map.exit_emulator_btn == "6");
 
     for (int player : {1, 2}) {
         INFO("player=" << player);

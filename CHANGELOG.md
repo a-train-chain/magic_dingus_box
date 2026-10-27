@@ -173,6 +173,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already has.
 
 ### Fixed
+- **Holding Z no longer locks the other buttons in games.** On an N64-style
+  controller, Z doubled as the key that enables the exit shortcut, and while
+  it was held the emulator ignored every other button — so Z + A (Mario 64's
+  backflip), Z + B and every other Z move did nothing, in every game played
+  with that controller. Start now plays that role instead; Z and Start
+  together still exit a game, and a tap of Start still pauses.
 - **Videos no longer hitch every three seconds.** The box looks for
   newly plugged-in controllers every three seconds, and each look
   reopened the TV-connection sensors and the power button it had
