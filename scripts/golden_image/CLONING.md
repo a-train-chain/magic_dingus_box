@@ -139,15 +139,36 @@ That runs `first_boot.sh`, which does:
 | Step | What | Cloned Pi behavior |
 |------|------|-------------------|
 | 1 | Regenerate SSH host keys | Old keys removed, `ssh-keygen -A`; SSH starts after first boot, including recovery of an enabled-but-failed service — every unit gets its own |
-| 1b | Regenerate machine-id | New DHCP DUID so clones don't fight the source box for a lease |
+| 1b | Regenerate machine-id | New DHCP DUID so clones don't fight the source box for a lease; then **restarts journald** so it writes under the new id (see below) |
 | 1c | **Revoke the source's VPN identity** | `services/.env` deleted and every inherited Docker container removed (`docker rm -f`, or straight from `/var/lib/docker/containers` when dockerd is down) — BEFORE the risky expand, and never fatal |
 | 2 | Expand root FS to fill SD | `growpart` + `resize2fs` (non-fatal on failure — the wipes below always run) |
 | 3 | Generate device identity | New UUID + new hostname `magicpi-XXXX` (hostname files first, gate record last) |
 | 4 | Create required directories | (idempotent) |
 | 5 | Fix ownership | (idempotent) |
-| 6 | **Wipe every per-unit state class** | `services/.env`, all *arr/qBittorrent config + DBs, watch history, paired phones, RetroArch saves/states + history (both `data/` and `build/data/`), Wi-Fi profiles, TMDB key, browse filters, MB re-lock, logs/journal |
+| 6 | **Wipe every per-unit state class** | `services/.env`, all *arr/qBittorrent config + DBs, watch history, paired phones, RetroArch saves/states + history (both `data/` and `build/data/`), Wi-Fi profiles, TMDB key, browse filters, MB re-lock, logs/journal (incl. the image's old machine-id journal directory) |
 | 6e | Pi 4B pruning | N64/Dreamcast ROMs + playlists deleted on a Pi 4B (runtime gate hides them anyway; this reclaims disk) |
 | 7 | Self-disable | Won't run again (a FAILED run leaves it enabled, so it retries next boot) |
+
+**Journal on first boot (2026-10-26).** journald names its directory after
+the machine-id it read at startup (`/var/log/journal/<id>/`) and never
+re-reads it, while `journalctl` only reads the current id's directory. Before
+this fix a unit's whole first boot was logged under the IMAGE's id, so every
+`journalctl -b` said "No journal files were found" until the first reboot
+(`verify_box.sh` WARNed "no platform log line", "mode: … -> unknown" and
+"logical canvas canary: not logged"; Box health showed an empty journal), and
+the old-id directory — the source box's last entries — stayed on the card
+forever, out of reach of Step 6c-2's vacuum. Step 1b now runs `systemctl
+restart systemd-journald` (`journalctl --flush`/`--rotate` do not move it —
+measured on systemd 257) and Step 6c-2 deletes every journal directory named
+for another id, unless a process still holds it open (then it WARNs and keeps
+it). The journal of a first boot starts at Step 6c-2; Steps 1–6 are in
+`/var/log/magic-first-boot.log`. Units cloned before this fix still carry
+the old directory; after their first reboot (so journald is off it) this
+removes it:
+
+```bash
+sudo bash -c 'id=$(cat /etc/machine-id); for d in /var/log/journal/*/; do d=${d%/}; n=${d##*/}; [[ ${n%%.*} =~ ^[0-9a-f]{32}$ && ${n%%.*} != "$id" ]] && rm -rfv "$d"; done; true'
+```
 
 After ~90 seconds, the kiosk is up in default mode (RetroArch + your
 default playlists work). Media Browser is locked because there's no

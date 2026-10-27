@@ -27,6 +27,10 @@ DATA_DIR="${CPP_DIR}/data"
 CONFIG_DIR="${INSTALL_DIR}/config"
 MAGIC_USER="magic"
 MAGIC_HOME="/home/${MAGIC_USER}"
+MACHINE_ID_FILE="/etc/machine-id"
+# journald's persistent + volatile roots; each holds one <machine-id>/ dir.
+JOURNAL_ROOTS=(/var/log/journal /run/log/journal)
+PROC_ROOT="/proc"
 
 # ---------------------------------------------------------------------------
 # Logging helper - stdout + syslog + a FILE that survives
@@ -165,6 +169,39 @@ mkdir -p /var/lib/dbus 2>/dev/null || true
 ln -sf /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null \
     || log "[1b/7] WARNING: could not link /var/lib/dbus/machine-id — dbus may drift"
 log "[1b/7] machine-id regenerated: $(cut -c1-8 /etc/machine-id 2>/dev/null)..."
+
+# journald names its directory after the machine-id it read AT STARTUP
+# (/var/log/journal/<id>/) and never re-reads it, while journalctl only reads
+# the directory of the CURRENT id. Left alone, journald spends the whole
+# first boot writing under the image's id and every `journalctl -b` says "No
+# journal files were found": verify_box WARNs no platform line / mode
+# unknown / canvas canary not logged, and Box health and the diagnostics
+# bundle show an empty journal on day one (seen on a v1.10.0 Pi 4B,
+# 2026-10-26). Only a restart moves it — `journalctl --flush` and `--rotate`
+# keep writing the old directory (measured on Trixie's systemd 257). The
+# restart is safe from here: journald keeps every service's stdout stream in
+# its fd store across a restart, this script's own included.
+# The abandoned old-id directory is removed by Step 6c-2.
+restart_journald_for_machine_id() {
+    local id root
+    id="$(tr -d '[:space:]' < "$MACHINE_ID_FILE" 2>/dev/null || true)"
+    if [[ ! "$id" =~ ^[0-9a-f]{32}$ ]]; then
+        log "[1b/7] WARNING: no valid machine-id — journald left as it is"
+        return 0
+    fi
+    if ! systemctl restart systemd-journald.service 2>/dev/null; then
+        log "[1b/7] WARNING: could not restart journald — journalctl stays empty until the next reboot"
+        return 0
+    fi
+    for root in "${JOURNAL_ROOTS[@]}"; do
+        if [[ -d "${root}/${id}" ]]; then
+            log "[1b/7] journald now writing under the new machine-id"
+            return 0
+        fi
+    done
+    log "[1b/7] WARNING: journald restarted but no journal directory for the new machine-id yet"
+}
+restart_journald_for_machine_id
 
 # ---------------------------------------------------------------------------
 # Step 1c: Revoke the source box's VPN identity — EARLY, and never fatal
@@ -814,6 +851,48 @@ log "[6/7] Wiping inherited system logs (cloud-init + journal)..."
 rm -f /var/log/cloud-init.log* /var/log/cloud-init-output.log* 2>/dev/null || true
 journalctl --rotate 2>/dev/null || true
 journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+
+# The vacuum above only reaches the CURRENT machine-id's directory —
+# journalctl opens no other — so the image's own directory (the source box's
+# last entries: prepare's rotate stub, the dd, its shutdown) survived it on
+# every unit, forever. Step 1b moved journald off it; remove every journal
+# directory named for an id this unit no longer has (`<id>` and namespaced
+# `<id>.<ns>`). One that a process still holds open is KEPT: deleting the
+# files under a journald that still writes them sends the rest of this
+# boot's log into unlinked inodes.
+journal_dir_held_open() {
+    [[ -n "$(find "$PROC_ROOT"/[0-9]*/fd -lname "$1/*" -print -quit 2>/dev/null)" ]]
+}
+remove_stale_machine_id_journals() {
+    local current root dir name removed=0
+    current="$(tr -d '[:space:]' < "$MACHINE_ID_FILE" 2>/dev/null || true)"
+    # Without a valid current id every directory would look stale.
+    if [[ ! "$current" =~ ^[0-9a-f]{32}$ ]]; then
+        log "[6/7] WARNING: no valid machine-id — old journal directories left in place"
+        return 0
+    fi
+    for root in "${JOURNAL_ROOTS[@]}"; do
+        for dir in "$root"/*; do
+            name="${dir##*/}"
+            [[ -d "$dir" && ! -L "$dir" ]] || continue
+            [[ "${name%%.*}" =~ ^[0-9a-f]{32}$ && "${name%%.*}" != "$current" ]] || continue
+            if journal_dir_held_open "$dir"; then
+                log "[6/7] WARNING: kept ${dir} — still open (journald was not restarted onto the new machine-id)"
+                continue
+            fi
+            if rm -rf "$dir" 2>/dev/null; then
+                removed=$((removed + 1))
+            else
+                log "[6/7] WARNING: could not remove old journal directory ${dir}"
+            fi
+        done
+    done
+    if [[ "$removed" -gt 0 ]]; then
+        log "[6/7] Removed ${removed} journal directory(ies) of the image's old machine-id"
+    fi
+}
+remove_stale_machine_id_journals
+
 if [[ -d /var/log/audit ]]; then
     rm -f /var/log/audit/audit.log.* 2>/dev/null || true
     truncate -s 0 /var/log/audit/audit.log 2>/dev/null || true
