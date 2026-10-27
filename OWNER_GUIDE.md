@@ -31,7 +31,7 @@ guide walks through all of it.
 
 - **Browse** playlists with the D-pad; **A** selects.
 - **Exit a game** (from the player-1 controller):
-  - N64-style pad: **hold Z, then press Start**
+  - N64-style pad: **press Z and Start together**
   - PlayStation-style pad: **hold Select, then press Start**
 - Your progress saves automatically when you exit, and picks up where
   you left off next time you launch the game.

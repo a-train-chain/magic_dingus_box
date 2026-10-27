@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-27
+
 ### Security
 - **The Content Manager can no longer be used to take over a box from
   the home network.** Anyone on the same Wi-Fi could send a crafted
