@@ -1,16 +1,20 @@
 // Every resolvable mapping must write an EXIT bind.
 //
 // The kiosk ships no RetroArch menu (owner decision 2026-08-03), so the
-// exit gesture -- hold N64 Z / PS Select, press Start -- is the ONLY way a
-// player leaves a game with the pad. Three ways it used to vanish:
+// exit gesture -- N64 Start + Z / PS hold Select, press Start -- is the
+// ONLY way a player leaves a game with the pad. On N64-style pads START is
+// the hotkey-enable modifier and Z the exit button: RetroArch withholds
+// every other button while the modifier is held, and Z is a gameplay
+// trigger (with Z as the modifier, Mario 64's Z+A backflip did nothing).
+// Three ways the gesture used to vanish:
 //
-//   1. The Controller Setup wizard did not require Z / Select, so a
-//      captured profile could omit the hotkey-enable modifier. A captured
-//      profile shadows the builtin for its VID/PID, so enable_hotkey_btn
-//      came out "" and write_hotkey_binds() wrote NOTHING.
-//   2. A modifier captured as an AXIS (an N64 clone whose Z reports ABS_Z)
-//      was dropped by the kind-aware put_btn contract -> "" -> same.
-//   3. (Same for the exit button itself, Start, captured as an axis.)
+//   1. The Controller Setup wizard did not require the modifier, so a
+//      captured profile could omit it. A captured profile shadows the
+//      builtin for its VID/PID, so enable_hotkey_btn came out "" and
+//      write_hotkey_binds() wrote NOTHING.
+//   2. A hotkey control captured as an AXIS (an N64 clone whose Z reports
+//      ABS_Z) was dropped by the kind-aware put_btn contract -> "" -> same.
+//   3. (Same for the other hotkey control captured as an axis.)
 //
 // build_mapping() now falls back to the builtin profile's token for a
 // missing hotkey control and emits the *_axis form for an axis capture.
@@ -99,23 +103,23 @@ TEST_CASE("every builtin mapping writes an exit bind",
     }
 }
 
-TEST_CASE("a captured profile missing Z / Select falls back to the builtin modifier",
+TEST_CASE("a captured profile missing Start / Select falls back to the builtin modifier",
           "[retroarch][hotkeys][exit]") {
     PhysicalProfile n64 = captured_from(retroarch::builtin_n64_adapter_profile());
-    n64.controls.erase(L::N64_Z);
+    n64.controls.erase(L::N64_START);
     PhysicalProfile ps = captured_from(retroarch::builtin_dragonrise_profile());
     ps.controls.erase(L::SELECT);
 
-    const std::string n64_z = retroarch::builtin_n64_adapter_profile().token(L::N64_Z);
+    const std::string n64_start = retroarch::builtin_n64_adapter_profile().token(L::N64_START);
     const std::string ps_sel = retroarch::builtin_dragonrise_profile().token(L::SELECT);
-    REQUIRE_FALSE(n64_z.empty());
+    REQUIRE_FALSE(n64_start.empty());
     REQUIRE_FALSE(ps_sel.empty());
 
     for (const char* core : kCores) {
         INFO("core: " << core);
         const auto m64 = build_mapping(
             get_semantic_mapping(ControllerStyle::N64_STYLE, core), n64);
-        CHECK(m64.enable_hotkey_btn == n64_z);
+        CHECK(m64.enable_hotkey_btn == n64_start);
         require_exit_bind(hotkeys(m64));
 
         const auto mps = build_mapping(
@@ -141,12 +145,13 @@ TEST_CASE("a hotkey control captured as an AXIS emits the _axis form",
             INFO("core: " << core);
             const auto m = build_mapping(
                 get_semantic_mapping(ControllerStyle::N64_STYLE, core), n64);
-            CHECK(m.enable_hotkey_btn.empty());   // never an axis token in _btn
-            CHECK(m.enable_hotkey_axis == "+2");
+            CHECK(m.exit_emulator_btn.empty());   // never an axis token in _btn
+            CHECK(m.exit_emulator_axis == "+2");
             const std::string out = hotkeys(m);
             require_exit_bind(out);
-            CHECK(has(out, "input_enable_hotkey_axis = \"+2\"\n"));
-            CHECK_FALSE(has(out, "input_enable_hotkey_btn"));
+            CHECK(has(out, "input_exit_emulator_axis = \"+2\"\n"));
+            CHECK_FALSE(has(out, "input_exit_emulator_btn"));
+            CHECK(has(out, "input_enable_hotkey_btn = \"12\"\n"));   // Start
         }
     }
     SECTION("PS Select and Start both on axes") {
@@ -160,6 +165,27 @@ TEST_CASE("a hotkey control captured as an AXIS emits the _axis form",
         CHECK(out ==
               "input_enable_hotkey_axis = \"-3\"\n"
               "input_exit_emulator_axis = \"+3\"\n");
+    }
+}
+
+TEST_CASE("Z is never the N64 hotkey-enable modifier",
+          "[retroarch][hotkeys][exit]") {
+    // RetroArch withholds every other button from the core while the
+    // hotkey-enable button is held. Z is held during play (Mario 64 crouch
+    // + A = backflip, Z-targeting), so it must be the EXIT button and Start
+    // the modifier -- on every core an N64-style pad can drive.
+    const PhysicalProfile n64 = retroarch::builtin_n64_adapter_profile();
+    const std::string z = n64.token(L::N64_Z);
+    const std::string start = n64.token(L::N64_START);
+    REQUIRE_FALSE(z.empty());
+    REQUIRE_FALSE(start.empty());
+    for (const char* core : kCores) {
+        INFO("core: " << core);
+        const auto m = build_mapping(
+            get_semantic_mapping(ControllerStyle::N64_STYLE, core), n64);
+        CHECK(m.enable_hotkey_btn == start);
+        CHECK(m.exit_emulator_btn == z);
+        CHECK(m.enable_hotkey_btn != z);
     }
 }
 

@@ -16,17 +16,25 @@ using L = LogicalControl;
 // builtin_n64_adapter_profile(); see controller_profile.cpp for that
 // adapter's physical button IDs and hardware evidence.
 //
-// Hold Z trigger + press Start = QUIT the game, directly, on every core
-// mapping including PS1 — the N64-style twin of the PS-style Select+Start
-// exit below, requested by the owner after using the PS version: the
-// RetroArch menu "isn't needed at all" on a kiosk (auto-save-on-exit is
-// on). Bound from PHYSICAL controls so no per-core RetroPad slot layout
-// can move the gesture. The old menu_toggle bind sat on the same Start
-// press and is dropped for the same reason as on the PS side.
+// Z + Start together = QUIT the game, directly, on every core mapping
+// including PS1 — the N64-style twin of the PS-style Select+Start exit
+// below, requested by the owner after using the PS version: the RetroArch
+// menu "isn't needed at all" on a kiosk (auto-save-on-exit is on). Bound
+// from PHYSICAL controls so no per-core RetroPad slot layout can move the
+// gesture. The old menu_toggle bind sat on the same Start press and is
+// dropped for the same reason as on the PS side.
+//
+// START is the hotkey-enable button and Z the exit button — never the
+// other way round. While RetroArch's hotkey-enable button is held it
+// withholds every other button from the core, and Z is a gameplay trigger
+// held constantly (Mario 64 crouch + A backflip, Z-targeting): with Z as
+// the enable button, holding Z made A/B/C do nothing (owner report on a
+// Pi 5, 2026-10-27). Nobody holds Start during play, and a Start tap still
+// reaches the core (pause), as the enable button itself is not withheld.
 SemanticMapping semantic_n64_style(const std::string& core) {
     SemanticMapping s;
-    s.hotkey_enable = L::N64_Z;
-    s.exit_emulator = L::N64_START;
+    s.hotkey_enable = L::N64_START;
+    s.exit_emulator = L::N64_Z;
     auto stick = [&] {
         s.stick_up = L::N64_STICK_UP; s.stick_down = L::N64_STICK_DOWN;
         s.stick_left = L::N64_STICK_LEFT; s.stick_right = L::N64_STICK_RIGHT;
