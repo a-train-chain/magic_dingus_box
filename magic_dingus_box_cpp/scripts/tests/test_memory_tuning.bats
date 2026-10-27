@@ -288,14 +288,30 @@ refute() {
 
 @test "usb0: a legacy 10-usb-gadget.network is moved aside (dingus.box fix)" {
     net="$MAGIC_TUNING_ROOT/etc/systemd/network"
-    mkdir -p "$net"
+    mkdir -p "$net" "$MAGIC_TUNING_ROOT/etc/dnsmasq.d"
     printf '[Match]\nName=usb0\n\n[Network]\nAddress=192.168.7.1/24\nDHCPServer=yes\n' \
         > "$net/10-usb-gadget.network"
+    # dnsmasq's usb0 config is already installed, so it replaces the legacy
+    # server; the hook only retires.
+    printf 'interface=usb0\n' > "$MAGIC_TUNING_ROOT/etc/dnsmasq.d/usb0.conf"
     run bash "$TUNING_SCRIPT"
     [ "$status" -eq 0 ]
     [ ! -e "$net/10-usb-gadget.network" ]
     ls "$MAGIC_TUNING_ROOT/var/lib/magic-dingus/retired/10-usb-gadget.network."*
     [[ "$output" == *"retired legacy usb0 DHCP server"* ]]
-    # Refresh-only: the hook never provisions the dnsmasq conf.
+    # Refresh-only: the hook never rewrites the dnsmasq conf.
+    [ "$(cat "$MAGIC_TUNING_ROOT/etc/dnsmasq.d/usb0.conf")" = "interface=usb0" ]
+}
+
+@test "usb0: the legacy file is kept on a box without dnsmasq's usb0 config" {
+    # No dnsmasq conf = the legacy server is the cable's only DHCP server.
+    net="$MAGIC_TUNING_ROOT/etc/systemd/network"
+    mkdir -p "$net"
+    printf '[Match]\nName=usb0\n\n[Network]\nAddress=192.168.7.1/24\nDHCPServer=yes\n' \
+        > "$net/10-usb-gadget.network"
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    [ -f "$net/10-usb-gadget.network" ]
+    [ ! -e "$MAGIC_TUNING_ROOT/var/lib/magic-dingus/retired" ]
     [ ! -e "$MAGIC_TUNING_ROOT/etc/dnsmasq.d/usb0.conf" ]
 }
