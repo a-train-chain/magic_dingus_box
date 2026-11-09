@@ -1,5 +1,7 @@
 #include "controller_detector.h"
 
+#include "../platform/input_device_info.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
@@ -167,9 +169,20 @@ std::vector<DetectedPad> detect_connected_controllers() {
         pad.vid = parse_hex4(read_sysfs_line(id_dir / "vendor"));
         pad.pid = parse_hex4(read_sysfs_line(id_dir / "product"));
         pad.name = dev_name;
+        // Driver + capabilities pick an automatic layout for modern pads
+        // (standard_layout.h). A failed read leaves them empty, which only
+        // means "no automatic layout" -- never a worse mapping than before.
+        if (auto info = platform::read_sysfs_input_info("/sys/class/input", basename)) {
+            pad.driver = info->driver;
+            pad.bustype = info->bustype;
+            pad.key_codes = info->key_codes;
+            pad.abs_codes = info->abs_codes;
+        }
         std::cout << "controller_detector: " << node.string() << " vid="
                   << std::hex << pad.vid << " pid=" << pad.pid << std::dec
-                  << " name=" << pad.name << std::endl;
+                  << " name=" << pad.name
+                  << " driver=" << (pad.driver.empty() ? "?" : pad.driver)
+                  << (pad.bustype == 0x05 ? " (Bluetooth)" : "") << std::endl;
         pads.push_back(pad);
     }
     return pads;

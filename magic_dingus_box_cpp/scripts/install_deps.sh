@@ -38,6 +38,7 @@ sudo apt install -y \
   libsystemd-dev \
   pulseaudio \
   pulseaudio-utils \
+  bluez \
   libyaml-cpp-dev \
   libjsoncpp-dev \
   libgstreamer1.0-dev \

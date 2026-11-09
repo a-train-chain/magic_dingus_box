@@ -145,7 +145,7 @@ That runs `first_boot.sh`, which does:
 | 3 | Generate device identity | New UUID + new hostname `magicpi-XXXX` (hostname files first, gate record last) |
 | 4 | Create required directories | (idempotent) |
 | 5 | Fix ownership | (idempotent) |
-| 6 | **Wipe every per-unit state class** | `services/.env`, all *arr/qBittorrent config + DBs, watch history, paired phones, RetroArch saves/states + history (both `data/` and `build/data/`), Wi-Fi profiles, TMDB key, browse filters, MB re-lock, logs/journal (incl. the image's old machine-id journal directory) |
+| 6 | **Wipe every per-unit state class** | `services/.env`, all *arr/qBittorrent config + DBs, watch history, paired phones, paired Bluetooth controllers (`/var/lib/bluetooth`), RetroArch saves/states + history (both `data/` and `build/data/`), Wi-Fi profiles, TMDB key, browse filters, MB re-lock, logs/journal (incl. the image's old machine-id journal directory) |
 | 6e | Pi 4B pruning | N64/Dreamcast ROMs + playlists deleted on a Pi 4B (runtime gate hides them anyway; this reclaims disk) |
 | 7 | Self-disable | Won't run again (a FAILED run leaves it enabled, so it retries next boot) |
 
@@ -175,6 +175,12 @@ default playlists work). Media Browser is locked because there's no
 `.env`. The operator activates it via the Content Manager UI on their
 laptop (drops in a WireGuard config; `setup_services.sh` rebuilds the
 entire stack from the codified fixtures in `magic_dingus_box_cpp/scripts/data/`).
+
+**Bluetooth pairings do NOT carry over.** A controller paired through
+Settings → Pair Wireless Controller lives in `/var/lib/bluetooth` with its
+link key; it is stashed out of the image and wiped on first boot (above).
+Each customer pairs their own. Modern pads (PlayStation, Xbox, Switch Pro,
+8BitDo) need no captured profile either — they get an automatic layout.
 
 **Controller profiles carry over too — deliberately.** `config/controller_profiles.json`
 (captured via Settings → Controller Setup) is not in the per-Pi wipe
@@ -303,6 +309,8 @@ Nothing is lost. Every secret `prepare_for_cloning.sh` removed from the SD
 — `services/.env` (VPN key, qBittorrent password), the Radarr/Sonarr/
 Prowlarr databases, `config.xml` files and their `Backups/` zips,
 `flask_secret.key` (phone pairings), the TMDB key, the Wi-Fi profile, the
+paired Bluetooth controllers (`/var/lib/bluetooth`; `bluetooth.service` is
+stopped for the clone and restarted by restore), the
 boot-partition cloud-init files — is in `/mnt/ssd/.mdb-secret-stash` on the
 movie drive, which survives the reboot and is never part of the dd'd SD
 card. (Before this, the stash lived in `/dev/shm`: a reboot erased it, and

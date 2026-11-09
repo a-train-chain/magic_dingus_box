@@ -102,7 +102,8 @@ The kiosk engine must build and run on **both Raspberry Pi 4B and Raspberry Pi 5
 - `libdrm`, `libgbm`, `libegl`, `libgles2` — DRM/KMS + EGL + OpenGL ES rendering substrate
 - `libevdev` — input device events
 - `libgpiod` — power button and LED GPIO
-- `libsystemd` — sd_notify readiness + watchdog. **Load-bearing, not optional**: CMake only auto-detects it, but the kiosk's systemd unit is `Type=notify` with a watchdog, so a binary built without it never sends `READY=1` and systemd kills a healthy kiosk on every box (shipped once, v1.7.2). The release workflow asserts `READY=1` is in the binary.
+- `libsystemd` — sd_notify readiness + watchdog. **Load-bearing, not optional**: CMake only auto-detects it, but the kiosk's systemd unit is `Type=notify` with a watchdog, so a binary built without it never sends `READY=1` and systemd kills a healthy kiosk on every box (shipped once, v1.7.2). The release workflow asserts `READY=1` is in the binary. The same library's sd-bus carries Bluetooth controller pairing (Settings → Pair Wireless Controller) to BlueZ.
+- `bluez` (runtime) — Bluetooth controller pairing. Raspberry Pi OS ships it; without it the pairing screen reports Bluetooth as unavailable and wired pads are unaffected. `setup_bluetooth.sh` (run by `setup_memory_tuning.sh`) puts the kiosk user in the `bluetooth` group and enables `bluetooth.service`.
 - `gstreamer-1.0` + `gstreamer-app-1.0` + `gstreamer-video-1.0` + `gstreamer-gl-1.0` + `gstreamer1.0-libav` — video pipeline
 - `yaml-cpp`, `jsoncpp` — config and playlist parsing
 - `libsqlite3` + the `sqlite3` CLI — Media Browser library/watch-state store (`media_browser.db`); the CLI backs the on-box acceptance checks (Media Browser builds only)

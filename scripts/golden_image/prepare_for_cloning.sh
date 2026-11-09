@@ -358,6 +358,11 @@ systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
 # ~/.config/pulse, and a copy caught mid-write would ship in every clone.
 systemctl stop magic-dingus-audio.service 2>/dev/null || true
 systemctl stop magic-dingus-web.service 2>/dev/null || true
+# bluetoothd rewrites /var/lib/bluetooth/<adapter>/<device>/info whenever a
+# paired controller connects, so a running daemon could re-create the
+# pairings SECRET_PATHS stashes below before dd reads the card.
+# restore_after_cloning.sh starts it again.
+systemctl stop bluetooth.service 2>/dev/null || true
 
 # Stop docker-compose stack via the systemd unit so its ExecStop runs
 # (which calls `docker compose down` cleanly). reset-failed first so a
@@ -686,6 +691,13 @@ SECRET_PATHS=(
     # reboot between prepare and restore" rule was already load-bearing for
     # the boot-partition stash; it now covers Wi-Fi continuity too.
     "/etc/NetworkManager/system-connections/*.nmconnection"
+    # Paired Bluetooth controllers (Settings -> Pair Wireless Controller):
+    # one directory per adapter, each paired device's `info` file holding
+    # its LinkKey. Useless on a unit -- the directory is keyed by the SOURCE
+    # board's adapter address -- but it is the operator's pairing data and
+    # key material. bluetooth.service is stopped above so nothing re-creates
+    # it mid-clone; first_boot.sh Step 6c-1b wipes it on the unit as well.
+    "/var/lib/bluetooth/**"
 )
 
 for _app in "${ARR_APPS[@]}"; do

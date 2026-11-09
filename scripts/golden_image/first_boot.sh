@@ -829,6 +829,27 @@ if [[ -d "$NM_DIR" ]]; then
     fi
 fi
 
+# Step 6c-1b: Wipe inherited Bluetooth pairings.
+#
+# prepare_for_cloning.sh keeps /var/lib/bluetooth out of the image; this is
+# the on-unit safety net (a card read before its first boot, an aborted
+# prepare, an image from before the stash existed). The source box's
+# pairings are keyed by ITS adapter address, so they would never load here,
+# but they are the operator's controllers and their link keys. The new owner
+# pairs their own in Settings -> Pair Wireless Controller. A unit's own
+# adapter directory, if bluetoothd already made one, goes too; the restart
+# recreates it.
+if [[ -d /var/lib/bluetooth ]]; then
+    bt_count=$(find /var/lib/bluetooth -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
+    if [[ "$bt_count" -gt 0 ]]; then
+        find /var/lib/bluetooth -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+        systemctl try-restart --no-block bluetooth.service 2>/dev/null || true
+        log "[6/7] Wiped inherited Bluetooth pairing data ($bt_count adapter dir(s))"
+    else
+        log "[6/7] No Bluetooth pairings to wipe (already clean)"
+    fi
+fi
+
 # Step 6c-2: Wipe inherited system logs.
 #
 # The on-unit safety net for the operator's logs, mirroring the way every

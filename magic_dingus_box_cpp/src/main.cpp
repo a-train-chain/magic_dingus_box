@@ -5,6 +5,7 @@
 #include "platform/gpio_manager.h"
 #include "platform/platform_profile.h"
 #include "platform/frame_presenter.h"
+#include "platform/bluez_worker.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
@@ -13,6 +14,7 @@
 #include "ui/pairing_screen.h"
 #include "ui/pairing_screen_renderer.h"
 #include "retroarch/controller_profile.h"
+#include "retroarch/standard_layout.h"
 // NOT under MEDIA_BROWSER_ENABLED: Toast::show() is called from the
 // display-mode change path below (~line 1533), which is core kiosk code and
 // compiles in every configuration. While this include sat inside the #ifdef,
@@ -287,6 +289,17 @@ int main(int /* argc */, char* /* argv */[]) {
     // Initialize input
     LOG_DEBUG("Initializing input...");
     InputManager input;
+    // Modern pads (DualSense, DualShock 4, Xbox, Switch Pro, 8BitDo) with no
+    // Controller Setup capture get the PS-style menu buttons automatically:
+    // L1/R1 previous/next, Triangle play/pause, Square inert. Installed
+    // before initialize() so the very first scan resolves it.
+    input.set_auto_overlay_fn([](const retroarch::CaptureDeviceCaps& caps)
+                                  -> std::optional<platform::MenuNavOverlay> {
+        if (auto profile = retroarch::standard_profile(caps)) {
+            return retroarch::standard_menu_overlay(*profile);
+        }
+        return std::nullopt;
+    });
     if (!input.initialize()) {
         LOG_WARN("Failed to initialize input");
     } else {
@@ -637,7 +650,13 @@ int main(int /* argc */, char* /* argv */[]) {
                                             playlist_directory);
     
     // Initialize settings menu
+    // Bluetooth controller pairing (Settings -> Pair Wireless Controller).
+    // Idle until the pairing step opens: no thread, no bus connection.
+    // Declared BEFORE settings_menu so it outlives the wizard that points
+    // at it (the wizard ends its session on the way out).
+    platform::BluezWorker bluetooth;
     ui::SettingsMenuManager settings_menu(&state);
+    settings_menu.set_bluetooth_port(&bluetooth);
     state.settings_menu = &settings_menu;
 
 #ifdef MEDIA_BROWSER_ENABLED

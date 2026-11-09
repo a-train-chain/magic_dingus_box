@@ -177,7 +177,10 @@ sudo usermod -a -G video,input $USER
   - `drm_display` - DRM/KMS display init, mode setting, CRTC management
   - `gbm_context` - GBM surface for EGL
   - `egl_context` - OpenGL ES 3.0 context, swap chain
-  - `input_manager` - evdev event processing, joystick/keyboard mapping, rotary encoder support
+  - `input_manager` - evdev event processing, joystick/keyboard mapping, rotary encoder support. A pad with no captured profile gets an AUTOMATIC menu overlay (`set_auto_overlay_fn`, installed by main.cpp from `retroarch::standard_profile`); an overlay entry mapped to `InputAction::NONE` suppresses that code's built-in action
+  - `input_device_info` - which nodes are controllers (`is_joystick_device`: a stick or hat, and NOT a touchpad / digitizer / accelerometer — mirrors the kernel joydev blacklist; a DualSense's "Motion Sensors" and "Touchpad" devices both report ABS_X and used to be opened as pads, so tilting it scrolled the menu) + `read_sysfs_input_info` (driver, bus, capability bitmaps) for the launcher
+  - `bt_pairing` - Bluetooth controller pairing, pure half (Mac-tested): `PairingFlow` reads BlueZ snapshots/results and decides the next command — power on, discover, pick the strongest advertising GAMEPAD (class/icon/appearance, name only when nothing else is known; never phones/headsets), Remove a stale pairing first (a pad in pairing mode again has dropped its keys — e.g. re-paired to a PS5), stop discovery, Pair, Trust, Connect; one retry then FAILED. `BluetoothPort` is the seam
+  - `bluez_worker` - the kiosk's `BluetoothPort` (sd-bus, kiosk-only): one detached thread + system-bus connection per pairing session, snapshots via GetManagedObjects every 500 ms, Pair/Connect async, a NoInputNoOutput default agent (PIN "0000" for legacy pads) for the session only. **Never blocks the render thread**: `stop()` detaches instead of joining (a wedged bluetoothd must not outlast the 10 s watchdog); sync calls capped at 5 s. Needs the kiosk user in the `bluetooth` group (`scripts/setup_bluetooth.sh`, run by `setup_memory_tuning.sh` step 1h)
   - `gpio_manager` - GPIO access (power button, LEDs)
 - **`video/`** - Video playback (GStreamer backend)
   - `gst_player` - GStreamer pipeline management, playback control
@@ -188,6 +191,7 @@ sudo usermod -a -G video,input $USER
   - `theme` - Color palette and layout constants
   - `font_manager` - stb_truetype font rasterization → GL textures
   - `settings_menu` - Settings UI state machine
+  - `controller_wizard` - Settings → Controller Setup (capture wizard) AND Settings → Pair Wireless Controller (same wizard, `open_for_pairing`; Green on PICK_DEVICE too). Pairing phases: PAIR_SEARCH (shows `PairingFlow`; BlueZ session runs only here) → PAIR_PRESS ("press any button on it"; other pads ignored when BlueZ's modalias gave the IDs) → DONE "Ready to play!" (saved/builtin profile) / AUTO_READY (automatic layout's lit-control test screen; Start on the pad or the knob finishes, Yellow maps by hand; nothing is saved) / PICK_STYLE (no automatic layout). A wired pad with an automatic layout and no saved profile also lands on AUTO_READY from PICK_DEVICE
   - `virtual_keyboard` - On-screen QWERTY keyboard
   - `qrcodegen` - QR code generation for WiFi setup
 - **`app/`** - Application logic
@@ -208,6 +212,7 @@ sudo usermod -a -G video,input $USER
   - `logical_controls` - the `LogicalControl` vocabulary (separate PS-style and N64-style sets) plus the wizard's per-style prompt order.
   - `joydev_index` - converts a raw evdev code + the device's capability lists into the RetroArch udev bind token (`"5"`, `"h0up"`, `"+2"`). The kiosk reads evdev codes; RetroArch configs want joystick indices — nothing else bridges the two.
   - `capture_session` - pure state machine behind the Controller Setup wizard: walks the per-style prompt list, decides when a press or stick deflection counts, rejects duplicates, supports skip/redo. No I/O.
+  - `standard_layout` - AUTOMATIC PS-style profile for modern pads, so PS4/PS5, Xbox, Switch Pro and 8BitDo (X-input or Switch mode) need no Controller Setup. They all have the DualShock's shape, so they use the PS-style semantic tables, matched by POSITION (bottom face button = Cross whatever it is labelled). Which evdev code sits at each position is fixed by the KERNEL DRIVER: `playstation`/`sony`/`nintendo` are positional (BTN_NORTH 0x133 = top), `xpad`/`xpadneo`/`microsoft`/VID 045e put Xbox X (left) on 0x133; Xbox triggers are axes (ABS_Z/RZ on xpad, ABS_BRAKE/GAS over BLE). `hid-generic` pads get NONE (report order says nothing about position). Also requires the full modern button set. Resolution everywhere: captured → builtin → automatic → legacy N64 (`resolve_mapping_for_pad(const DetectedPad&, ...)`). An axis-kind control in a RetroPad BUTTON slot is emitted as `input_playerN_<slot>_axis` (`ControllerMapping::btn_axes`, outside the frozen snapshot format) — that is how an Xbox trigger drives N64 Z
   - `controller_detector` - USB controller probing (vendor/product IDs → `ControllerType` enum). `detect_primary_controller()` returns the first recognized pad; `detect_connected_controllers()` returns one entry per `/dev/input/js*` in port order, which is what per-port resolution consumes. Split out of `retroarch_launcher` in v1.4.0.
 - **`debug/`** - `screenshot_capture`: `touch <data>/screenshot_request` and the next drawn frame (the full composite, read back before the swap) is written to `<data>/screenshots/<UTC>.bmp`, newest 10 kept. The directory is excluded from deploy/OTA rsyncs and scrubbed from golden images (personal content).
 - **`utils/`** - Utilities
@@ -424,6 +429,7 @@ Prefer `local` when authoring — that's the canonical default and what `playlis
 
 ### In RetroArch
 - Per-core button mappings live in `controller_mapping.cpp` (semantic tables) combined with a pad's `PhysicalProfile`; player 1 and player 2 resolve independently from whichever pad is on each port
+- Modern pads (DualSense/DS4, Xbox, Switch Pro, 8BitDo) use the PS-style tables automatically (`retroarch/standard_layout.h`), wired or Bluetooth; exit = hold Select (Share/View/−) + press Start (Options/Menu/+)
 - **Exit a game — direct quit, no RetroArch menu** (owner decision 2026-08-03; the RA menu "isn't needed at all" on a kiosk): N64-style pads = **Z + Start together, either order** (verified on a Pi 5, 2026-10-27); PS-style pads = hold **Select + press Start**. Bound from PHYSICAL controls in the style preambles (`SemanticMapping::exit_emulator`) so per-core RetroPad slot remaps can never move the gesture — the mupen table repurposes the select SLOT for N64 L, which is exactly how the old start+select combo silently became Start+L1 in N64 games. RetroArch honors these hotkeys from the PLAYER 1 pad only (accepted limitation with two pads). Auto-save-on-exit makes direct quit safe. **On N64-style pads Start is the hotkey-enable modifier and Z the exit button, never the reverse**: RetroArch withholds every other button from the game while the modifier is held, and Z is held during play (with Z as the modifier, Mario 64's Z+A backflip did nothing — owner report, Pi 5, 2026-10-27; `test_exit_gesture_binds.cpp` pins it).
 - Auto-save state on exit, auto-load on start
 
@@ -1001,6 +1007,14 @@ line, so a box provisioned before this pattern existed kept the blocking
 entry forever — and that is not hypothetical, the source box was still
 carrying the automount line on 2026-08-05, one step short of baking the
 boot hang into another image.
+
+**Bluetooth pairings are per-box state too** (2026-11): `/var/lib/bluetooth`
+(one dir per adapter, each paired pad's `info` holds its LinkKey) is in
+`prepare_for_cloning.sh`'s SECRET_PATHS with `bluetooth.service` stopped for
+the clone (a connecting pad would re-create it), restored by
+`restore_after_cloning.sh`, and wiped by `first_boot.sh` Step 6c-1b. The
+source's dirs are keyed by its own adapter address so they would never load
+on a unit — they are still the operator's data.
 
 **Run `scripts/golden_image/sync_source_box.sh --pi magic@<host>` before
 every clone.** The out-of-box fixes live in eight different files and
