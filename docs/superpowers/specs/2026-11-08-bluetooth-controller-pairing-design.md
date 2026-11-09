@@ -70,8 +70,11 @@ improve with updates.
   `bluetoothd` cannot hold the render loop past the 10 s systemd watchdog.
 - **Board parity.** The Pi 4B and Pi 5 have the same on-board radio, so
   there is no platform gate and no `PlatformProfile` field.
-- **Permissions.** The kiosk user joins the `bluetooth` group
-  (`setup_bluetooth.sh`, via `setup_memory_tuning.sh` step 1h).
+- **Permissions.** Nothing special on Trixie: the box's BlueZ D-Bus policy
+  (bluez 5.82) lets any local user call `org.bluez`, checked on a Pi 5.
+  `setup_bluetooth.sh` (via `setup_memory_tuning.sh` step 1h) enables
+  `bluetooth.service`, unblocks the radio, and adds the kiosk user to the
+  `bluetooth` group as a fallback for older policies that required it.
 - **Golden image.** `/var/lib/bluetooth` (link keys) is stashed out of the
   image with `bluetooth.service` stopped, restored on the source box, and
   wiped by `first_boot.sh`.

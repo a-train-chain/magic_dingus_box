@@ -5,9 +5,12 @@
 # Settings -> Pair Wireless Controller (platform/bluez_worker.cpp) talks to
 # BlueZ over the system D-Bus as the kiosk's own user (User=magic). This
 # makes sure it can:
-#   1. the kiosk user is in the `bluetooth` group, which Debian's BlueZ
-#      D-Bus policy grants org.bluez access. Takes effect at the kiosk's
-#      next start (systemd sets supplementary groups at exec).
+#   1. the kiosk user is in the `bluetooth` group. A fallback, not the
+#      access path: Raspberry Pi OS Trixie's BlueZ D-Bus policy (bluez
+#      5.82, checked on a Pi 5 2026-11-08) already lets ANY local user call
+#      org.bluez through its default context, but older Debian policies
+#      limited it to this group. Takes effect at the kiosk's next start
+#      (systemd sets supplementary groups at exec).
 #   2. bluetooth.service is enabled and started, unless an operator masked
 #      it (then it is left alone and the pairing screen says Bluetooth is
 #      unavailable).

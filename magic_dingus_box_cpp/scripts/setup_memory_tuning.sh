@@ -30,8 +30,8 @@
 #        setup_usb_gadget_dns.sh --retire-legacy (its DHCP server on usb0
 #        broke http://dingus.box) — same delivery reasoning as 1a
 #   1h. lets the kiosk pair Bluetooth controllers via setup_bluetooth.sh
-#        (kiosk user in the bluetooth group, bluetooth.service enabled,
-#        radio unblocked) — same delivery reasoning as 1a
+#        (bluetooth.service enabled, radio unblocked, kiosk user in the
+#        bluetooth group as a fallback for older BlueZ policies) — same delivery reasoning as 1a
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -174,8 +174,9 @@ fi
 
 # --- 1h. Bluetooth controller pairing ---------------------------------------
 # Same delivery reasoning as 1d: Settings -> Pair Wireless Controller needs
-# the kiosk user in the bluetooth group (BlueZ's D-Bus policy) and a running
-# bluetoothd. Best-effort and never fails; skips itself in test mode and on
+# a running, unblocked bluetoothd. The kiosk user also joins the bluetooth
+# group, a fallback for BlueZ policies older than Trixie's (which already
+# allow any local user). Best-effort and never fails; skips itself in test mode and on
 # a box without BlueZ.
 BT_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup_bluetooth.sh"
 if [[ -f "$BT_HELPER" ]]; then
