@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -57,6 +58,17 @@ public:
     // keep pointing into it). Passing an empty map removes all overlays and
     // restores pure built-in behavior.
     void set_menu_overlays(std::map<uint32_t, MenuNavOverlay> overlays);
+
+    // Automatic menu-nav overlay for a pad that has NO entry in the map
+    // above (no captured profile): called once per joystick at open time
+    // with its capabilities, driver and bus. main.cpp installs
+    // retroarch::standard_profile() here, so a DualSense / Xbox / Switch Pro
+    // pad gets the PS-style menu buttons (L1/R1 = previous/next, Triangle =
+    // play/pause) without the Controller Setup wizard. Returning nullopt
+    // keeps the built-in table. Setting it re-resolves every open device.
+    using AutoOverlayFn = std::function<std::optional<MenuNavOverlay>(
+        const retroarch::CaptureDeviceCaps&)>;
+    void set_auto_overlay_fn(AutoOverlayFn fn);
 
     // Raw capture (wizard): while enabled, joystick devices' events are
     // delivered via drain_raw_events() INSTEAD of being action-mapped.
@@ -178,7 +190,15 @@ private:
     // overlays_ and is invalidated by set_menu_overlays().
     const MenuNavOverlay* lookup_overlay(uint16_t vid, uint16_t pid) const;
 
+    // The overlay a device should use: its captured one from overlays_,
+    // else its automatic one (Device::auto_overlay), else nullptr.
+    const MenuNavOverlay* resolve_overlay(Device& device);
+    // Capability snapshot of one open joystick (shared by device_caps()
+    // and the automatic overlay).
+    static retroarch::CaptureDeviceCaps caps_of(const Device& device);
+
     std::map<uint32_t, MenuNavOverlay> overlays_;   // (vid << 16) | pid
+    AutoOverlayFn auto_overlay_fn_;
 
     bool raw_capture_ = false;
     std::vector<RawInputEvent> raw_events_;

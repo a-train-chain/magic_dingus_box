@@ -71,7 +71,9 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
         // now the single "Connect a Device" surface — QR, 6-digit code,
         // typed address, and the USB-C cable path.
         MenuItem("Connect a Device", MenuSection::PHONE_REMOTE, "Phone, computer, or USB cable"),
-        MenuItem("Controller Setup", MenuSection::CONTROLLER_SETUP, "Map any USB gamepad"),
+        MenuItem("Pair Wireless Controller", MenuSection::PAIR_CONTROLLER,
+                 "PlayStation, Xbox, Switch, 8BitDo"),
+        MenuItem("Controller Setup", MenuSection::CONTROLLER_SETUP, "Map any gamepad's buttons"),
         MenuItem("Back", MenuSection::BACK)
     };
 }
@@ -452,8 +454,10 @@ void SettingsMenuManager::open() {
         // covers phone remote, Content Manager, and the USB-C cable path.
         menu_items_.emplace_back("Connect a Device", MenuSection::PHONE_REMOTE,
                                  "Phone, computer, or USB cable");
+        menu_items_.emplace_back("Pair Wireless Controller", MenuSection::PAIR_CONTROLLER,
+                                 "PlayStation, Xbox, Switch, 8BitDo");
         menu_items_.emplace_back("Controller Setup", MenuSection::CONTROLLER_SETUP,
-                                 "Map any USB gamepad");
+                                 "Map any gamepad's buttons");
         menu_items_.emplace_back("Back", MenuSection::BACK);
 #endif
     }
@@ -762,6 +766,7 @@ void SettingsMenuManager::close_pairing_screen() {
 ControllerWizard* SettingsMenuManager::controller_wizard() {
     if (!controller_wizard_) {
         controller_wizard_ = std::make_unique<ControllerWizard>();
+        controller_wizard_->set_bluetooth(bt_port_);
     }
     return controller_wizard_.get();
 }
@@ -769,6 +774,16 @@ ControllerWizard* SettingsMenuManager::controller_wizard() {
 void SettingsMenuManager::open_controller_wizard(platform::InputManager* input) {
     wizard_active_ = true;
     controller_wizard()->open(input);
+}
+
+void SettingsMenuManager::open_controller_wizard_for_pairing(platform::InputManager* input) {
+    wizard_active_ = true;
+    controller_wizard()->open_for_pairing(input);
+}
+
+void SettingsMenuManager::set_bluetooth_port(platform::bt::BluetoothPort* port) {
+    bt_port_ = port;
+    if (controller_wizard_) controller_wizard_->set_bluetooth(port);
 }
 
 void SettingsMenuManager::close_controller_wizard() {

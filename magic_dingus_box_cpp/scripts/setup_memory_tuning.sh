@@ -29,6 +29,9 @@
 #   1g. moves a legacy /etc/systemd/network/10-usb-gadget.network aside via
 #        setup_usb_gadget_dns.sh --retire-legacy (its DHCP server on usb0
 #        broke http://dingus.box) — same delivery reasoning as 1a
+#   1h. lets the kiosk pair Bluetooth controllers via setup_bluetooth.sh
+#        (bluetooth.service enabled, radio unblocked, kiosk user in the
+#        bluetooth group as a fallback for older BlueZ policies) — same delivery reasoning as 1a
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -167,6 +170,20 @@ if [[ -f "$USB_DNS_HELPER" ]]; then
         bash "$USB_DNS_HELPER" --retire-legacy 2>&1 | sed 's/^/  /' || true
 else
     log "setup_usb_gadget_dns.sh not found; skipping legacy usb0 networkd check"
+fi
+
+# --- 1h. Bluetooth controller pairing ---------------------------------------
+# Same delivery reasoning as 1d: Settings -> Pair Wireless Controller needs
+# a running, unblocked bluetoothd. The kiosk user also joins the bluetooth
+# group, a fallback for BlueZ policies older than Trixie's (which already
+# allow any local user). Best-effort and never fails; skips itself in test mode and on
+# a box without BlueZ.
+BT_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup_bluetooth.sh"
+if [[ -f "$BT_HELPER" ]]; then
+    MAGIC_TUNING_ROOT="$TUNING_ROOT" MAGIC_SKIP_SYSTEMCTL="$SKIP_SYSTEMCTL" \
+        bash "$BT_HELPER" 2>&1 | sed 's/^/  /' || true
+else
+    log "setup_bluetooth.sh not found; skipping Bluetooth pairing setup"
 fi
 
 # --- 2. system.slice companion ----------------------------------------------

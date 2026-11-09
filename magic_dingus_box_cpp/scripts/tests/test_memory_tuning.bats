@@ -315,3 +315,27 @@ refute() {
     [ ! -e "$MAGIC_TUNING_ROOT/var/lib/magic-dingus/retired" ]
     [ ! -e "$MAGIC_TUNING_ROOT/etc/dnsmasq.d/usb0.conf" ]
 }
+
+# --- 1h. Bluetooth controller pairing -----------------------------------------
+
+@test "bluetooth: setup_memory_tuning.sh runs the pairing setup before the cmdline step can exit" {
+    helper_line="$(grep -n 'setup_bluetooth.sh"$' "$TUNING_SCRIPT" | head -1 | cut -d: -f1)"
+    cmdline_line="$(grep -n '^# --- 4\. kernel cmdline' "$TUNING_SCRIPT" | cut -d: -f1)"
+    [ -n "$helper_line" ] && [ -n "$cmdline_line" ]
+    [ "$helper_line" -lt "$cmdline_line" ]
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[bluetooth] SKIP: test mode"* ]]
+}
+
+@test "bluetooth: the setup touches nothing in test mode and never fails" {
+    # A fake root or MAGIC_SKIP_SYSTEMCTL means no usermod, no systemctl,
+    # no rfkill: it must exit before any of them.
+    run bash "$SCRIPT_DIR/../setup_bluetooth.sh"
+    [ "$status" -eq 0 ]
+    [ "$output" = "[bluetooth] SKIP: test mode" ]
+
+    MAGIC_TUNING_ROOT="" MAGIC_SKIP_SYSTEMCTL=true run bash "$SCRIPT_DIR/../setup_bluetooth.sh"
+    [ "$status" -eq 0 ]
+    [ "$output" = "[bluetooth] SKIP: test mode" ]
+}

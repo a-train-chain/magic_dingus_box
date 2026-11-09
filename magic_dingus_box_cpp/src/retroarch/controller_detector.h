@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace retroarch {
@@ -37,10 +38,26 @@ std::string controller_type_name(ControllerType t);
 // the udev DB in syspath order and counts the phone remote) -- the launcher
 // pins each player to its pad with write_port_reservations().
 struct DetectedPad {
+    DetectedPad() = default;
+    // The identity-only form every caller used before the sysfs fields
+    // below existed ({port, vid, pid, name}). A constructor rather than
+    // aggregate init so those sites stay warning-free under
+    // -Wmissing-field-initializers.
+    DetectedPad(int port_, uint16_t vid_, uint16_t pid_, std::string name_)
+        : port(port_), vid(vid_), pid(pid_), name(std::move(name_)) {}
+
     int port = 0;
     uint16_t vid = 0;
     uint16_t pid = 0;
     std::string name;
+    // From sysfs (platform::read_sysfs_input_info): the kernel driver, the
+    // bus (0x03 USB, 0x05 Bluetooth) and the capability lists. They let a
+    // modern pad with no saved profile get an automatic layout
+    // (retroarch/standard_layout.h) instead of the legacy N64 fallback.
+    std::string driver;
+    uint16_t bustype = 0;
+    std::vector<uint16_t> key_codes;   // ascending EV_KEY codes
+    std::vector<uint16_t> abs_codes;   // ascending EV_ABS codes (incl. hats)
 };
 
 // Enumerate /dev/input/js* lexicographically (same walk as

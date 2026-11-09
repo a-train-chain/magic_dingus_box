@@ -108,6 +108,15 @@ struct ControllerMapping {
     // emits nothing, and the pad has no way out of a game.
     std::string enable_hotkey_axis = "";
     std::string exit_emulator_axis = "";
+
+    // AXIS form of the RetroPad BUTTON slots, keyed by RetroArch bind name
+    // ("b", "a", "l2", "r2", ...) -> signed axis token ("+2"). Set when the
+    // control a slot is assigned to is an analog axis on this pad -- an Xbox
+    // controller's triggers -- and emitted as input_playerN_<name>_axis
+    // next to that slot's "nul" _btn line. Empty for every pad whose
+    // buttons are buttons, so it adds nothing to their config. Deliberately
+    // NOT part of the frozen mapping snapshot format.
+    std::map<std::string, std::string> btn_axes;
 };
 
 // A per-core mapping expressed in LOGICAL controls instead of physical
@@ -198,6 +207,16 @@ ControllerMapping get_mapping(ControllerType type, const std::string& core_name)
 // intentionally stays lightweight (no cyclic dependency on this header).
 ControllerMapping resolve_mapping_for_pad(
     uint16_t vid, uint16_t pid,
+    const std::map<std::string, PhysicalProfile>& store,
+    const std::string& core_name);
+
+// The same precedence for a pad the launcher enumerated, with one more step
+// before the legacy fallback: a modern pad (DualSense, DualShock 4, Xbox,
+// Switch Pro, 8BitDo in X-input/Switch mode) whose driver lays its buttons
+// out by position gets standard_profile() -- the PS-style tables, no
+// Controller Setup needed. Order: captured -> builtin -> automatic -> legacy.
+ControllerMapping resolve_mapping_for_pad(
+    const DetectedPad& pad,
     const std::map<std::string, PhysicalProfile>& store,
     const std::string& core_name);
 

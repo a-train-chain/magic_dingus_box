@@ -17,6 +17,7 @@
 #include "font_manager.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -53,8 +54,9 @@ namespace {
 //     centre key labelled "Enter" (304) -> SELECT,
 //     D-pad (ABS_HAT0X/Y) -> ROTATE / ROTATE_VERTICAL (input_manager.cpp:730-757).
 //
-// GREEN / NEXT is bound to nothing in any wizard phase, so it is never
-// advertised.
+// GREEN / NEXT does one thing: on PICK_DEVICE it starts Bluetooth pairing
+// (only when the box has a BlueZ session to pair through), and it is
+// advertised only there.
 constexpr const char* kCancelHint = "Black / Menu: cancel";
 constexpr const char* kSelectHint = "Click knob / Enter";
 
@@ -75,6 +77,38 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
         draw_text(s, x, y, size, color);
     };
 
+    // Centered text word-wrapped to the canvas minus a margin, for strings
+    // that can be long (a pad's full USB name, a pairing failure). The CRT
+    // canvas is only 640 wide. Returns the height used.
+    auto wrapped_text = [&](const std::string& s, float top, int size,
+                            const ui::Color& color) -> float {
+        if (s.empty()) return 0.0f;
+        const int max_w = static_cast<int>(vw) - 96;
+        std::vector<std::string> lines;
+        std::string line;
+        size_t i = 0;
+        while (i < s.size()) {
+            size_t sp = s.find(' ', i);
+            if (sp == std::string::npos) sp = s.size();
+            const std::string word = s.substr(i, sp - i);
+            const std::string trial = line.empty() ? word : line + " " + word;
+            if (!line.empty() &&
+                body_font_manager_->get_text_width(trial, size) > max_w) {
+                lines.push_back(line);
+                line = word;
+            } else {
+                line = trial;
+            }
+            i = sp + 1;
+        }
+        if (!line.empty()) lines.push_back(line);
+        const float line_h = static_cast<float>(size) * 1.35f;
+        for (size_t n = 0; n < lines.size(); ++n) {
+            center_text(lines[n], top + static_cast<float>(n) * line_h, size, color);
+        }
+        return static_cast<float>(lines.size()) * line_h;
+    };
+
     auto footer = [&](const std::string& s) {
         int w = body_font_manager_->get_text_width(s, theme_->font_small_size);
         float x = (vw - static_cast<float>(w)) / 2.0f;
@@ -88,7 +122,9 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
 
     // ---- Title ---------------------------------------------------------------
     {
-        const std::string title = "Controller Setup";
+        const bool pairing = wiz.phase() == ControllerWizard::Phase::PAIR_SEARCH ||
+                             wiz.phase() == ControllerWizard::Phase::PAIR_PRESS;
+        const std::string title = pairing ? "Pair Wireless Controller" : "Controller Setup";
         int tw = title_font_manager_->get_text_width(title, theme_->font_heading_size);
         float tx = (vw - static_cast<float>(tw)) / 2.0f;
         float ty = 40.0f + title_font_manager_->get_baseline_at_size(theme_->font_heading_size);
@@ -117,6 +153,114 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
                         vh * 0.40f + 74.0f, theme_->font_small_size, theme_->dim);
             if (!wiz.status_line().empty()) {
                 center_text(wiz.status_line(), vh * 0.40f + 112.0f,
+                            theme_->font_small_size, theme_->highlight2);
+            }
+            if (wiz.can_pair()) {
+                center_text("Wireless controller not connected yet? Press Green to pair it",
+                            vh * 0.40f + 150.0f, theme_->font_small_size, theme_->fg);
+                footer(std::string("Green: pair a wireless controller  ·  ") + kCancelHint);
+            } else {
+                footer(kCancelHint);
+            }
+            break;
+        }
+
+        // -------------------------------------------------------------------
+        case ControllerWizard::Phase::PAIR_SEARCH: {
+            using FlowPhase = platform::bt::PairingFlow::Phase;
+            const platform::bt::PairingFlow* flow = wiz.pairing();
+            const FlowPhase fp = flow ? flow->phase() : FlowPhase::UNAVAILABLE;
+            const std::string name = flow ? flow->device_name() : std::string();
+            const std::string message = flow ? flow->message() : std::string();
+
+            if (fp == FlowPhase::STARTING || fp == FlowPhase::SCANNING) {
+                center_text("Put your controller in pairing mode", 112.0f,
+                            theme_->font_medium_size, theme_->fg);
+                // How to, per family. Only the buttons differ; every one of
+                // these ends with a light flashing quickly.
+                struct HowTo { const char* pad; const char* how; };
+                const HowTo rows[] = {
+                    {"PlayStation 5", "hold Create + PS until the light flashes"},
+                    {"PlayStation 4", "hold Share + PS until the light bar flashes"},
+                    {"Xbox", "hold the pair button on top until the logo flashes"},
+                    {"Switch Pro", "hold the small sync button on top"},
+                    {"8BitDo", "hold Start + Y, then hold the pair button"},
+                    {"Others", "hold the pairing button until the light flashes"},
+                };
+                // One centered line per pad, its name in the accent color.
+                // Centered rather than in two columns so the CRT canvas
+                // (640 wide) fits the longest row.
+                const int size = theme_->font_small_size;
+                float y = 170.0f;
+                for (const auto& r : rows) {
+                    const std::string pad = std::string(r.pad) + ":  ";
+                    const int pad_w = body_font_manager_->get_text_width(pad, size);
+                    const int how_w = body_font_manager_->get_text_width(r.how, size);
+                    const float x = (vw - static_cast<float>(pad_w + how_w)) / 2.0f;
+                    const float base = y + body_font_manager_->get_baseline_at_size(size);
+                    draw_text(pad, x, base, size, theme_->accent);
+                    draw_text(r.how, x + static_cast<float>(pad_w), base, size, theme_->fg);
+                    y += static_cast<float>(size) * 1.7f;
+                }
+                // A slow three-dot pulse so the screen visibly works.
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+                const int dots = static_cast<int>((ms / 500) % 4);
+                std::string looking = "Looking for your controller";
+                looking.append(static_cast<size_t>(dots), '.');
+                center_text(looking, y + 24.0f, theme_->font_medium_size, theme_->highlight1);
+                if (!message.empty()) {
+                    wrapped_text(message, y + 72.0f, theme_->font_small_size,
+                                 theme_->highlight2);
+                } else if (flow && flow->searching_a_while()) {
+                    wrapped_text("Still looking - the light should be flashing quickly. "
+                                 "Keep the controller close to the box.",
+                                 y + 72.0f, theme_->font_small_size, theme_->dim);
+                }
+                footer(kCancelHint);
+            } else if (fp == FlowPhase::PAIRING || fp == FlowPhase::CONNECTING ||
+                       fp == FlowPhase::CONNECTED) {
+                center_text(fp == FlowPhase::PAIRING ? "Pairing with" : "Connecting to",
+                            vh * 0.36f, theme_->font_medium_size, theme_->fg);
+                const float used = wrapped_text(name, vh * 0.36f + 52.0f,
+                                                theme_->font_medium_size, theme_->accent);
+                center_text("Keep it close to the box", vh * 0.36f + 64.0f + used,
+                            theme_->font_small_size, theme_->dim);
+                footer(kCancelHint);
+            } else if (fp == FlowPhase::FAILED) {
+                center_text("Couldn't pair", vh * 0.34f, theme_->font_large_size,
+                            theme_->highlight2);
+                wrapped_text(message, vh * 0.34f + 70.0f, theme_->font_small_size, theme_->fg);
+                footer(std::string("Red or ") + kSelectHint + ": try again  ·  " + kCancelHint);
+            } else {   // UNAVAILABLE
+                const float used = wrapped_text(
+                    message.empty() ? std::string("Bluetooth isn't available") : message,
+                    vh * 0.36f, theme_->font_medium_size, theme_->fg);
+                wrapped_text("Wired USB controllers and 2.4 GHz wireless receivers still work",
+                             vh * 0.36f + 16.0f + used, theme_->font_small_size, theme_->dim);
+                footer(std::string(kSelectHint) + ": close");
+            }
+            break;
+        }
+
+        // -------------------------------------------------------------------
+        case ControllerWizard::Phase::PAIR_PRESS: {
+            {
+                const std::string s = "Connected!";
+                int w = title_font_manager_->get_text_width(s, theme_->font_heading_size);
+                float x = (vw - static_cast<float>(w)) / 2.0f;
+                float y = vh * 0.34f +
+                          title_font_manager_->get_baseline_at_size(theme_->font_heading_size);
+                draw_text(s, x, y, theme_->font_heading_size, theme_->highlight1,
+                          /*use_title_font=*/true);
+            }
+            const float used = wrapped_text(wiz.device_name(), vh * 0.34f + 60.0f,
+                                            theme_->font_medium_size, theme_->fg);
+            center_text("Press any button on it to continue", vh * 0.34f + 76.0f + used,
+                        theme_->font_medium_size, theme_->accent);
+            if (!wiz.status_line().empty()) {
+                center_text(wiz.status_line(), vh * 0.34f + 126.0f + used,
                             theme_->font_small_size, theme_->highlight2);
             }
             footer(kCancelHint);
@@ -269,9 +413,44 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
         }
 
         // -------------------------------------------------------------------
+        case ControllerWizard::Phase::AUTO_READY: {
+            const float headline = wrapped_text(
+                "Set up automatically - press the buttons to try them", 96.0f,
+                theme_->font_medium_size, theme_->fg);
+            const auto& captured = wiz.captured();
+            const auto& lit = wiz.test_lit();
+            std::vector<retroarch::LogicalControl> controls;
+            for (const auto& [control, binding] : captured) {
+                (void)binding;
+                controls.push_back(control);
+            }
+            const size_t per_col = (controls.size() + 1) / 2;
+            const float col_x[2] = {vw * 0.18f, vw * 0.58f};
+            const float list_top = std::max(160.0f, 96.0f + headline + 16.0f);
+            const float row_h = per_col == 0 ? 24.0f
+                              : std::max(18.0f, (vh - list_top - 70.0f) /
+                                                    static_cast<float>(per_col));
+            for (size_t i = 0; i < controls.size(); ++i) {
+                const size_t col = per_col == 0 ? 0 : i / per_col;
+                const size_t row = per_col == 0 ? i : i % per_col;
+                auto it = lit.find(controls[i]);
+                const bool is_lit = it != lit.end() && it->second;
+                std::string label = (is_lit ? "* " : "  ") +
+                                    short_control_label(controls[i]);
+                float y = list_top + static_cast<float>(row) * row_h +
+                          body_font_manager_->get_baseline_at_size(theme_->font_small_size);
+                draw_text(label, col_x[std::min<size_t>(col, 1)], y,
+                          theme_->font_small_size, is_lit ? theme_->accent : theme_->dim);
+            }
+            footer(std::string("Start or ") + kSelectHint + ": done  ·  "
+                   "Yellow: map buttons yourself  ·  " + kCancelHint);
+            break;
+        }
+
+        // -------------------------------------------------------------------
         case ControllerWizard::Phase::DONE: {
             {
-                const std::string s = "Saved!";
+                const std::string s = wiz.done_title();
                 int w = title_font_manager_->get_text_width(s, theme_->font_heading_size);
                 float x = (vw - static_cast<float>(w)) / 2.0f;
                 float y = vh * 0.40f +

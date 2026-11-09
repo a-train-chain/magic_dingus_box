@@ -529,7 +529,9 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     
 
     // 2. Resolve each port's mapping independently: captured profile
-    // -> builtin -> legacy N64 fallback (resolve_mapping_for_pad's
+    // -> builtin -> automatic layout for a modern pad (DualSense, Xbox,
+    // Switch Pro ...; standard_layout.h) -> legacy N64 fallback
+    // (resolve_mapping_for_pad's
     // precedence, via resolve_port_mappings() in
     // controller_mapping.cpp). A missing P2 pad mirrors P1 exactly,
     // and no detected pads at all falls back to today's single

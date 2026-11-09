@@ -18,6 +18,7 @@ namespace ui {
 
 namespace platform {
     class InputManager;
+    namespace bt { class BluetoothPort; }
 }
 
 namespace ui {
@@ -34,6 +35,7 @@ enum class MenuSection {
                        // Content Manager Info screen; SELECT is a no-op.
     PHONE_REMOTE,      // Drills into the "Connect a Device" pairing screen, not a submenu
     CONTROLLER_SETUP,  // Drills into the Controller Setup wizard, not a submenu
+    PAIR_CONTROLLER,   // Drills into the same wizard, straight into Bluetooth pairing
     BACK,
     BROWSE_GAMES,
     TOGGLE_PLAYLIST_LOOP,
@@ -177,7 +179,13 @@ public:
     // gamepad dead until a kiosk restart).
     ControllerWizard* controller_wizard();
     void open_controller_wizard(platform::InputManager* input);
+    // Settings -> Pair Wireless Controller: the same wizard, opened straight
+    // into its Bluetooth pairing step.
+    void open_controller_wizard_for_pairing(platform::InputManager* input);
     void close_controller_wizard();
+    // The BlueZ session the wizard pairs through (main.cpp owns it). Unset
+    // means the pairing step reports that Bluetooth is unavailable.
+    void set_bluetooth_port(platform::bt::BluetoothPort* port);
     bool is_controller_wizard_active() const { return wizard_active_; }
 
     // Consume-once flag: true when a Settings action changed the captured
@@ -241,6 +249,7 @@ private:
     bool pairing_active_ = false;
 
     std::unique_ptr<ControllerWizard> controller_wizard_;
+    platform::bt::BluetoothPort* bt_port_ = nullptr;
     bool wizard_active_ = false;
 };
 

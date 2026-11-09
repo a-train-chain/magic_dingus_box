@@ -20,10 +20,13 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "app/app_state.h"
+#include "platform/bt_pairing.h"
 #include "retroarch/controller_profile.h"
 #include "ui/controller_wizard.h"
 #include "ui/settings_menu.h"
@@ -391,4 +394,58 @@ TEST_CASE("retiring the wizard touches neither pairing nor settings.json",
     f.sm.force_close();
     CHECK(ui_test::fake_pairing_calls() == 0);
     CHECK(ui_test::fake_settings_saves() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Pair Wireless Controller
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct IdlePort : platform::bt::BluetoothPort {
+    bool started = false;
+    void start() override { started = true; }
+    void stop() override { started = false; }
+    void send(const platform::bt::BtCommand&) override {}
+    std::optional<platform::bt::BtSnapshot> take_snapshot() override { return std::nullopt; }
+    std::vector<platform::bt::BtResult> take_results() override { return {}; }
+};
+
+}  // namespace
+
+TEST_CASE("Settings has a Pair Wireless Controller row next to Controller Setup",
+          "[settings_wizard][pairing]") {
+    app::AppState state{};
+    SettingsMenuManager sm{&state};
+    sm.open();
+    int pair = -1, setup = -1;
+    const auto& items = sm.get_menu_items();
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].label == "Pair Wireless Controller") pair = static_cast<int>(i);
+        if (items[i].label == "Controller Setup") setup = static_cast<int>(i);
+    }
+    REQUIRE(pair >= 0);
+    REQUIRE(setup >= 0);
+    CHECK(items[pair].section == ui::MenuSection::PAIR_CONTROLLER);
+    CHECK(pair + 1 == setup);
+}
+
+TEST_CASE("Pair Wireless Controller opens the wizard straight into pairing",
+          "[settings_wizard][pairing]") {
+    ui_test::fake_reset();
+    app::AppState state{};
+    platform::InputManager im;
+    IdlePort port;
+    SettingsMenuManager sm{&state};
+    sm.set_bluetooth_port(&port);
+    sm.open();
+    sm.open_controller_wizard_for_pairing(&im);
+    REQUIRE(sm.is_controller_wizard_active());
+    CHECK(sm.controller_wizard()->phase() == Phase::PAIR_SEARCH);
+    CHECK(port.started);
+
+    // Black (BTN4) reaches toggle() on hardware; it must end the session.
+    sm.toggle();
+    CHECK_FALSE(sm.is_controller_wizard_active());
+    CHECK_FALSE(port.started);
 }

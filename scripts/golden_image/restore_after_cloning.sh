@@ -288,6 +288,13 @@ if systemctl is-enabled magic-dingus-audio.service &>/dev/null; then
         log "[3/4] WARN: magic-dingus-audio.service failed to start"
 fi
 
+# bluetoothd (stopped by prepare so the pairings stayed stashed), before the
+# kiosk so the owner's paired controllers reconnect straight away.
+if systemctl is-enabled bluetooth.service &>/dev/null; then
+    systemctl start bluetooth.service 2>&1 | sed 's/^/    /' || \
+        log "[3/4] WARN: bluetooth.service failed to start"
+fi
+
 systemctl start magic-dingus-box-cpp.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-box-cpp.service failed to start"
 
