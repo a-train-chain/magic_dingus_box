@@ -838,8 +838,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/mb_filter_persistence.cpp
         src/utils/config.cpp
         src/utils/services_env.cpp
-        # playlist_loader is here for the trim/loop parsing tests; it pulls in
-        # yaml-cpp, hence the extra include/link directories below.
+        # playlist_loader is here for the trim/loop parsing tests and the
+        # all-fields fixture shared with the web admin's Python tests
+        # (test_playlist_yaml_fixture.cpp); it pulls in yaml-cpp, hence the
+        # extra include/link directories below.
         src/app/playlist_loader.cpp
         # platform_profile backs filter_for_platform (the Pi 4 game-system
         # gate) — pure logic, no Linux-only deps.
