@@ -1415,13 +1415,13 @@ function renderROMLibraryPanel() {
 
         if (!shouldShow) return '';
 
-        const systemLabel = rom.system.toUpperCase();
+        const systemLabel = escapeHtml(String(rom.system).toUpperCase());
 
         return `
             <div class="library-item ${inPlaylist ? 'in-playlist' : ''}" 
                  draggable="true" 
                  data-index="${rom.originalIndex}"
-                 data-system="${rom.system}"
+                 data-system="${escapeHtml(rom.system)}"
                  data-type="rom"
                  data-path="${escapeHtml(rom.path)}"
                  ondragstart="handleROMLibraryDragStart(event)"
@@ -1429,7 +1429,7 @@ function renderROMLibraryPanel() {
                 <span class="video-icon">${spriteIcon('ic-games')}</span>
                 <span class="video-name">${escapeHtml(name)}</span>
                 <span style="font-size: 0.7rem; color: var(--text-secondary); margin-left: 0.5rem;">${systemLabel}</span>
-                <button class="add-btn" onclick="addROMToPlaylist('${rom.system}', ${rom.originalIndex})" title="Add to playlist">+</button>
+                <button class="add-btn" onclick="addROMToPlaylist('${escapeJs(rom.system)}', ${rom.originalIndex})" title="Add to playlist">+</button>
             </div>
         `;
     }).join('');

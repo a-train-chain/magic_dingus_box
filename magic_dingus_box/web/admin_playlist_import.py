@@ -23,7 +23,7 @@ from werkzeug.exceptions import HTTPException
 try:
     from admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
-        _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
+        _valid_rom_system, _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
         optional_size_cap_mb, success_response,
     )
     from admin_playlists import (
@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
-        _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
+        _valid_rom_system, _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
         optional_size_cap_mb, success_response,
     )
     from .admin_playlists import (
@@ -508,6 +508,10 @@ def register(app, ctx) -> None:
                     roms_skipped = 0
                     rom_renames = {}
                     for rom_entry, rom_system, rom_name in rom_files:
+                        # Same allowlist as upload_rom(): the system becomes
+                        # a directory name the Content Manager renders.
+                        if not _valid_rom_system(rom_system):
+                            continue
                         try:
                             safe_system = _sanitize_filename(rom_system)
                             safe_rom = _sanitize_filename(rom_name)

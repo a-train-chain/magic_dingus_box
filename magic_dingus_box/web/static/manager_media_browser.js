@@ -119,7 +119,7 @@ async function refreshStorageDevices() {
                     </div>
                 </div>
                 <button class="btn-secondary small" style="color: var(--error); border-color: var(--error); white-space: nowrap;"
-                        onclick="openPrepareDriveModal('${escapeHtml(d.name)}')">
+                        onclick="openPrepareDriveModal('${escapeJs(d.name)}')">
                     Erase &amp; prepare
                 </button>
             </div>`).join('');
