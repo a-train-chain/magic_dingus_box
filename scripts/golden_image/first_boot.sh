@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2329  # file-wide: run_step calls every step_<name> (and through it the helpers) by computed name, and the handlers run from traps
+# shellcheck disable=SC2317,SC2329  # file-wide: run_step calls every step_<name> (and through it the helpers) by computed name, and the handlers run from traps (SC2329 is ShellCheck 0.11's name for it, SC2317 0.10's)
 set -euo pipefail
 
 #

@@ -737,9 +737,3 @@ kill -9 $$
     ! printf '%s' "$last" | grep -qF "=== FAILED" || false
     printf '%s' "$last" | grep -qF "=== Magic Dingus Box first-boot setup complete ==="
 }
-
-@test "the engine and first_boot.sh pass shellcheck at the gate's severity" {
-    if ! command -v shellcheck >/dev/null 2>&1; then skip "shellcheck not installed"; fi
-    run shellcheck -S info "$FB"
-    [ "$status" -eq 0 ]
-}

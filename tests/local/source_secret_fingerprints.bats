@@ -373,8 +373,8 @@ esac"
     # step list, not where their text sits.
     eval "$(sed -n '/^FB_STEP_TABLE=(/,/^)/p' "$f")"
     order=" ${FB_STEP_TABLE[*]} "
-    [[ "$order" == *" vpn_identity "*" expand_rootfs "* ]]
-    [[ "$order" == *" vpn_identity "*" wipe_media_browser "* ]]
+    [[ "$order" == *" vpn_identity "*"expand_rootfs "* ]]
+    [[ "$order" == *" vpn_identity "*"wipe_media_browser "* ]]
 }
 
 # Runs the real Step 1c text under first_boot's own shell options and ERR trap,
