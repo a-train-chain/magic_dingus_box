@@ -432,11 +432,22 @@ public:
         std::lock_guard<std::mutex> lk(err_mtx_);
         return last_error_;
     }
+    // The last error set on the CALLING thread (by any SonarrClient; ""
+    // until one is set, and cleared by set_error({}) on this thread). The
+    // mutation workers (series_mutations.cpp) read THIS to explain their own
+    // failed call: last_error() is shared with SeriesDetail's background
+    // re-polls, so reading it can report another worker's error.
+    std::string last_error_on_this_thread() const { return thread_error_slot(); }
 
 protected:
     void set_error(std::string msg) {
+        thread_error_slot() = msg;
         std::lock_guard<std::mutex> lk(err_mtx_);
         last_error_ = std::move(msg);
+    }
+    static std::string& thread_error_slot() {
+        thread_local std::string slot;
+        return slot;
     }
     // Virtual for stubbing in tests (see test_sonarr_client.cpp).
     virtual std::string http_get(const std::string& path);

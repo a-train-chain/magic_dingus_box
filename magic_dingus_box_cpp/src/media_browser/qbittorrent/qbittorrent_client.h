@@ -158,13 +158,25 @@ public:
         std::lock_guard<std::mutex> lk(err_mtx_);
         return last_error_;
     }
+    // The last error set on the CALLING thread (by any QbittorrentClient;
+    // "" until one is set, and cleared by set_error({}) on this thread).
+    // pause_all/resume_all/delete_torrent/the alt-limit calls decide success
+    // from THIS: the client is shared by the Queue poll, Remove/Delete
+    // Season workers and the movie/game quiet hooks, so the shared
+    // last_error() can carry — or have cleared — another thread's result.
+    std::string last_error_on_this_thread() const { return thread_error_slot(); }
 
 protected:
     // err_mtx_ is a LEAF mutex: set_error never touches cookie_mtx_, so
     // the call sites that already hold cookie_mtx_ nest it safely.
     void set_error(std::string msg) {
+        thread_error_slot() = msg;
         std::lock_guard<std::mutex> lk(err_mtx_);
         last_error_ = std::move(msg);
+    }
+    static std::string& thread_error_slot() {
+        thread_local std::string slot;
+        return slot;
     }
     // Virtual seam for tests (mock client).
     virtual std::string http_get(const std::string& path);

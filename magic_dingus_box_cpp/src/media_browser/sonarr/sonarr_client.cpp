@@ -382,7 +382,7 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
     if (!have) {
         set_error("Sonarr lookup returned no results for tmdb:"
                   + std::to_string(tmdb_id));
-        spdlog::error("[sonarr] add_series: {}", last_error());
+        spdlog::error("[sonarr] add_series: {}", last_error_on_this_thread());
         return result;  // ok=false
     }
 
@@ -390,7 +390,7 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
     if (!series.isObject()) {  // .get() on a non-object throws
         set_error("Sonarr lookup returned an unexpected shape for tmdb:"
                   + std::to_string(tmdb_id));
-        spdlog::error("[sonarr] add_series: {}", last_error());
+        spdlog::error("[sonarr] add_series: {}", last_error_on_this_thread());
         return result;  // ok=false
     }
 
@@ -406,7 +406,7 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
         if (!probe) {
             set_error("Could not reach Sonarr to check whether tvdb:"
                       + std::to_string(tvdb_id) + " is already in the library");
-            spdlog::error("[sonarr] add_series: {}", last_error());
+            spdlog::error("[sonarr] add_series: {}", last_error_on_this_thread());
             return result;  // ok=false — deliberately NO POST
         }
         if (!probe->empty()) {
@@ -436,7 +436,7 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
     auto roots = get_root_folders();
     if (roots.empty()) {
         set_error("No root folder configured in Sonarr");
-        spdlog::error("[sonarr] add_series: {}", last_error());
+        spdlog::error("[sonarr] add_series: {}", last_error_on_this_thread());
         return result;  // ok=false
     }
 
@@ -466,7 +466,7 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
 
     const std::string resp = http_post("/api/v3/series", body);
     if (resp.empty()) {
-        spdlog::error("[sonarr] add_series POST failed: {}", last_error());
+        spdlog::error("[sonarr] add_series POST failed: {}", last_error_on_this_thread());
         return result;  // ok=false
     }
 
@@ -494,7 +494,7 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
     }
     if (new_id <= 0) {
         set_error("Sonarr accepted the add but no series id could be resolved");
-        spdlog::error("[sonarr] add_series: {}", last_error());
+        spdlog::error("[sonarr] add_series: {}", last_error_on_this_thread());
         return result;  // ok=false
     }
 
@@ -533,7 +533,7 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
 
     if (!result.ok) {
         set_error("Sonarr accepted the add but its state could not be read back");
-        spdlog::error("[sonarr] add_series: {}", last_error());
+        spdlog::error("[sonarr] add_series: {}", last_error_on_this_thread());
         return result;
     }
     if (!result.settled) {

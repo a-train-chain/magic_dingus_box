@@ -241,7 +241,7 @@ std::vector<QbitTorrent> QbittorrentClient::get_torrents() try {
         std::lock_guard<std::mutex> lk(cookie_mtx_);
         if (sid_cookie_.empty()) {
             if (!login_locked()) {
-                spdlog::warn("[qbit] login failed: {}", last_error());
+                spdlog::warn("[qbit] login failed: {}", last_error_on_this_thread());
                 return {};
             }
         }
@@ -313,14 +313,18 @@ bool QbittorrentClient::delete_torrent(const std::string& hash,
 
     std::string body = "hashes=" + lower_hash
                      + "&deleteFiles=" + (delete_files ? "true" : "false");
+    // Cleared first, like pause_all: otherwise an earlier failure on this
+    // thread (one stuck torrent in a Remove/Delete Season purge loop) would
+    // make every later delete in the loop report failure too.
+    set_error({});
     std::string resp = http_post("/api/v2/torrents/delete", body);
 
     // qBit returns 200 with empty body on success, even when the hash
-    // doesn't exist (no-op). last_error_ is set by http_post if the
+    // doesn't exist (no-op). http_post sets this thread's error if the
     // call itself failed (network, 4xx, etc.).
-    if (!last_error().empty()) {
+    if (!last_error_on_this_thread().empty()) {
         spdlog::warn("[qbit] delete_torrent({}) failed: {}",
-                     lower_hash, last_error());
+                     lower_hash, last_error_on_this_thread());
         return false;
     }
     spdlog::info("[qbit] delete_torrent({}, files={})",
@@ -342,13 +346,13 @@ bool QbittorrentClient::pause_all() {
     // hashes=all is qBit's documented "select all torrents" sentinel.
     set_error({});
     http_post("/api/v2/torrents/stop", "hashes=all");  // qBit 5.x
-    if (!last_error().empty()) {
+    if (!last_error_on_this_thread().empty()) {
         // Fall back to legacy 4.x alias.
         set_error({});
         http_post("/api/v2/torrents/pause", "hashes=all");
     }
-    if (!last_error().empty()) {
-        spdlog::warn("[qbit] pause_all failed: {}", last_error());
+    if (!last_error_on_this_thread().empty()) {
+        spdlog::warn("[qbit] pause_all failed: {}", last_error_on_this_thread());
         return false;
     }
     spdlog::info("[qbit] paused all torrents (playback start)");
@@ -364,12 +368,12 @@ bool QbittorrentClient::resume_all() {
     }
     set_error({});
     http_post("/api/v2/torrents/start", "hashes=all");  // qBit 5.x
-    if (!last_error().empty()) {
+    if (!last_error_on_this_thread().empty()) {
         set_error({});
         http_post("/api/v2/torrents/resume", "hashes=all");  // qBit 4.x
     }
-    if (!last_error().empty()) {
-        spdlog::warn("[qbit] resume_all failed: {}", last_error());
+    if (!last_error_on_this_thread().empty()) {
+        spdlog::warn("[qbit] resume_all failed: {}", last_error_on_this_thread());
         return false;
     }
     spdlog::info("[qbit] resumed all torrents (playback end)");
@@ -403,11 +407,11 @@ bool QbittorrentClient::set_alt_speed_limits_enabled(bool on) {
         // http_get) or malformed (anything but the documented "0"/"1").
         // Either way we cannot know the current state, so a toggle could
         // flip it the WRONG way — fail instead.
-        if (last_error().empty()) {
+        if (last_error_on_this_thread().empty()) {
             set_error("qbit speedLimitsMode unrecognized: '" + mode + "'");
         }
         spdlog::warn("[qbit] set_alt_speed_limits_enabled({}) read failed: {}",
-                     on, last_error());
+                     on, last_error_on_this_thread());
         return false;
     }
 
@@ -418,8 +422,8 @@ bool QbittorrentClient::set_alt_speed_limits_enabled(bool on) {
 
     set_error({});
     http_post("/api/v2/transfer/toggleSpeedLimitsMode", "");
-    if (!last_error().empty()) {
-        spdlog::warn("[qbit] toggleSpeedLimitsMode failed: {}", last_error());
+    if (!last_error_on_this_thread().empty()) {
+        spdlog::warn("[qbit] toggleSpeedLimitsMode failed: {}", last_error_on_this_thread());
         return false;
     }
 
@@ -428,12 +432,12 @@ bool QbittorrentClient::set_alt_speed_limits_enabled(bool on) {
     set_error({});
     std::string mode2 = read_mode();
     if (mode2 != (on ? "1" : "0")) {
-        if (last_error().empty()) {
+        if (last_error_on_this_thread().empty()) {
             set_error("qbit speedLimitsMode still '" + mode2
                       + "' after toggle");
         }
         spdlog::warn("[qbit] set_alt_speed_limits_enabled({}) verify failed: {}",
-                     on, last_error());
+                     on, last_error_on_this_thread());
         return false;
     }
     spdlog::info("[qbit] alt speed limits (trickle) {}", on ? "ON" : "OFF");
@@ -452,9 +456,9 @@ bool QbittorrentClient::configure_alt_speed_limits(int dl_bytes_s, int up_bytes_
                            + ",\"alt_up_limit\":"
                            + std::to_string(up_bytes_s) + "}";
     http_post("/api/v2/app/setPreferences", body);
-    if (!last_error().empty()) {
+    if (!last_error_on_this_thread().empty()) {
         spdlog::warn("[qbit] configure_alt_speed_limits({}, {}) failed: {}",
-                     dl_bytes_s, up_bytes_s, last_error());
+                     dl_bytes_s, up_bytes_s, last_error_on_this_thread());
         return false;
     }
     spdlog::info("[qbit] alt speed limits configured (dl={} KiB/s, up={} KiB/s)",

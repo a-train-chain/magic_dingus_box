@@ -210,7 +210,7 @@ SeriesMutationOutcome run_start_season_download(SonarrClient& sonarr, int sid,
                                                 const std::string& title) {
     SeriesMutationOutcome out;
     if (!sonarr.set_season_monitored(sid, season, true)) {
-        const std::string err = sonarr.last_error();
+        const std::string err = sonarr.last_error_on_this_thread();
         out.toast = title + ": couldn't monitor season " +
                     std::to_string(season) + " \xE2\x80\x94 " + err;
         return out;
@@ -258,7 +258,7 @@ SeriesMutationOutcome run_add_at_season(SonarrClient& sonarr, int tmdb_id,
         // Sonarr" — last_error() is set on every transport failure, so an
         // empty vector alone is ambiguous and blaming the config would be
         // wrong.
-        const std::string err = sonarr.last_error();
+        const std::string err = sonarr.last_error_on_this_thread();
         out.toast = err.empty()
             ? title + ": Sonarr has no quality profile \xE2\x80\x94 not added"
             : title + ": couldn't reach Sonarr \xE2\x80\x94 " + err;
@@ -283,7 +283,7 @@ SeriesMutationOutcome run_add_at_season(SonarrClient& sonarr, int tmdb_id,
         // branch applies no addOptions.
         auto res = sonarr.add_series(tmdb_id, qp_id, /*monitor=*/false, title);
         if (!res.ok) {
-            const std::string err = sonarr.last_error();
+            const std::string err = sonarr.last_error_on_this_thread();
             out.toast = title + ": add failed \xE2\x80\x94 " + err;
             return out;
         }
@@ -309,7 +309,7 @@ SeriesMutationOutcome run_add_at_season(SonarrClient& sonarr, int tmdb_id,
     // default, applied by Sonarr itself.
     auto res = sonarr.add_series(tmdb_id, qp_id, /*monitor=*/true, title);
     if (!res.ok) {
-        const std::string err = sonarr.last_error();
+        const std::string err = sonarr.last_error_on_this_thread();
         out.toast = title + ": add failed \xE2\x80\x94 " + err;
         return out;
     }
@@ -343,7 +343,7 @@ SeriesMutationOutcome run_add_at_season(SonarrClient& sonarr, int tmdb_id,
         // monitoring, so do it explicitly and report THOSE outcomes — same
         // shape as the NextSeason flow.
         if (!sonarr.set_season_monitored(sid, first.season, true)) {
-            const std::string err = sonarr.last_error();
+            const std::string err = sonarr.last_error_on_this_thread();
             out.toast = title + ": couldn't monitor season " +
                         std::to_string(first.season) + " \xE2\x80\x94 " + err;
             return out;
@@ -399,7 +399,7 @@ SeriesMutationOutcome run_whole_series(SonarrClient& sonarr, bool pre_add,
         const int qp_id =
             pick_series_quality_profile_id(sonarr.get_quality_profiles());
         if (qp_id == 0) {
-            const std::string err = sonarr.last_error();
+            const std::string err = sonarr.last_error_on_this_thread();
             out.toast = err.empty()
                 ? title + ": Sonarr has no quality profile "
                           "\xE2\x80\x94 not added"
@@ -423,7 +423,7 @@ SeriesMutationOutcome run_whole_series(SonarrClient& sonarr, bool pre_add,
         // gated on res.settled.
         auto res = sonarr.add_series(tmdb_id, qp_id, /*monitor=*/true, title);
         if (!res.ok) {
-            const std::string err = sonarr.last_error();
+            const std::string err = sonarr.last_error_on_this_thread();
             out.toast = title + ": add failed \xE2\x80\x94 " + err;
             return out;
         }
@@ -605,7 +605,7 @@ SeriesMutationOutcome run_remove_series(SonarrClient& sonarr,
         // entry to every client call, so a LATER success wipes the diagnosis
         // and the abort toast below degrades to "NOT removed" with no reason
         // attached.
-        if (cancel_err.empty()) cancel_err = sonarr.last_error();
+        if (cancel_err.empty()) cancel_err = sonarr.last_error_on_this_thread();
     }
     if (cancel_failed > 0) {
         // A genuinely failed cancel still aborts before anything is deleted
@@ -672,7 +672,7 @@ SeriesMutationOutcome run_remove_series(SonarrClient& sonarr,
         }
     }
     if (!sonarr.remove_series(sid, /*delete_files=*/true)) {
-        const std::string err = sonarr.last_error();
+        const std::string err = sonarr.last_error_on_this_thread();
         out.toast = title + ": remove failed \xE2\x80\x94 " + err;
         return out;
     }

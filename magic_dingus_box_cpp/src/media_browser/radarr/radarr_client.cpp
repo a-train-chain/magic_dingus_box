@@ -257,7 +257,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
                             + std::to_string(tmdb_id);
         if (!lookup_failure.empty()) message += " (" + lookup_failure + ")";
         set_error(std::move(message));
-        spdlog::error("[radarr] add_movie: {}", last_error());
+        spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
         return false;
     }
 
@@ -267,7 +267,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
     std::istringstream is(lookup_resp);
     if (!Json::parseFromStream(rb, is, &root, &err)) {
         set_error("Radarr lookup parse failed: " + err);
-        spdlog::error("[radarr] add_movie: {}", last_error());
+        spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
         return false;
     }
 
@@ -277,7 +277,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
     if (root.isArray()) {
         if (root.size() == 0) {
             set_error("Radarr lookup returned no results");
-            spdlog::error("[radarr] add_movie: {}", last_error());
+            spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
             return false;
         }
         movie = root[0u];
@@ -285,7 +285,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
         movie = root;
     } else {
         set_error("Radarr lookup returned unexpected JSON shape");
-        spdlog::error("[radarr] add_movie: {}", last_error());
+        spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
         return false;
     }
 
@@ -309,7 +309,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
     auto roots = get_root_folders();
     if (roots.empty()) {
         set_error("No root folder configured in Radarr");
-        spdlog::error("[radarr] add_movie: {}", last_error());
+        spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
         return false;
     }
     movie["qualityProfileId"]    = quality_profile_id;
@@ -329,7 +329,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
     auto resp = http_post("/api/v3/movie", body);
     if (resp.empty()) {
         // last_error_ already set by http_post on failure.
-        spdlog::error("[radarr] add_movie POST failed: {}", last_error());
+        spdlog::error("[radarr] add_movie POST failed: {}", last_error_on_this_thread());
         return false;
     }
     spdlog::info("[radarr] add_movie ok: tmdb_id={} title='{}' rootFolder='{}'",

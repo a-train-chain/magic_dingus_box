@@ -10,6 +10,7 @@
 
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "media_browser/movie_remove.h"
@@ -29,6 +30,7 @@ public:
     bool fail_hash_read = false;
     bool fail_cancel = false;
     bool fail_remove = false;
+    std::string concurrent_error;
     std::vector<std::string> hashes{"abc123"};
     std::vector<std::string> calls;
 
@@ -62,6 +64,10 @@ public:
                         (delete_files ? ":files" : ""));
         if (fail_remove) {
             set_error("HTTP 404: not found");
+            // A background poll on another thread fails its own call on
+            // this shared client before the worker reads the cause.
+            if (!concurrent_error.empty())
+                std::thread([this] { set_error(concurrent_error); }).join();
             return false;
         }
         return RadarrMockClient::remove_movie(id, delete_files);
@@ -186,4 +192,18 @@ TEST_CASE("movie remove: only this movie's queue rows are cancelled",
     const auto out = mb::remove_movie_orphan_proof(radarr, &qbit, 2);
     CHECK(out.cancelled == 0);
     for (const auto& c : radarr.calls) CHECK(c.rfind("cancel:", 0) != 0);
+}
+
+TEST_CASE("movie remove: the failure message is this worker's own error, not "
+          "a concurrent poll's", "[movie_remove][last_error]") {
+    ScriptedRadarr radarr;
+    radarr.fail_remove = true;
+    radarr.concurrent_error = "curl: Couldn't connect to server";
+    RecordingQbit qbit;
+    const auto out = mb::remove_movie_orphan_proof(radarr, &qbit, 1);
+    CHECK_FALSE(out.removed);
+    CHECK(out.message == "Remove failed: HTTP 404: not found");
+    // The shared slot holds the other thread's error — the one the old
+    // last_error() read would have put in this toast.
+    CHECK(radarr.last_error() == "curl: Couldn't connect to server");
 }

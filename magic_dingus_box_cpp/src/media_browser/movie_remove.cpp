@@ -41,7 +41,7 @@ MovieRemoveOutcome remove_movie_orphan_proof(RadarrClient& radarr,
         ++cancel_failed;
         // Captured AT the failing call: a later success would clear the
         // shared last_error() and the abort would lose its reason.
-        if (cancel_err.empty()) cancel_err = radarr.last_error();
+        if (cancel_err.empty()) cancel_err = radarr.last_error_on_this_thread();
         spdlog::warn("[movie_remove] failed to cancel queue item {} for "
                      "movie {}: {}", q.id, radarr_id, cancel_err);
     }
@@ -97,7 +97,7 @@ MovieRemoveOutcome remove_movie_orphan_proof(RadarrClient& radarr,
     // Step 3: the record and its library file — last, because it is the
     // one step a retry cannot undo.
     if (!radarr.remove_movie(radarr_id, /*delete_files=*/true)) {
-        out.message = "Remove failed: " + radarr.last_error();
+        out.message = "Remove failed: " + radarr.last_error_on_this_thread();
         return out;
     }
     out.removed = true;
