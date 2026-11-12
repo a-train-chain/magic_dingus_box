@@ -281,6 +281,9 @@ if(BUILD_KIOSK)
             # undefined LibraryDb::*/WatchStore::*.
             src/media_browser/library/library_db.cpp
             src/media_browser/library/watch_store.cpp
+            # The one libcurl transport every MB HTTP call goes through
+            # (dual-listed: also in MEDIA_BROWSER_SOURCES for the tests).
+            src/media_browser/http/http_request.cpp
             src/media_browser/sonarr/sonarr_parsers.cpp
             src/media_browser/sonarr/sonarr_client.cpp
             src/media_browser/sonarr/sonarr_mock.cpp
@@ -493,6 +496,7 @@ if(ENABLE_MEDIA_BROWSER)
 
     # --- Media browser library sources (expanded in later tasks) ---
     set(MEDIA_BROWSER_SOURCES
+        src/media_browser/http/http_request.cpp
         src/media_browser/sonarr/sonarr_parsers.cpp
         src/media_browser/sonarr/sonarr_client.cpp
         src/media_browser/sonarr/sonarr_mock.cpp
@@ -550,6 +554,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_watch_store.cpp
         tests/media_browser/test_tmdb_client.cpp
+        tests/media_browser/test_http_request.cpp
         tests/media_browser/test_tmdb_tv.cpp
         tests/media_browser/test_media_ref.cpp
         tests/media_browser/test_mb_filter_persistence.cpp
