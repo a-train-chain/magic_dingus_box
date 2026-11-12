@@ -1,4 +1,5 @@
 #include "media_browser/qbittorrent/qbittorrent_client.h"
+#include "media_browser/http/http_request.h"
 
 #include <curl/curl.h>
 #include <json/json.h>
@@ -14,47 +15,37 @@ namespace media_browser {
 
 namespace {
 
-size_t write_cb(char* ptr, size_t size, size_t nmemb, std::string* out) {
-    out->append(ptr, size * nmemb);
-    return size * nmemb;
-}
+// qBittorrent is a localhost service (127.0.0.1:8080, published from
+// Gluetun's netns): 2 s connect bound on every call.
+constexpr long kConnectTimeoutSecs = 2;
 
-// Captures Set-Cookie response headers so we can extract the SID
-// returned by /api/v2/auth/login. qBit's auth is a simple
-// username+password POST that returns "Ok." in the body and a SID
-// cookie in the headers; subsequent requests must echo the cookie.
-size_t header_cb(char* buffer, size_t size, size_t nitems,
-                 std::string* out_set_cookie) {
-    const size_t n = size * nitems;
+// Extracts the SID from one captured response header line, or "" when the
+// line is not qBit's session cookie. qBit's auth is a simple
+// username+password POST that returns "Ok." in the body and a SID cookie in
+// the headers; subsequent requests must echo the cookie.
+std::string sid_from_header_line(const std::string& line) {
     static const char kKey[] = "Set-Cookie:";
+    const size_t n = line.size();
     // CASE-INSENSITIVE compare — qBittorrent emits the header as
     // "set-cookie:" (lowercase) and HTTP headers are case-insensitive
     // per RFC 7230. The original strncmp here was case-sensitive,
     // which silently broke every login (header was never matched →
     // SID cookie never captured → "no SID cookie returned" warning
     // on every kiosk request → entire qBit live-overlay path dead).
-    if (n > sizeof(kKey) - 1
-        && strncasecmp(buffer, kKey, sizeof(kKey) - 1) == 0) {
-        // Trim leading space after "Set-Cookie:"
-        size_t start = sizeof(kKey) - 1;
-        while (start < n && (buffer[start] == ' ' || buffer[start] == '\t')) {
-            ++start;
-        }
-        // Strip trailing CRLF
-        size_t end = n;
-        while (end > start && (buffer[end-1] == '\r' || buffer[end-1] == '\n')) {
-            --end;
-        }
-        // qBit's cookie is "SID=...; HttpOnly; path=/" — we only need
-        // the "SID=..." part (everything before the first ';').
-        std::string raw(buffer + start, end - start);
-        size_t semi = raw.find(';');
-        if (semi != std::string::npos) raw.resize(semi);
-        if (raw.compare(0, 4, "SID=") == 0) {
-            *out_set_cookie = raw;
-        }
+    if (n <= sizeof(kKey) - 1 ||
+        strncasecmp(line.c_str(), kKey, sizeof(kKey) - 1) != 0) {
+        return {};
     }
-    return n;
+    // Trim leading space after "Set-Cookie:" (the transport already
+    // stripped the trailing CRLF).
+    size_t start = sizeof(kKey) - 1;
+    while (start < n && (line[start] == ' ' || line[start] == '\t')) ++start;
+    // qBit's cookie is "SID=...; HttpOnly; path=/" — we only need
+    // the "SID=..." part (everything before the first ';').
+    std::string raw = line.substr(start);
+    size_t semi = raw.find(';');
+    if (semi != std::string::npos) raw.resize(semi);
+    return raw.compare(0, 4, "SID=") == 0 ? raw : std::string{};
 }
 
 }  // namespace
@@ -70,43 +61,34 @@ bool QbittorrentClient::login_locked() {
     std::string body = "username=" + cfg_.username
                      + "&password=" + cfg_.password;
 
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        set_error("curl init failed");
-        return false;
-    }
-
-    std::string resp_body;
-    std::string set_cookie;
-    std::string url = cfg_.base_url + "/api/v2/auth/login";
-
-    curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST,           1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &resp_body);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA,     &set_cookie);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+    http::Request req;
+    req.method = http::Method::Post;
+    req.url = cfg_.base_url + "/api/v2/auth/login";
+    req.body = std::move(body);
+    req.capture_headers = true;
+    req.timeout_secs = cfg_.timeout_secs;
+    req.connect_timeout_secs = kConnectTimeoutSecs;
     // qBit requires a Referer header that matches its own origin
     // — without it the login returns 403 even with valid credentials.
     // It validates the host portion only, not the full URL.
-    struct curl_slist* hdrs = nullptr;
-    std::string referer = "Referer: " + cfg_.base_url;
-    hdrs = curl_slist_append(hdrs, referer.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
-
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-    curl_slist_free_all(hdrs);
-    curl_easy_cleanup(curl);
+    req.headers = {"Referer: " + cfg_.base_url};
+    auto resp = http::request(req);
+    if (resp.curl_code == CURLE_FAILED_INIT) {
+        set_error(resp.error);
+        return false;
+    }
+    const CURLcode rc = resp.curl_code;
+    const long http_code = resp.status;
+    const std::string& resp_body = resp.body;
+    // Last matching line wins, as the old per-header callback did.
+    std::string set_cookie;
+    for (const auto& line : resp.headers) {
+        std::string sid = sid_from_header_line(line);
+        if (!sid.empty()) set_cookie = std::move(sid);
+    }
 
     if (rc != CURLE_OK) {
-        set_error(std::string("qbit login: ") + curl_easy_strerror(rc));
+        set_error("qbit login: " + resp.error);
         return false;
     }
     if (http_code != 200 || resp_body != "Ok.") {
@@ -128,43 +110,27 @@ std::string QbittorrentClient::http_get(const std::string& path) {
     std::string url = cfg_.base_url + path;
 
     auto perform = [&]() -> std::pair<long, std::string> {
-        CURL* curl = curl_easy_init();
-        if (!curl) return {0, {}};
-
-        std::string body;
-        curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &body);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(cfg_.timeout_secs));
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
-        curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
-
-        struct curl_slist* hdrs = nullptr;
-        std::string cookie_hdr;
+        http::Request req;
+        req.url = url;
+        req.timeout_secs = cfg_.timeout_secs;
+        req.connect_timeout_secs = kConnectTimeoutSecs;
         {
             std::lock_guard<std::mutex> lk(cookie_mtx_);
             if (!sid_cookie_.empty()) {
-                cookie_hdr = "Cookie: " + sid_cookie_;
-                hdrs = curl_slist_append(hdrs, cookie_hdr.c_str());
+                req.headers.push_back("Cookie: " + sid_cookie_);
             }
         }
-        std::string referer = "Referer: " + cfg_.base_url;
-        hdrs = curl_slist_append(hdrs, referer.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
-
-        CURLcode rc = curl_easy_perform(curl);
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-        curl_slist_free_all(hdrs);
-        curl_easy_cleanup(curl);
-
-        if (rc != CURLE_OK) {
-            std::lock_guard<std::mutex> lk(cookie_mtx_);
-            set_error(std::string("curl: ") + curl_easy_strerror(rc));
+        req.headers.push_back("Referer: " + cfg_.base_url);
+        auto resp = http::request(req);
+        if (resp.curl_code == CURLE_FAILED_INIT) {
             return {0, {}};
         }
-        return {http_code, body};
+        if (!resp.transport_ok()) {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
+            set_error("curl: " + resp.error);
+            return {0, {}};
+        }
+        return {resp.status, std::move(resp.body)};
     };
 
     auto [code, body] = perform();
@@ -215,49 +181,31 @@ std::string QbittorrentClient::http_post(const std::string& path,
     std::string url = cfg_.base_url + path;
 
     auto perform = [&]() -> std::pair<long, std::string> {
-        CURL* curl = curl_easy_init();
-        if (!curl) {
-            std::lock_guard<std::mutex> lk(cookie_mtx_);
-            set_error("curl init failed");
-            return {0, {}};
-        }
-
-        std::string resp;
-        curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
-        curl_easy_setopt(curl, CURLOPT_POST,           1L);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &resp);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(cfg_.timeout_secs));
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
-        curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
-
-        struct curl_slist* hdrs = nullptr;
-        std::string cookie_hdr;
+        http::Request req;
+        req.method = http::Method::Post;
+        req.body = body;
+        req.url = url;
+        req.timeout_secs = cfg_.timeout_secs;
+        req.connect_timeout_secs = kConnectTimeoutSecs;
         {
             std::lock_guard<std::mutex> lk(cookie_mtx_);
             if (!sid_cookie_.empty()) {
-                cookie_hdr = "Cookie: " + sid_cookie_;
-                hdrs = curl_slist_append(hdrs, cookie_hdr.c_str());
+                req.headers.push_back("Cookie: " + sid_cookie_);
             }
         }
-        std::string referer = "Referer: " + cfg_.base_url;
-        hdrs = curl_slist_append(hdrs, referer.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
-
-        CURLcode rc = curl_easy_perform(curl);
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-        curl_slist_free_all(hdrs);
-        curl_easy_cleanup(curl);
-
-        if (rc != CURLE_OK) {
+        req.headers.push_back("Referer: " + cfg_.base_url);
+        auto resp = http::request(req);
+        if (resp.curl_code == CURLE_FAILED_INIT) {
             std::lock_guard<std::mutex> lk(cookie_mtx_);
-            set_error(std::string("curl: ") + curl_easy_strerror(rc));
+            set_error(resp.error);
             return {0, {}};
         }
-        return {http_code, resp};
+        if (!resp.transport_ok()) {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
+            set_error("curl: " + resp.error);
+            return {0, {}};
+        }
+        return {resp.status, std::move(resp.body)};
     };
 
     auto [code, resp] = perform();
