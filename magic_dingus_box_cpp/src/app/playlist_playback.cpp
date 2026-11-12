@@ -4,6 +4,7 @@
 #include "playback_reset.h"
 
 #include <iostream>
+#include <utility>
 
 namespace app {
 
@@ -415,6 +416,18 @@ void PlaylistPlayback::tick_pipeline_error() {
     // Pipeline error on a playlist item -> skip it (or give up after a
     // run of failures). Not gated on video_active: an error before
     // preroll leaves duration 0, so video_active never turned on.
+    //
+    // Controller::load_next_item hands over a run of items that would not
+    // load (its synchronous retries are bounded — see kMaxSyncLoadRetries)
+    // by raising playlist_item_load_failed; it is consumed every frame, so
+    // a hand-off that something else overtook (Media Browser entry, a
+    // playlist switch) is dropped rather than acted on later.
+    const bool load_failed = std::exchange(state_.playlist_item_load_failed, false);
+    if (owns_pipeline() && load_failed) {
+        act_on_failed_item(error_policy_.on_load_failure(failure_budget()),
+                           "load failed");
+        return;
+    }
     if (owns_pipeline()) {
         const auto decision = error_policy_.on_frame(
             transport_.stream_generation(), transport_.has_error(),

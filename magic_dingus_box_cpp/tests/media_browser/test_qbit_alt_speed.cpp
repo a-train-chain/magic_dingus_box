@@ -18,6 +18,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "media_browser/qbittorrent/qbittorrent_client.h"
@@ -38,6 +39,7 @@ public:
     bool fail_mode_get = false;       // GET fails like a transport error
     bool toggle_is_noop = false;      // POST toggle "succeeds" but state sticks
     bool fail_toggle_post = false;    // POST toggle fails like a 4xx
+    std::string concurrent_error;     // set from ANOTHER thread mid-setPreferences
 
     int mode_gets = 0;
     int toggles = 0;
@@ -71,6 +73,11 @@ protected:
             return {};  // real qBit: 200 with empty body
         }
         if (path == "/api/v2/app/setPreferences") {
+            // Another thread (the Queue poll, say) fails a call on this
+            // shared client while ours is in flight.
+            if (!concurrent_error.empty()) {
+                std::thread([this] { set_error(concurrent_error); }).join();
+            }
             return {};  // 200, empty body
         }
         set_error("unexpected POST " + path);
@@ -183,4 +190,17 @@ TEST_CASE("configure_alt_speed_limits posts BYTES/s rates as json= preferences",
     REQUIRE(q.post_bodies[0] ==
             "/api/v2/app/setPreferences|"
             "json={\"alt_dl_limit\":2097152,\"alt_up_limit\":1048576}");
+}
+
+TEST_CASE("configure_alt_speed_limits: another thread's error does not fail "
+          "this call", "[qbit][alt-speed][last_error]") {
+    // The verdict used to read the SHARED last_error(): any other thread
+    // failing a call on this client mid-request turned a success into a
+    // logged failure (and the reverse — a concurrent set_error({}) hid a
+    // real one). It reads this thread's own error now.
+    FakeQbit q;
+    q.concurrent_error = "curl: Timeout was reached";
+    REQUIRE(q.configure_alt_speed_limits(2097152, 8192));
+    CHECK(q.last_error() == "curl: Timeout was reached");  // shared: theirs
+    CHECK(q.last_error_on_this_thread().empty());          // ours: clean
 }

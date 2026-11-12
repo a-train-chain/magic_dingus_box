@@ -889,7 +889,8 @@ void BrowseScreen::persist_filter_state(MbMode mode_for_write, FilterTabKind tab
                                         const FilterState& fs) {
     // KEEP this guard. write_filter_state is itself a no-op for ForYou, but
     // the guard suppresses the SAVE as well — and save_settings is a
-    // synchronous serialize + tmp-write + fs::rename on the render thread.
+    // serialize on the render thread plus a tmp-write + fsync + rename on
+    // the settings writer thread.
     // SHUFFLE is a repeat-press action that routes here on every press, so
     // dropping the guard would cost one SD write per press for a payload that
     // provably did not change.
@@ -1289,8 +1290,9 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
                         // apply_mode_toggle: staged edits -> the OUTGOING
                         // mode's slot, mb_mode -> incoming, return the
                         // incoming mode's persisted state), then exactly ONE
-                        // settings.json write. save_settings is a synchronous
-                        // serialize + tmp-write + rename on the render thread;
+                        // settings.json write. save_settings is a serialize
+                        // on the render thread plus a tmp-write + fsync +
+                        // rename on the settings writer thread;
                         // the earlier two-call shape cost an extra SD write
                         // per press for no benefit.
                         const MbMode outgoing = this->mode();

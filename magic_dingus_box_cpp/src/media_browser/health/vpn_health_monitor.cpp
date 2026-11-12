@@ -2,8 +2,8 @@
 #include "media_browser/health/vpn_health_monitor.h"
 
 #include "app/app_state.h"
+#include "media_browser/http/http_request.h"
 
-#include <curl/curl.h>
 #include <spdlog/spdlog.h>
 
 namespace media_browser {
@@ -23,17 +23,15 @@ namespace {
 // would force a full stack restart on the next setup_services.sh run,
 // not worth it for a signal that the video_active guard already fixes.
 bool default_radarr_ping() {
-    CURL* curl = curl_easy_init();
-    if (!curl) return false;
-    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:7878/ping");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
-    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);   // HEAD-equivalent; we don't read body
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_easy_cleanup(curl);
-    return rc == CURLE_OK && http_code >= 200 && http_code < 300;
+    http::Request req;
+    req.method = http::Method::Head;   // we don't read the body
+    req.url = "http://127.0.0.1:7878/ping";
+    // 3 s total and no separate connect bound — unchanged from before the
+    // shared transport (the 3 s total already bounds the connect).
+    // NOSIGNAL comes from the transport (this runs on its own thread).
+    req.timeout_secs = 3;
+    const auto resp = http::request(req);
+    return resp.transport_ok() && resp.status >= 200 && resp.status < 300;
 }
 
 }  // namespace

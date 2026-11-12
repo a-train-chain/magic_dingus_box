@@ -10,8 +10,13 @@ ROOT = Path(__file__).resolve().parents[2]
 class FirstBootSSH(unittest.TestCase):
     def run_block(self, active=False, enabled=True):
         source = (ROOT / 'scripts/golden_image/first_boot.sh').read_text()
-        block = source.split('# Restart sshd so', 1)[1].split('# Step 1b:', 1)[0]
-        block = '# Restart sshd so' + block
+        # The restart loop is the tail of the ssh_host_keys step function:
+        # from its comment to the loop's closing `done`.
+        block = source.split('# Restart sshd so', 1)[1].split('\ndone\n', 1)[0]
+        block = '# Restart sshd so' + block + '\ndone\n'
+        self.assertIn('for SSH_UNIT in', block)
+        self.assertLess(source.index('step_ssh_host_keys() {'), source.index('# Restart sshd so'))
+        self.assertLess(source.index('# Restart sshd so'), source.index('# Step 1b:'))
         with tempfile.TemporaryDirectory() as directory:
             p = Path(directory)
             fake = p / 'systemctl'

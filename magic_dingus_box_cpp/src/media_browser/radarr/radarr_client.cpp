@@ -1,5 +1,6 @@
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/radarr/radarr_parsers.h"
+#include "media_browser/http/http_request.h"
 
 #include <curl/curl.h>
 #include <json/json.h>
@@ -15,10 +16,21 @@
 namespace media_browser {
 
 namespace {
-static size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
-    auto* s = static_cast<std::string*>(ud);
-    s->append(static_cast<char*>(ptr), size * nmemb);
-    return size * nmemb;
+// Radarr is a localhost service (127.0.0.1:7878, published from Gluetun's
+// netns). Connect bound matches ProwlarrClient's — the same kind of *arr
+// endpoint on the same netns — so a dead Radarr fails in 3 s instead of
+// burning the whole request budget; the total timeouts are unchanged.
+constexpr long kConnectTimeoutSecs = 3;
+
+http::Request radarr_request(http::Method m, const std::string& url,
+                             const std::string& api_key, long timeout_secs) {
+    http::Request r;
+    r.method = m;
+    r.url = url;
+    r.headers = {"X-Api-Key: " + api_key};
+    r.timeout_secs = timeout_secs;
+    r.connect_timeout_secs = kConnectTimeoutSecs;
+    return r;
 }
 }  // namespace
 
@@ -46,38 +58,19 @@ std::string RadarrClient::http_get_long(const std::string& path, int timeout_sec
 
 RadarrClient::HttpGetResult
 RadarrClient::http_get_result(const std::string& path, int timeout_secs) {
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        set_error("curl init failed");
-        return {{}, "curl init failed"};
+    auto resp = http::request(radarr_request(
+        http::Method::Get, cfg_.base_url + path, cfg_.api_key, timeout_secs));
+    if (!resp.transport_ok()) {
+        set_error(resp.error);
+        return {{}, std::move(resp.error)};
     }
-    std::string url = cfg_.base_url + path;
-    std::string body;
-    struct curl_slist* headers = nullptr;
-    std::string auth = "X-Api-Key: " + cfg_.api_key;
-    headers = curl_slist_append(headers, auth.c_str());
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_secs));
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) {
-        std::string error = curl_easy_strerror(rc);
-        set_error(error);
-        return {{}, std::move(error)};
-    }
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code;
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status;
         std::string error = os.str();
         set_error(error);
         return {{}, std::move(error)};
     }
-    return {std::move(body), {}};
+    return {std::move(resp.body), {}};
 }
 
 std::chrono::steady_clock::time_point RadarrClient::metadata_retry_now() const {
@@ -97,77 +90,48 @@ std::string RadarrClient::http_post(const std::string& path, const std::string& 
 RadarrClient::HttpPostResult
 RadarrClient::http_post_result(const std::string& path, const std::string& body) {
     HttpPostResult out;
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        set_error("curl init failed");
-        out.never_sent = true;
-        return out;
-    }
-    std::string url = cfg_.base_url + path;
-    std::string resp;
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, ("X-Api-Key: " + cfg_.api_key).c_str());
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(cfg_.timeout_secs));
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) {
-        set_error(curl_easy_strerror(rc));
+    auto req = radarr_request(http::Method::Post, cfg_.base_url + path,
+                              cfg_.api_key, cfg_.timeout_secs);
+    req.headers.push_back("Content-Type: application/json");
+    req.body = body;
+    auto resp = http::request(req);
+    if (!resp.transport_ok()) {
+        set_error(resp.error);
         // No complete answer: report no status even if headers arrived
         // (a dropped body after a 2xx is still "we don't know").
         // never_sent only for failures that happen before a single byte
         // can reach Radarr — everything else may have been acted on.
-        out.never_sent = rc == CURLE_COULDNT_RESOLVE_HOST ||
+        const CURLcode rc = resp.curl_code;
+        out.never_sent = rc == CURLE_FAILED_INIT ||
+                         rc == CURLE_COULDNT_RESOLVE_HOST ||
                          rc == CURLE_COULDNT_RESOLVE_PROXY ||
                          rc == CURLE_COULDNT_CONNECT ||
                          rc == CURLE_UNSUPPORTED_PROTOCOL ||
                          rc == CURLE_URL_MALFORMAT;
         return out;
     }
-    out.http_code = http_code;
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code << ": " << resp;
+    out.http_code = resp.status;
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status << ": " << resp.body;
         set_error(os.str());
     }
-    out.body = std::move(resp);
+    out.body = std::move(resp.body);
     return out;
 }
 
 long RadarrClient::http_delete(const std::string& path) {
-    CURL* curl = curl_easy_init();
-    if (!curl) { set_error("curl init failed"); return 0; }
-    std::string url = cfg_.base_url + path;
-    std::string resp;
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, ("X-Api-Key: " + cfg_.api_key).c_str());
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(cfg_.timeout_secs));
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+    auto resp = http::request(radarr_request(
+        http::Method::Delete, cfg_.base_url + path, cfg_.api_key,
+        cfg_.timeout_secs));
     // 0 = transport failure (no status line); any real code is returned
     // as-is, including >=400, so the caller's verdict never depends on a
     // cross-thread read of last_error_.
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code;
+    if (!resp.transport_ok()) { set_error(resp.error); return 0; }
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status;
         set_error(os.str());
     }
-    return http_code;
+    return resp.status;
 }
 
 bool RadarrClient::is_reachable() {
@@ -293,7 +257,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
                             + std::to_string(tmdb_id);
         if (!lookup_failure.empty()) message += " (" + lookup_failure + ")";
         set_error(std::move(message));
-        spdlog::error("[radarr] add_movie: {}", last_error());
+        spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
         return false;
     }
 
@@ -303,7 +267,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
     std::istringstream is(lookup_resp);
     if (!Json::parseFromStream(rb, is, &root, &err)) {
         set_error("Radarr lookup parse failed: " + err);
-        spdlog::error("[radarr] add_movie: {}", last_error());
+        spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
         return false;
     }
 
@@ -313,7 +277,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
     if (root.isArray()) {
         if (root.size() == 0) {
             set_error("Radarr lookup returned no results");
-            spdlog::error("[radarr] add_movie: {}", last_error());
+            spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
             return false;
         }
         movie = root[0u];
@@ -321,7 +285,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
         movie = root;
     } else {
         set_error("Radarr lookup returned unexpected JSON shape");
-        spdlog::error("[radarr] add_movie: {}", last_error());
+        spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
         return false;
     }
 
@@ -345,7 +309,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
     auto roots = get_root_folders();
     if (roots.empty()) {
         set_error("No root folder configured in Radarr");
-        spdlog::error("[radarr] add_movie: {}", last_error());
+        spdlog::error("[radarr] add_movie: {}", last_error_on_this_thread());
         return false;
     }
     movie["qualityProfileId"]    = quality_profile_id;
@@ -365,7 +329,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor,
     auto resp = http_post("/api/v3/movie", body);
     if (resp.empty()) {
         // last_error_ already set by http_post on failure.
-        spdlog::error("[radarr] add_movie POST failed: {}", last_error());
+        spdlog::error("[radarr] add_movie POST failed: {}", last_error_on_this_thread());
         return false;
     }
     spdlog::info("[radarr] add_movie ok: tmdb_id={} title='{}' rootFolder='{}'",

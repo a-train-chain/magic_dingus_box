@@ -27,6 +27,15 @@ jobs:
       - name: Run local test tier
         run: ./tests/run_local_tests.sh --tap
 
+      # tests/local/test_*.py (clone swap cleanup, first-boot SSH) — stdlib
+      # unittest, the same command as run_offline.sh's local-python suite.
+      # run_local_tests.sh runs only the .bats files, so these ran in no
+      # workflow. discover picks up a new test_*.py here automatically.
+      - name: Run local Python tests
+        run: |
+          cd tests/local
+          python3 -m unittest discover -s . -p 'test_*.py' -v
+
   # BLOCKING ShellCheck gate over every tracked shell script (*.sh, *.bash,
   # and extensionless sh/bash-shebang files) at -S info. Config and the
   # three repo-wide exclusions live in .shellcheckrc; deliberate one-off
@@ -181,8 +190,21 @@ jobs:
         with:
           python-version: "3.11"
 
+      # gunicorn + flask-sock (which pulls simple-websocket) so test_serve.py
+      # runs the production server for real: single-worker gthread gunicorn
+      # carrying the Phone Remote WebSocket. Without them serve.py silently
+      # fell back to Werkzeug and the WS legs skipped. pip, not apt: these
+      # must land in setup-python's interpreter, not the runner's system
+      # python3. gunicorn is pinned to Trixie's python3-gunicorn (what boxes
+      # run, via install_deps.sh / update.sh ensure_web_server_dep);
+      # flask-sock carries install_deps.sh's own floor. ffmpeg/ffprobe for
+      # the real-conversion upload tests. Under CI=true a missing one of
+      # these FAILS its test (tests/_deps.py) instead of skipping.
       - name: Install dependencies
-        run: pip install flask pyyaml pytest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install flask pyyaml pytest 'gunicorn==23.0.0' 'flask-sock>=0.7.0'
 
       - name: Run web suite
         run: python -m pytest magic_dingus_box/web/tests/ -q

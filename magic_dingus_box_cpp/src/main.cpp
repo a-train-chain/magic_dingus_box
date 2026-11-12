@@ -722,8 +722,11 @@ int main(int /* argc */, char* /* argv */[]) {
     } movie_quiet_unpublish{movie_quiet_ptr, game_quiet_mode};
 
     // Watch-state store (Phase 3): resume positions + watched flags for
-    // movies and TV, in the media_browser.db SQLite file. Main/render-
-    // thread-only by construction — workers never touch it. Best-effort:
+    // movies and TV, in the media_browser.db SQLite file. Its API is
+    // main/render-thread-only — the Media Browser's workers never touch
+    // it — and does no disk I/O after open(): reads come from an in-memory
+    // mirror, writes are queued for the store's own writer thread (drained
+    // before the _exit at the bottom of main). Best-effort:
     // open() failure leaves ok()==false, every method degrades to a safe
     // no-op (no resume, no checkpoints, no watched marks) and the store
     // logs its own one-shot warning. Declared BEFORE the screens so it
@@ -2081,6 +2084,11 @@ int main(int /* argc */, char* /* argv */[]) {
         // clobber the restored file with its stale in-memory state.
         // Checked ~once a second (restore is rare; no need to stat every
         // frame like the seek queue).
+        //
+        // The marker unlinks here and in the playlist poke below are file
+        // writes on this loop, left in place deliberately (reviewed
+        // 2026-11): one per web-admin action, never per tick, and the
+        // marker must be gone before the next poll or the reload repeats.
         {
             static int settings_reload_check = 0;
             if (++settings_reload_check >= 60) {
@@ -2091,7 +2099,11 @@ int main(int /* argc */, char* /* argv */[]) {
                     std::error_code rm_ec;
                     fs::remove(reload_marker, rm_ec);
                     const auto prev_mode = state.display_settings.mode;
-                    app::SettingsPersistence::load_settings(state);
+                    // reload_from_disk, not load_settings: saves are
+                    // written in the background, and one of ours still in
+                    // the air must not land on top of the restored file
+                    // after this load (see settings_persistence.h).
+                    app::SettingsPersistence::reload_from_disk(state);
                     // Same per-board reconcile the boot path runs (e.g. a
                     // Pi 4 backup restored onto a Pi 5 saying "headphone").
                     state.audio_settings.sanitize_for_platform(
@@ -2435,6 +2447,34 @@ int main(int /* argc */, char* /* argv */[]) {
     gbm.cleanup();
     display.cleanup();
 
+    // Settings and watch history are written by background threads (the
+    // render loop must never wait on the SD card — WatchdogSec=10), and
+    // the _exit() below skips the destructors that would otherwise drain
+    // them. Wait here for whatever is still queued: normally nothing, or a
+    // write that finishes in milliseconds. Bounded, with ONE 3 s deadline
+    // for both, so a wedged card costs at most 3 s of TimeoutStopSec
+    // (20 s) next to the waits below (10 s + 3 s) and a mid-game stop's
+    // 5 s. If it runs out, the previous settings.json (the save is tmp +
+    // rename) and the last 30 s watch checkpoint are what remain — say so,
+    // while the log is still open.
+    {
+        const auto persist_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        if (!app::SettingsPersistence::flush_pending_saves(
+                std::chrono::seconds(3))) {
+            LOG_WARN("Shutdown: settings.json save did not finish in time — "
+                     "the last settings change may be lost");
+        }
+#ifdef MEDIA_BROWSER_ENABLED
+        if (!watch_store.flush_until(persist_deadline)) {
+            LOG_WARN("Shutdown: watch history write did not finish in time — "
+                     "resume falls back to the last checkpoint on disk");
+        }
+#else
+        (void)persist_deadline;
+#endif
+    }
+
     LOG_INFO("Shutdown complete");
     logging::shutdown();
 
@@ -2454,11 +2494,11 @@ int main(int /* argc */, char* /* argv */[]) {
     // "Failed with result 'timeout'" every time — noise that hides a real
     // failure the day there is one.
     //
-    // Safe because nothing is left to persist: watch position is flushed
-    // above, settings save at each change site rather than at exit (14 call
-    // sites in the settings menu alone), and logging::shutdown() has already
-    // flushed and closed the log. The kernel reclaims the rest, exactly as it
-    // would after the SIGKILL this replaces.
+    // Safe because nothing is left to persist: watch position is queued
+    // above and settings at each change site, both background writers were
+    // drained just before "Shutdown complete", and logging::shutdown() has
+    // already flushed and closed the log. The kernel reclaims the rest,
+    // exactly as it would after the SIGKILL this replaces.
 #ifdef MEDIA_BROWSER_ENABLED
     // The game-end hook restores the services it quieted (docker start of
     // the arr containers, then qBit resume) asynchronously. A stop mid-game

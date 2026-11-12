@@ -394,6 +394,7 @@ async function sendPackageUpload(file, type, overwrite) {
     await acquireWakeLock();
 
     let attempts = 0;
+    let csrfRetried = false;
 
     return new Promise((resolve) => {
         const settle = async (after) => {
@@ -487,6 +488,18 @@ async function sendPackageUpload(file, type, overwrite) {
                             showNotification(packageImportSummary(data), 'success', 9000);
                             await refreshAfterPackageImport(type);
                         });
+                        return;
+                    }
+
+                    if (!csrfRetried && xhrIsCsrfRejection(xhr)) {
+                        // Expired CSRF token: refresh it and re-send once.
+                        // The rejected request never reached the import
+                        // route, so nothing was extracted. Not a transport
+                        // failure, so it does not use up a retry.
+                        csrfRetried = true;
+                        attempts--;
+                        await fetchCsrfToken();
+                        attemptUpload();
                         return;
                     }
 

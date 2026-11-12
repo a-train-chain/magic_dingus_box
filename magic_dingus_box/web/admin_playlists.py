@@ -6,6 +6,7 @@ emulator_core validation every playlist write path applies.
 """
 from __future__ import annotations
 
+import math
 import re
 import sys
 import yaml
@@ -142,7 +143,7 @@ def _playlist_summary(path: Path) -> dict:
     every failure degrades to the stem rather than raising.
     """
     try:
-        data = yaml.safe_load(path.read_text())
+        data = load_playlist_yaml(path.read_text())
     except Exception:
         return {"title": path.stem, "item_count": 0}
     if not isinstance(data, dict):
@@ -196,120 +197,262 @@ def _emulator_core_error(playlist: Any):
         "(letters, digits, underscores) or 'auto'.")
 
 
-def format_playlist_yaml(data: dict) -> str:
-    """Format playlist data as clean YAML matching the expected format.
-    
-    This ensures the YAML output matches the format that PlaylistLibrary expects,
-    with consistent structure and blank fields where no data exists.
-    """
-    
-    def yaml_quote(value) -> str:
-        """Quote a YAML value if it contains special characters that would break parsing."""
-        # Handle non-string values
-        if value is None:
-            return "''"
-        if isinstance(value, bool):
-            return 'true' if value else 'false'
-        if isinstance(value, (int, float)):
-            return str(value)
-        # Convert to string if not already
-        value = str(value)
-        if not value:
-            return "''"
-        # Control characters (newline, tab, CR, etc.) CANNOT be represented in
-        # a single-quoted YAML scalar — embedding a literal newline there
-        # produces broken or injectable YAML (a dedented continuation line
-        # parses as a brand-new key). Emit a double-quoted scalar with proper
-        # backslash escapes instead, which round-trips control chars safely.
-        if any(ord(c) < 0x20 for c in value):
-            escaped = (value.replace('\\', '\\\\')
-                            .replace('"', '\\"')
-                            .replace('\n', '\\n')
-                            .replace('\t', '\\t')
-                            .replace('\r', '\\r'))
-            return f'"{escaped}"'
-        # Characters that need quoting: # (comment), : (key separator), leading/trailing spaces
-        needs_quoting = any(c in value for c in ['#', ':', '[', ']', '{', '}', '&', '*', '!', '|', '>', "'", '"', '%', '@', '`'])
-        needs_quoting = needs_quoting or value.startswith(' ') or value.endswith(' ')
-        needs_quoting = needs_quoting or value.startswith('-') or value.startswith('?')
-        if needs_quoting:
-            # Use single quotes and escape any single quotes in the value
-            escaped = value.replace("'", "''")
-            return f"'{escaped}'"
-        return value
-    
-    lines = []
-    
-    # Top-level fields in expected order (always include for consistency)
-    lines.append(f"title: {yaml_quote(data.get('title', 'Untitled'))}")
-    # Default to blank, not the literal "Unknown". A playlist with no curator
-    # should render with no byline (the cards omit it entirely when empty),
-    # rather than being permanently attributed to a person called Unknown.
-    lines.append(f"curator: {yaml_quote(data.get('curator', ''))}")
-    
-    # Always include description field (blank if empty, for consistency)
-    description = data.get('description', '')
-    lines.append(f"description: {yaml_quote(description)}")
-    
-    # Playlist type (video or game). Quote like every other user-supplied
-    # field — an unquoted value could inject newlines / extra YAML keys.
-    # Derive rather than default to 'video'. Writing 'video' onto a playlist
-    # whose items are all games is what produced the mismatch this key is
-    # supposed to describe.
-    lines.append(f"playlist_type: {yaml_quote(data.get('playlist_type') or _derive_playlist_type(data))}")
-    
-    # Loop as lowercase boolean
-    loop_value = 'true' if data.get('loop', False) else 'false'
-    lines.append(f"loop: {loop_value}")
-    
-    # Items list
-    lines.append("items:")
-    
-    items = data.get('items', [])
-    for item in items:
-        # Each item starts with "  - title:" - quote the title
-        lines.append(f"  - title: {yaml_quote(item.get('title', 'Untitled'))}")
-        
-        # Artist field (right after title, for music videos)
-        artist = item.get('artist', '')
-        lines.append(f"    artist: {yaml_quote(artist)}")
-        
-        lines.append(f"    source_type: {yaml_quote(item.get('source_type', 'local'))}")
-        
-        # Path is required for local/emulated_game types - MUST quote as paths often contain #
-        if item.get('path'):
-            lines.append(f"    path: {yaml_quote(item['path'])}")
-        
-        # Optional fields - only include if present
-        if item.get('url'):
-            lines.append(f"    url: {yaml_quote(item['url'])}")
-        
-        if item.get('start') is not None:
-            lines.append(f"    start: {item['start']}")
-        
-        if item.get('end') is not None:
-            lines.append(f"    end: {item['end']}")
-        
-        if item.get('tags'):
-            # Format tags as YAML list - filter out invalid tags
-            valid_tags = [t for t in item['tags'] if isinstance(t, str) and t.strip()]
-            if valid_tags:
-                lines.append("    tags:")
-                for tag in valid_tags:
-                    lines.append(f"      - {yaml_quote(tag)}")
-        
-        # Emulator fields for games — quote like every other field.
-        if item.get('emulator_core'):
-            lines.append(f"    emulator_core: {yaml_quote(item['emulator_core'])}")
+def _time_bound(value: Any):
+    """Coerce an item's start/end to a finite, non-negative number.
 
-        if item.get('emulator_system'):
-            lines.append(f"    emulator_system: {yaml_quote(item['emulator_system'])}")
-        
-        # Add blank line between items for readability
-        if item != items[-1]:  # Not the last item
-            lines.append("")
-    
-    return '\n'.join(lines) + '\n'
+    format_playlist_yaml writes start/end unquoted, so a string carrying a
+    newline used to inject arbitrary keys (an emulator_core that never met
+    the guard above). The kiosk reads both as<double>. None/"" mean
+    "absent". Raises ValueError for anything else that is not a number."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("not a number")
+    if isinstance(value, str):
+        value = value.strip()
+    number = float(value)  # ValueError / TypeError for non-numbers
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("must be finite and non-negative")
+    return int(number) if number.is_integer() else number
+
+
+def _invalid_time_bounds(playlist: Any) -> Optional[str]:
+    """Return a description of the first bad start/end, else None."""
+    if not isinstance(playlist, dict) or not isinstance(playlist.get("items"), list):
+        return None
+    for item in playlist["items"]:
+        if not isinstance(item, dict):
+            continue
+        for key in ("start", "end"):
+            try:
+                _time_bound(item.get(key))
+            except (TypeError, ValueError):
+                return f"{key} {repr(item.get(key))[:80]}"
+    return None
+
+
+def _time_bounds_error(playlist: Any):
+    bad = _invalid_time_bounds(playlist)
+    if bad is None:
+        return None
+    return error_response(
+        "VALIDATION_ERROR",
+        f"Invalid {bad}: must be a non-negative number of seconds.")
+
+
+# ===== PLAYLIST YAML EMITTER =====
+#
+# The kiosk's playlist_loader.cpp is the schema of record; these are the keys
+# it (or the Content Manager) gives meaning to, in the order the emitter has
+# always written them. Every OTHER key — top-level or per-item — is carried
+# through untouched, after the known ones: a save or an import must never be
+# the thing that deletes a field a newer kiosk or a hand-edit relies on.
+PLAYLIST_TOP_LEVEL_KEYS = (
+    "title", "curator", "description", "playlist_type", "loop", "items")
+PLAYLIST_ITEM_KEYS = (
+    "title", "artist", "source_type", "path", "url", "start", "end", "tags",
+    "emulator_core", "emulator_system")
+
+# Line-break characters YAML recognises inside a scalar. A string carrying
+# any of them (or any other control character) is written double-quoted
+# with backslash escapes on ONE line, never as a multi-line single-quoted or
+# block scalar: that is the form both yaml-cpp and PyYAML read back
+# byte-for-byte, and it cannot be dedented into a new key.
+_YAML_LINE_BREAKS = "\n\r\x85  "
+
+
+class _PlaylistDumper(yaml.SafeDumper):
+    """safe_dump with the house layout: sequences indented under their key
+    ("items:\\n  - title: ..."), no anchors/aliases (yaml-cpp 0.7/0.8 and a
+    human editor both do better without them)."""
+
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+    def ignore_aliases(self, data):
+        return True
+
+
+def _represent_str(dumper, value):
+    if any(c in _YAML_LINE_BREAKS or ord(c) < 0x20 or ord(c) == 0x7F
+           for c in value):
+        return dumper.represent_scalar("tag:yaml.org,2002:str", value, style='"')
+    # Default style: PyYAML quotes anything its resolver would read back as
+    # a non-string (Yes, true, null, ~, 0x1F, 12, 2024-01-01, ...).
+    return dumper.represent_str(value)
+
+
+_PlaylistDumper.add_representer(str, _represent_str)
+
+
+def _dump(node) -> str:
+    return yaml.dump(
+        node, Dumper=_PlaylistDumper, sort_keys=False, allow_unicode=True,
+        default_flow_style=False, explicit_start=False, explicit_end=False,
+        # Never fold: a folded plain/quoted scalar is legal YAML but a long
+        # path or title should stay one greppable line.
+        width=float("inf"))
+
+
+def _as_text(value) -> str:
+    """A known string field's value as the string the kiosk will read.
+
+    Matches the text the hand-rolled emitter used to write for non-strings
+    (None -> '', True -> 'true', 12 -> '12'), so the kiosk's meaning is
+    unchanged — but it is now written as a STRING, so the next load does
+    not turn it into a bool/None/number again."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return value if isinstance(value, str) else str(value)
+
+
+# Fields the kiosk reads with yaml-cpp's as<std::string>(), which returns a
+# scalar's SOURCE TEXT however it is spelled: `artist: Yes` is the band Yes
+# on the TV. PyYAML's safe_load turns the same scalar into True, so a plain
+# safe_load -> format round trip rewrote it as the string "true" (shipped:
+# The_Nostalgia_Channel.yaml). load_playlist_yaml restores the source text.
+_PLAYLIST_TEXT_KEYS = ("title", "curator", "description", "playlist_type")
+_ITEM_TEXT_KEYS = ("title", "artist", "source_type", "path", "url",
+                   "emulator_core", "emulator_system")
+
+
+def _restore_text(typed, raw):
+    """`typed` with a non-string scalar replaced by its source text `raw`.
+    None stays None (a null was never text) and so do collections."""
+    if (typed is None or isinstance(typed, (str, dict, list))
+            or not isinstance(raw, str)):
+        return typed
+    return raw
+
+
+def load_playlist_yaml(text: str):
+    """yaml.safe_load, except the fields the kiosk reads as text keep their
+    text: `title: Yes`, `artist: 0x1F`, `- 2001` (a bare path) load as the
+    strings 'Yes', '0x1F', '2001' — what the kiosk shows — not True/31/2001.
+
+    Everything else (loop, start/end, unknown keys) keeps safe_load's types.
+    Raises yaml.YAMLError exactly as safe_load does."""
+    typed = yaml.safe_load(text)
+    if not isinstance(typed, dict):
+        return typed
+    try:
+        raw = yaml.load(text, Loader=yaml.BaseLoader)  # every scalar a str
+    except yaml.YAMLError:  # pragma: no cover - safe_load accepted it
+        return typed
+    if not isinstance(raw, dict):  # pragma: no cover
+        return typed
+
+    def fix(typed_map, raw_map, keys):
+        for key in keys:
+            if key in typed_map and key in raw_map:
+                typed_map[key] = _restore_text(typed_map[key], raw_map[key])
+
+    fix(typed, raw, _PLAYLIST_TEXT_KEYS)
+    items, raw_items = typed.get("items"), raw.get("items")
+    if not (isinstance(items, list) and isinstance(raw_items, list)
+            and len(items) == len(raw_items)):
+        return typed
+    for i, (item, raw_item) in enumerate(zip(items, raw_items)):
+        if isinstance(item, dict) and isinstance(raw_item, dict):
+            fix(item, raw_item, _ITEM_TEXT_KEYS)
+            tags, raw_tags = item.get("tags"), raw_item.get("tags")
+            if (isinstance(tags, list) and isinstance(raw_tags, list)
+                    and len(tags) == len(raw_tags)):
+                item["tags"] = [_restore_text(t, r)
+                                for t, r in zip(tags, raw_tags)]
+        else:
+            # A bare scalar item is a PATH to the kiosk.
+            items[i] = _restore_text(item, raw_item)
+    return typed
+
+
+def _format_item(item):
+    """One playlist item as the dict the emitter writes.
+
+    A bare string item (a path; playlist_loader.cpp treats it as a local
+    video titled from its filename) is kept bare. Any other non-mapping is
+    passed through unchanged rather than guessed at."""
+    if not isinstance(item, dict):
+        return item
+
+    out = {}
+    # No title stays no title: the kiosk then derives one from the filename
+    # (title_from_rom_path). Writing "Untitled" overrode that.
+    if "title" in item:
+        out["title"] = _as_text(item["title"])
+    out["artist"] = _as_text(item.get("artist", ""))
+    out["source_type"] = _as_text(item.get("source_type", "local"))
+    for key in ("path", "url"):
+        if item.get(key):
+            out[key] = _as_text(item[key])
+    # _time_bound yields a plain number or raises ValueError (callers turn
+    # that into a 400) — a string never reaches the file.
+    for key in ("start", "end"):
+        bound = _time_bound(item.get(key))
+        if bound is not None:
+            out[key] = bound
+    tags = item.get("tags")
+    if isinstance(tags, (list, tuple)):
+        valid_tags = [t for t in tags if isinstance(t, str) and t.strip()]
+        if valid_tags:
+            out["tags"] = valid_tags
+    elif tags:
+        out["tags"] = tags  # not a list: not ours to reinterpret
+    for key in ("emulator_core", "emulator_system"):
+        if item.get(key):
+            out[key] = _as_text(item[key])
+
+    for key, value in item.items():
+        if key not in PLAYLIST_ITEM_KEYS:
+            out[key] = value
+    return out
+
+
+def format_playlist_yaml(data: dict) -> str:
+    """Serialize a playlist dict to the YAML the kiosk loads.
+
+    Emitted by PyYAML (so every string round-trips as a string), known keys
+    first in the historical order, every unknown top-level and per-item key
+    carried through after them. Items are separated by a blank line, as the
+    hand-written files are. The output uses only block mappings/sequences,
+    plain/single/double-quoted scalars and `[]`/`{}` for empty collections —
+    no anchors, tags, document markers or folded/literal blocks.
+    """
+    items = data.get("items")
+    if items is None:
+        items = []
+    if not isinstance(items, list):
+        raise ValueError("Playlist 'items' must be a list")
+
+    head = {
+        "title": _as_text(data.get("title", "Untitled")),
+        # Default to blank, not the literal "Unknown": a playlist with no
+        # curator renders with no byline.
+        "curator": _as_text(data.get("curator", "")),
+        "description": _as_text(data.get("description", "")),
+        # Derive rather than default to 'video' — the kiosk ignores this key,
+        # but the Content Manager sorts playlists into tabs by it.
+        "playlist_type": _as_text(
+            data.get("playlist_type") or _derive_playlist_type(data)),
+        "loop": bool(data.get("loop", False)),
+    }
+    tail = {k: v for k, v in data.items() if k not in PLAYLIST_TOP_LEVEL_KEYS}
+
+    parts = [_dump(head)]
+    if not items:
+        parts.append("items: []\n")
+    else:
+        # Each item is dumped as a complete one-entry `items:` document and
+        # its entry lines kept, so the blank separator line can only ever
+        # fall BETWEEN two entries, never inside a scalar.
+        chunks = [_dump({"items": [_format_item(i)]}).split("\n", 1)[1]
+                  for i in items]
+        parts.append("items:\n" + "\n".join(chunks))
+    if tail:
+        parts.append(_dump(tail))
+    return "".join(parts)
 
 
 def register(app, ctx) -> None:
@@ -337,7 +480,7 @@ def register(app, ctx) -> None:
 
         for p in sorted(playlists_dir.glob("*.y*ml")):
             try:
-                data = yaml.safe_load(p.read_text())
+                data = load_playlist_yaml(p.read_text())
                 playlists.append({
                     'filename': p.name,
                     'title': data.get('title', p.stem),
@@ -376,7 +519,7 @@ def register(app, ctx) -> None:
             return error_response("NOT_FOUND", f"Playlist '{name}' not found", status=404)
 
         try:
-            data = yaml.safe_load(p.read_text())
+            data = load_playlist_yaml(p.read_text())
             return success_response(data=data)
         except Exception as e:
             return error_response("PARSE_ERROR", f"Failed to parse playlist: {e}", status=500)
@@ -396,7 +539,7 @@ def register(app, ctx) -> None:
                 data = request.get_json()
                 if not data:
                     return error_response("VALIDATION_ERROR", "Invalid JSON body")
-                bad_core = _emulator_core_error(data)
+                bad_core = _emulator_core_error(data) or _time_bounds_error(data)
                 if bad_core:
                     return bad_core
                 # Convert to clean YAML matching the expected format

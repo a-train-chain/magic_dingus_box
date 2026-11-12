@@ -412,6 +412,13 @@ const PhysicalProfile* builtin_profile_for(uint16_t vid, uint16_t pid) {
     return it == kStore.end() ? nullptr : &it->second;
 }
 
+// Synchronous (tmp + fsync + rename + directory fsync) and called on the
+// render thread — deliberately, unlike settings.json, which moved to a
+// background writer in 2026-11: this runs once per Controller Setup wizard
+// run (and on "reset profiles"), and the wizard shows the operator the real
+// result of the save, which a queued write could not give it. The cost is
+// that a save made while a big Content Manager upload saturates the SD card
+// can freeze the picture for the length of one fsync.
 bool save_profile_store(const std::map<std::string, PhysicalProfile>& profiles) {
     const std::string path = config::get_controller_profiles_file();
 

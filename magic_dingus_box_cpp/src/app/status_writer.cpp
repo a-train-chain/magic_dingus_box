@@ -45,42 +45,14 @@ StatusWriter::StatusWriter(std::string path, FileSink sink)
     : path_(std::move(path)),
       tmp_path_(path_ + ".tmp"),
       sink_(std::move(sink)),
-      owning_thread_(std::this_thread::get_id()) {
-    writer_ = std::thread([this] { writer_loop(); });
-}
+      owning_thread_(std::this_thread::get_id()) {}
 
-StatusWriter::~StatusWriter() {
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-        stop_ = true;
-    }
-    cv_.notify_all();
-    if (writer_.joinable()) writer_.join();
-}
-
-void StatusWriter::writer_loop() {
-    std::unique_lock<std::mutex> lk(mu_);
-    for (;;) {
-        cv_.wait(lk, [this] { return has_pending_ || stop_; });
-        if (!has_pending_) break;  // stopping, and the final state is out
-        std::string body = std::move(pending_);
-        has_pending_ = false;
-        writing_ = true;
-        // The sink runs WITHOUT the lock: it is the part that can take
-        // seconds, and write_now() must be able to replace pending_ (and
-        // see write_failed_) the whole time.
-        lk.unlock();
-        const bool ok = sink_(tmp_path_, path_, body);
-        lk.lock();
-        writing_ = false;
-        if (!ok) write_failed_ = true;
-        cv_.notify_all();  // flush()
-    }
-}
+// worker_ is the last member, so its destructor runs first: it finishes
+// the write in hand and the latest pending one, then joins.
+StatusWriter::~StatusWriter() = default;
 
 void StatusWriter::flush() {
-    std::unique_lock<std::mutex> lk(mu_);
-    cv_.wait(lk, [this] { return !has_pending_ && !writing_; });
+    worker_.flush();
 }
 
 void StatusWriter::write_now(const AppState& state) {
@@ -197,14 +169,11 @@ void StatusWriter::write_now(const AppState& state) {
     // session begin/end) still write immediately.
     const std::string body = Json::writeString(b, root);
     const auto mono_now = std::chrono::steady_clock::now();
-    bool resend = false;
-    {
-        // Held only for flag/mailbox swaps — the writer never holds mu_
-        // across a write, so this cannot wait on the SD card.
-        std::lock_guard<std::mutex> lk(mu_);
-        resend = write_failed_;
-        write_failed_ = false;
-    }
+    // A failed write is reported back by the worker and resent here (the
+    // old synchronous code left last_body_ stale for the same effect).
+    // Cannot wait on the SD card: the worker holds its lock only for
+    // flag/mailbox swaps, never across a write.
+    const bool resend = worker_.take_failure();
     if (!resend && body == last_body_ &&
         mono_now - last_write_ < std::chrono::seconds(2)) {
         return;
@@ -215,15 +184,12 @@ void StatusWriter::write_now(const AppState& state) {
         system_clock::now().time_since_epoch()).count();
     std::string out = Json::writeString(b, root);
 
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-        pending_ = std::move(out);
-        has_pending_ = true;
-    }
-    cv_.notify_all();
-    // A failed write is reported back through write_failed_ and resent on
-    // the next call (the old synchronous code left last_body_ stale for the
-    // same effect).
+    // Latest wins: this replaces a snapshot the worker has not started.
+    // sink_ and the paths never change after construction and outlive
+    // worker_ (see the header), so capturing `this` is safe.
+    worker_.submit([this, out = std::move(out)] {
+        return sink_(tmp_path_, path_, out);
+    });
     last_body_ = body;
     last_write_ = mono_now;
 }

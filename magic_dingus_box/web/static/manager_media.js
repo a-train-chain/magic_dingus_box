@@ -134,13 +134,39 @@ async function loadVideos() {
     }
 }
 
+// The owner's Quality / Framing / Normalize choices for a video upload. Read
+// by EVERY path into /admin/smart-upload — the file picker, drag-and-drop,
+// the retry button and the playlist editor's auto-add — so the input method
+// can never decide which settings apply. (Until 2026-11 only the file picker
+// sent them; the other paths silently got the server's defaults.) A control
+// missing from the page falls back to the file picker's historical defaults.
+function readSmartUploadOptions() {
+    return {
+        resolution: document.getElementById('targetResolution')?.value
+            || UPLOAD_CONFIG.TRANSCODE.DEFAULT_RESOLUTION,
+        fitMode: document.getElementById('framingMode')?.value
+            || UPLOAD_CONFIG.TRANSCODE.DEFAULT_FIT_MODE,
+        normalizeAudio: document.getElementById('normalizeAudio')?.checked || false,
+    };
+}
+
+// The ONE multipart body for /admin/smart-upload (fields read by
+// admin_media.py's smart_upload).
+function buildSmartUploadFormData(file, options = readSmartUploadOptions()) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('resolution', options.resolution);
+    formData.append('fit_mode', options.fitMode);
+    formData.append('normalize_audio', options.normalizeAudio ? 'true' : 'false');
+    return formData;
+}
+
 async function handleDirectUpload(input) {
     if (input.files.length === 0) return;
 
     const files = Array.from(input.files);
-    const targetResolution = document.getElementById('targetResolution')?.value || UPLOAD_CONFIG.TRANSCODE.DEFAULT_RESOLUTION;
-    const framingMode = document.getElementById('framingMode')?.value || UPLOAD_CONFIG.TRANSCODE.DEFAULT_FIT_MODE;
-    const normalizeAudio = document.getElementById('normalizeAudio')?.checked || false;
+    // Read once, so a control changed mid-batch does not split the batch.
+    const uploadOptions = readSmartUploadOptions();
 
     // Auto-expand the upload section if it's collapsed
     const uploadContent = document.getElementById('libraryUploadContent');
@@ -187,13 +213,9 @@ async function handleDirectUpload(input) {
             console.log(`[SmartUpload] Processing: ${file.name}`);
 
             // Upload to smart-upload endpoint
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('resolution', targetResolution);
-            formData.append('fit_mode', framingMode);
-            formData.append('normalize_audio', normalizeAudio ? 'true' : 'false');
+            const formData = buildSmartUploadFormData(file, uploadOptions);
 
-            const uploadResponse = await new Promise((resolve, reject) => {
+            const sendUpload = () => new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', `${currentDevice.url}/admin/smart-upload`);
 
@@ -222,7 +244,9 @@ async function handleDirectUpload(input) {
                             reject(new Error('Invalid server response'));
                         }
                     } else {
-                        reject(new Error(`Upload failed: ${xhr.status}`));
+                        const err = new Error(`Upload failed: ${xhr.status}`);
+                        err.csrfRejected = xhrIsCsrfRejection(xhr);
+                        reject(err);
                     }
                 };
 
@@ -231,6 +255,17 @@ async function handleDirectUpload(input) {
                 xhr.onabort = () => reject(new Error('Upload cancelled'));
                 xhr.send(formData);
             });
+
+            // An expired CSRF token: refresh it and re-send the file once
+            // (sendUpload reads csrfToken when it opens the request).
+            let uploadResponse;
+            try {
+                uploadResponse = await sendUpload();
+            } catch (e) {
+                if (!e.csrfRejected) throw e;
+                await fetchCsrfToken();
+                uploadResponse = await sendUpload();
+            }
 
             if (uploadResponse.data?.action === 'direct') {
                 // File was compatible - already saved directly
@@ -585,7 +620,10 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
     // assume.
     return new Promise((resolve) => {
         const { MAX_RETRIES, RETRY_DELAY_MS, TIMEOUT_MS } = UPLOAD_CONFIG;
+        // Read once per file: every retry re-sends with the same settings.
+        const uploadOptions = readSmartUploadOptions();
         let attempts = 0;
+        let csrfRetried = false;
 
         const autoAddFinal = (finalPath) => {
             if (!autoAddToPlaylist) return;
@@ -669,8 +707,7 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
         const attemptUpload = () => {
             attempts++;
 
-            const formData = new FormData();
-            formData.append('file', file);
+            const formData = buildSmartUploadFormData(file, uploadOptions);
 
             const xhr = new XMLHttpRequest();
             let timeoutId = null;
@@ -709,6 +746,12 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                         autoAddFinal(data.output_path || `data/media/${data.output_filename || file.name}`);
                         resolve({ success: true });
                     }
+                } else if (!csrfRetried && xhrIsCsrfRejection(xhr)) {
+                    // Expired CSRF token: refresh it and re-send once. Not
+                    // a failed attempt, so it does not use up a retry.
+                    csrfRetried = true;
+                    attempts--;
+                    fetchCsrfToken().then(attemptUpload);
                 } else {
                     handleError(`Server error (${xhr.status})`);
                 }
@@ -817,7 +860,7 @@ async function deleteVideo(path, filename) {
                 // Encode the path components to handle special characters in URL
                 const encodedPath = path.split('/').map(encodeURIComponent).join('/');
 
-                const response = await fetch(`${currentDevice.url}/admin/media/${encodedPath}`, {
+                const response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/media/${encodedPath}`, {
                     method: 'DELETE',
                     headers: getCsrfHeaders(false)
                 });

@@ -1,0 +1,75 @@
+# Every playlist field, in one file, read by BOTH sides of the format:
+#   - magic_dingus_box/web/tests/test_playlist_yaml_fixture.py loads it,
+#     runs it through format_playlist_yaml and checks nothing is lost or
+#     retyped — and that the result is byte-identical to
+#     playlist_all_fields.emitted.yaml next to this file;
+#   - magic_dingus_box_cpp/tests/app/test_playlist_yaml_fixture.cpp loads
+#     this file AND the emitted one with the kiosk's PlaylistLoader and
+#     checks they mean the same thing on the TV.
+# Change this file -> regenerate the emitted one (the Python test prints how).
+title: All Fields
+curator: Fixture Curator
+description: 'Every known key, a bare path, unknown keys and awkward strings: #, ''quotes'', Yes'
+playlist_type: video
+loop: true
+items:
+  - title: Full Video Item
+    artist: Some Artist
+    source_type: local
+    path: 'media/Full Video [abc123].mp4'
+    url: https://example.com/watch?v=abc123
+    start: 12
+    end: 34.5
+    tags:
+      - one
+      - Yes
+    rating: 5
+    note: kept by every writer
+
+  - title: A Game
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/A Game (USA).nes
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: A Stream
+    artist: ''
+    source_type: youtube
+    url: https://www.youtube.com/watch?v=xyz
+
+  - media/Bare Path Video (USA).mp4
+
+  - artist: No Title Here
+    source_type: local
+    path: media/Untitled Clip (Europe).mp4
+
+  - title: Yes
+    artist: 0x1F
+    source_type: local
+    path: media/a.mp4
+
+  - title: 'true'
+    artist: 'null'
+    source_type: local
+    path: media/b.mp4
+
+  - title: '~'
+    artist: 'Yes'
+    source_type: local
+    path: media/c.mp4
+
+  - title: '0x1F'
+    artist: "Line one\nLine two"
+    source_type: local
+    path: "media/d #1: it's - fine \U0001F3B8.mp4"
+
+  - title: '- leading dash, trailing space '
+    artist: 'A very long artist name that goes on well past eighty columns so a folding emitter would wrap it'
+    source_type: local
+    path: media/e.mp4
+unknown_top_level:
+  nested:
+    - 1
+    - two
+  flag: false

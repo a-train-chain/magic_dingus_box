@@ -369,14 +369,23 @@ esac"
     [ -n "$s1c" ]
     [ "$s1c" -lt "$s2" ]
     [ "$s1c" -lt "$s6" ]
+    # The steps are functions now: what decides the ORDER THEY RUN IN is the
+    # step list, not where their text sits.
+    eval "$(sed -n '/^FB_STEP_TABLE=(/,/^)/p' "$f")"
+    order=" ${FB_STEP_TABLE[*]} "
+    [[ "$order" == *" vpn_identity "*"expand_rootfs "* ]]
+    [[ "$order" == *" vpn_identity "*"wipe_media_browser "* ]]
 }
 
 # Runs the real Step 1c text under first_boot's own shell options and ERR trap,
 # against a scratch install dir: a failing purge must be LOGGED, not abort.
 run_step_1c() {
     local f="$GI_DIR/first_boot.sh" body
-    body="$(sed -n '/^revoke_source_vpn_identity() {/,/^fi$/p' "$f")"
-    [ -n "$body" ] || { echo "Step 1c not found"; return 1; }
+    body="$(sed -n '/^revoke_source_vpn_identity() {/,/^}/p' "$f")"$'\n'
+    body+="$(sed -n '/^step_vpn_identity() {/,/^}/p' "$f")"$'\n'
+    [[ "$body" == *"revoke_source_vpn_identity() {"*"step_vpn_identity() {"* ]] \
+        || { echo "Step 1c not found"; return 1; }
+    body+="step_vpn_identity"
     cat > "$T/step1c.sh" <<EOF
 set -euo pipefail
 trap 'echo "=== FAILED at line \$LINENO"' ERR

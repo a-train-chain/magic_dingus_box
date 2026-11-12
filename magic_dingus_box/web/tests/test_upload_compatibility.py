@@ -1,7 +1,6 @@
 """Uploads must produce masters the Pi 4 hardware decoder can play."""
 import io
 import json
-import shutil
 import subprocess
 import time
 from fractions import Fraction
@@ -10,13 +9,14 @@ import pytest
 
 import admin
 from admin import create_app
+from ._deps import need_tool
 from .test_transcode_staging import stub_bin, _run_job
 
 
 @pytest.fixture
 def real_ffmpeg():
-    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
-        pytest.skip('FFmpeg and ffprobe required for real upload conversion')
+    # FFmpeg and ffprobe are required for real upload conversion.
+    need_tool('ffmpeg', 'ffprobe')
 
 
 def _probe(path):
