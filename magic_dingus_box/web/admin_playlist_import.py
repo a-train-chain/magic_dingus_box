@@ -28,7 +28,7 @@ try:
     )
     from admin_playlists import (
         _emulator_core_error, _playlist_filename_for_title, _playlist_summary,
-        format_playlist_yaml,
+        _time_bounds_error, format_playlist_yaml,
     )
     from admin_security import _is_within
 except ImportError:  # pragma: no cover - exercised by whichever form runs
@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     )
     from .admin_playlists import (
         _emulator_core_error, _playlist_filename_for_title, _playlist_summary,
-        format_playlist_yaml,
+        _time_bounds_error, format_playlist_yaml,
     )
     from .admin_security import _is_within
 
@@ -113,7 +113,7 @@ def register(app, ctx) -> None:
                     "Playlist must have an 'items' list"
                 )
 
-            bad_core = _emulator_core_error(data)
+            bad_core = _emulator_core_error(data) or _time_bounds_error(data)
             if bad_core:
                 return bad_core
             
@@ -346,7 +346,8 @@ def register(app, ctx) -> None:
 
                     # Before ANY file is extracted: a refused package must
                     # leave nothing behind.
-                    bad_core = _emulator_core_error(playlist_data)
+                    bad_core = (_emulator_core_error(playlist_data)
+                                or _time_bounds_error(playlist_data))
                     if bad_core:
                         return bad_core
 

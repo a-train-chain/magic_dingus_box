@@ -6,6 +6,7 @@ emulator_core validation every playlist write path applies.
 """
 from __future__ import annotations
 
+import math
 import re
 import sys
 import yaml
@@ -196,6 +197,49 @@ def _emulator_core_error(playlist: Any):
         "(letters, digits, underscores) or 'auto'.")
 
 
+def _time_bound(value: Any):
+    """Coerce an item's start/end to a finite, non-negative number.
+
+    format_playlist_yaml writes start/end unquoted, so a string carrying a
+    newline used to inject arbitrary keys (an emulator_core that never met
+    the guard above). The kiosk reads both as<double>. None/"" mean
+    "absent". Raises ValueError for anything else that is not a number."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("not a number")
+    if isinstance(value, str):
+        value = value.strip()
+    number = float(value)  # ValueError / TypeError for non-numbers
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("must be finite and non-negative")
+    return int(number) if number.is_integer() else number
+
+
+def _invalid_time_bounds(playlist: Any) -> Optional[str]:
+    """Return a description of the first bad start/end, else None."""
+    if not isinstance(playlist, dict) or not isinstance(playlist.get("items"), list):
+        return None
+    for item in playlist["items"]:
+        if not isinstance(item, dict):
+            continue
+        for key in ("start", "end"):
+            try:
+                _time_bound(item.get(key))
+            except (TypeError, ValueError):
+                return f"{key} {repr(item.get(key))[:80]}"
+    return None
+
+
+def _time_bounds_error(playlist: Any):
+    bad = _invalid_time_bounds(playlist)
+    if bad is None:
+        return None
+    return error_response(
+        "VALIDATION_ERROR",
+        f"Invalid {bad}: must be a non-negative number of seconds.")
+
+
 def format_playlist_yaml(data: dict) -> str:
     """Format playlist data as clean YAML matching the expected format.
     
@@ -284,11 +328,12 @@ def format_playlist_yaml(data: dict) -> str:
         if item.get('url'):
             lines.append(f"    url: {yaml_quote(item['url'])}")
         
-        if item.get('start') is not None:
-            lines.append(f"    start: {item['start']}")
-        
-        if item.get('end') is not None:
-            lines.append(f"    end: {item['end']}")
+        # Never interpolate the raw value: _time_bound yields a plain number
+        # (raises ValueError otherwise, which callers turn into a 400).
+        for key in ('start', 'end'):
+            bound = _time_bound(item.get(key))
+            if bound is not None:
+                lines.append(f"    {key}: {bound}")
         
         if item.get('tags'):
             # Format tags as YAML list - filter out invalid tags
@@ -396,7 +441,7 @@ def register(app, ctx) -> None:
                 data = request.get_json()
                 if not data:
                     return error_response("VALIDATION_ERROR", "Invalid JSON body")
-                bad_core = _emulator_core_error(data)
+                bad_core = _emulator_core_error(data) or _time_bounds_error(data)
                 if bad_core:
                     return bad_core
                 # Convert to clean YAML matching the expected format
