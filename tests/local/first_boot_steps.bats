@@ -714,10 +714,10 @@ kill -9 $$
 
 @test "verify_box FAILs (not WARNs) a unit with an unfinished first-boot step" {
     grep -q 'fail "first-boot step(s) never completed: \${FB_MISSING}' "$VERIFY_BOX"
-    grep -q 'FB_STATE="\${FB_STATE_ROOT}/\$(fb_board_id)"' "$VERIFY_BOX"
+    grep -q 'FB_STEP_DIR="\${FB_STATE_ROOT}/\$(fb_board_id)"' "$VERIFY_BOX"
     # Keyed on a non-empty step list: a unit set up by an older first_boot.sh
     # has no record and is judged by its log, as before.
-    grep -q 'if \[\[ -s "\${FB_STATE}/steps" \]\]; then' "$VERIFY_BOX"
+    grep -q 'if \[\[ -s "\${FB_STEP_DIR}/steps" \]\]; then' "$VERIFY_BOX"
 }
 
 @test "verify_box's log check still fails an incomplete run and passes a complete one" {

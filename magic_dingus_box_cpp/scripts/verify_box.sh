@@ -170,13 +170,13 @@ first_boot_incomplete_steps() {   # STATE-DIR -> the steps with no .done marker
     done < "${dir}/steps"
     printf '%s' "${out% }"
 }
-FB_STATE="${FB_STATE_ROOT}/$(fb_board_id)"
-if [[ -s "${FB_STATE}/steps" ]]; then
-  FB_MISSING=$(first_boot_incomplete_steps "$FB_STATE")
+FB_STEP_DIR="${FB_STATE_ROOT}/$(fb_board_id)"
+if [[ -s "${FB_STEP_DIR}/steps" ]]; then
+  FB_MISSING=$(first_boot_incomplete_steps "$FB_STEP_DIR")
   if [[ -n "$FB_MISSING" ]]; then
     fail "first-boot step(s) never completed: ${FB_MISSING} — SOURCE-BOX state may remain on this unit (see ${FB_LOG})"
   else
-    pass "every first-boot step is recorded complete ($(grep -c . "${FB_STATE}/steps") steps)"
+    pass "every first-boot step is recorded complete ($(grep -c . "${FB_STEP_DIR}/steps") steps)"
   fi
 fi
 
