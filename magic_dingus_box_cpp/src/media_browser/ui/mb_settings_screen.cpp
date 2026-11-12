@@ -1,5 +1,6 @@
 #include "media_browser/ui/mb_settings_screen.h"
 
+#include "media_browser/http/http_request.h"
 #include "media_browser/movie_drive.h"
 #include "media_browser/ui/indexer_toggle_logic.h"
 #include "media_browser/ui/mb_chrome.h"
@@ -9,7 +10,6 @@
 #include <sstream>
 #include <string>
 
-#include <curl/curl.h>
 #include <json/json.h>
 #include <spdlog/spdlog.h>
 
@@ -86,12 +86,6 @@ constexpr std::chrono::milliseconds kBannerMs{2500};
 // owns its own offset-from-bottom math (anchored to the wood frame, not
 // the screen edge). The legacy kFooterPadY constant retired in v1.6.x.
 
-size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
-    auto* s = static_cast<std::string*>(ud);
-    s->append(static_cast<char*>(ptr), size * nmemb);
-    return size * nmemb;
-}
-
 // Format raw byte count as "124 GB" (no decimal). Used by the Storage row's
 // "FREE: 124 GB" right-aligned readout — the space-saving short form is more
 // scannable than the long "12.3 GB free / 500 GB" we used in the prototype.
@@ -151,48 +145,27 @@ void draw_cursor_marker(::ui::Renderer& r,
 // ---------------------------------------------------------------------------
 
 bool MbSettingsScreen::ping_http(const std::string& url) {
-    CURL* curl = curl_easy_init();
-    if (!curl) return false;
-    std::string body;
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 1L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_easy_cleanup(curl);
+    http::Request req;
+    req.url = url;
+    req.timeout_secs = 2;
+    req.connect_timeout_secs = 1;
+    const auto resp = http::request(req);
     // Consider the service reachable if we got ANY response — qBittorrent
     // returns 403/401 on unauthenticated /api/v2/app/version which still
     // proves the daemon is listening.
-    return (rc == CURLE_OK) && (http_code > 0);
+    return resp.transport_ok() && resp.status > 0;
 }
 
 std::string MbSettingsScreen::http_get(const std::string& url,
                                        const std::string& header) {
-    CURL* curl = curl_easy_init();
-    if (!curl) return {};
-    std::string body;
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 1L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    struct curl_slist* headers = nullptr;
-    if (!header.empty()) {
-        headers = curl_slist_append(headers, header.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    }
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (headers) curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK || http_code >= 400) return {};
-    return body;
+    http::Request req;
+    req.url = url;
+    req.timeout_secs = 3;
+    req.connect_timeout_secs = 1;
+    if (!header.empty()) req.headers = {header};
+    auto resp = http::request(req);
+    if (!resp.transport_ok() || resp.status >= 400) return {};
+    return std::move(resp.body);
 }
 
 // ---------------------------------------------------------------------------
