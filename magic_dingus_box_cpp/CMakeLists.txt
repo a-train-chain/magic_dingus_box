@@ -170,6 +170,9 @@ set(APP_SOURCES
     src/app/playlist_loader.cpp
     src/app/rom_title.cpp
     src/app/controller.cpp
+    # Controller playback state + playlist stepping, split out so
+    # test_app_unit can link it (also listed there).
+    src/app/controller_playback.cpp
     src/app/controller_text_input.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp

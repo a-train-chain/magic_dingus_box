@@ -153,6 +153,16 @@ private:
     // even when playback had already started.
     void wait_for_playback_start(int max_ms, std::function<void()> progress_callback);
 
+    // The media half of load_playlist_item, after the index check, the
+    // now-playing publish and the Master Shuffle check: stop/settle/load/
+    // play for a video item, the RetroArch hand-off for a game. Kiosk-only
+    // (controller.cpp); load_playlist_item itself is in
+    // controller_playback.cpp so the stepping code can be linked into the
+    // Mac tests, which supply their own definition of this function.
+    utils::Result<> load_item_media(AppState& state, const app::PlaylistItem& item,
+                                    const std::string& playlist_directory,
+                                    std::function<void()> progress_callback);
+
     video::VideoPlayer* player_;
     retroarch::RetroArchLauncher retroarch_launcher_;
     std::function<void(const app::PlaylistItem&)> game_session_begin_;
