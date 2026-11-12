@@ -814,6 +814,13 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # (controller.cpp is in no test target).
         src/app/shuffle_queue.cpp
         src/app/playlist_cursor.cpp
+        # Controller::update_state (video_active debounce) and NEXT/PREV/
+        # Master Shuffle stepping incl. the load-next retry loop, against a
+        # fake VideoPlayer. controller.cpp itself stays kiosk-only: the
+        # tests define Controller::load_item_media and RetroArchLauncher's
+        # constructor (tests/app/controller_test_doubles.cpp, globbed above).
+        src/app/controller_playback.cpp
+        src/utils/path_resolver.cpp
         # main.cpp's playlist playback control (SELECT/NEXT/PREV, auto-
         # advance, failed-item skip, stall watchdog) against a fake
         # transport, and the web-admin playlist reload's re-anchoring.

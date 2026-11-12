@@ -142,6 +142,10 @@ public:
     // display from scratch. Sticky: never cleared.
     bool display_lost() const { return display_lost_; }
 
+    // Deterministic shuffle order for the unit tests (the kiosk seeds from
+    // std::random_device at construction).
+    void seed_shuffle_rng(uint32_t seed) { rng_.seed(seed); }
+
 private:
     bool display_lost_ = false;
 
