@@ -2091,7 +2091,11 @@ int main(int /* argc */, char* /* argv */[]) {
                     std::error_code rm_ec;
                     fs::remove(reload_marker, rm_ec);
                     const auto prev_mode = state.display_settings.mode;
-                    app::SettingsPersistence::load_settings(state);
+                    // reload_from_disk, not load_settings: saves are
+                    // written in the background, and one of ours still in
+                    // the air must not land on top of the restored file
+                    // after this load (see settings_persistence.h).
+                    app::SettingsPersistence::reload_from_disk(state);
                     // Same per-board reconcile the boot path runs (e.g. a
                     // Pi 4 backup restored onto a Pi 5 saying "headphone").
                     state.audio_settings.sanitize_for_platform(
@@ -2435,6 +2439,21 @@ int main(int /* argc */, char* /* argv */[]) {
     gbm.cleanup();
     display.cleanup();
 
+    // Settings are written by a background thread (the render loop must
+    // never wait on the SD card — WatchdogSec=10), and the _exit() below
+    // skips the destructor that would otherwise drain it. Wait here for
+    // whatever is still queued: normally nothing, or a write that finishes
+    // in milliseconds. Bounded, so a wedged card costs at most 3 s of
+    // TimeoutStopSec (20 s) next to the waits below (10 s + 3 s) and a
+    // mid-game stop's 5 s. If it runs out, the previous settings.json is
+    // what remains (the save is tmp + rename) — say so, while the log is
+    // still open.
+    if (!app::SettingsPersistence::flush_pending_saves(
+            std::chrono::seconds(3))) {
+        LOG_WARN("Shutdown: settings.json save did not finish in time — "
+                 "the last settings change may be lost");
+    }
+
     LOG_INFO("Shutdown complete");
     logging::shutdown();
 
@@ -2454,10 +2473,10 @@ int main(int /* argc */, char* /* argv */[]) {
     // "Failed with result 'timeout'" every time — noise that hides a real
     // failure the day there is one.
     //
-    // Safe because nothing is left to persist: watch position is flushed
-    // above, settings save at each change site rather than at exit (14 call
-    // sites in the settings menu alone), and logging::shutdown() has already
-    // flushed and closed the log. The kernel reclaims the rest, exactly as it
+    // Safe because nothing is left to persist: watch position is queued
+    // above and settings at each change site, both background writers were
+    // drained just before "Shutdown complete", and logging::shutdown() has
+    // already flushed and closed the log. The kernel reclaims the rest, exactly as it
     // would after the SIGKILL this replaces.
 #ifdef MEDIA_BROWSER_ENABLED
     // The game-end hook restores the services it quieted (docker start of
