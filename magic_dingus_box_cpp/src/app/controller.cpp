@@ -57,7 +57,14 @@ bool Controller::poll_seek_request() {
             return false;
         }
     }
-    fs::remove(path);  // consume — even if invalid, don't loop on a bad file
+    // Consume — even if invalid, don't loop on a bad file. This unlink is a
+    // file write on the render loop, left here deliberately (reviewed
+    // 2026-11): it runs once per phone tap-to-seek, never per tick, and
+    // consume-once needs the file gone before the next frame's exists()
+    // check. If it ever has to move, the request needs an identity (inode +
+    // mtime) remembered here first, or a deferred unlink re-seeks every
+    // frame until it lands.
+    fs::remove(path);
 
     if (!root.isMember("pos")) return false;
     double frac = root["pos"].asDouble();

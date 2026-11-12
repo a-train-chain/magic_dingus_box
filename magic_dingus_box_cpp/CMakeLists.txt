@@ -850,7 +850,9 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
     target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES}
-        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only)
+        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only
+        # settings_persistence.cpp writes on a background thread.
+        pthread)
     target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
@@ -901,7 +903,8 @@ if(UTILS_TEST_SOURCES)
         src/utils/bmp_writer.cpp
         src/utils/screenshot_store.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
-    target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
+    # pthread: latest_wins_worker.h (the background file-writer thread).
+    target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain pthread)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME UtilsUnit COMMAND test_utils_unit)
 endif()

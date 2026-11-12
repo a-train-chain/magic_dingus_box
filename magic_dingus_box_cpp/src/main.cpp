@@ -2084,6 +2084,11 @@ int main(int /* argc */, char* /* argv */[]) {
         // clobber the restored file with its stale in-memory state.
         // Checked ~once a second (restore is rare; no need to stat every
         // frame like the seek queue).
+        //
+        // The marker unlinks here and in the playlist poke below are file
+        // writes on this loop, left in place deliberately (reviewed
+        // 2026-11): one per web-admin action, never per tick, and the
+        // marker must be gone before the next poll or the reload repeats.
         {
             static int settings_reload_check = 0;
             if (++settings_reload_check >= 60) {
@@ -2492,8 +2497,8 @@ int main(int /* argc */, char* /* argv */[]) {
     // Safe because nothing is left to persist: watch position is queued
     // above and settings at each change site, both background writers were
     // drained just before "Shutdown complete", and logging::shutdown() has
-    // already flushed and closed the log. The kernel reclaims the rest, exactly as it
-    // would after the SIGKILL this replaces.
+    // already flushed and closed the log. The kernel reclaims the rest,
+    // exactly as it would after the SIGKILL this replaces.
 #ifdef MEDIA_BROWSER_ENABLED
     // The game-end hook restores the services it quieted (docker start of
     // the arr containers, then qBit resume) asynchronously. A stop mid-game
