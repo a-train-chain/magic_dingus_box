@@ -451,7 +451,7 @@ async function performSavePlaylist(type) {
         let response;
         if (saveBtn) saveBtn.disabled = true;
         try {
-            response = await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}${qs}`, {
+            response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}${qs}`, {
                 method: 'POST',
                 headers: getCsrfHeaders(),
                 body: JSON.stringify(playlistData)
@@ -482,6 +482,12 @@ async function performSavePlaylist(type) {
                     alert('Failed to save playlist');
                 }); }
             );
+            return;
+        }
+
+        if (response.status === 403) {
+            // Still refused after fetchWithCsrfRetry's fresh token.
+            alert('Your session expired and could not be refreshed. Reload the page and try again.');
             return;
         }
 

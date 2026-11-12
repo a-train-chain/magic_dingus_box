@@ -193,7 +193,7 @@ async function handleDirectUpload(input) {
             formData.append('fit_mode', framingMode);
             formData.append('normalize_audio', normalizeAudio ? 'true' : 'false');
 
-            const uploadResponse = await new Promise((resolve, reject) => {
+            const sendUpload = () => new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', `${currentDevice.url}/admin/smart-upload`);
 
@@ -222,7 +222,9 @@ async function handleDirectUpload(input) {
                             reject(new Error('Invalid server response'));
                         }
                     } else {
-                        reject(new Error(`Upload failed: ${xhr.status}`));
+                        const err = new Error(`Upload failed: ${xhr.status}`);
+                        err.csrfRejected = xhrIsCsrfRejection(xhr);
+                        reject(err);
                     }
                 };
 
@@ -231,6 +233,17 @@ async function handleDirectUpload(input) {
                 xhr.onabort = () => reject(new Error('Upload cancelled'));
                 xhr.send(formData);
             });
+
+            // An expired CSRF token: refresh it and re-send the file once
+            // (sendUpload reads csrfToken when it opens the request).
+            let uploadResponse;
+            try {
+                uploadResponse = await sendUpload();
+            } catch (e) {
+                if (!e.csrfRejected) throw e;
+                await fetchCsrfToken();
+                uploadResponse = await sendUpload();
+            }
 
             if (uploadResponse.data?.action === 'direct') {
                 // File was compatible - already saved directly
@@ -586,6 +599,7 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
     return new Promise((resolve) => {
         const { MAX_RETRIES, RETRY_DELAY_MS, TIMEOUT_MS } = UPLOAD_CONFIG;
         let attempts = 0;
+        let csrfRetried = false;
 
         const autoAddFinal = (finalPath) => {
             if (!autoAddToPlaylist) return;
@@ -709,6 +723,12 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                         autoAddFinal(data.output_path || `data/media/${data.output_filename || file.name}`);
                         resolve({ success: true });
                     }
+                } else if (!csrfRetried && xhrIsCsrfRejection(xhr)) {
+                    // Expired CSRF token: refresh it and re-send once. Not
+                    // a failed attempt, so it does not use up a retry.
+                    csrfRetried = true;
+                    attempts--;
+                    fetchCsrfToken().then(attemptUpload);
                 } else {
                     handleError(`Server error (${xhr.status})`);
                 }
