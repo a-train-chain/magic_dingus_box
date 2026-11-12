@@ -980,7 +980,7 @@ async function deletePlaylist(filename, type) {
                     const deleteVideos = document.getElementById('deleteVideosCheckbox')?.checked || false;
                     const url = `${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}${deleteVideos ? '?delete_videos=true' : ''}`;
 
-                    const response = await fetch(url, {
+                    const response = await fetchWithCsrfRetry(url, {
                         method: 'DELETE',
                         headers: getCsrfHeaders(false)
                     });
@@ -1015,7 +1015,7 @@ async function deletePlaylist(filename, type) {
             `Delete playlist "${filename}"?`,
             async () => {
                 try {
-                    await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}`, {
+                    await fetchWithCsrfRetry(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}`, {
                         method: 'DELETE',
                         headers: getCsrfHeaders(false)
                     });

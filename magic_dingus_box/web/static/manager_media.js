@@ -837,7 +837,7 @@ async function deleteVideo(path, filename) {
                 // Encode the path components to handle special characters in URL
                 const encodedPath = path.split('/').map(encodeURIComponent).join('/');
 
-                const response = await fetch(`${currentDevice.url}/admin/media/${encodedPath}`, {
+                const response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/media/${encodedPath}`, {
                     method: 'DELETE',
                     headers: getCsrfHeaders(false)
                 });

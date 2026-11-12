@@ -632,7 +632,7 @@ async function _detectMediaBrowserProvider() {
 
     try {
         await fetchCsrfToken();
-        const response = await fetch(
+        const response = await fetchWithCsrfRetry(
             `${currentDevice.url}/admin/media-browser/detect-provider`, {
                 method: 'POST',
                 headers: { 'X-CSRF-Token': csrfToken || '' },
@@ -725,7 +725,7 @@ async function configureMediaBrowser() {
     }
 
     try {
-        const response = await fetch(`${currentDevice.url}/admin/media-browser/setup`, {
+        const response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/media-browser/setup`, {
             method: 'POST',
             headers: { 'X-CSRF-Token': csrfToken || '' },
             body: formData,
@@ -1177,7 +1177,7 @@ async function restartMediaBrowserServices() {
     await fetchCsrfToken();
 
     try {
-        const response = await fetch(`${currentDevice.url}/admin/media-browser/restart`, {
+        const response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/media-browser/restart`, {
             method: 'POST',
             headers: { 'X-CSRF-Token': csrfToken || '' },
         });
@@ -1259,7 +1259,7 @@ async function _confirmMediaBrowserReset() {
     await fetchCsrfToken();
 
     try {
-        const response = await fetch(`${currentDevice.url}/admin/media-browser/reset`, {
+        const response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/media-browser/reset`, {
             method: 'POST',
             headers: {
                 'X-CSRF-Token': csrfToken || '',

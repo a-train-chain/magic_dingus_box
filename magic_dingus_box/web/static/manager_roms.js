@@ -243,6 +243,7 @@ function uploadSingleROM(file, system, progressBar, autoAddToPlaylist) {
     return new Promise((resolve) => {
         const { MAX_RETRIES, RETRY_DELAY_MS, TIMEOUT_MS } = UPLOAD_CONFIG;
         let attempts = 0;
+        let csrfRetried = false;
 
         const attemptUpload = () => {
             attempts++;
@@ -304,6 +305,14 @@ function uploadSingleROM(file, system, progressBar, autoAddToPlaylist) {
                     }
 
                     resolve({ success: true });
+                } else if (!csrfRetried && xhrIsCsrfRejection(xhr)) {
+                    // Expired CSRF token: refresh it and re-send once. The
+                    // rejected request never reached the upload route, so
+                    // nothing was saved. Not a failed attempt, so it does
+                    // not use up a retry.
+                    csrfRetried = true;
+                    attempts--;
+                    fetchCsrfToken().then(attemptUpload);
                 } else {
                     handleError(`Server error (${xhr.status})`);
                 }
@@ -353,7 +362,7 @@ async function deleteROM(path, filename) {
                 // Encode the path components to handle special characters in URL
                 const encodedPath = path.split('/').map(encodeURIComponent).join('/');
 
-                const response = await fetch(`${currentDevice.url}/admin/roms/${encodedPath}`, {
+                const response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/roms/${encodedPath}`, {
                     method: 'DELETE',
                     headers: getCsrfHeaders(false)
                 });
