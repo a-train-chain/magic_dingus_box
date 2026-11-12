@@ -28,7 +28,7 @@ try:
     )
     from admin_playlists import (
         _emulator_core_error, _playlist_filename_for_title, _playlist_summary,
-        _time_bounds_error, format_playlist_yaml,
+        _time_bounds_error, format_playlist_yaml, load_playlist_yaml,
     )
     from admin_security import _is_within
 except ImportError:  # pragma: no cover - exercised by whichever form runs
@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     )
     from .admin_playlists import (
         _emulator_core_error, _playlist_filename_for_title, _playlist_summary,
-        _time_bounds_error, format_playlist_yaml,
+        _time_bounds_error, format_playlist_yaml, load_playlist_yaml,
     )
     from .admin_security import _is_within
 
@@ -94,7 +94,7 @@ def register(app, ctx) -> None:
             # Read and parse YAML content
             try:
                 yaml_content = file.read().decode('utf-8')
-                data = yaml.safe_load(yaml_content)
+                data = load_playlist_yaml(yaml_content)
             except UnicodeDecodeError:
                 return error_response("VALIDATION_ERROR", "File must be valid UTF-8 text")
             except yaml.YAMLError as e:
@@ -327,7 +327,7 @@ def register(app, ctx) -> None:
                         # Capped: see _ZIP_TEXT_ENTRY_MAX.
                         yaml_content = _read_zip_entry_capped(
                             zf, playlist_file).decode('utf-8')
-                        playlist_data = yaml.safe_load(yaml_content)
+                        playlist_data = load_playlist_yaml(yaml_content)
                     except _ZipEntryTooLarge:
                         return error_response(
                             "VALIDATION_ERROR",
