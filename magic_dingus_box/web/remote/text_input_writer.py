@@ -98,5 +98,10 @@ class TextInputWriter:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
                 f.write(line.encode("utf-8"))
+                # Push the bytes to the file BEFORE unlocking. A buffered
+                # write otherwise lands at close(), after LOCK_UN — where it
+                # can fall between the kiosk's locked read and its locked
+                # truncate and be erased (a lost keystroke).
+                f.flush()
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
