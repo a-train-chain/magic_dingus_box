@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_state.h"
+#include "text_queue_drainer.h"
 #include "../video/video_player.h"
 #include "../retroarch/retroarch_launcher.h"
 #include "../utils/result.h"
@@ -115,15 +116,26 @@ public:
     // seek handlers get (a phone tap-to-seek is invisible to it otherwise).
     bool poll_seek_request();
 
-    // Phone Remote: drain the JSON-Lines queue at the configured path
-    // and dispatch each event to state.active_text_keyboard. No-op when
-    // file is missing/empty (idle fast path) or pointer is null. The
-    // file is truncated after parsing under the same flock.
+    // Phone Remote: dispatch queued phone keystrokes to
+    // state.active_text_keyboard (dropped when it is null). Called every
+    // frame, and does NO blocking file work itself: it dispatches what the
+    // drain worker has read so far, then stats the JSON-Lines queue and —
+    // when it is not empty — asks the worker to lock, read and truncate it
+    // (app/text_queue_drainer.h). Keystrokes therefore reach the keyboard
+    // on the frame AFTER the one that noticed them, in order.
     void poll_text_input_queue(AppState& state);
 
     // Set the queue file path. Default is data/text_input_queue.jsonl
     // resolved via config::get_data_path(). Tests inject a temp path.
     void set_text_input_queue_path(std::string path);
+
+    // Test seams. wait_for_text_input_drain() blocks until the drain
+    // worker is idle (a test then polls once more to dispatch);
+    // set_text_input_drain_for_tests() replaces the lock/read/truncate.
+    void wait_for_text_input_drain() { text_drainer_.wait_idle(); }
+    void set_text_input_drain_for_tests(TextQueueDrainer::DrainFn fn) {
+        text_drain_fn_ = std::move(fn);
+    }
     
     // System Volume
     void set_system_volume(int percent);
@@ -212,6 +224,13 @@ private:
     int video_active_negative_count_ = 0;
 
     // Shuffle ordering lives in app/shuffle_queue.h (pure, tested).
+
+    // Phone keyboard queue: the lock/read/truncate runs on text_drainer_'s
+    // worker thread, never on the render loop. text_drain_fn_ is empty in
+    // the kiosk (the real file drain is used). Keep text_drainer_ the LAST
+    // member so its thread is joined before anything else is destroyed.
+    TextQueueDrainer::DrainFn text_drain_fn_;
+    TextQueueDrainer text_drainer_;
 };
 
 } // namespace app
