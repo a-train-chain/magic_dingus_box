@@ -2,6 +2,7 @@
 #include "media_browser/sonarr/sonarr_parsers.h"
 #include "media_browser/radarr/radarr_client.h"   // normalize_prefix (one implementation)
 #include "media_browser/radarr/radarr_parsers.h"  // parse_system_status
+#include "media_browser/http/http_request.h"
 
 #include <curl/curl.h>
 #include <json/json.h>
@@ -17,12 +18,6 @@
 namespace media_browser {
 
 namespace {
-
-size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
-    auto* s = static_cast<std::string*>(ud);
-    s->append(static_cast<char*>(ptr), size * nmemb);
-    return size * nmemb;
-}
 
 // RFC 3986 percent-encoding: unreserved characters pass through, everything
 // else becomes %HH. Copied in spirit from tmdb_client.cpp rather than from
@@ -83,76 +78,56 @@ std::string SonarrClient::build_lookup_path_term(const std::string& term) {
 // --- transport -----------------------------------------------------------
 
 namespace {
-// Shared curl setup for all four verbs.
-struct CurlRequest {
-    CURL* curl = nullptr;
-    curl_slist* headers = nullptr;
-    std::string body;
-    ~CurlRequest() {
-        if (headers) curl_slist_free_all(headers);
-        if (curl) curl_easy_cleanup(curl);
+// Sonarr is a localhost service (127.0.0.1:8989, published from Gluetun's
+// netns). It had no connect bound; 3 s matches ProwlarrClient's — the same
+// kind of *arr endpoint on the same netns. NOSIGNAL comes from the shared
+// transport (required off the main thread: without it libcurl's resolver
+// uses SIGALRM). Total timeouts are unchanged.
+constexpr long kConnectTimeoutSecs = 3;
+
+// One request with Sonarr's headers: the API key always, Content-Type: JSON
+// whenever a body is sent.
+http::Response sonarr_send(http::Method m, const std::string& url,
+                           const std::string& api_key, long timeout_secs,
+                           const std::string* body = nullptr) {
+    http::Request r;
+    r.method = m;
+    r.url = url;
+    r.headers = {"X-Api-Key: " + api_key};
+    if (body) {
+        r.headers.push_back("Content-Type: application/json");
+        r.body = *body;
     }
-};
+    r.timeout_secs = timeout_secs;
+    r.connect_timeout_secs = kConnectTimeoutSecs;
+    return http::request(r);
+}
 }  // namespace
 
 std::string SonarrClient::http_get(const std::string& path) {
-    CurlRequest req;
-    req.curl = curl_easy_init();
-    if (!req.curl) { set_error("curl init failed"); return {}; }
-    const std::string url = cfg_.base_url + path;
-    req.headers = curl_slist_append(req.headers,
-                                    ("X-Api-Key: " + cfg_.api_key).c_str());
-    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
-    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
-                     static_cast<long>(cfg_.timeout_secs));
-    // Required off the main thread: without it libcurl's resolver uses
-    // SIGALRM and crashes with a SIGSEGV inside the signal handler.
-    // ProwlarrClient documents the same; RadarrClient omits it (a latent bug
-    // this client deliberately does not copy).
-    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(req.curl);
-    long http_code = 0;
-    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code;
+    auto resp = sonarr_send(http::Method::Get, cfg_.base_url + path,
+                            cfg_.api_key, cfg_.timeout_secs);
+    if (!resp.transport_ok()) { set_error(resp.error); return {}; }
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status;
         set_error(os.str());
         return {};
     }
-    return req.body;
+    return std::move(resp.body);
 }
 
 std::string SonarrClient::http_post(const std::string& path, const std::string& body) {
-    CurlRequest req;
-    req.curl = curl_easy_init();
-    if (!req.curl) { set_error("curl init failed"); return {}; }
-    const std::string url = cfg_.base_url + path;
-    req.headers = curl_slist_append(req.headers,
-                                    ("X-Api-Key: " + cfg_.api_key).c_str());
-    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
-    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
-    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
-    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
-                     static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(req.curl);
-    long http_code = 0;
-    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
-    if (http_code >= 400) {
+    auto resp = sonarr_send(http::Method::Post, cfg_.base_url + path,
+                            cfg_.api_key, cfg_.timeout_secs, &body);
+    if (!resp.transport_ok()) { set_error(resp.error); return {}; }
+    if (resp.status >= 400) {
         // Include the body: Sonarr's validation failures (seriesExistsValidator,
         // bad qualityProfileId) explain themselves there and nowhere else.
-        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+        std::ostringstream os; os << "HTTP " << resp.status << ": " << resp.body;
         set_error(os.str());
         return {};
     }
-    return req.body;
+    return std::move(resp.body);
 }
 
 long SonarrClient::http_post_status(const std::string& path, const std::string& body) {
@@ -160,59 +135,26 @@ long SonarrClient::http_post_status(const std::string& path, const std::string& 
     // http_delete's comment for why), POST verb instead of DELETE for
     // endpoints like /api/v3/history/failed/{id} that answer success with
     // an empty body.
-    CurlRequest req;
-    req.curl = curl_easy_init();
-    if (!req.curl) { set_error("curl init failed"); return 0; }
-    const std::string url = cfg_.base_url + path;
-    req.headers = curl_slist_append(req.headers,
-                                    ("X-Api-Key: " + cfg_.api_key).c_str());
-    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
-    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
-    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
-                     static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(req.curl);
-    long http_code = 0;
-    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+    auto resp = sonarr_send(http::Method::Post, cfg_.base_url + path,
+                            cfg_.api_key, cfg_.timeout_secs, &body);
+    if (!resp.transport_ok()) { set_error(resp.error); return 0; }
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status << ": " << resp.body;
         set_error(os.str());
     }
-    return http_code;
+    return resp.status;
 }
 
 std::string SonarrClient::http_put(const std::string& path, const std::string& body) {
-    CurlRequest req;
-    req.curl = curl_easy_init();
-    if (!req.curl) { set_error("curl init failed"); return {}; }
-    const std::string url = cfg_.base_url + path;
-    req.headers = curl_slist_append(req.headers,
-                                    ("X-Api-Key: " + cfg_.api_key).c_str());
-    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
-    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_CUSTOMREQUEST, "PUT");
-    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
-    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
-    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
-                     static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(req.curl);
-    long http_code = 0;
-    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+    auto resp = sonarr_send(http::Method::Put, cfg_.base_url + path,
+                            cfg_.api_key, cfg_.timeout_secs, &body);
+    if (!resp.transport_ok()) { set_error(resp.error); return {}; }
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status << ": " << resp.body;
         set_error(os.str());
         return {};
     }
-    return req.body;
+    return std::move(resp.body);
 }
 
 long SonarrClient::http_put_status(const std::string& path,
@@ -220,91 +162,42 @@ long SonarrClient::http_put_status(const std::string& path,
     // Same shape as http_post_status (status code, not body — see
     // http_delete's comment for why), PUT verb for endpoints like
     // /api/v3/episode/monitor whose success-body shape is unverified.
-    CurlRequest req;
-    req.curl = curl_easy_init();
-    if (!req.curl) { set_error("curl init failed"); return 0; }
-    const std::string url = cfg_.base_url + path;
-    req.headers = curl_slist_append(req.headers,
-                                    ("X-Api-Key: " + cfg_.api_key).c_str());
-    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
-    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_CUSTOMREQUEST, "PUT");
-    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
-    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
-                     static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(req.curl);
-    long http_code = 0;
-    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+    auto resp = sonarr_send(http::Method::Put, cfg_.base_url + path,
+                            cfg_.api_key, cfg_.timeout_secs, &body);
+    if (!resp.transport_ok()) { set_error(resp.error); return 0; }
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status << ": " << resp.body;
         set_error(os.str());
     }
-    return http_code;
+    return resp.status;
 }
 
 long SonarrClient::http_delete(const std::string& path) {
-    CurlRequest req;
-    req.curl = curl_easy_init();
-    if (!req.curl) { set_error("curl init failed"); return 0; }
-    const std::string url = cfg_.base_url + path;
-    req.headers = curl_slist_append(req.headers,
-                                    ("X-Api-Key: " + cfg_.api_key).c_str());
-    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
-    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
-                     static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(req.curl);
-    long http_code = 0;
-    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
+    auto resp = sonarr_send(http::Method::Delete, cfg_.base_url + path,
+                            cfg_.api_key, cfg_.timeout_secs);
     // 0 is the ONE reserved "no answer" value: a transport failure never
     // produced a status line, so callers can treat it as "this DELETE did not
     // happen" without consulting last_error() across a thread boundary.
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code;
+    if (!resp.transport_ok()) { set_error(resp.error); return 0; }
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status;
         set_error(os.str());
     }
-    return http_code;
+    return resp.status;
 }
 
 long SonarrClient::http_delete_body(const std::string& path, const std::string& body) {
     // Same shape as http_delete (status code, not body — see that
-    // function's comment for why), with a POSTFIELDS body attached to the
-    // DELETE verb for /api/v3/episodefile/bulk's id list.
-    CurlRequest req;
-    req.curl = curl_easy_init();
-    if (!req.curl) { set_error("curl init failed"); return 0; }
-    const std::string url = cfg_.base_url + path;
-    req.headers = curl_slist_append(req.headers,
-                                    ("X-Api-Key: " + cfg_.api_key).c_str());
-    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
-    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
-    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
-    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
-                     static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
-    CURLcode rc = curl_easy_perform(req.curl);
-    long http_code = 0;
-    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
-    if (http_code >= 400) {
-        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+    // function's comment for why), with a body attached to the DELETE verb
+    // for /api/v3/episodefile/bulk's id list.
+    auto resp = sonarr_send(http::Method::Delete, cfg_.base_url + path,
+                            cfg_.api_key, cfg_.timeout_secs, &body);
+    if (!resp.transport_ok()) { set_error(resp.error); return 0; }
+    if (resp.status >= 400) {
+        std::ostringstream os; os << "HTTP " << resp.status << ": " << resp.body;
         set_error(os.str());
     }
-    return http_code;
+    return resp.status;
 }
 
 // --- endpoints -----------------------------------------------------------
