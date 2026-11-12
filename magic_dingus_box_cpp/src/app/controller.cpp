@@ -112,6 +112,13 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         std::cout << "Stopped playback, loading new file..." << std::endl;
 
         // Brief delay for MPV to stop
+        // TODO(render-thread): this 200 ms settle and wait_for_playback_start's
+        // up-to-1000 ms below block the render thread on EVERY track change.
+        // They should become a per-frame state machine like the playlist
+        // switch in playlist_playback.cpp, but the settle exists because the
+        // DRM driver needs time to release the previous video's buffers, so
+        // that change needs hardware validation on both boards. (A MISSING
+        // file no longer reaches here — load_playlist_item refuses it first.)
         wait_with_callback(200, progress_callback);
 
         // Load the new file
@@ -158,6 +165,7 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         std::cout << "Starting playlist transition (source_type=video)..." << std::endl;
 
         stop();
+        // Same blocking settle as the "local" branch — see the TODO there.
         wait_with_callback(200, progress_callback);
 
         std::cout << "Loading file: " << item.path << std::endl;

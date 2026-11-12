@@ -192,7 +192,7 @@ sudo usermod -a -G video,input $USER
   - `qrcodegen` - QR code generation for WiFi setup
 - **`app/`** - Application logic
   - `app_state.h` - Global state (playlists, playback, settings)
-  - `controller` - High-level video/audio control, RetroArch launch/return orchestration
+  - `controller` - High-level video/audio control, RetroArch launch/return orchestration. Split in two TUs: `controller.cpp` (kiosk-only: `load_item_media` — stop/settle/load/play and the game hand-off) and `controller_playback.cpp` (player pass-throughs, `update_state`'s `video_active` debounce, `load_playlist_item`'s dispatch, NEXT/PREV/Master Shuffle stepping), which talks to the player only through `video::VideoPlayer` and is unit-tested in `test_app_unit` against a fake player (`tests/app/test_controller_playback.cpp`, link doubles in `controller_test_doubles.cpp`). A missing file is refused before anything stops the stream; `load_next_item` retries at most `kMaxSyncLoadRetries` loadable-but-failing items per call, then hands off via `AppState::playlist_item_load_failed` to `PlaylistPlayback::tick_pipeline_error` / `PlaybackErrorPolicy::on_load_failure` (an unbounded retry run once blocked the render thread past the watchdog).
   - `playlist_loader` - YAML playlist parsing
   - `settings_persistence` - YAML settings storage
   - `sample_mode` - Sample/demo mode for kiosk auto-play

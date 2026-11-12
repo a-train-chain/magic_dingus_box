@@ -10,6 +10,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -18,7 +20,9 @@
 
 #include "app/app_state.h"
 #include "app/controller.h"
+#include "app/playlist_playback.h"
 #include "controller_test_doubles.h"
+#include "video/playback_error_policy.h"
 
 namespace fs = std::filesystem;
 using test_doubles::count;
@@ -421,6 +425,185 @@ TEST_CASE("load_next_item: when every other item fails, back to the menu with an
     CHECK(r.state.current_playlist_index == -1);
     CHECK(r.state.current_item_index == -1);
     CHECK(r.state.error_message == "No playable content in playlist");
+    CHECK(count("play") == 0);
+}
+
+// ── Missing files must not block the render thread ───────────────────────
+// Every load used to stop() the stream and wait 200 ms BEFORE finding out
+// the file was missing, and load_next_item retried every remaining item
+// inside one call: ~48 missing items in a row held the render thread past
+// the 10 s systemd watchdog, and the kiosk was SIGABRTed on every NEXT or
+// auto-advance into the run.
+
+TEST_CASE("load_next_item: a missing file costs no stop and no settle",
+          "[controller][next][retry][missing]") {
+    Rig r;
+    const int pl = r.add_playlist("v", 6, {1, 2, 3});
+    r.playing(pl, 0);
+
+    r.controller.load_next_item(r.state, "");
+
+    CHECK(r.state.current_item_index == 4);
+    // Only the load that plays pays: the retry loop's pre-stop and the
+    // load's own stop + settle.
+    CHECK(count("settle") == 1);
+    CHECK(count("stop") == 2);
+}
+
+TEST_CASE("load_next_item: 48 missing items in a row cost one settle, not 48",
+          "[controller][next][retry][missing]") {
+    Rig r;
+    std::vector<int> missing;
+    for (int i = 1; i <= 48; ++i) missing.push_back(i);
+    const int pl = r.add_playlist("v", 60, missing);
+    r.playing(pl, 0);
+
+    r.controller.load_next_item(r.state, "");
+
+    CHECK(r.state.current_item_index == 49);
+    CHECK(r.last_loaded() == "v49.mp4");
+    CHECK(count("settle") == 1);
+}
+
+TEST_CASE("load_playlist_item: a missing file leaves the playing stream alone",
+          "[controller][missing]") {
+    Rig r;
+    const int pl = r.add_playlist("v", 2, {1});
+    r.player.playing = true;
+
+    auto result = r.controller.load_playlist_item(r.state, r.state.playlists[pl], 1, "");
+
+    CHECK_FALSE(result);
+    CHECK(count("stop") == 0);
+    CHECK(count("settle") == 0);
+    CHECK(r.player.playing);
+}
+
+TEST_CASE("load_next_item: unloadable items are retried at most kMaxSyncLoadRetries "
+          "times per call, then handed to the per-frame policy",
+          "[controller][next][retry][bound]") {
+    Rig r;
+    const int pl = r.add_playlist("v", 20);
+    for (int i = 1; i <= 12; ++i) {
+        r.player.fail_paths.insert(r.state.playlists[pl].items[i].path);
+    }
+    r.playing(pl, 0);
+    constexpr int K = app::Controller::kMaxSyncLoadRetries;
+
+    r.controller.load_next_item(r.state, "");
+
+    CHECK(count("settle") == 1 + K);                 // first attempt + K retries
+    CHECK(r.state.current_item_index == 1 + K);      // the last one that failed
+    CHECK(r.state.playlist_item_load_failed);
+    CHECK(r.state.current_playlist_index == pl);     // not back to the menu
+    CHECK(r.state.error_message.empty());
+    CHECK(count("play") == 0);
+}
+
+TEST_CASE("load_next_item: missing files do not count against the retry bound",
+          "[controller][next][retry][bound]") {
+    Rig r;
+    const int pl = r.add_playlist("v", 30, {2, 3, 4, 5, 6, 7, 8, 9});
+    r.player.fail_paths.insert(r.state.playlists[pl].items[1].path);
+    r.player.fail_paths.insert(r.state.playlists[pl].items[10].path);
+    r.playing(pl, 0);
+
+    r.controller.load_next_item(r.state, "");
+
+    CHECK(r.state.current_item_index == 11);
+    CHECK(r.last_loaded() == "v11.mp4");
+    CHECK_FALSE(r.state.playlist_item_load_failed);
+}
+
+// The kiosk's ControllerTransport, over the real Controller + fake player:
+// PlaylistPlayback driving Controller end to end, a frame at a time.
+struct ControllerAdapter final : app::PlaylistTransport {
+    app::Controller& c;
+    FakeVideoPlayer& p;
+    ControllerAdapter(app::Controller& controller, FakeVideoPlayer& player)
+        : c(controller), p(player) {}
+    void stop() override { c.stop(); }
+    void play() override { c.play(); }
+    void toggle_pause() override { c.toggle_pause(); }
+    void seek(double s) override { c.seek(s); }
+    bool is_playing() const override { return c.is_playing(); }
+    bool is_paused() const override { return c.is_paused(); }
+    utils::Result<> load_playlist_item(app::AppState& s, const app::Playlist& pl, int i,
+                                       const std::string& d) override {
+        return c.load_playlist_item(s, pl, i, d);
+    }
+    void load_next_item(app::AppState& s, const std::string& d) override { c.load_next_item(s, d); }
+    void load_previous_item(app::AppState& s, const std::string& d) override {
+        c.load_previous_item(s, d);
+    }
+    void play_random_global_video(app::AppState& s, const std::string& d) override {
+        c.play_random_global_video(s, d);
+    }
+    void master_shuffle_advance(app::AppState& s, const std::string& d) override {
+        c.master_shuffle_advance(s, d);
+    }
+    void master_shuffle_back(app::AppState& s, const std::string& d) override {
+        c.master_shuffle_back(s, d);
+    }
+    uint64_t stream_generation() const override { return p.generation; }
+    bool has_error() const override { return p.has_error(); }
+    double player_position() const override { return p.get_position(); }
+    std::chrono::steady_clock::time_point now() const override {
+        return std::chrono::steady_clock::time_point{std::chrono::hours(1000)};
+    }
+};
+
+TEST_CASE("a long run of unloadable items is walked a bounded chunk per frame",
+          "[controller][retry][bound][playback]") {
+    Rig r;
+    const int pl = r.add_playlist("v", 30);
+    for (int i = 1; i <= 20; ++i) {
+        r.player.fail_paths.insert(r.state.playlists[pl].items[i].path);
+    }
+    r.playing(pl, 0);
+    ControllerAdapter t(r.controller, r.player);
+    const std::string dir;
+    app::PlaylistPlayback pb(r.state, t, dir);
+
+    r.controller.load_next_item(r.state, dir);   // NEXT / auto-advance
+    int frames = 0;
+    int max_settles_per_frame = count("settle");
+    while (r.state.playlist_item_load_failed && frames < 50) {
+        const int before = count("settle");
+        pb.tick_pipeline_error();
+        max_settles_per_frame = std::max(max_settles_per_frame, count("settle") - before);
+        ++frames;
+    }
+
+    CHECK(r.state.current_item_index == 21);
+    CHECK(r.last_loaded() == "v21.mp4");
+    CHECK(count("play") == 1);
+    CHECK(max_settles_per_frame <= 1 + app::Controller::kMaxSyncLoadRetries);
+    CHECK(frames == 20 / (1 + app::Controller::kMaxSyncLoadRetries));
+    CHECK(r.state.error_message.empty());
+}
+
+TEST_CASE("a playlist that never loads gives up after the policy's budget",
+          "[controller][retry][bound][playback]") {
+    Rig r;
+    const int pl = r.add_playlist("v", 60);
+    for (const auto& it : r.state.playlists[pl].items) r.player.fail_paths.insert(it.path);
+    r.playing(pl, 0);
+    ControllerAdapter t(r.controller, r.player);
+    const std::string dir;
+    app::PlaylistPlayback pb(r.state, t, dir);
+
+    r.controller.load_next_item(r.state, dir);
+    int frames = 0;
+    while (r.state.playlist_item_load_failed && frames < 50) {
+        pb.tick_pipeline_error();
+        ++frames;
+    }
+
+    // failure_budget(60 items) = kMaxFailureBudget = 10 hand-offs.
+    CHECK(frames == video::PlaybackErrorPolicy::kMaxFailureBudget);
+    CHECK(r.state.current_playlist_index == -1);
+    CHECK(r.state.error_message == "Couldn't play these videos");
     CHECK(count("play") == 0);
 }
 

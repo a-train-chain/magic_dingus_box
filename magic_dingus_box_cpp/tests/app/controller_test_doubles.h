@@ -11,6 +11,7 @@
 // load_file_with_resolution(), play(). Every call lands in one ordered
 // event log so a test can assert what a step cost.
 
+#include <cstdint>
 #include <set>
 #include <string>
 #include <vector>
@@ -36,6 +37,8 @@ public:
     double position = 0.0;
     double duration = 0.0;
     double volume = 100.0;
+    // GstPlayer::stream_generation(): bumped by every load_file().
+    uint64_t generation = 0;
     // load_file() returns false for these resolved paths.
     std::set<std::string> fail_paths;
 

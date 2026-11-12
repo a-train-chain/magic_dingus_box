@@ -28,6 +28,7 @@ int count(const std::string& name) {
 
 bool FakeVideoPlayer::load_file(const std::string& path, double, double, bool) {
     events().push_back("load_file " + std::filesystem::path(path).filename().string());
+    ++generation;
     if (fail_paths.count(path)) return false;
     playing = false;
     eos = false;

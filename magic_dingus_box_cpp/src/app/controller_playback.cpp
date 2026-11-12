@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <chrono>
 #include <algorithm>
+#include <optional>
 
 namespace fs = std::filesystem;
 
@@ -221,6 +222,23 @@ const PlaylistItem* current_item(const AppState& state) {
     return &pl.items[state.current_item_index];
 }
 
+// The resolved path of a local video item whose file does not exist, or
+// nullopt (file present, or not a file-backed video item). The same
+// resolution + existence check load_file_with_resolution makes, done BEFORE
+// anything stops the playing stream: a missing file used to cost a stop()
+// and the 200 ms settle before being discovered, per item.
+std::optional<std::string> missing_video_file(const PlaylistItem& item,
+                                              const std::string& playlist_directory) {
+    if (item.source_type != "local" && item.source_type != "video") {
+        return std::nullopt;
+    }
+    std::string resolved = utils::resolve_video_path(item.path, playlist_directory);
+    if (fs::exists(fs::path(resolved))) {
+        return std::nullopt;
+    }
+    return resolved;
+}
+
 }  // namespace
 
 void Controller::update_state(AppState& state) {
@@ -410,6 +428,16 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
     const auto& item = playlist.items[item_index];
 
+    // A missing file is refused before anything is torn down: the stream
+    // that is playing keeps playing (and keeps its now-playing info), and
+    // no stop() + 200 ms settle is paid for an item that cannot load.
+    if (const auto missing = missing_video_file(item, playlist_directory)) {
+        std::string error = "Failed to load playlist item: " + item.path +
+                            " (Video file does not exist: " + *missing + ")";
+        std::cerr << "Error: " << error << std::endl;
+        return utils::Result<>::fail(error);
+    }
+
     // Publish "what is playing" for StatusWriter -> kiosk_status.json ->
     // the phone remote. These AppState fields were declared and
     // serialized but never assigned anywhere, so remote.js's
@@ -508,9 +536,23 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
         state.last_advanced_item_index = -1;  // Reset advance flag to allow retry
 
         bool found = false;
-        for (int candidate : cursor::retry_order(state.current_item_index, old_index,
-                                                 static_cast<int>(playlist.items.size()))) {
+        int sync_retries = 0;  // retries that paid a stop + settle
+        const std::vector<int> order = cursor::retry_order(
+            state.current_item_index, old_index, static_cast<int>(playlist.items.size()));
+        for (size_t n = 0; n < order.size(); ++n) {
+            const int candidate = order[n];
             state.current_item_index = candidate;
+
+            // Missing file: known from a stat, so skip it without stopping
+            // the stream or waiting out the settle. Free, so a run of them
+            // (an unplugged library drive, a deleted batch) is crossed in
+            // one call and does not count against kMaxSyncLoadRetries.
+            if (const auto missing = missing_video_file(playlist.items[candidate],
+                                                        playlist_directory)) {
+                std::cerr << "Warning: Also failed item " << (candidate + 1)
+                          << ": Video file does not exist: " << *missing << std::endl;
+                continue;
+            }
 
             // Defensive null guard. player_ is set at construction and not
             // reassigned anywhere, but an emulated-game retry path can have
@@ -528,6 +570,21 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
             }
             std::cerr << "Warning: Also failed item " << (state.current_item_index + 1)
                       << ": " << retry.error() << std::endl;
+
+            // Each failed load above cost a stop + 200 ms settle on the
+            // render thread; an unbounded run of them blocked it past the
+            // 10 s systemd watchdog. After kMaxSyncLoadRetries, hand the
+            // rest to the per-frame failure policy: the next frame's
+            // PlaylistPlayback::tick_pipeline_error continues from this
+            // item (skip on, or give up after a run of failures).
+            if (++sync_retries >= kMaxSyncLoadRetries && n + 1 < order.size()) {
+                std::cerr << "Warning: " << sync_retries << " more items failed to load; "
+                          << "continuing after item " << (candidate + 1)
+                          << " on the next frame" << std::endl;
+                state.playlist_item_load_failed = true;
+                state.ui_visible_when_playing = was_ui_visible;
+                return;
+            }
         }
 
         if (!found) {

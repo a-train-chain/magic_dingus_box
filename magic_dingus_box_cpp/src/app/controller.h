@@ -83,6 +83,16 @@ public:
     utils::Result<> load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr);
     
     // Navigation
+    //
+    // load_next_item retries past items that fail to load. A missing file
+    // is skipped for the cost of a stat (no stop, no settle). An item that
+    // exists but fails costs a stop + the 200 ms settle, so at most
+    // kMaxSyncLoadRetries of those are retried in one call (after the
+    // first attempt): then it sets state.playlist_item_load_failed and
+    // returns, and PlaylistPlayback continues on the next frame through
+    // the playback error policy. Keeps one call well inside the 10 s
+    // systemd watchdog however long the run of bad items is.
+    static constexpr int kMaxSyncLoadRetries = 3;
     void load_next_item(AppState& state, const std::string& playlist_directory);
     void load_previous_item(AppState& state, const std::string& playlist_directory);
     
