@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # file-wide: run_step calls every step_<name> (and through it the helpers) by computed name, and the handlers run from traps
 set -euo pipefail
 
 #
@@ -10,7 +11,13 @@ set -euo pipefail
 #   - Unique device identity generation
 #   - Required directory creation
 #   - Ownership/permission fixup
+#   - Wiping every class of per-unit state the image inherited from the
+#     source box (credentials, pairings, saves, logs)
 #   - Self-disabling so it never runs again
+#
+# Every item is its own STEP: a failing step never stops the ones after it,
+# a completed step is recorded and never repeated, and a step that keeps
+# failing is retried on a bounded number of boots. See "Step engine" below.
 #
 # This script is enabled by prepare_golden_image.sh and triggered by
 # magic-first-boot.service (oneshot, before the kiosk app starts).
@@ -31,6 +38,14 @@ MACHINE_ID_FILE="/etc/machine-id"
 # journald's persistent + volatile roots; each holds one <machine-id>/ dir.
 JOURNAL_ROOTS=(/var/log/journal /run/log/journal)
 PROC_ROOT="/proc"
+# build/data/ carries a SECOND copy of most per-unit state (populated when the
+# C++ tests run on the box). Defined here, not inside a step: every step runs
+# in its own subshell, so a variable one step sets never reaches the next.
+BUILD_DATA_DIR="${CPP_DIR}/build/data"
+NM_DIR="/etc/NetworkManager/system-connections"
+# Where the record of completed steps lives ("Step engine" below).
+FB_STATE_ROOT="/var/lib/magic-dingus-box/first_boot"
+FB_BOARD_SERIAL_FILE="/proc/device-tree/serial-number"
 
 # ---------------------------------------------------------------------------
 # Logging helper - stdout + syslog + a FILE that survives
@@ -49,14 +64,18 @@ FIRST_BOOT_LOG="/var/log/magic-first-boot.log"
 mkdir -p "$(dirname "$FIRST_BOOT_LOG")" 2>/dev/null || true
 
 log() {
-    echo "$1"
+    # In a subshell, guarded: stdout is journald's stream, and Step 1b
+    # restarts journald. If that stream ever broke, a bare echo would take
+    # SIGPIPE and silently kill the whole run at its next log line.
+    ( echo "$1" ) 2>/dev/null || true
     logger -t "magic-first-boot" "$1" 2>/dev/null || true
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$FIRST_BOOT_LOG" 2>/dev/null || true
 }
 
 # Say WHERE it died, not just that it did. set -euo pipefail aborts on the
 # first failing command, and without this the operator gets an exit code and
-# nothing else.
+# nothing else. This trap covers the preamble only (the code above the step
+# list); each step reports its own failure through run_step.
 first_boot_failed() {
     local rc=$? line=${1:-?}
     log "=== FAILED at line ${line} (exit ${rc}): ${BASH_COMMAND}"
@@ -101,9 +120,294 @@ if [[ -f "${CLONE_BACKUP_DIR}/in_progress" && -s "${CLONE_BACKUP_DIR}/source_car
     fi
 fi
 
+# >>> step engine
+# ---------------------------------------------------------------------------
+# Step engine: one step's failure never stops another, and nothing runs twice
+# ---------------------------------------------------------------------------
+# This script used to be one linear run under `set -e`: the first failing
+# command anywhere ended it, and nothing below that line ran. On the first
+# golden image (2026-08-04) `parted -s` exited 1 in Step 2, so no unit
+# regenerated its identity, wiped the source box's saves, pairings or Wi-Fi
+# password, re-locked the Media Browser or disabled this service — and it
+# died at the same line on every boot after. Guarding that one command fixed
+# that one command; the wipes at the bottom still depended on every line
+# above them never failing.
+#
+# Each step is now a function (step_<name>, below) run by run_step:
+#
+#   - ISOLATED. A step runs in its own subshell. Whatever happens in it — a
+#     failing command, an unset variable, a killed process — the next step
+#     still runs. The price: a variable one step sets is invisible to the
+#     others, so anything shared lives with the paths at the top of the file.
+#   - FAIL-FAST INSIDE. The subshell runs under `set -e`, so a step still
+#     stops at its first failing command instead of ploughing on past a
+#     failed prerequisite. bash silently IGNORES `set -e` in everything
+#     called from an `if`, `||` or `&&` — so run_step is only ever called as
+#     a plain statement (never `run_step x || ...`), this level runs with
+#     `set +e` and reads the subshell's status, and run_step proves errexit
+#     is live before every step.
+#   - RECORDED. A step that returns 0 leaves <state>/<name>.done and is never
+#     run again. Without that, isolation would be worse than the bug: one
+#     permanently failing harmless step (the partition expand on an odd card)
+#     would keep this service enabled, and every boot would re-run the WIPES —
+#     destroying the customer's own saves, pairings and Wi-Fi each time.
+#   - BOUNDED. An attempt is counted BEFORE the step starts, so a step that
+#     hangs the boot or loses power counts too. After FB_MAX_ATTEMPTS boots a
+#     step is abandoned, loudly. That bound covers the wipes on purpose: a
+#     wipe that finally succeeded months later would delete months of the
+#     customer's own data.
+#   - The service disables itself once no step can run again: every step done
+#     (the "complete" line), or every unfinished one abandoned — the unit is
+#     then flagged for good (verify_box.sh FAILs it from the record below).
+#
+# The record lives in FB_STATE_ROOT/<board serial>/ — outside the install
+# tree (an OTA's rsync --delete never sees it) and not under cloning_backup/
+# (Step 6d empties that). An image must never carry it: a clone that
+# inherited "every step done" would skip every wipe and call itself complete.
+# prepare_for_cloning.sh and prepare_golden_image.sh delete FB_STATE_ROOT when
+# they enable this service, and the board serial in the path (burned into the
+# SoC — no dd copies it) means a record that rode along anyway is not even
+# looked at on another board.
+#   steps               every step name, in run order (verify_box.sh reads it)
+#   <name>.done         the step completed; never run again
+#   <name>.attempt.<n>  the step was started on its n-th boot
+# The markers are EMPTY files: creating one needs no free data block. A step's
+# NAME is its key in the record: rename one and it runs again on any unit
+# that is still mid-retry.
+FB_MAX_ATTEMPTS=3
+FB_STATE_DIR=""
+FB_STATE_OK=1       # 0 = the record cannot be written -> this is the only run
+FB_OK_NOW=""        # steps that completed in THIS run
+
+# This board's hardware serial — the name of its state directory.
+# verify_box.sh carries the same function; first_boot_steps.bats keeps the
+# two identical.
+fb_board_id() {
+    local id
+    id="$(tr -cd '0-9A-Za-z' 2>/dev/null < "$FB_BOARD_SERIAL_FILE" || true)"
+    printf '%s\n' "${id:-unknown}"
+}
+
+# Completed — recorded on an earlier boot, or finished in this run (which is
+# all there is to go on when the record cannot be written).
+fb_done() {   # NAME
+    [[ -e "${FB_STATE_DIR}/$1.done" || " ${FB_OK_NOW} " == *" $1 "* ]]
+}
+
+fb_attempts() {   # NAME -> how many boots have started this step
+    local n=0 f
+    for f in "${FB_STATE_DIR}/$1".attempt.*; do
+        if [[ -e "$f" ]]; then n=$((n + 1)); fi
+    done
+    printf '%s\n' "$n"
+}
+
+# Create an (empty) marker. Only a .done marker is pushed to the card with
+# fsync: it must be durable before the kiosk starts and the customer creates
+# anything a repeated wipe would destroy. (On ext4 that commit also carries
+# the step's own unlinks, which were journalled before it.) A lost attempt
+# marker only costs one extra try.
+fb_mark() {   # MARKER-NAME
+    local f="${FB_STATE_DIR}/$1"
+    touch "$f" 2>/dev/null
+    [[ -e "$f" ]] || return 1
+    case "$1" in
+        *.done) sync "$f" "$FB_STATE_DIR" 2>/dev/null || true ;;
+    esac
+    return 0
+}
+
+# No durable record => no second run. A completed wipe that cannot be
+# recorded would run again on the next boot and take the customer's data
+# with it, so fb_finish disables the service whatever this run achieved.
+fb_state_broken() {   # WHY
+    [[ "$FB_STATE_OK" -eq 1 ]] || return 0
+    FB_STATE_OK=0
+    log "=== FAILED to record first-boot progress: $1"
+    log "===   Without that record a finished wipe could run AGAIN on a later boot"
+    log "===   and delete the customer's own data, so this is the ONLY first-boot"
+    log "===   run: the service is disabled at the end, whatever the outcome."
+}
+
+fb_state_init() {
+    local entry
+    FB_STATE_DIR="${FB_STATE_ROOT}/$(fb_board_id)"
+    if ! mkdir -p "$FB_STATE_DIR" 2>/dev/null; then
+        fb_state_broken "cannot create ${FB_STATE_DIR}"
+        return 0
+    fi
+    # Written whole or not at all: verify_box.sh trusts every line of it.
+    if { for entry in "${FB_STEP_TABLE[@]}"; do printf '%s\n' "${entry%%:*}"; done; } \
+            > "${FB_STATE_DIR}/steps.tmp" 2>/dev/null \
+       && mv -f "${FB_STATE_DIR}/steps.tmp" "${FB_STATE_DIR}/steps" 2>/dev/null; then
+        sync "${FB_STATE_DIR}/steps" "$FB_STATE_DIR" 2>/dev/null || true
+    else
+        fb_state_broken "cannot write ${FB_STATE_DIR}/steps"
+    fi
+    log "=== Step record: ${FB_STATE_DIR} (a step is tried on at most ${FB_MAX_ATTEMPTS} boots)"
+}
+
+# May this unfinished step still run on a later boot? Not once its attempts
+# are spent, and not when the step it needs can never complete either.
+fb_retriable() {   # NAME [NEEDS]
+    [[ "$FB_STATE_OK" -eq 1 ]] || return 1
+    [[ "$(fb_attempts "$1")" -lt "$FB_MAX_ATTEMPTS" ]] || return 1
+    [[ -z "${2:-}" ]] && return 0
+    fb_done "$2" && return 0
+    [[ "$(fb_attempts "$2")" -lt "$FB_MAX_ATTEMPTS" ]]
+}
+
+# ERR trap of a step's subshell: name the step and the failing line. With
+# errtrace the trap is inherited by nested subshells ($(...), pipeline
+# elements) too; only the step's own level reports, so one failure is one line.
+fb_step_err() {   # EXIT-STATUS LINE COMMAND
+    local nl=$'\n' cmd="$3"
+    [[ "$BASH_SUBSHELL" -eq "$FB_STEP_DEPTH" ]] || return 0
+    cmd="${cmd//$nl/ }"
+    log "=== FAILED step ${FB_STEP_NAME} at line ${2} (exit ${1}): ${cmd:0:200}"
+}
+
+# Run one step. ALWAYS call this as a plain statement — see FAIL-FAST above.
+run_step() {   # NAME[:NEEDS]
+    local name="${1%%:*}" needs="" attempts rc live
+
+    [[ "$1" == *:* ]] && needs="${1#*:}"
+
+    if fb_done "$name"; then
+        log "[skip] ${name}: completed on an earlier boot — not repeated"
+        return 0
+    fi
+    if [[ -n "$needs" ]] && ! fb_done "$needs"; then
+        log "[wait] ${name}: needs '${needs}', which has not completed — not run"
+        return 0
+    fi
+    attempts="$(fb_attempts "$name")"
+    if [[ "$attempts" -ge "$FB_MAX_ATTEMPTS" ]]; then
+        log "[gave up] ${name}: failed or was interrupted on ${attempts} boots — not tried again"
+        return 0
+    fi
+    attempts=$((attempts + 1))
+    fb_mark "${name}.attempt.${attempts}" \
+        || fb_state_broken "cannot record attempt ${attempts} of step ${name}"
+
+    # Is errexit live here? In a context where bash ignores it, this subshell
+    # runs on past `false` and exits 0.
+    ( set -e; false; exit 0 ) 2>/dev/null
+    live=$?
+    if [[ "$live" -eq 0 ]]; then
+        log "=== FAILED: the step engine is running where bash ignores 'set -e'"
+        log "===   (the step runner was called from an if / || / &&). Step ${name} will"
+        log "===   NOT stop at its first error. This is a bug in first_boot.sh."
+    fi
+
+    (
+        set -eEuo pipefail
+        FB_STEP_NAME="$name"
+        FB_STEP_DEPTH="$BASH_SUBSHELL"
+        trap 'fb_step_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
+        "step_${name}"
+    )
+    rc=$?
+
+    if [[ "$rc" -eq 0 ]]; then
+        FB_OK_NOW="${FB_OK_NOW} ${name}"
+        fb_mark "${name}.done" \
+            || fb_state_broken "cannot record that step ${name} completed"
+    else
+        log "=== FAILED step ${name} (exit ${rc}, attempt ${attempts} of ${FB_MAX_ATTEMPTS}) — the remaining steps still run"
+    fi
+    return 0
+}
+
+# Decide what this run amounted to, disable the service when nothing can run
+# again, and exit.
+fb_finish() {
+    local entry name needs rc incomplete="" retry="" gave_up=""
+
+    for entry in "${FB_STEP_TABLE[@]}"; do
+        name="${entry%%:*}"
+        needs=""
+        [[ "$entry" == *:* ]] && needs="${entry#*:}"
+        if fb_done "$name"; then
+            continue
+        fi
+        incomplete="${incomplete} ${name}"
+        if fb_retriable "$name" "$needs"; then
+            retry="${retry} ${name}"
+        else
+            gave_up="${gave_up} ${name}"
+        fi
+    done
+
+    if [[ -z "$incomplete" ]]; then
+        if [[ -z "$FB_OK_NOW" ]]; then
+            # Someone running this by hand to "reset" a finished unit must
+            # not be left thinking the wipes ran.
+            log "=== Every step was already recorded complete — NOTHING was run."
+            log "===   To run first boot from scratch (it WIPES this unit's saves, pairings"
+            log "===   and Wi-Fi): sudo rm -rf ${FB_STATE_DIR}  and run this script again."
+        fi
+        # -------------------------------------------------------------------
+        # Step 7: Disable this service (run once only)
+        # -------------------------------------------------------------------
+        log "[7/7] Disabling first-boot service..."
+        systemctl disable magic-first-boot.service
+        rc=$?
+        if [[ "$rc" -ne 0 ]]; then
+            # Every step is recorded, so the next boot repeats nothing: it
+            # skips them all and only tries this again.
+            log "=== FAILED to disable magic-first-boot.service (exit ${rc}) — it will run again"
+            log "===   next boot, repeat no step, and retry only this."
+            exit 1
+        fi
+        log "[7/7] magic-first-boot.service disabled (will not run again)"
+        log "=== Magic Dingus Box first-boot setup complete ==="
+        exit 0
+    fi
+
+    log "=== FAILED: first-boot setup INCOMPLETE — steps not completed:${incomplete}"
+    log "=== A partial first boot can leave SOURCE-BOX state on this unit:"
+    log "===   identity, saves, pairing and credentials may NOT be wiped."
+    log "===   verify_box.sh FAILs this unit until every step is recorded complete."
+    log "=== Full log: ${FIRST_BOOT_LOG}"
+    if [[ -n "$retry" ]]; then
+        log "=== Retrying on the next boot:${retry}"
+        log "===   (steps already completed are not repeated)"
+        if [[ -n "$gave_up" ]]; then
+            log "=== Given up on:${gave_up}"
+        fi
+        exit 1
+    fi
+    log "=== GIVING UP on:${gave_up} — first boot will not run again by itself."
+    systemctl disable magic-first-boot.service \
+        || log "=== WARNING: could not disable magic-first-boot.service"
+    if [[ "$FB_STATE_OK" -eq 1 ]]; then
+        log "=== Once the cause is fixed, retry by hand (completed steps are skipped):"
+        log "===   sudo rm -f ${FB_STATE_DIR}/*.attempt.*"
+        log "===   sudo bash /opt/magic_dingus_box/scripts/golden_image/first_boot.sh"
+    else
+        log "=== This run could not be recorded, so a re-run by hand repeats EVERY"
+        log "===   step, wipes included. Only do that before the unit holds anything"
+        log "===   worth keeping:"
+        log "===   sudo bash /opt/magic_dingus_box/scripts/golden_image/first_boot.sh"
+    fi
+    exit 1
+}
+# <<< step engine
+
+# ---------------------------------------------------------------------------
+# The steps
+# ---------------------------------------------------------------------------
+# One step_<name> function each, in the order they run (the list itself is at
+# the bottom of the file). Their bodies are deliberately NOT indented: they
+# are the lines of the old linear script, unmoved, so the change that
+# isolated them stays reviewable line by line. Helper functions a step calls
+# sit beside it at top level, never inside it.
+
 # ---------------------------------------------------------------------------
 # Step 1: Regenerate SSH host keys
 # ---------------------------------------------------------------------------
+step_ssh_host_keys() {
 log "[1/7] Regenerating SSH host keys..."
 
 # UNCONDITIONAL rotation. This block used to skip when keys already existed,
@@ -141,6 +445,7 @@ for SSH_UNIT in ssh.service sshd.service; do
         break
     fi
 done
+}
 
 # ---------------------------------------------------------------------------
 # Step 1b: Regenerate /etc/machine-id
@@ -158,6 +463,7 @@ done
 # it, so a duplicate machine-id cannot survive even one DHCP exchange that
 # a later step might trigger. (The expand itself grows the partition ONLINE
 # with growpart/resize2fs and never reboots.)
+step_machine_id() {
 log "[1b/7] Regenerating machine-id..."
 rm -f /etc/machine-id /var/lib/dbus/machine-id
 systemd-machine-id-setup >/dev/null 2>&1 || true
@@ -169,6 +475,8 @@ mkdir -p /var/lib/dbus 2>/dev/null || true
 ln -sf /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null \
     || log "[1b/7] WARNING: could not link /var/lib/dbus/machine-id — dbus may drift"
 log "[1b/7] machine-id regenerated: $(cut -c1-8 /etc/machine-id 2>/dev/null)..."
+restart_journald_for_machine_id
+}
 
 # journald names its directory after the machine-id it read AT STARTUP
 # (/var/log/journal/<id>/) and never re-reads it, while journalctl only reads
@@ -201,7 +509,6 @@ restart_journald_for_machine_id() {
     done
     log "[1b/7] WARNING: journald restarted but no journal directory for the new machine-id yet"
 }
-restart_journald_for_machine_id
 
 # ---------------------------------------------------------------------------
 # Step 1c: Revoke the source box's VPN identity — EARLY, and never fatal
@@ -221,7 +528,6 @@ restart_journald_for_machine_id
 # identity regeneration. Wrapped so a failure cannot abort first boot (every
 # later wipe matters as much) — but it is logged loudly, and verify_box.sh
 # FAILs a unit still holding the key (source_secret_fingerprints).
-log "[1c/7] Revoking the source box's VPN identity (services/.env + inherited containers)..."
 SOURCE_SECRETS_LIB="$(dirname "${BASH_SOURCE[0]}")/source_secrets_lib.sh"
 
 revoke_source_vpn_identity() {
@@ -244,6 +550,8 @@ revoke_source_vpn_identity() {
     fi
     return "$rc"
 }
+step_vpn_identity() {
+log "[1c/7] Revoking the source box's VPN identity (services/.env + inherited containers)..."
 if revoke_source_vpn_identity; then
     log "[1c/7] Source VPN identity revoked"
 else
@@ -255,10 +563,12 @@ else
     log "[1c/7] WARNING: and confirm with verify_box.sh. Continuing first boot."
     log "[1c/7] WARNING: =============================================================="
 fi
+}
 
 # ---------------------------------------------------------------------------
 # Step 2: Expand root filesystem to fill SD card
 # ---------------------------------------------------------------------------
+step_expand_rootfs() {
 log "[2/7] Expanding root filesystem..."
 
 # Wait for udev to settle before querying block devices. Guarded: settle
@@ -391,10 +701,12 @@ else
         fi
     fi
 fi
+}
 
 # ---------------------------------------------------------------------------
 # Step 3: Generate unique device identity
 # ---------------------------------------------------------------------------
+step_device_identity() {
 log "[3/7] Generating unique device identity..."
 
 DEVICE_INFO_PATH="${DATA_DIR}/device_info.json"
@@ -480,10 +792,14 @@ DEVEOF
 
     log "[3/7] Device identity created: ${DEVICE_UUID} (hostname: ${NEW_HOSTNAME})"
 fi
+}
 
 # ---------------------------------------------------------------------------
 # Step 4: Create required directories
 # ---------------------------------------------------------------------------
+# Steps 4 and 5 are ONE step (data_dirs): the chowns of Step 5 need the
+# directories of Step 4, so a failed mkdir must stop before them.
+step_data_dirs() {
 log "[4/7] Creating required directories..."
 
 mkdir -p "${DATA_DIR}/saves"
@@ -507,6 +823,7 @@ if [[ -f "${DATA_DIR}/device_info.json" ]]; then
     chown "${MAGIC_USER}:${MAGIC_USER}" "${DATA_DIR}/device_info.json"
 fi
 log "[5/7] Set ownership on first-boot created directories and files"
+}
 
 # ---------------------------------------------------------------------------
 # Step 6: Wipe Media Browser per-Pi state (cloned-image only)
@@ -532,6 +849,7 @@ log "[5/7] Set ownership on first-boot created directories and files"
 # once per cloned Pi. The source Pi's restore_after_cloning.sh disabled
 # the unit before we ever got here, so this code path doesn't fire on
 # the source Pi.
+step_wipe_media_browser() {
 log "[6/7] Cleaning Media Browser per-Pi state..."
 
 SERVICES_DIR="${INSTALL_DIR}/services"
@@ -600,6 +918,7 @@ if [[ -d "$SERVICES_DIR" ]]; then
 else
     log "[6/7] services/ not present; nothing to clean (Pi without Media Browser)"
 fi
+}
 
 # Reset media_browser_unlocked in settings.json. The kiosk has a built-in
 # "secret sequence" that gates the entire Media Browser feature visibility
@@ -608,6 +927,7 @@ fi
 # true and persisted. Cloned Pis would inherit "unlocked" state and show
 # the Media Browser chip — defeating the "users won't know the feature
 # exists" UX intent. Reset the flag here so cloned Pis start locked.
+step_reset_settings() {
 SETTINGS_PATH="${INSTALL_DIR}/config/settings.json"
 if [[ -f "$SETTINGS_PATH" ]] && command -v python3 &>/dev/null; then
     python3 -c "
@@ -666,6 +986,7 @@ except Exception as e:
 " 2>&1 | sed 's/^/    /' || true
     log "[6/7] Reset personal browse filters (customer starts at factory defaults)"
 fi
+}
 
 # Phone Remote: a cloned Pi must NOT inherit the source's paired phones
 # or its Flask HMAC secret. Wiping flask_secret.key forces create_app() to
@@ -673,6 +994,7 @@ fi
 # by the source Pi (defense-in-depth even after paired_remotes.json is
 # already wiped). The other files are transient state files that the kiosk
 # / Flask recreate on demand — safe to delete.
+step_wipe_phone_remote() {
 log "[6/7] Wiping Phone Remote per-Pi state (paired phones, sessions, secrets)..."
 # box_health_last.json is the Content Manager's cached Box health verdict —
 # the SOURCE box's, which a clone must not show as its own.
@@ -720,7 +1042,6 @@ done
 # kiosk_status.json and seek_request.json are here for the same reason they
 # are in the data/ list above: transient kiosk↔Flask state a fresh box
 # regenerates on demand, and the build copy shipped when only data/ was wiped.
-BUILD_DATA_DIR="${CPP_DIR}/build/data"
 if [[ -d "$BUILD_DATA_DIR" ]]; then
     for f in paired_remotes.json pairing_session.json pairing_audit.log \
              pending_revocations.txt seek_request.json kiosk_status.json \
@@ -731,11 +1052,13 @@ if [[ -d "$BUILD_DATA_DIR" ]]; then
         fi
     done
 fi
+}
 
 # Debug screenshots (data/screenshots/*.bmp, from `touch
 # data/screenshot_request` — see debug/screenshot_capture.h). Pictures of the
 # source operator's TV: personal content. prepare_for_cloning.sh strips them
 # from the image; this is the on-unit safety net, same as the watch db below.
+step_wipe_personal_data() {
 for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
     [[ -d "$d" ]] || continue
     if [[ -d "${d}/screenshots" ]]; then
@@ -786,6 +1109,7 @@ for f in "${TMDB_KEY_FILES[@]}"; do
     rm -f "$f"
     log "    wiped: $(basename "$f")"
 done
+}
 
 # Step 6c and 6d run UNCONDITIONALLY — they are the most important
 # anti-leak steps for cloned Pis (inherited WiFi credentials and the
@@ -815,7 +1139,7 @@ done
 # up the change automatically on its next reload. No need to
 # restart NM here — Pi will boot, NM will start, find no saved
 # profiles, sit idle until the operator sets one up.
-NM_DIR="/etc/NetworkManager/system-connections"
+step_wipe_wifi() {
 if [[ -d "$NM_DIR" ]]; then
     # Count what we're about to wipe (for the log).
     nm_count=$(find "$NM_DIR" -maxdepth 1 -name "*.nmconnection" \
@@ -828,6 +1152,7 @@ if [[ -d "$NM_DIR" ]]; then
         log "[6/7] No WiFi profiles to wipe (already clean)"
     fi
 fi
+}
 
 # Step 6c-2: Wipe inherited system logs.
 #
@@ -847,10 +1172,12 @@ fi
 #
 # Vacuum by TIME, not size: --vacuum-size keeps the NEWEST slices, which is
 # exactly where a recent Wi-Fi join sits.
+step_wipe_logs() {
 log "[6/7] Wiping inherited system logs (cloud-init + journal)..."
 rm -f /var/log/cloud-init.log* /var/log/cloud-init-output.log* 2>/dev/null || true
 journalctl --rotate 2>/dev/null || true
 journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+}
 
 # The vacuum above only reaches the CURRENT machine-id's directory —
 # journalctl opens no other — so the image's own directory (the source box's
@@ -891,8 +1218,15 @@ remove_stale_machine_id_journals() {
         log "[6/7] Removed ${removed} journal directory(ies) of the image's old machine-id"
     fi
 }
+# Its own step, and one that waits for the machine_id step: until the id has
+# changed no directory is stale, so running it would find nothing, be recorded
+# as done, and leave the image's journal on the unit for good once a later
+# boot does change the id.
+step_stale_journal_dirs() {
 remove_stale_machine_id_journals
+}
 
+step_wipe_audit_docker_logs() {
 if [[ -d /var/log/audit ]]; then
     rm -f /var/log/audit/audit.log.* 2>/dev/null || true
     truncate -s 0 /var/log/audit/audit.log 2>/dev/null || true
@@ -916,6 +1250,7 @@ if [[ ${#DOCKER_LOGS[@]} -gt 0 ]]; then
     log "[6/7] Truncated ${#DOCKER_LOGS[@]} inherited Docker container log(s)"
 fi
 log "[6/7] Inherited logs cleared (this unit's own history starts now)"
+}
 
 # Step 6d: Wipe inherited cloning-backup state.
 #
@@ -951,6 +1286,7 @@ log "[6/7] Inherited logs cleared (this unit's own history starts now)"
 #   - The new Pi has its own fresh device identity (Step 3 above),
 #     fresh hostname, fresh hosts entry. The backed-up "magicpi"
 #     values aren't relevant.
+step_wipe_cloning_backup() {
 BACKUP_DIR="/var/lib/magic-dingus-box/cloning_backup"
 if [[ -d "$BACKUP_DIR" ]]; then
     backup_count=$(find "$BACKUP_DIR" -mindepth 1 2>/dev/null | wc -l)
@@ -961,6 +1297,7 @@ if [[ -d "$BACKUP_DIR" ]]; then
         log "[6/7] cloning_backup/ already empty"
     fi
 fi
+}
 
 # Step 6e: Prune Pi 5-only game content on Pi 4 boards.
 #
@@ -977,6 +1314,7 @@ fi
 #
 # Board detection mirrors the kiosk's own parse_pi_model(): prefix
 # match on /proc/device-tree/model (which carries a trailing NUL).
+step_prune_pi4_content() {
 PI_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)"
 if [[ "$PI_MODEL" == "Raspberry Pi 4 "* ]]; then
     log "[6/7] Pi 4B detected — pruning Pi 5-only game content..."
@@ -985,7 +1323,7 @@ if [[ "$PI_MODEL" == "Raspberry Pi 4 "* ]]; then
     # document: build/data/ carries its own thumbnails and playlists (and on
     # some source boxes its own roms/), so pruning only data/ left the Pi 5
     # playlists on disk under the path a build-tree run reads, and left the
-    # space unreclaimed. BUILD_DATA_DIR is defined in Step 6 above.
+    # space unreclaimed. BUILD_DATA_DIR is defined with the paths at the top.
     for base in "$DATA_DIR" "$BUILD_DATA_DIR"; do
         [[ -d "$base" ]] || continue
         for path in \
@@ -1007,6 +1345,7 @@ if [[ "$PI_MODEL" == "Raspberry Pi 4 "* ]]; then
 else
     log "[6/7] Board is '${PI_MODEL:-unknown}' — no platform pruning needed"
 fi
+}
 
 # Step 6f: Wipe RetroArch saves and save states — units ship PRISTINE.
 #
@@ -1030,6 +1369,7 @@ fi
 # decision exists to prevent. Same dual-copy trap as flask_secret.key and
 # media_browser.db above; this tree has now caught three separate leaks, so
 # assume any new per-unit state has a build/data twin until proven otherwise.
+step_wipe_saves() {
 log "[6/7] Wiping RetroArch saves + save states (pristine-unit policy)..."
 for d in "${DATA_DIR}/saves" "${DATA_DIR}/states" \
          "${BUILD_DATA_DIR}/saves" "${BUILD_DATA_DIR}/states"; do
@@ -1081,6 +1421,7 @@ if [[ -d "$RA_DIR" ]]; then
 
     log "[6/7] RetroArch personal state cleared (BIOS + core configs kept)"
 fi
+}
 
 # NOTE on data/media: deliberately PRESERVED — uploaded videos and playlist
 # content are the shipped product, same as ROMs, cores, and thumbnails.
@@ -1099,6 +1440,7 @@ fi
 # to the sequence (Step 2's online expand never reboots, and neither does
 # anything else here), and the posture is inert-but-harmless until then. Best-effort like
 # every other converge step: a failure must not stop first boot.
+step_memory_posture() {
 MEMTUNE="/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh"
 if [[ -f "$MEMTUNE" ]]; then
     log "[6g/7] Converging playback memory posture..."
@@ -1107,6 +1449,7 @@ if [[ -f "$MEMTUNE" ]]; then
 else
     log "[6g/7] setup_memory_tuning.sh not on this image; skipping"
 fi
+}
 
 # ---------------------------------------------------------------------------
 # Step 6h: OTA power-loss recovery
@@ -1119,6 +1462,7 @@ fi
 # belt to that suspenders. Then make sure the recovery unit itself is
 # installed + enabled (clones cut from donor images that predate it).
 # Best-effort like every converge step: never fails first boot.
+step_ota_recovery() {
 rm -f /home/magic/.magic_dingus_box_backup.ota_in_progress \
       /home/magic/.magic_dingus_box_backup.ota_in_progress.tmp 2>/dev/null || true
 OTA_RECOVERY="/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_ota_recovery.sh"
@@ -1129,6 +1473,7 @@ if [[ -f "$OTA_RECOVERY" ]]; then
 else
     log "[6h/7] setup_ota_recovery.sh not on this image; skipping"
 fi
+}
 
 # ---------------------------------------------------------------------------
 # Step 6i: Every clone starts on the STABLE update channel
@@ -1139,15 +1484,52 @@ fi
 # prepare_for_cloning.sh already refuses to clone a beta box; this is the
 # belt to those suspenders (and covers images cut any other way). Absence
 # IS stable, so deleting the file is the whole reset.
+step_update_channel() {
 rm -f "${INSTALL_DIR}/config/update_channel" "${INSTALL_DIR}/config/update_channel.tmp" 2>/dev/null || true
 log "[6i/7] Update channel reset to stable"
+}
 
+# >>> run steps
 # ---------------------------------------------------------------------------
-# Step 7: Disable this service (run once only)
+# The steps, in run order
 # ---------------------------------------------------------------------------
-log "[7/7] Disabling first-boot service..."
+# NAME runs step_NAME. NAME:NEEDS runs it only once step NEEDS has completed
+# (on this boot or an earlier one); until then it waits, uncounted. NEEDS must
+# be a step with no NEEDS of its own. The order is the order the linear
+# script always had. Add a NEEDS only for a real dependency: while it is
+# unmet, its step does not run at all.
+FB_STEP_TABLE=(
+    ssh_host_keys                  # 1
+    machine_id                     # 1b   + journald restarted onto the new id
+    vpn_identity                   # 1c   before the risky expand
+    expand_rootfs                  # 2
+    device_identity                # 3    hostname + device_info.json
+    data_dirs                      # 4-5
+    wipe_media_browser             # 6    services/.env, *arr / qBittorrent / gluetun config
+    reset_settings                 # 6    Media Browser re-lock, browse filters
+    wipe_phone_remote              # 6    paired phones, Flask secret, queues
+    wipe_personal_data             # 6    screenshots, watch history, TMDB key
+    wipe_wifi                      # 6c
+    wipe_logs                      # 6c-2 cloud-init + journal
+    stale_journal_dirs:machine_id  # 6c-2 the image's old journal directory
+    wipe_audit_docker_logs         # 6c-2
+    wipe_cloning_backup            # 6d
+    prune_pi4_content              # 6e
+    wipe_saves                     # 6f
+    memory_posture                 # 6g
+    ota_recovery                   # 6h
+    update_channel                 # 6i
+)
 
-systemctl disable magic-first-boot.service
-log "[7/7] magic-first-boot.service disabled (will not run again)"
-
-log "=== Magic Dingus Box first-boot setup complete ==="
+# From here on nothing may abort the run. errexit is a per-step tool now
+# (run_step turns it on inside each step's subshell), and the preamble's ERR
+# trap would report a step's failure as the whole script's. Step 7 — the
+# self-disable — is the end of fb_finish.
+set +e
+trap - ERR
+fb_state_init
+for FB_ENTRY in "${FB_STEP_TABLE[@]}"; do
+    run_step "$FB_ENTRY"
+done
+fb_finish
+# <<< run steps
