@@ -371,3 +371,310 @@ TEST_CASE("started_movie_ids: any row counts, kind-isolated",
     REQUIRE(watched.count(603) == 0);
     REQUIRE(watched.count(680) == 1);
 }
+
+// ── Writer thread + in-memory mirror ────────────────────────────────────
+// Watch writes used to run on the render loop (every 30 s during playback,
+// at end-of-stream, on leaving Playback), and that loop pings the systemd
+// watchdog (WatchdogSec=10): a WAL append can sit behind a saturated SD
+// card, and every ~1000 WAL pages SQLite checkpoints — two fsyncs — on the
+// committing thread. Now writes are queued for a writer thread and reads
+// come from a mirror of the table. These pin: the caller never waits,
+// reads see every write at once, the queue coalesces per key, the bounded
+// flush shutdown uses, and that what lands on disk is exactly what the
+// mirror said.
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <tuple>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+#include <condition_variable>
+#include <limits>
+
+namespace {
+
+using namespace std::chrono_literals;
+
+// Parks the writer thread before a batch, standing in for a card stuck
+// behind a writeback queue.
+struct StalledWriter {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool released = false;
+    bool entered = false;
+
+    void install(WatchStore& store) {
+        store.set_before_write_for_tests([this] {
+            std::unique_lock<std::mutex> lk(mu);
+            entered = true;
+            cv.notify_all();
+            cv.wait(lk, [this] { return released; });
+        });
+    }
+    void wait_entered() {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [this] { return entered; });
+    }
+    void release() {
+        std::lock_guard<std::mutex> lk(mu);
+        released = true;
+        cv.notify_all();
+    }
+};
+
+// Everything the UI can read, for comparing a live store with a reopened one.
+struct Snapshot {
+    std::vector<std::tuple<int, int, int, double, double, bool>> tv;
+    std::vector<std::tuple<int, double, double, bool>> movies;
+    std::vector<int> watched_movies;
+    std::vector<int> started_movies;
+    std::vector<std::pair<int, int>> tv_counts;
+    bool operator==(const Snapshot& o) const {
+        return tv == o.tv && movies == o.movies &&
+               watched_movies == o.watched_movies &&
+               started_movies == o.started_movies && tv_counts == o.tv_counts;
+    }
+};
+
+Snapshot snapshot_of(WatchStore& s, const std::vector<int>& ids) {
+    Snapshot out;
+    for (int id : ids) {
+        for (const auto& [k, row] : s.series_watch(id)) {
+            out.tv.emplace_back(id, k.season, k.episode, row.position_s,
+                                row.duration_s, row.watched);
+        }
+        if (auto m = s.movie_watch(id)) {
+            out.movies.emplace_back(id, m->position_s, m->duration_s, m->watched);
+        }
+    }
+    std::sort(out.tv.begin(), out.tv.end());
+    for (int id : s.watched_movie_ids()) out.watched_movies.push_back(id);
+    for (int id : s.started_movie_ids()) out.started_movies.push_back(id);
+    for (const auto& [id, n] : s.tv_watched_counts()) out.tv_counts.emplace_back(id, n);
+    std::sort(out.watched_movies.begin(), out.watched_movies.end());
+    std::sort(out.started_movies.begin(), out.started_movies.end());
+    std::sort(out.tv_counts.begin(), out.tv_counts.end());
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("WatchStore: a write never waits for the disk, reads see it at "
+          "once, and the queue keeps only the latest per key",
+          "[watch_store][io]") {
+    auto path = make_temp_db_path();
+    {
+        StalledWriter stalled;   // declared first: must outlive the store
+        WatchStore store;
+        REQUIRE(store.open(path.string()));
+        stalled.install(store);
+
+        store.upsert_position(tv_ref(1396), 1, 1, 30.0, 3600.0);
+        stalled.wait_entered();   // the writer is now stuck "on the card"
+
+        // An hour of 30 s checkpoints, an EOS mark and a movie, all while
+        // the card is stuck. The old synchronous store blocked the render
+        // loop on each one.
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 2; i <= 120; ++i) {
+            store.upsert_position(tv_ref(1396), 1, 1, 30.0 * i, 3600.0);
+        }
+        store.mark_watched(tv_ref(1396), 1, 2);
+        store.upsert_position(movie_ref(603), 0, 0, 500.0, 7200.0);
+        CHECK(std::chrono::steady_clock::now() - t0 < 500ms);
+
+        // Read-your-writes, with nothing on disk yet.
+        auto map = store.series_watch(1396);
+        REQUIRE(map.size() == 2);
+        CHECK(map.at(media_browser::ui::WatchKey{1, 1}).position_s == 3600.0);
+        CHECK(map.at(media_browser::ui::WatchKey{1, 1}).watched);
+        CHECK(map.at(media_browser::ui::WatchKey{1, 2}).watched);
+        REQUIRE(store.movie_watch(603).has_value());
+        CHECK(store.movie_watch(603)->position_s == 500.0);
+        CHECK(store.tv_watched_counts().at(1396) == 2);
+        CHECK(store.started_movie_ids().count(603) == 1);
+
+        // Shutdown's flush is bounded: a wedged card cannot hold it.
+        CHECK_FALSE(store.flush(20ms));
+
+        stalled.release();
+        REQUIRE(store.flush(10s));
+        // The write in flight, then ONE statement per key that changed —
+        // not 121 queued checkpoints for the card to work through.
+        CHECK(store.disk_writes_for_tests() == 1 + 3);
+    }
+    // A fresh process sees exactly what was read back above.
+    WatchStore reopened;
+    REQUIRE(reopened.open(path.string()));
+    auto map = reopened.series_watch(1396);
+    REQUIRE(map.size() == 2);
+    CHECK(map.at(media_browser::ui::WatchKey{1, 1}).position_s == 3600.0);
+    CHECK(map.at(media_browser::ui::WatchKey{1, 1}).watched);
+    CHECK(map.at(media_browser::ui::WatchKey{1, 2}).watched);
+    CHECK(reopened.movie_watch(603)->position_s == 500.0);
+    reopened.close();
+    remove_db(path);
+}
+
+TEST_CASE("WatchStore: folding queued writes equals running them in order",
+          "[watch_store][io]") {
+    auto path = make_temp_db_path();
+    const std::vector<int> ids = {7, 8, 9, 10, 11};
+    Snapshot live;
+    {
+        StalledWriter stalled;   // declared first: must outlive the store
+        WatchStore store;
+        REQUIRE(store.open(path.string()));
+        // A row that already exists on disk, so the ratchet and the
+        // preserved position have something to act on.
+        store.upsert_position(tv_ref(7), 1, 1, 950.0, 1000.0);   // watched
+        store.upsert_position(tv_ref(7), 1, 2, 400.0, 1000.0);
+        REQUIRE(store.flush(10s));
+
+        stalled.install(store);
+        store.upsert_position(tv_ref(99), 1, 1, 1.0, 10.0);
+        stalled.wait_entered();
+        // Everything below is queued behind the stuck write and folded.
+        // Seek back on a watched episode: position regresses, flag stays.
+        store.upsert_position(tv_ref(7), 1, 1, 5.0, 1000.0);
+        // Mark, then keep playing: the flag survives the later checkpoint.
+        store.mark_watched(tv_ref(7), 1, 2);
+        store.upsert_position(tv_ref(7), 1, 2, 450.0, 1000.0);
+        // Checkpoint, then mark: the mark keeps the position.
+        store.upsert_position(tv_ref(8), 2, 3, 120.0, 1000.0);
+        store.mark_watched(tv_ref(8), 2, 3);
+        // Cross the threshold, then seek back before anything is written.
+        store.upsert_position(tv_ref(9), 1, 1, 990.0, 1000.0);
+        store.upsert_position(tv_ref(9), 1, 1, 10.0, 1000.0);
+        // Mark-only on a row that does not exist: 0 / 0, watched.
+        store.mark_watched(movie_ref(10), 0, 0);
+        // A special (season 0) is watched but never counted.
+        store.mark_watched(tv_ref(11), 0, 1);
+        // A movie and a show sharing an id stay apart.
+        store.upsert_position(movie_ref(7), 0, 0, 60.0, 6000.0);
+
+        live = snapshot_of(store, ids);
+        stalled.release();
+        REQUIRE(store.flush(10s));
+        CHECK(snapshot_of(store, ids) == live);
+    }
+    WatchStore reopened;
+    REQUIRE(reopened.open(path.string()));
+    const Snapshot disk = snapshot_of(reopened, ids);
+    CHECK(disk == live);   // the disk holds exactly what the mirror served
+
+    // And the values themselves, spelled out.
+    auto s7 = reopened.series_watch(7);
+    CHECK(s7.at(media_browser::ui::WatchKey{1, 1}).position_s == 5.0);
+    CHECK(s7.at(media_browser::ui::WatchKey{1, 1}).watched);
+    CHECK(s7.at(media_browser::ui::WatchKey{1, 2}).position_s == 450.0);
+    CHECK(s7.at(media_browser::ui::WatchKey{1, 2}).watched);
+    auto s8 = reopened.series_watch(8);
+    CHECK(s8.at(media_browser::ui::WatchKey{2, 3}).position_s == 120.0);
+    CHECK(s8.at(media_browser::ui::WatchKey{2, 3}).watched);
+    auto s9 = reopened.series_watch(9);
+    CHECK(s9.at(media_browser::ui::WatchKey{1, 1}).position_s == 10.0);
+    CHECK(s9.at(media_browser::ui::WatchKey{1, 1}).watched);
+    REQUIRE(reopened.movie_watch(10).has_value());
+    CHECK(reopened.movie_watch(10)->position_s == 0.0);
+    CHECK(reopened.movie_watch(10)->watched);
+    CHECK(reopened.tv_watched_counts().count(11) == 0);
+    CHECK(reopened.tv_watched_counts().at(7) == 2);
+    CHECK(reopened.movie_watch(7)->position_s == 60.0);
+    CHECK_FALSE(reopened.movie_watch(7)->watched);
+    reopened.close();
+    remove_db(path);
+}
+
+TEST_CASE("WatchStore: closing drains the queue (no flush needed)",
+          "[watch_store][io]") {
+    auto path = make_temp_db_path();
+    {
+        WatchStore store;
+        REQUIRE(store.open(path.string()));
+        store.upsert_position(movie_ref(550), 0, 0, 1234.0, 8000.0);
+        store.mark_watched(tv_ref(42), 3, 4);
+    }  // destructor only
+    WatchStore reopened;
+    REQUIRE(reopened.open(path.string()));
+    REQUIRE(reopened.movie_watch(550).has_value());
+    CHECK(reopened.movie_watch(550)->position_s == 1234.0);
+    CHECK(reopened.series_watch(42).at(media_browser::ui::WatchKey{3, 4}).watched);
+    reopened.close();
+    remove_db(path);
+}
+
+TEST_CASE("WatchStore: a write the disk rejects costs that row only, and "
+          "warns once",
+          "[watch_store][io]") {
+    auto sink = std::make_shared<CountingWarnSink>();
+    auto logger = std::make_shared<spdlog::logger>("watch_store_io_test", sink);
+    auto prev = spdlog::default_logger();
+    spdlog::set_default_logger(logger);
+
+    auto path = make_temp_db_path();
+    {
+        StalledWriter stalled;   // declared first: must outlive the store
+        WatchStore store;
+        REQUIRE(store.open(path.string()));
+        stalled.install(store);
+        store.upsert_position(tv_ref(1), 1, 1, 10.0, 100.0);
+        stalled.wait_entered();
+        // SQLite stores NaN as NULL, and duration_s is NOT NULL: this
+        // statement fails. Twice, to pin "warns once".
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        store.upsert_position(tv_ref(2), 1, 1, 10.0, nan);
+        store.upsert_position(tv_ref(3), 1, 1, 10.0, nan);
+        // Queued in the same batch, sorted AFTER the failing rows.
+        store.upsert_position(tv_ref(4), 1, 1, 40.0, 100.0);
+        stalled.release();
+        REQUIRE(store.flush(10s));
+        CHECK(sink->warn_count.load() == 1);
+        // Still usable afterwards.
+        store.mark_watched(tv_ref(5), 1, 1);
+        REQUIRE(store.flush(10s));
+    }
+    WatchStore reopened;
+    REQUIRE(reopened.open(path.string()));
+    CHECK(reopened.series_watch(1).size() == 1);
+    CHECK(reopened.series_watch(2).empty());   // rejected
+    CHECK(reopened.series_watch(3).empty());   // rejected
+    CHECK(reopened.series_watch(4).at(media_browser::ui::WatchKey{1, 1}).position_s == 40.0);
+    CHECK(reopened.series_watch(5).at(media_browser::ui::WatchKey{1, 1}).watched);
+    reopened.close();
+    remove_db(path);
+    spdlog::set_default_logger(prev);
+}
+
+TEST_CASE("WatchStore: the mirror is loaded from disk, kind by kind",
+          "[watch_store][io]") {
+    auto path = make_temp_db_path();
+    {
+        // Rows written by plain SQL — what an older kiosk left behind.
+        LibraryDb db;
+        REQUIRE(db.open(path.string()));
+        REQUIRE(db.run_migrations());
+        REQUIRE(db.exec(
+            "INSERT INTO watch_state(kind,tmdb_id,season,episode,position_s,"
+            "duration_s,watched,updated_at) VALUES"
+            "('movie',603,0,0,300,7200,0,1),"
+            "('movie',680,0,0,7000,7200,1,1),"
+            "('tv',603,1,1,100,3000,1,1),"
+            "('tv',603,1,2,200,3000,0,1),"
+            "('tv',603,0,1,0,0,1,1);"));
+    }
+    WatchStore store;
+    REQUIRE(store.open(path.string()));
+    CHECK(store.movie_watch(603)->position_s == 300.0);
+    CHECK_FALSE(store.movie_watch(603)->watched);
+    CHECK(store.watched_movie_ids() == std::unordered_set<int>{680});
+    CHECK(store.started_movie_ids() == (std::unordered_set<int>{603, 680}));
+    CHECK(store.series_watch(603).size() == 3);
+    CHECK(store.series_watch(680).empty());            // a movie id, not a show
+    CHECK(store.tv_watched_counts().at(603) == 1);     // the special is not counted
+    CHECK(store.disk_writes_for_tests() == 0);         // reading writes nothing
+    store.close();
+    remove_db(path);
+}

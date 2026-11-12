@@ -722,8 +722,11 @@ int main(int /* argc */, char* /* argv */[]) {
     } movie_quiet_unpublish{movie_quiet_ptr, game_quiet_mode};
 
     // Watch-state store (Phase 3): resume positions + watched flags for
-    // movies and TV, in the media_browser.db SQLite file. Main/render-
-    // thread-only by construction — workers never touch it. Best-effort:
+    // movies and TV, in the media_browser.db SQLite file. Its API is
+    // main/render-thread-only — the Media Browser's workers never touch
+    // it — and does no disk I/O after open(): reads come from an in-memory
+    // mirror, writes are queued for the store's own writer thread (drained
+    // before the _exit at the bottom of main). Best-effort:
     // open() failure leaves ok()==false, every method degrades to a safe
     // no-op (no resume, no checkpoints, no watched marks) and the store
     // logs its own one-shot warning. Declared BEFORE the screens so it
@@ -2439,19 +2442,32 @@ int main(int /* argc */, char* /* argv */[]) {
     gbm.cleanup();
     display.cleanup();
 
-    // Settings are written by a background thread (the render loop must
-    // never wait on the SD card — WatchdogSec=10), and the _exit() below
-    // skips the destructor that would otherwise drain it. Wait here for
-    // whatever is still queued: normally nothing, or a write that finishes
-    // in milliseconds. Bounded, so a wedged card costs at most 3 s of
-    // TimeoutStopSec (20 s) next to the waits below (10 s + 3 s) and a
-    // mid-game stop's 5 s. If it runs out, the previous settings.json is
-    // what remains (the save is tmp + rename) — say so, while the log is
-    // still open.
-    if (!app::SettingsPersistence::flush_pending_saves(
-            std::chrono::seconds(3))) {
-        LOG_WARN("Shutdown: settings.json save did not finish in time — "
-                 "the last settings change may be lost");
+    // Settings and watch history are written by background threads (the
+    // render loop must never wait on the SD card — WatchdogSec=10), and
+    // the _exit() below skips the destructors that would otherwise drain
+    // them. Wait here for whatever is still queued: normally nothing, or a
+    // write that finishes in milliseconds. Bounded, with ONE 3 s deadline
+    // for both, so a wedged card costs at most 3 s of TimeoutStopSec
+    // (20 s) next to the waits below (10 s + 3 s) and a mid-game stop's
+    // 5 s. If it runs out, the previous settings.json (the save is tmp +
+    // rename) and the last 30 s watch checkpoint are what remain — say so,
+    // while the log is still open.
+    {
+        const auto persist_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        if (!app::SettingsPersistence::flush_pending_saves(
+                std::chrono::seconds(3))) {
+            LOG_WARN("Shutdown: settings.json save did not finish in time — "
+                     "the last settings change may be lost");
+        }
+#ifdef MEDIA_BROWSER_ENABLED
+        if (!watch_store.flush_until(persist_deadline)) {
+            LOG_WARN("Shutdown: watch history write did not finish in time — "
+                     "resume falls back to the last checkpoint on disk");
+        }
+#else
+        (void)persist_deadline;
+#endif
     }
 
     LOG_INFO("Shutdown complete");
