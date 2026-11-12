@@ -964,10 +964,39 @@ hostname and collided with the source box on mDNS/DHCP. Now uses
 wastes the tail of its card is an annoyance, one that skips the
 credential wipes is a defective product.
 
-`first_boot.sh` writes `/var/log/magic-first-boot.log` and traps ERR with
-the failing line number. Both exist because the original failure produced
-an EMPTY journal (Step 6c-2 wipes it by design), leaving nothing to
-diagnose from.
+`first_boot.sh` writes `/var/log/magic-first-boot.log` and logs every
+failure with the step's name and the failing line number. Both exist
+because the original failure produced an EMPTY journal (Step 6c-2 wipes it
+by design), leaving nothing to diagnose from.
+
+**No first-boot step can stop another, and none runs twice (2026-11).**
+Guarding `parted` fixed one command; every wipe still depended on every
+line above it never failing. `first_boot.sh` is now a list of steps
+(`FB_STEP_TABLE` at the bottom, one `step_<name>` function each) run by
+`run_step`, each in its own subshell under `set -e`: a failing step stops
+at its first error, and the rest still run. Rules:
+- **A completed step is recorded and never repeated** — empty marker files
+  in `/var/lib/magic-dingus-box/first_boot/<board serial>/` (`<step>.done`,
+  `<step>.attempt.N`, the list `steps`). Without the record, one
+  permanently failing harmless step would re-run the WIPES on every boot
+  and destroy the customer's own saves, pairings and Wi-Fi. A step is
+  tried on at most 3 boots (counted before it starts, so a hang or power
+  cut counts), then abandoned; the service disables itself when every
+  step is done or abandoned. `verify_box.sh` FAILs a unit with a step
+  that has no `.done`.
+- **An image must never carry the record**: `prepare_for_cloning.sh` and
+  `prepare_golden_image.sh` delete the directory where they enable the
+  service (anything else that arms first boot must too); the board serial
+  in the path makes an inherited record invisible on another board.
+- **`run_step` is only ever a plain statement.** bash ignores `set -e` in
+  everything called from `if` / `||` / `&&`, which would turn every step
+  into "plough on after errors".
+- **Steps share nothing but the paths at the top of the file** (a subshell's
+  variables die with it). A new step = a function + a table row; a real
+  ordering dependency is `name:needs` (only `stale_journal_dirs:machine_id`
+  today). Renaming a step makes it run again on a unit still mid-retry.
+- Step bodies are deliberately unindented (the old linear lines, unmoved).
+  `tests/local/first_boot_steps.bats` runs the real engine and step list.
 
 **`x-systemd.automount` will hang a boot with no drive.** An automount unit
 is started at boot even with `noauto` — that is its purpose — and with no
