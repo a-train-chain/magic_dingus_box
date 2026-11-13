@@ -80,7 +80,15 @@ std::optional<int> decide_auto_tune(const AutoTuneInput& in);
 // a resting state: once it has lasted OrphanStreamGuard::kBoundS, main.cpp
 // stops the stream and resets the main UI (controller.stop(), then
 // app::stop_to_menu), and the rule tunes on the same frame. List style
-// never stops anything here.
+// never stops anything here (main.cpp only evaluates this in guide style;
+// `guide_style` stays in the struct so the predicate's own List-style gate
+// is unit-tested).
+//
+// Edge also covered: a web-admin playlist reload that empties the playing
+// playlist leaves current_item_index -1 with current_playlist_index still
+// set. If the viewer had paused that video in guide style, the guard stops
+// it after the bound and re-tunes. That deliberately overrides reload's
+// "never interrupted" rule: a stream with no channel behind it must not rest.
 struct OrphanStreamInput {
     bool guide_style = false;
     bool intro_complete = false;     // the intro plays with no indexes by design

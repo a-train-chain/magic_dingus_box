@@ -263,8 +263,8 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         wait_with_callback(300, progress_callback);
         state.loading_progress.store(0.35f);
 
-        // This used to poll is_playing() up to 10 x 100 ms. cleanup() left
-        // that flag true (GstPlayer::forget_stream), so over a playing video
+        // This used to poll is_playing() up to 10 x 100 ms. Before
+        // GstPlayer::forget_stream, cleanup() left that flag true, so over a playing video
         // the poll always ran out and logged "did not stop cleanly" — about a
         // pipeline cleanup() had already set to NULL and released; nothing
         // could ever update the flag again until a re-initialize. So every
@@ -277,11 +277,6 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
             wait_with_callback(1000, progress_callback);
         }
 
-        if (is_playing()) {
-            std::cerr << "Warning: GStreamer did not stop cleanly before RetroArch launch" << std::endl;
-        } else {
-            std::cout << "GStreamer stopped successfully" << std::endl;
-        }
         
         // ---- Everything DRM-INDEPENDENT happens FIRST, while we can still
         // ---- draw. See app_state.h: from release_master() onward the panel
@@ -532,7 +527,6 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         // before returning so the main loop can always rebuild the kiosk UI.
         if (player_) {
             player_->stop();
-            std::cout << "Stopped video player after RetroArch launch" << std::endl;
         }
         prepare_kiosk_state_after_game(state);
 

@@ -79,7 +79,7 @@ private:
     std::atomic<bool> is_playing_;
     std::atomic<bool> is_paused_;
     // Latched by bus_call on GST_MESSAGE_EOS; cleared by stop() (which
-    // every load_file() runs through) and by fire_seek() (a FLUSH seek
+    // every load_file() runs through), by cleanup() (via forget_stream) and by fire_seek() (a FLUSH seek
     // out of EOS resumes playback). Needed because a pipeline REMAINS in
     // GST_STATE_PLAYING after posting EOS — without the latch,
     // update_state()'s state poll overwrote bus_call's is_playing_=false
@@ -87,7 +87,7 @@ private:
     // after natural end-of-stream.
     std::atomic<bool> at_eos_{false};
     // Latched by bus_call on GST_MESSAGE_ERROR; cleared ONLY by stop()
-    // (which every load_file() runs through). Unlike at_eos_ a seek does
+    // (which every load_file() runs through) and cleanup() (via forget_stream). Unlike at_eos_ a seek does
     // not clear it — a failed pipeline stays failed until it is torn down.
     // Gates is_playing_ the same way at_eos_ does: an errored pipeline can
     // keep reporting GST_STATE_PLAYING, and the state poll used to flip
