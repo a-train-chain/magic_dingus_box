@@ -58,7 +58,9 @@ that was already running.
   in memory — no file or network access per frame.
 - Tuning must never feel like "starting a file": no visible jump to 0:00, no
   black gap longer than today's playlist switch.
-- A box that never touches the setting must not change at all.
+- A box that never touches the setting must not change at all. (The
+  system time zone is the one exception, by decision: see "Clock", the
+  2026-11-13 clarification.)
 - No unreadable grid: no cell text below the kiosk's 14 px body size on the
   720-tall canvas, nothing outside the bezel's visible opening.
 
@@ -191,6 +193,18 @@ lowest channel with a schedule.
     connection, rather than resetting to UTC; [Claude's call]
   - the zone is per-box state: excluded from backup/restore, which moves
     content between boxes.
+  - **Clarification (2026-11-13), against the anti-goal "a box that never
+    touches the setting must not change at all":** the browser's zone is
+    applied — and `services/.env` `TZ=` rewritten — on EVERY box, List
+    style included, not only on boxes in Channel Guide style. A correct
+    system clock zone is right for the whole box (logs, the media
+    containers, anything that prints local time), so this is kept
+    deliberately; the anti-goal covers what the kiosk shows and does, not
+    the system zone.
+  - A browser that reports UTC to hide its zone (Firefox
+    resistFingerprinting, Tor, Brave's strict mode) never moves a box
+    already on a named zone: a UTC report then changes nothing. [Claude's
+    call, 2026-11-13 final review]
 
 ## Controls (Channel Guide style)
 
