@@ -1354,10 +1354,10 @@ TEST_CASE("pending_tune names the channel a tune is loading until its load runs"
 
 TEST_CASE("a re-tune from nothing playing hides the guide unless it is kept",
           "[playlist_playback][guide]") {
-    // main.cpp's nothing-playing rule passes keep_overlay =
-    // AppState::guide_opened_by_viewer: a failed item's dark-window guide
-    // (stop_to_menu shows it) goes away when the video comes back, while a
-    // guide the viewer opened stays.
+    // keep_overlay at the call: a failed item's dark-window guide
+    // (stop_to_menu shows it) goes away when the video comes back (main.cpp's
+    // nothing-playing rule passes false; a guide the viewer owns is kept by
+    // the load-time check, below), while keep_overlay=true keeps it.
     Guide g;
     app::stop_to_menu(g.s);
     REQUIRE(g.s.ui_visible_when_playing);

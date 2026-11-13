@@ -302,21 +302,24 @@ public:
     int tuned_channel = -1;
     std::vector<int> guide_gave_up;
     double guide_wait_until_utc = 0;
-    // Channel Guide, written by main.cpp (render thread only):
-    // guide_cursor: the guide's cursor (app/guide_nav.h) — channel row,
-    //   the grid's 5-row window, on the Picture control. Moved by the
-    //   guide-style ROTATE / SELECT / NEXT / PREV branches and clamped every
-    //   frame; the List style's selected_index / picture_focus are not used
-    //   in guide style.
+    // Channel Guide input state, written by app::guide_input / guide_frame
+    // (app/guide_nav.h, called from main.cpp; render thread only):
+    // guide_cursor: channel row, the grid's 5-row window, on the Picture
+    //   control. The List style's selected_index / picture_focus are not
+    //   used in guide style.
     // guide_opened_by_viewer: the viewer owns the guide — SELECT opened it,
-    //   or the shown guide got any input (ROTATE, a SELECT that is not a
-    //   Tune or Close, NEXT/PREV). Cleared by the viewer's Close and Tune
-    //   presses and whenever the overlay hides. A tune's load
+    //   or the shown guide got any other input. Cleared by the viewer's
+    //   Close and Tune presses and whenever the overlay hides. A tune's load
     //   (PlaylistPlayback, decided when the load RUNS) never hides a guide
     //   the viewer owns — "the guide never closes by itself"; one the
     //   viewer does not own goes, so the video simply comes back.
+    // guide_viewer_tune: the row of a viewer's Tune press whose load has not
+    //   run (-1 none) — the knob and NEXT/PREV leave that tune's close alone.
+    // guide_appeared: the frame the guide comes on screen.
     GuideCursor guide_cursor;
     bool guide_opened_by_viewer = false;
+    int guide_viewer_tune = -1;
+    GuideShownEdge guide_appeared;
     bool master_shuffle_active; // True if Master Shuffle is playing (picks random video from ANY playlist)
     
     // Shuffle queue - ensures all videos play once before reshuffling
