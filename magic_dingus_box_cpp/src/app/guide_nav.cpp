@@ -216,9 +216,21 @@ void guide_frame(AppState& s, const GuideFrameFacts& f) {
     if (!f.guide_style) return;
 
     s.picture_focus = false;  // the List's; never set in guide style
+    // Drawn only on the tuned channel's panel: nothing tuned, no control.
+    const bool tuned = f.pending_tune.value_or(s.tuned_channel) >= 0;
+    if (!tuned) s.picture_control_available = false;
     s.guide_cursor = guide_clamp(
         s.guide_cursor, f.rows,
-        s.picture_control_available || (s.guide_cursor.on_picture && f.picture_may_stay));
+        s.picture_control_available ||
+            (tuned && s.guide_cursor.on_picture && f.picture_may_stay));
+}
+
+std::optional<int> guide_entry_tune(const AppState& s) {
+#ifdef MEDIA_BROWSER_ENABLED
+    if (s.current_screen == AppScreen::MediaBrowser) return std::nullopt;
+#endif
+    if (!has_playing_indexes(s)) return std::nullopt;
+    return s.master_shuffle_active ? 0 : s.current_playlist_index;
 }
 
 }  // namespace app

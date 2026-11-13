@@ -210,6 +210,11 @@ struct GuideFrameFacts {
 //     loading: a failed item's stop_to_menu, the Media Browser closing with
 //     nothing playing (never while it owns the screen). Settings over the
 //     guide does not hide it here.
+//   - the Picture control is offered only while a channel is tuned (a
+//     pending tune first): the guide draws it on the tuned channel's panel
+//     and nowhere else, so with nothing tuned (a List video still playing
+//     on entering guide style) picture_control_available is cleared and the
+//     cursor cannot land on a control that is not drawn;
 //   - the cursor is clamped: on the Picture control it rides through the
 //     load gap between items while picture_may_stay, as the List's focus
 //     does; off it, the control counts only while drawn. The List's
@@ -217,5 +222,14 @@ struct GuideFrameFacts {
 // Outside guide style the cursor and picture_focus are left alone; the edge
 // is fed "not on screen".
 void guide_frame(AppState& s, const GuideFrameFacts& f);
+
+// Entering Channel Guide style (Settings -> Display -> Menu Style, or a
+// settings restore) with a List playlist playing or loading (the playing
+// indexes set): the channel to tune live — its row, the same row being the
+// same channel, or 00 while Master Shuffle plays — so the box is live at
+// once, joined at the scheduled point, rather than after the List item ends.
+// nullopt with nothing playing or loading (the nothing-playing rule tunes
+// then) and while the Media Browser owns the screen.
+std::optional<int> guide_entry_tune(const AppState& s);
 
 }  // namespace app

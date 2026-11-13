@@ -45,6 +45,7 @@
 #include "app/game_quiet_mode.h"
 #include "app/game_handoff.h"
 #include "app/game_handoff_kiosk.h"
+#include "app/guide_clock.h"
 #include "app/guide_nav.h"
 #include "app/intro_sequence.h"
 #include "app/intro_sequence_kiosk.h"
@@ -88,7 +89,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
-#include <limits>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -686,12 +686,26 @@ int main(int /* argc */, char* /* argv */[]) {
     // Display → Menu Style, or a settings restore) rebuilds it — List hands
     // playback nullptr.
     app::MenuStyle channels_menu_style = state.display_settings.menu_style;
-    auto sync_menu_style = [&state, &channels_menu_style, &rebuild_channels]() {
+    // Entering Channel Guide style with a List playlist playing or loading
+    // tunes its row live (app::guide_entry_tune — 00 for Master Shuffle), so
+    // the box is live at once; set_channels alone cannot, as nothing is
+    // tuned yet. A tune the gates drop (a switch in flight) leaves the item's
+    // end to rejoin the schedule; with nothing playing the nothing-playing
+    // rule tunes.
+    auto sync_menu_style = [&state, &channels_menu_style, &rebuild_channels,
+                            &playlist_playback]() {
         if (state.display_settings.menu_style == channels_menu_style) return;
         channels_menu_style = state.display_settings.menu_style;
         rebuild_channels();
         LOG_INFO("Menu style -> {}",
                  channels_menu_style == app::MenuStyle::ChannelGuide ? "Channel Guide" : "List");
+        if (channels_menu_style != app::MenuStyle::ChannelGuide) return;
+        if (const auto row = app::guide_entry_tune(state)) {
+            playlist_playback.tune(*row, /*keep_overlay=*/false);
+            if (playlist_playback.switch_pending()) {
+                LOG_INFO("Menu style -> Channel Guide: tuning channel {} live", *row);
+            }
+        }
     };
     // The channel last watched is saved when a tune changes it (app/guide_nav.h).
     app::LastChannelWatch last_channel_watch{state.tuned_channel, state.last_channel_id};
@@ -1041,18 +1055,21 @@ int main(int /* argc */, char* /* argv */[]) {
     // vectors reuse their storage.
     app::AutoTuneInput auto_tune;
 
-    // The Channel Guide as painted this frame (ui/channel_guide_view.h),
-    // laid out in the drawing block and handed to the renderer by pointer
-    // (Renderer::set_channel_guide); lives across frames so the pointer is
-    // always to a live view.
+    // The Channel Guide as painted (ui/channel_guide_view.h), handed to the
+    // renderer by pointer (Renderer::set_channel_guide); lives across frames
+    // so the pointer is always to a live view. Laid out again only when its
+    // inputs change (guide_layout_key, the signature of them, below) — at
+    // most once a second for the clock — and given a new revision each time
+    // so the painter re-measures its strings only then.
     ui::GuideView guide_view;
-    // The guide prints local time = UTC + utc_offset_s. The offset comes
-    // from localtime_r (no file I/O once tzset() has run) and is recomputed
-    // at most once a UTC minute — a zone's offset only changes on a minute
-    // boundary — or after the timezone_reload_request poke's tzset().
-    int utc_offset_s = 0;
-    int64_t utc_offset_minute = std::numeric_limits<int64_t>::min();
-    auto local_utc_offset = [](double now_utc) {
+    uint64_t guide_layout_key = 0;
+    bool guide_laid_out = false;
+    // The guide prints local time = UTC + the zone's offset, looked up at
+    // most once a UTC minute or after the timezone_reload_request poke's
+    // tzset() (app/guide_clock.h). localtime_r does no file I/O once
+    // tzset() has run.
+    app::GuideClock guide_clock;
+    auto zone_offset = [](double now_utc) {
         const std::time_t t = static_cast<std::time_t>(std::floor(now_utc));
         std::tm local{};
         if (localtime_r(&t, &local) == nullptr) return 0;
@@ -1785,23 +1802,43 @@ int main(int /* argc */, char* /* argv */[]) {
         // the guide's window instead of the whole picture: through a
         // fade-out it stays there, and the full picture comes back on the
         // frame the fade ends. The guide shows a pending tune as tuned, so
-        // channel up/down looks instant. Local time is UTC + utc_offset_s,
-        // the offset refreshed at most once a minute. No allocation, no
-        // file I/O.
+        // channel up/down looks instant. Local time is UTC + the zone's
+        // offset (app::GuideClock: looked up at most once a minute).
+        //
+        // guide_inputs: the signature of everything the view is laid out
+        // from — the canvas, the channel list (its rebuild count), the tuned
+        // channel, the cursor, the Picture control and its crop, the source
+        // aspect, the zone offset, the local minute (the clock) and the UTC
+        // second (the progress bar, the now line, "joins at m:ss"). The view
+        // is laid out again only when it changes (at most once a second
+        // while nothing else moves), and the redraw gate reads it too. No
+        // allocation, no file I/O.
         const bool guide_style_now = playlist_playback.guide_style();
         const bool guide_painted_now = guide_style_now && app::guide_painted(state);
         const int guide_tuned = playlist_playback.pending_tune().value_or(state.tuned_channel);
         double guide_now_utc = 0.0;
-        int64_t guide_local_minute = 0;
+        int guide_offset_s = 0;
+        double guide_source_aspect = 0.0;
+        app::ContentSignature guide_inputs;
         if (guide_painted_now) {
             guide_now_utc = playlist_transport.wall_now_utc();
-            const auto utc_minute = static_cast<int64_t>(std::floor(guide_now_utc / 60.0));
-            if (utc_minute != utc_offset_minute) {
-                utc_offset_s = local_utc_offset(guide_now_utc);
-                utc_offset_minute = utc_minute;
-            }
-            guide_local_minute =
-                static_cast<int64_t>(std::floor((guide_now_utc + utc_offset_s) / 60.0));
+            guide_offset_s = guide_clock.offset(guide_now_utc, zone_offset);
+            guide_source_aspect = playing_display_aspect();
+            guide_inputs.add(static_cast<uint64_t>(state.display_settings.mode));
+            guide_inputs.add(channels_generation);
+            guide_inputs.add(static_cast<uint64_t>(state.playlists.size()));
+            guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(guide_tuned)));
+            guide_inputs.add(static_cast<uint64_t>(state.guide_cursor.row));
+            guide_inputs.add(static_cast<uint64_t>(state.guide_cursor.scroll));
+            guide_inputs.add(static_cast<uint64_t>(state.guide_cursor.on_picture));
+            guide_inputs.add(static_cast<uint64_t>(state.picture_control_available));
+            guide_inputs.add(static_cast<uint64_t>(state.picture_crop));
+            guide_inputs.add(static_cast<uint64_t>(std::llround(guide_source_aspect * 10000.0)));
+            guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(guide_offset_s)));
+            guide_inputs.add(static_cast<uint64_t>(
+                app::GuideClock::local_minute(guide_now_utc, guide_offset_s)));
+            guide_inputs.add(
+                static_cast<uint64_t>(static_cast<int64_t>(std::floor(guide_now_utc))));
         }
 
         // Render video (if playing or loading)
@@ -1925,19 +1962,16 @@ int main(int /* argc */, char* /* argv */[]) {
             sig.add(static_cast<uint64_t>(state.guide_cursor.row));
             sig.add(static_cast<uint64_t>(state.guide_cursor.scroll));
             sig.add(static_cast<uint64_t>(state.guide_cursor.on_picture));
-            // The guide on screen and what it draws with no input: the tuned
-            // channel (a pending tune first), the clock (local minute — a
-            // time-zone poke moves it with no UTC change), the progress bar,
-            // the now line and the "joins at m:ss" note (the UTC second: at
-            // most one redraw a second, and only while the guide is
-            // painted), a channel rebuild, the Picture control appearing.
+            // The guide on screen and what it draws with no input: its
+            // inputs' signature (guide_inputs, above — the tuned channel, the
+            // clock's local minute, the UTC second for the progress bar, now
+            // line and join note: at most one redraw a second, and only while
+            // the guide is painted; a channel rebuild; the Picture control)
+            // and whether its window is dark (no video).
             sig.add(static_cast<uint64_t>(guide_painted_now));
             if (guide_painted_now) {
-                sig.add(static_cast<uint64_t>(static_cast<int64_t>(guide_tuned)));
-                sig.add(static_cast<uint64_t>(guide_local_minute));
-                sig.add(static_cast<uint64_t>(static_cast<int64_t>(std::floor(guide_now_utc))));
-                sig.add(channels_generation);
-                sig.add(static_cast<uint64_t>(state.picture_control_available));
+                sig.add(guide_inputs.value());
+                sig.add(static_cast<uint64_t>(state.video_active));
             }
             sig.add(static_cast<uint64_t>(state.playlists.size()));
             sig.add(static_cast<uint64_t>(state.current_playlist_index));
@@ -2034,23 +2068,32 @@ int main(int /* argc */, char* /* argv */[]) {
         // the closing brace is marked.
         if (draw_this_frame) {
 
-        // The Channel Guide for this frame, laid out from memory only
+        // The Channel Guide for this frame, handed to the renderer below;
+        // nullptr = not painted. Laid out from memory only
         // (ui::layout_channel_guide: the channel list, the playlists, the
-        // clock) and handed to the renderer below; nullptr = not painted.
+        // clock), and only when its inputs changed since the last layout —
+        // otherwise the same view is painted again. Each layout gets a new
+        // revision (the painter's measurement cache key).
         const ui::GuideView* guide_frame_view = nullptr;
         if (guide_painted_now) {
-            ui::GuideViewInput guide_in;
-            guide_in.crt = state.display_settings.mode == app::DisplayMode::CRT_NATIVE;
-            guide_in.channels = &channels;
-            guide_in.playlists = &state.playlists;
-            guide_in.tuned = guide_tuned;
-            guide_in.cursor = state.guide_cursor;
-            guide_in.picture_available = state.picture_control_available;
-            guide_in.picture_crop = state.picture_crop;
-            guide_in.source_aspect = playing_display_aspect();
-            guide_in.now_utc = guide_now_utc;
-            guide_in.utc_offset_s = utc_offset_s;
-            guide_view = ui::layout_channel_guide(guide_in);
+            if (!guide_laid_out || guide_inputs.value() != guide_layout_key) {
+                ui::GuideViewInput guide_in;
+                guide_in.crt = state.display_settings.mode == app::DisplayMode::CRT_NATIVE;
+                guide_in.channels = &channels;
+                guide_in.playlists = &state.playlists;
+                guide_in.tuned = guide_tuned;
+                guide_in.cursor = state.guide_cursor;
+                guide_in.picture_available = state.picture_control_available;
+                guide_in.picture_crop = state.picture_crop;
+                guide_in.source_aspect = guide_source_aspect;
+                guide_in.now_utc = guide_now_utc;
+                guide_in.utc_offset_s = guide_offset_s;
+                const uint64_t revision = guide_view.revision + 1;
+                guide_view = ui::layout_channel_guide(guide_in);
+                guide_view.revision = revision;
+                guide_layout_key = guide_inputs.value();
+                guide_laid_out = true;
+            }
             guide_frame_view = &guide_view;
         }
 
@@ -2540,7 +2583,8 @@ int main(int /* argc */, char* /* argv */[]) {
         // start-up, so the file decides). Same ~1/s exists + remove as the
         // settings poke above, and the same accepted cost: one unlink and
         // one zoneinfo read per web-admin action, never per tick. The guide
-        // recomputes its UTC offset on the next frame it paints.
+        // looks its UTC offset up again on the next frame it paints
+        // (GuideClock::invalidate).
         {
             static int timezone_reload_check = 0;
             if (++timezone_reload_check >= 60) {
@@ -2551,7 +2595,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     std::error_code rm_ec;
                     fs::remove(tz_marker, rm_ec);
                     tzset();
-                    utc_offset_minute = std::numeric_limits<int64_t>::min();
+                    guide_clock.invalidate();
                     LOG_INFO("Time zone reloaded (web-admin poke)");
                 }
             }

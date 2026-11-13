@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -145,6 +146,10 @@ struct GuideHint {
 };
 
 struct GuideView {
+    // Set by the view's owner to a new value on every layout (main.cpp); the
+    // painter keeps what it measures with the fonts per revision. Not set by
+    // layout_channel_guide.
+    uint64_t revision = 0;
     bool crt = false;  // laid out for the CRT Native canvas (640x480)
     GuideRect window;
     std::string window_bug;  // "04" / "MIX" / "" (nothing tuned)

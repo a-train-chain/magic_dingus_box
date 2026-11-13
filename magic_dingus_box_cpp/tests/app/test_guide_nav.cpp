@@ -832,3 +832,78 @@ TEST_CASE("the channel last tuned is saved when it changes, checked on a tuned m
         CHECK(watch.changed(s));
     }
 }
+
+TEST_CASE("the Picture control is offered only while a channel is tuned", "[guide_nav]") {
+    // A List video still playing on entering guide style: nothing tuned, a
+    // non-4:3 video under the overlay (main.cpp's picture rule says "drawn").
+    app::AppState s;
+    put_playing(s, 2);
+    s.tuned_channel = -1;
+    s.ui_visible_when_playing = true;
+    app::guide_frame(s, frame_facts());  // on screen already: no edge below
+
+    SECTION("nothing tuned: no control, and the cursor cannot stay on it") {
+        s.guide_cursor = {0, 0, true};
+        s.picture_control_available = true;
+        app::guide_frame(s, frame_facts(std::nullopt, /*may_stay=*/true));
+        CHECK_FALSE(s.picture_control_available);
+        CHECK(same(s.guide_cursor, {0, 0, false}));
+        // ...nor turn onto it: up from 00 stays on 00.
+        input(s, app::GuideEvent::Rotate, -1);
+        CHECK(same(s.guide_cursor, {0, 0, false}));
+    }
+    SECTION("a pending tune counts as tuned") {
+        s.guide_cursor = {0, 0, true};
+        s.picture_control_available = true;
+        app::guide_frame(s, frame_facts(2, /*may_stay=*/true));
+        CHECK(s.picture_control_available);
+        CHECK(same(s.guide_cursor, {0, 0, true}));
+    }
+    SECTION("tuned: as before") {
+        s.tuned_channel = 2;
+        s.guide_cursor = {0, 0, true};
+        s.picture_control_available = true;
+        app::guide_frame(s, frame_facts());
+        CHECK(s.picture_control_available);
+        CHECK(same(s.guide_cursor, {0, 0, true}));
+    }
+    SECTION("List style: the List's control is not touched") {
+        auto f = frame_facts();
+        f.guide_style = false;
+        s.picture_control_available = true;
+        app::guide_frame(s, f);
+        CHECK(s.picture_control_available);
+    }
+}
+
+TEST_CASE("entering guide style with a List playlist playing tunes its channel live",
+          "[guide_nav]") {
+    app::AppState s;
+    SECTION("a playlist playing: its row") {
+        put_playing(s, 4);
+        s.tuned_channel = -1;
+        CHECK(app::guide_entry_tune(s) == 4);
+    }
+    SECTION("loading (the indexes set, no video yet): its row") {
+        put_loading(s, 3);
+        CHECK(app::guide_entry_tune(s) == 3);
+    }
+    SECTION("Master Shuffle: channel 00, not the source playlist's row") {
+        put_playing(s, 5);  // the shuffle's current pick comes from row 5
+        s.master_shuffle_active = true;
+        CHECK(app::guide_entry_tune(s) == 0);
+    }
+    SECTION("nothing playing or loading: nothing (the nothing-playing rule tunes)") {
+        put_nothing_playing(s);
+        CHECK_FALSE(app::guide_entry_tune(s).has_value());
+        s.master_shuffle_active = true;  // a stale flag alone is not playing
+        CHECK_FALSE(app::guide_entry_tune(s).has_value());
+    }
+#ifdef MEDIA_BROWSER_ENABLED
+    SECTION("never while the Media Browser owns the screen") {
+        put_playing(s, 4);
+        s.current_screen = app::AppScreen::MediaBrowser;
+        CHECK_FALSE(app::guide_entry_tune(s).has_value());
+    }
+#endif
+}
