@@ -118,6 +118,9 @@ struct FakeTransport : app::PlaylistTransport {
     uint64_t stream_generation() const override { return generation; }
     bool has_error() const override { return error; }
     double player_position() const override { return position; }
+    // What GstPlayer::describe_state() would answer (the stall log line).
+    std::string pipeline = "PLAYING (fake)";
+    std::string pipeline_state() const override { return pipeline; }
     std::chrono::steady_clock::time_point now() const override { return clock; }
     double wall_now_utc() const override { return wall; }
 };
@@ -2428,4 +2431,158 @@ TEST_CASE("List style: a playlist boundary is never bounded",
     }
     CHECK(t.calls == std::vector<std::string>{"next_item"});
     CHECK(s.current_playlist_index == 1);
+}
+
+// ── Channel Guide: a frozen picture ──────────────────────────────────────
+// Seen once on a Pi 5: after a channel join's seek the pipeline sat on the
+// keyframe while it reported playing, and play() — the watchdog's restart,
+// tried three times 8 s apart — never moved it: ~25 s of a frozen picture,
+// then a failed item. On a channel the first stall reloads the channel at
+// its live point instead (the boundary's load, no failure counted); a
+// second stall on the same airing is a failed item through the policy.
+
+namespace {
+
+// main.cpp's per-frame ticks with the stall watchdog, every 100 ms for
+// `total`. The watchdog's clock is the fake steady clock, in seconds.
+void stall_frames(Guide& g, std::chrono::milliseconds total) {
+    const auto end = g.t.clock + total;
+    while (g.t.clock < end) {
+        g.t.advance(std::chrono::milliseconds(100));
+        g.pb.tick_switch_timeout();
+        g.pb.tick_pipeline_error();
+        g.pb.tick_auto_advance();
+        g.pb.tick_stall_watchdog(
+            std::chrono::duration<double>(g.t.clock.time_since_epoch()).count());
+    }
+}
+
+// Tunes `channel` at `wall`, brings the stream up and freezes it at its join
+// point: the pipeline reports playing, the position never moves.
+void tune_and_freeze(Guide& g, int channel, double wall) {
+    const double join = tune_and_play(g, channel, wall);
+    g.t.playing_default = true;
+    g.s.update_playback_state(join, 200.0);
+    g.t.calls.clear();
+    g.t.offsets.clear();
+    g.t.load_wall.clear();
+}
+
+// The reload's new stream is up (load_file bumps the generation) and frozen
+// again at the position the reload asked for.
+void reload_up_and_frozen(Guide& g) {
+    g.t.generation += 1;
+    g.playing();
+    g.s.update_playback_state(g.t.last_offset(), 200.0);
+}
+
+int count_calls(const FakeTransport& t, const std::string& call) {
+    return static_cast<int>(std::count(t.calls.begin(), t.calls.end(), call));
+}
+
+}  // namespace
+
+TEST_CASE("a frozen channel is reloaded at its live point once, without a failure",
+          "[playlist_playback][guide][stall]") {
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    g.t.pipeline = "PAUSED -> PLAYING (ASYNC)";
+    tune_and_freeze(g, 1, kW0 + 130);  // 01: b (airs kW0+100 to +300), 30 s in
+
+    stall_frames(g, milliseconds(2900));
+    CHECK(g.t.calls.empty());  // under the 3 s threshold: a hitch
+    stall_frames(g, milliseconds(300));
+    // The first stall: the channel's live point, no play(), nothing counted.
+    REQUIRE(g.t.calls == std::vector<std::string>{"load_at Cartoons 1"});
+    REQUIRE(g.t.load_wall.size() == 1);
+    CHECK(g.t.last_offset() == Approx(g.t.load_wall[0] - (kW0 + 100)));
+    CHECK(g.t.last_offset() > 33.0);  // the live point, past the frozen 30 s
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.s.current_playlist_index == 1);
+    CHECK(g.s.current_item_index == 1);
+    CHECK(g.s.guide_wait_until_utc == 0.0);
+    CHECK(g.s.guide_gave_up.empty());
+    CHECK(g.s.error_message.empty());
+    CHECK_FALSE(g.s.ui_visible_when_playing);  // the overlay is left as it was
+    CHECK(err.count("reloading channel 1 at its live point") == 1);
+    CHECK(err.count("PAUSED -> PLAYING (ASYNC)") == 1);  // the pipeline's state, logged
+
+    SECTION("frozen again on the same airing: a failed item, dark until its slot ends") {
+        reload_up_and_frozen(g);
+        stall_frames(g, milliseconds(3200));
+        CHECK(g.t.calls == std::vector<std::string>{"load_at Cartoons 1", "stop"});
+        CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
+        CHECK(g.s.tuned_channel == 1);
+        CHECK(g.s.guide_gave_up.empty());
+        CHECK(g.s.current_playlist_index == -1);  // stop_to_menu
+        CHECK(err.count("stalled again") == 1);
+        CHECK(err.count("PAUSED -> PLAYING (ASYNC)") == 2);
+    }
+    SECTION("the reload plays: a later freeze is a new one, reloaded again") {
+        reload_up_and_frozen(g);
+        double pos = g.t.last_offset();
+        g.t.position = pos;
+        for (int i = 0; i < 60; ++i) {  // 6 s of real progress
+            pos += 0.1;
+            g.t.position = pos;
+            g.s.update_playback_state(pos, 200.0);
+            stall_frames(g, milliseconds(100));
+        }
+        CHECK(g.t.calls.size() == 1);
+        stall_frames(g, milliseconds(3200));  // frozen again
+        CHECK(g.t.calls == std::vector<std::string>{"load_at Cartoons 1", "load_at Cartoons 1"});
+        CHECK(g.s.guide_wait_until_utc == 0.0);
+        CHECK(err.count("stalled again") == 0);
+    }
+    SECTION("a tune to the channel starts afresh") {
+        reload_up_and_frozen(g);
+        g.t.playing_default = false;
+        g.pb.tune(1, false);
+        run_frames(g.pb, g.t, kSettled);
+        g.t.playing_default = true;
+        reload_up_and_frozen(g);
+        stall_frames(g, milliseconds(3200));
+        CHECK(count_calls(g.t, "load_at Cartoons 1") == 3);  // reload, tune, reload
+        CHECK(err.count("stalled again") == 0);
+    }
+    CHECK(count_calls(g.t, "play") == 0);
+}
+
+TEST_CASE("a one-item channel frozen twice on its airing is given up",
+          "[playlist_playback][guide][stall]") {
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    tune_and_freeze(g, 2, kW0 + 10);  // 02: m (50 s), 10 s in
+    g.s.update_playback_state(g.s.get_position(), 50.0);
+    stall_frames(g, milliseconds(3200));
+    REQUIRE(g.t.calls == std::vector<std::string>{"load_at Movies 0"});
+    reload_up_and_frozen(g);
+    g.s.update_playback_state(g.t.last_offset(), 50.0);
+    stall_frames(g, milliseconds(3200));
+    CHECK(g.t.calls == std::vector<std::string>{"load_at Movies 0", "stop"});
+    CHECK(g.s.guide_gave_up == std::vector<int>{2});
+    CHECK(g.s.tuned_channel == -1);
+    CHECK(g.s.error_message == "Couldn't play these videos");
+    CHECK(count_calls(g.t, "play") == 0);
+}
+
+TEST_CASE("a frozen stream that is not a channel load is still restarted with play()",
+          "[playlist_playback][guide][stall]") {
+    // A List-style item still playing when the style changed to the guide:
+    // nothing to rejoin. The List path, its log line naming the pipeline.
+    Guide g;
+    StreamCapture err(std::cerr);
+    g.t.pipeline = "PLAYING (SUCCESS)";
+    put_playing(g.s, 1, 0);
+    g.s.update_playback_state(5.0, 100.0);
+    g.t.playing_default = true;
+    double now = 1000.0;
+    for (int i = 0; i < 5; ++i) g.pb.tick_stall_watchdog(now += 1.0);
+    CHECK(g.t.calls == std::vector<std::string>{"play"});
+    CHECK(err.count("restarting playback") == 1);
+    CHECK(err.count("PLAYING (SUCCESS)") == 1);
 }

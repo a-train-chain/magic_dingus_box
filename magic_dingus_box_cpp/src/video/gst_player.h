@@ -2,6 +2,7 @@
 
 #include "video_player.h"
 #include "deferred_start.h"
+#include "log_rate_limit.h"
 #include "query_cache.h"
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
@@ -48,6 +49,12 @@ public:
     // suppress drawing the PREVIOUS stream's leftover frame while the
     // new pipeline decodes its first one. 0 = nothing ever loaded.
     uint64_t stream_generation() const { return stream_generation_; }
+
+    // The pipeline's current state, its pending one and the last state
+    // change's return, e.g. "PAUSED -> PLAYING (ASYNC)" — read with a ZERO
+    // timeout, so it never blocks the render thread. For the stall
+    // watchdog's log line (PlaylistTransport::pipeline_state).
+    std::string describe_state() const;
 
     // Set PulseAudio device on the audio sink (e.g. sink name)
     // Must be called after initialize(). Also stored for pipeline re-creation.
@@ -111,6 +118,12 @@ private:
     // in a single millisecond. See bus_call() for the throttle logic.
     guint64 last_qos_logged_dropped_ = 0;
     std::chrono::steady_clock::time_point last_qos_log_time_{};
+
+    // GStreamer WARNING messages are logged at WARN, at most one per source
+    // element per 5 s (cleared per load_file), so the next frozen picture
+    // names the element that complained without a chatty one flooding the
+    // journal. See bus_call().
+    PerSourceLogLimit warning_log_limit_{std::chrono::seconds(5)};
 
     // EOS callback
     std::function<void()> eos_callback_;

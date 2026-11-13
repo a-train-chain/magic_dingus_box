@@ -920,25 +920,67 @@ void PlaylistPlayback::tick_stall_watchdog(double now_sec) {
         !state_.showing_intro_video && !state_.is_switching_playlist;
     const auto wd_action = stall_watchdog_.update(
         expect_playing, state_.get_position(), now_sec);
-    if (wd_action == app::PlaybackStallWatchdog::Action::Advance &&
-        owns_pipeline()) {
+    if (wd_action == app::PlaybackStallWatchdog::Action::None) return;
+    // What the pipeline itself says (zero-timeout state read): the frozen
+    // picture seen on a Pi 5 reported playing throughout.
+    const std::string pipeline = transport_.pipeline_state();
+    const std::string pipeline_note = pipeline.empty() ? "" : " (pipeline " + pipeline + ")";
+    if (wd_action == app::PlaybackStallWatchdog::Action::Recover && stall_is_channels()) {
+        on_channel_stall(pipeline_note);
+    } else if (wd_action == app::PlaybackStallWatchdog::Action::Advance &&
+               owns_pipeline()) {
         // Repeated play() never got position moving: skip the item,
         // counted in the same failure run as pipeline errors.
         std::cerr << "Playback still stalled at "
                   << state_.get_position() << "s after "
                   << app::PlaybackStallWatchdog::kMaxRecoveriesBeforeAdvance
-                  << " restarts — giving up on this item" << std::endl;
+                  << " restarts" << pipeline_note << " — giving up on this item" << std::endl;
         act_on_failed_item(
             error_policy_.on_failure(
                 transport_.stream_generation(), failure_budget()),
             "stalled");
-    } else if (wd_action != app::PlaybackStallWatchdog::Action::None) {
+    } else {
         // Recover — or Advance where there is no playlist to
         // advance (Media Browser playback): one more restart.
         std::cerr << "Playback stalled at " << state_.get_position()
-                  << "s while reported playing — restarting playback"
-                  << std::endl;
+                  << "s while reported playing" << pipeline_note
+                  << " — restarting playback" << std::endl;
         transport_.play();
+    }
+}
+
+bool PlaylistPlayback::stall_is_channels() const {
+    const Channel* ch = channel_at(state_.tuned_channel);
+    return ch && !ch->items.empty() && channel_progress_.loaded && owns_pipeline();
+}
+
+void PlaylistPlayback::on_channel_stall(const std::string& pipeline_note) {
+    const int channel = state_.tuned_channel;
+    if (channel_progress_.stall_reload && !channel_progress_.proven) {
+        // The reload did not help: its own stream froze before it played
+        // kChannelPlaysS. A failed item, like any other — the channel waits
+        // for the slot's end, or is given up.
+        std::cerr << "Channel " << channel << " stalled again at "
+                  << state_.get_position() << "s after its reload" << pipeline_note
+                  << " — counting a failed item" << std::endl;
+        act_on_failed_item(
+            error_policy_.on_failure(transport_.stream_generation(), failure_budget()),
+            "stalled");
+        return;
+    }
+    const auto oa = join_point(*channel_at(channel), transport_.wall_now_utc());
+    if (!oa) return;  // not reached: stall_is_channels() saw a schedule
+    std::cerr << "Playback stalled at " << state_.get_position()
+              << "s while reported playing" << pipeline_note << " — reloading channel "
+              << channel << " at its live point" << std::endl;
+    // A fresh join, as a tune's is: the once-per-item guard re-armed.
+    state_.last_advanced_item_index = -1;
+    state_.last_advanced_duration = 0.0;
+    // The boundary's load (no stop/settle of its own: load_item_media stops
+    // and settles the old pipeline itself), so the start bound watches it
+    // (kChannelStartTimeout) and the overlay stays as it is.
+    if (load_on_air(channel, *oa, /*keep_overlay=*/true)) {
+        channel_progress_.stall_reload = true;
     }
 }
 

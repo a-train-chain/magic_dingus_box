@@ -341,6 +341,33 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
             break;
         }
 
+        case GST_MESSAGE_WARNING: {
+            // Not acted on — logged, so a pipeline that wedges while it
+            // reports playing (a frozen channel join on a Pi 5) leaves the
+            // element that complained in the journal. Rate-limited per
+            // source element (PerSourceLogLimit): a decoder warning on every
+            // frame must not flood the SD card.
+            gchar* debug = nullptr;
+            GError* warning = nullptr;
+            gst_message_parse_warning(msg, &warning, &debug);
+            GErrorPtr warning_ptr(warning);  // RAII cleanup
+            const char* src_name = GST_MESSAGE_SRC_NAME(msg);
+            const std::string source = src_name ? src_name : "(unnamed)";
+            const auto verdict = player->warning_log_limit_.admit(
+                source, std::chrono::steady_clock::now());
+            if (verdict.log) {
+                LOG_WARN("GStreamer warning from {}: {} | {}{}", source,
+                         warning ? warning->message : "unknown",
+                         debug ? debug : "",
+                         verdict.suppressed > 0
+                             ? " (+" + std::to_string(verdict.suppressed) +
+                                   " more from it held back)"
+                             : std::string());
+            }
+            g_free(debug);
+            break;
+        }
+
         case GST_MESSAGE_STATE_CHANGED: {
             GstState old_state, new_state, pending_state;
             gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
@@ -489,6 +516,9 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
     // was already higher.
     last_qos_logged_dropped_ = 0;
     last_qos_log_time_ = std::chrono::steady_clock::time_point{};
+    // Likewise the warning limiter: the new stream's elements may each log
+    // their first warning.
+    warning_log_limit_.clear();
 
     std::string uri = "file://" + path;
     // Handle absolute paths
@@ -546,6 +576,23 @@ void GstPlayer::play() {
     LOG_DEBUG("GstPlayer::play() current state: {}, pending: {}",
               gst_element_state_get_name(current),
               gst_element_state_get_name(pending));
+}
+
+std::string GstPlayer::describe_state() const {
+    if (!initialized_ || !pipeline_) return "no pipeline";
+    GstState current = GST_STATE_VOID_PENDING;
+    GstState pending = GST_STATE_VOID_PENDING;
+    // Zero timeout: never waits for an async change to finish.
+    const GstStateChangeReturn ret = gst_element_get_state(pipeline_, &current, &pending, 0);
+    std::string out = gst_element_state_get_name(current);
+    if (pending != GST_STATE_VOID_PENDING) {
+        out += " -> ";
+        out += gst_element_state_get_name(pending);
+    }
+    out += " (";
+    out += gst_element_state_change_return_get_name(ret);
+    out += ")";
+    return out;
 }
 
 void GstPlayer::pause() {

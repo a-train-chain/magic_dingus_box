@@ -126,6 +126,10 @@ public:
     virtual uint64_t stream_generation() const = 0;
     virtual bool has_error() const = 0;
     virtual double player_position() const = 0;
+    // The pipeline's current/pending state as text, read without blocking
+    // (GstPlayer::describe_state). Only the stall watchdog's log line reads
+    // it; "" = not known.
+    virtual std::string pipeline_state() const { return {}; }
 
     // steady_clock::now() in the kiosk; a hand-advanced clock in the tests.
     // Every switch deadline and the stuck-switch timeout read this.
@@ -232,7 +236,15 @@ public:
     void tick_auto_advance();
     // The playback stall watchdog: restart a pipeline that silently
     // stopped, or give up on the item after repeated restarts. `now_sec` is
-    // steady_clock seconds.
+    // steady_clock seconds. On a channel (Channel Guide style, the stream is
+    // a channel load) the first stall RELOADS the channel at its live point
+    // (app::join_point, the boundary's load — no switch, no sleep, no failure
+    // counted) instead of play(): seen on a Pi 5, a join's seek left the
+    // pipeline on its keyframe while it reported playing, and three play()s
+    // 8 s apart never moved it. If the reload's own stream stalls before it
+    // has played kChannelPlaysS, that is a failed item through the policy
+    // (the slot's wait, or a give-up); a stall after that is a new one.
+    // Every stall line logs the pipeline's state (pipeline_state()).
     void tick_stall_watchdog(double now_sec);
 
     // ── Playlist switch state ────────────────────────────────────────────
@@ -344,6 +356,9 @@ private:
         bool loaded = false;           // the playing stream is a channel load
         std::optional<double> anchor;  // first position once playing
         bool proven = false;           // prove_channel() has run for it
+        // The load was a stall's reload (reload_stalled_channel): a stall of
+        // this stream before it is proven counts as a failed item.
+        bool stall_reload = false;
     };
     ChannelProgress channel_progress_;
     // A channel load (a tune's or a boundary's) returned OK at this time
@@ -367,6 +382,13 @@ private:
     double played_position(double player_pos);
     // The channel plays: clear guide_gave_up (once per load).
     void prove_channel();
+    // The stalled stream is a channel load whose channel is still tuned and
+    // scheduled: a stall there is the channel's (tick_stall_watchdog).
+    bool stall_is_channels() const;
+    // A channel's stall: reload it at its live point, or — the reload's own
+    // stream stalled before it was proven — count a failed item.
+    // `pipeline_note` is the log line's pipeline state.
+    void on_channel_stall(const std::string& pipeline_note);
 
     // A GStreamer error (corrupt/truncated file, unsupported codec) or a
     // stall the watchdog could not revive used to strand an unattended
