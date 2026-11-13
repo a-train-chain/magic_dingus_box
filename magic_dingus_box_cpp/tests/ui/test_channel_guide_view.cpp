@@ -303,6 +303,63 @@ TEST_CASE("the bottom row: None on a tuned 4:3 row and on a no-schedule row", "[
     CHECK(v.panel.bottom == ui::GuideBottom::None);
 }
 
+TEST_CASE("the view carries the canvas and the Picture control's state", "[guide_view]") {
+    Fixture f;
+    auto in = f.in();
+    in.tuned = 1;
+    in.cursor = app::GuideCursor{0, 0, true};
+    in.picture_available = true;
+    in.picture_crop = false;
+    auto v = ui::layout_channel_guide(in);
+    CHECK_FALSE(v.crt);
+    CHECK(v.panel.bottom == ui::GuideBottom::Picture);
+    CHECK_FALSE(v.panel.picture_crop);
+    CHECK(v.panel.picture_focus);
+    in.picture_crop = true;
+    in.cursor = app::GuideCursor{1, 0, false};
+    v = ui::layout_channel_guide(in);
+    CHECK(v.panel.picture_crop);
+    CHECK_FALSE(v.panel.picture_focus);
+    in.crt = true;
+    CHECK(ui::layout_channel_guide(in).crt);
+}
+
+TEST_CASE("the video window in framebuffer px", "[guide_view]") {
+    const ui::GuideRect tv{40, 40, 384, 288};
+    const ui::GuideRect crt{24, 24, 224, 168};
+    // Modern TV at 1920x1080: the 960x720 canvas is the 1440x1080 4:3 area
+    // at x 240 — x_fb = 240 + x * 1080 / 720, y_fb = y * 1080 / 720.
+    auto w = ui::guide_rect_to_fb(tv, 960, 720, ui::GuideRect{240, 0, 1440, 1080});
+    CHECK(w.x == 300);
+    CHECK(w.y == 60);
+    CHECK(w.w == 576);
+    CHECK(w.h == 432);
+    // Modern TV at 1280x720: identity inside the 960x720 area at x 160.
+    w = ui::guide_rect_to_fb(tv, 960, 720, ui::GuideRect{160, 0, 960, 720});
+    CHECK(w.x == 200);
+    CHECK(w.y == 40);
+    CHECK(w.w == 384);
+    CHECK(w.h == 288);
+    // CRT Native: 640x480 stretched over the whole 1280x720 framebuffer —
+    // x * 1280 / 640, y * 720 / 480 (not uniform).
+    w = ui::guide_rect_to_fb(crt, 640, 480, ui::GuideRect{0, 0, 1280, 720});
+    CHECK(w.x == 48);
+    CHECK(w.y == 36);
+    CHECK(w.w == 448);
+    CHECK(w.h == 252);
+    // A 4:3 area that does not fill the height (a 5:4 mode letterboxes it):
+    // the area's own offset and scale, edges rounded.
+    w = ui::guide_rect_to_fb(tv, 960, 720, ui::GuideRect{0, 32, 1280, 960});
+    CHECK(w.x == 53);   // round(40 * 4/3 = 53.33)
+    CHECK(w.y == 85);   // 32 + round(53.33)
+    CHECK(w.w == 512);  // round(424 * 4/3 = 565.33) - 53
+    CHECK(w.h == 384);  // 32 + round(328 * 4/3 = 437.33) - 85
+    // No canvas: nothing.
+    w = ui::guide_rect_to_fb(tv, 0, 720, ui::GuideRect{0, 0, 1280, 720});
+    CHECK(w.w == 0);
+    CHECK(w.h == 0);
+}
+
 TEST_CASE("channel names truncate to the column's real width", "[guide_view]") {
     Fixture f;
     f.playlists[1].title = std::string(40, 'a');

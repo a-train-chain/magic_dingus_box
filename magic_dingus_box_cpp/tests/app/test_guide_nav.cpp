@@ -717,3 +717,118 @@ TEST_CASE("the guide's appearance is a rising edge, once per appearance", "[guid
         CHECK(first.rose(true));
     }
 }
+
+// ── Painting (main.cpp / Renderer::render) ───────────────────────────────
+
+TEST_CASE("the video goes in the guide's window while the guide is on screen",
+          "[guide_nav]") {
+    app::AppState s;
+    SECTION("over a playing channel: only with the overlay up") {
+        put_playing(s);
+        CHECK_FALSE(app::guide_window_video(s));
+        s.ui_visible_when_playing = true;
+        CHECK(app::guide_window_video(s));
+    }
+    SECTION("a tune's load gap with the guide up: the window (dark until the stream)") {
+        put_loading(s);
+        s.ui_visible_when_playing = true;
+        CHECK(app::guide_window_video(s));
+        s.ui_visible_when_playing = false;
+        CHECK_FALSE(app::guide_window_video(s));
+    }
+    SECTION("never the intro, even before its first frame (nothing playing yet)") {
+        put_nothing_playing(s);
+        s.ui_visible_when_playing = false;
+        s.showing_intro_video = true;
+        CHECK_FALSE(app::guide_window_video(s));
+        s.showing_intro_video = false;
+        CHECK(app::guide_window_video(s));
+    }
+}
+
+TEST_CASE("the guide is painted while on screen and through a Close's fade-out",
+          "[guide_nav]") {
+    app::AppState s;
+    SECTION("on screen: painted, the load gap included") {
+        put_loading(s);
+        s.ui_visible_when_playing = true;
+        CHECK(app::guide_painted(s));
+        put_nothing_playing(s);
+        s.ui_visible_when_playing = false;
+        CHECK(app::guide_painted(s));
+    }
+    SECTION("a Close over a video: hidden at once, painted until the fade ends") {
+        put_playing(s, 3);
+        s.ui_visible_when_playing = true;
+        s.guide_cursor = {3, 1, false};
+        input(s, app::GuideEvent::Select, 0);  // the tuned row: Close
+        REQUIRE_FALSE(s.ui_visible_when_playing);
+        REQUIRE(s.is_fading);
+        CHECK_FALSE(app::guide_visible(s));
+        CHECK_FALSE(app::guide_window_video(s));  // the video is back full-screen
+        CHECK(app::guide_painted(s));             // the guide fades over it
+        s.is_fading = false;                      // the fade ended
+        CHECK_FALSE(app::guide_painted(s));
+    }
+    SECTION("a fade IN with the overlay hidden is not the guide's") {
+        put_playing(s);
+        s.is_fading = true;
+        s.fade_target_ui_visible = true;
+        CHECK_FALSE(app::guide_painted(s));
+    }
+    SECTION("never over the intro") {
+        put_nothing_playing(s);
+        s.showing_intro_video = true;
+        CHECK_FALSE(app::guide_painted(s));
+    }
+#ifdef MEDIA_BROWSER_ENABLED
+    SECTION("never over the Media Browser, a fade included") {
+        app::reset_main_ui_for_media_browser(s);
+        s.current_screen = app::AppScreen::MediaBrowser;
+        s.is_fading = true;
+        s.fade_target_ui_visible = false;
+        CHECK_FALSE(app::guide_painted(s));
+    }
+#endif
+}
+
+TEST_CASE("the channel last tuned is saved when it changes, checked on a tuned move",
+          "[guide_nav]") {
+    app::AppState s;
+    s.last_channel_id = "chan-a";  // loaded from settings.json
+    app::LastChannelWatch watch{s.tuned_channel, s.last_channel_id};
+    CHECK_FALSE(watch.changed(s));  // nothing moved
+
+    SECTION("a tune to another channel: saved once") {
+        s.tuned_channel = 2;
+        s.last_channel_id = "chan-b";
+        CHECK(watch.changed(s));
+        CHECK_FALSE(watch.changed(s));  // the next frames: nothing new
+        CHECK_FALSE(watch.changed(s));
+    }
+    SECTION("the boot tune to the channel already saved: nothing to save") {
+        s.tuned_channel = 1;  // last_channel_id still "chan-a"
+        CHECK_FALSE(watch.changed(s));
+    }
+    SECTION("a rebuild re-anchoring the tuned row: same channel, no save") {
+        s.tuned_channel = 1;
+        CHECK_FALSE(watch.changed(s));
+        s.tuned_channel = 4;  // a reload moved "chan-a" to row 4
+        CHECK_FALSE(watch.changed(s));
+    }
+    SECTION("the id is not compared while tuned_channel stays put") {
+        s.last_channel_id = "chan-c";
+        CHECK_FALSE(watch.changed(s));
+        s.tuned_channel = 3;
+        CHECK(watch.changed(s));  // seen at the move
+    }
+    SECTION("tuned, lost to a reload, tuned again elsewhere: saved") {
+        s.tuned_channel = 1;
+        CHECK_FALSE(watch.changed(s));
+        s.tuned_channel = -1;  // its playlist is gone
+        CHECK_FALSE(watch.changed(s));
+        s.tuned_channel = 1;  // another playlist now at row 1
+        s.last_channel_id = "chan-d";
+        CHECK(watch.changed(s));
+    }
+}

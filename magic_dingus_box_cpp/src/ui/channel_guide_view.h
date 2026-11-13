@@ -57,6 +57,10 @@ struct GuidePanel {
     GuideBottom bottom = GuideBottom::PressToWatch;
     std::string join_note;  // "joins at m:ss" (another channel)
     bool show_artist = false, show_next = false, show_source = false;
+    // The Picture control's checkbox (ticked = cropped) and its gold focus
+    // (the cursor is on it); drawn only when bottom == Picture.
+    bool picture_crop = true;
+    bool picture_focus = false;
 };
 
 struct GuideTick {
@@ -102,6 +106,7 @@ struct GuideHint {
 };
 
 struct GuideView {
+    bool crt = false;  // laid out for the CRT Native canvas (640x480)
     GuideRect window;
     std::string window_bug;  // "04" / "MIX" / "" (nothing tuned)
     GuideRect panel_rect;
@@ -234,6 +239,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
 
     // Geometry (spec table).
     const bool crt = in.crt;
+    v.crt = crt;
     v.window = crt ? GuideRect{24, 24, 224, 168} : GuideRect{40, 40, 384, 288};
     v.panel_rect = crt ? GuideRect{260, 24, 356, 168} : GuideRect{448, 40, 472, 288};
     v.logo = crt ? GuideRect{477, 443, 139, 20} : GuideRect{739, 654, 181, 26};
@@ -366,11 +372,34 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     else
         p.bottom = pc_tunable ? GuideBottom::PressToWatch : GuideBottom::None;
     p.show_source = !crt && p.bottom == GuideBottom::Picture;
+    p.picture_crop = in.picture_crop;
+    p.picture_focus = in.cursor.on_picture;
 
     v.hints.push_back({"TURN", "channels"});
     v.hints.push_back({"PRESS", "watch"});
     if (!crt) v.hints.push_back({"PRESS", "on green to hide guide"});
     return v;
+}
+
+// A rect on the logical canvas (canvas_w x canvas_h, top-left origin) in
+// framebuffer px, top-left origin: where it lands once the canvas is drawn
+// into `content_fb` — the 4:3 area in Modern TV (960x720 into 1440x1080 at
+// x 240 on a 1920x1080 mode), the whole framebuffer in CRT Native (640x480
+// stretched over 1280x720: NOT uniform). Edges are rounded, so neighbouring
+// rects stay neighbours. With the content as tall as the framebuffer (every
+// 16:9 mode) this is the guide's video window formula: Modern TV
+// x_fb = content_x + x * fb_h / 720, y_fb = y * fb_h / 720; CRT Native
+// x * fb_w / 640, y * fb_h / 480. An empty canvas maps to an empty rect.
+inline GuideRect guide_rect_to_fb(const GuideRect& r, int canvas_w, int canvas_h,
+                                  const GuideRect& content_fb) {
+    if (canvas_w <= 0 || canvas_h <= 0) return GuideRect{};
+    const double sx = static_cast<double>(content_fb.w) / canvas_w;
+    const double sy = static_cast<double>(content_fb.h) / canvas_h;
+    const int x0 = content_fb.x + static_cast<int>(std::lround(r.x * sx));
+    const int y0 = content_fb.y + static_cast<int>(std::lround(r.y * sy));
+    const int x1 = content_fb.x + static_cast<int>(std::lround((r.x + r.w) * sx));
+    const int y1 = content_fb.y + static_cast<int>(std::lround((r.y + r.h) * sy));
+    return GuideRect{x0, y0, x1 - x0, y1 - y0};
 }
 
 }  // namespace ui

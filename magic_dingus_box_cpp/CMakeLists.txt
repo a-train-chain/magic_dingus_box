@@ -142,6 +142,9 @@ set(UI_SOURCES
     src/ui/renderer_shaders.cpp
     src/ui/renderer_text.cpp
     src/ui/renderer_main_menu.cpp
+    # The Channel Guide's painter (GL — kiosk only; its view model,
+    # channel_guide_view.h, and text_fit.h are header-only and Mac-tested).
+    src/ui/renderer_channel_guide.cpp
     src/ui/renderer_settings.cpp
     src/ui/renderer_mb.cpp
     src/ui/renderer_crt.cpp

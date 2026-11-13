@@ -24,6 +24,7 @@
 #include "qrcodegen.hpp" // QR code generation
 #include "text_utf8.h"
 #include "picture_control_layout.h"
+#include "channel_guide_view.h"
 #include "../app/app_state.h"
 #include "../app/playlist_loader.h"
 #include "../app/settings_persistence.h" // For getting config if needed
@@ -91,9 +92,19 @@ void Renderer::render(app::AppState& state) {
     
     // Calculate UI overlay alpha based on fade state
     float ui_overlay_alpha = 1.0f;
-    
-    // If we're transitioning between videos, don't show UI at all
-    if (is_transitioning && !state.video_active) {
+
+    // Channel Guide style: the overlay is the guide main.cpp laid out for
+    // this frame (set_channel_guide), or nothing — never the list. The
+    // pointer is main.cpp's app::guide_painted: the guide on screen, or a
+    // Close's fade-out.
+    const bool guide_style =
+        state.display_settings.menu_style == app::MenuStyle::ChannelGuide;
+    const GuideView* guide = guide_style ? channel_guide_ : nullptr;
+
+    // If we're transitioning between videos, don't show UI at all — except
+    // the guide, which stays up through a tune's load gap (the window dark
+    // until the new stream arrives).
+    if (is_transitioning && !state.video_active && guide == nullptr) {
         return;  // Don't render UI during video transitions
     }
     
@@ -206,7 +217,17 @@ void Renderer::render(app::AppState& state) {
     }
     
     // Only render UI components if they are visible
-    if (ui_overlay_alpha > 0.0f) {
+    if (ui_overlay_alpha > 0.0f && guide_style) {
+        // The Channel Guide: its own background (bg everywhere but the video
+        // window — no 50 % overlay), panel, grid, hints and logo, at the
+        // overlay's fade alpha. The window is dark while no video plays.
+        if (guide) {
+            render_channel_guide(*guide, ui_overlay_alpha, !state.video_active);
+        }
+        if (state.is_loading_game) {
+            render_loading_overlay(state);
+        }
+    } else if (ui_overlay_alpha > 0.0f) {
         // When UI overlay should be visible, draw dark overlay behind text
         // Draw overlay first so it's behind all text elements
         if (state.video_active && !state.intro_fading_out) {

@@ -20,6 +20,7 @@ class ControllerWizard;
 class PairingScreen;
 class SettingsMenuManager;
 class VirtualKeyboard;
+struct GuideView;
 }
 
 namespace app {
@@ -111,7 +112,14 @@ public:
     // off-screen for the current viewport size, instead of using a
     // hardcoded CRT-tuned row count.
     void render(app::AppState& state);
-    
+
+    // Channel Guide style: the guide main.cpp laid out for this frame
+    // (ui/channel_guide_view.h), painted by render(state) in place of the
+    // playlist list; nullptr when the guide is not painted this frame
+    // (app::guide_painted). Set before every render(); the view must stay
+    // alive until that render returns. In List style it is never read.
+    void set_channel_guide(const GuideView* view) { channel_guide_ = view; }
+
     // Render loading overlay
     void render_loading_overlay(const app::AppState& state);
 
@@ -564,6 +572,11 @@ private:
     // no row is drawn selected (no highlight bar, no blinking indicator).
     void render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing, int current_playlist_index = -1, bool picture_focus = false);
     void render_footer(const app::AppState& state, float text_alpha = 1.0f, bool video_active = false, bool ui_visible_when_playing = false);
+    // The Channel Guide (renderer_channel_guide.cpp): `view` at `alpha` (the
+    // overlay's fade); `window_dark` fills the video window black (no video
+    // in it). Batched primitives only.
+    const GuideView* channel_guide_ = nullptr;
+    void render_channel_guide(const GuideView& view, float alpha, bool window_dark);
     void render_volume_overlay(const app::AppState& state);
     void render_seek_bar(const app::AppState& state);
     void render_scanlines(); // Deprecated, replaced by render_crt_effects

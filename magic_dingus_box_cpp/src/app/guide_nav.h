@@ -27,6 +27,7 @@
 
 #include <chrono>
 #include <optional>
+#include <string>
 
 namespace app {
 
@@ -109,6 +110,32 @@ struct GuideShownEdge {
 // is drawn there, so SELECT opens the guide rather than pressing an
 // invisible row. Input and the renderer use this one definition.
 bool guide_visible(const AppState& s);
+
+// The tuned video is drawn in the guide's window rather than over the whole
+// picture: the guide is on screen (guide_visible) and the intro is over (the
+// intro has no overlay, but before its first frame nothing is "playing").
+bool guide_window_video(const AppState& s);
+
+// The renderer paints the guide this frame, in Channel Guide style: while it
+// is on screen (guide_visible — the load gap of a tune with the overlay up
+// included, where the List style draws nothing), and through a Close's
+// fade-out, when the overlay is already hidden but still fading (the video
+// is back full-screen underneath). Never over the intro or the Media
+// Browser.
+bool guide_painted(const AppState& s);
+
+// Saving the channel last tuned (AppState::last_channel_id, persisted as
+// playback.last_channel) when it changes. The id is compared only on a
+// frame where tuned_channel moved — a tune's load ran, or a rebuild
+// re-anchored it — never every frame (a string compare per frame for a
+// change that comes with a tune). Seed both from the loaded settings.
+struct LastChannelWatch {
+    int seen_tuned = -1;
+    std::string saved_id;
+    // True (once) when last_channel_id differs from the value last saved, as
+    // seen on a tuned_channel move: the caller saves the settings.
+    bool changed(const AppState& s);
+};
 
 enum class GuideEvent {
     Rotate,       // encoder turn / D-pad up-down (delta)

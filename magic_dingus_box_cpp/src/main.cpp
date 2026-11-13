@@ -64,6 +64,7 @@
 #include "app/redraw_gate.h"
 #include "app/post_game_gate.h"
 #include "debug/screenshot_capture.h"
+#include "ui/channel_guide_view.h"
 #include "ui/crt_time.h"
 #include "utils/config.h"
 #include "utils/frame_pacing.h"
@@ -84,8 +85,10 @@
 #ifdef MEDIA_BROWSER_ENABLED
 #include <algorithm>
 #endif
+#include <cmath>
 #include <cstdlib>
 #include <ctime>
+#include <limits>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -152,6 +155,15 @@ static void reload_menu_overlays(platform::InputManager& input) {
 }
 
 int main(int /* argc */, char* /* argv */[]) {
+    // Local time comes from /etc/localtime, which the web admin changes
+    // with timedatectl when the Content Manager reports the owner's zone.
+    // A TZ inherited from the unit (services/.env is its EnvironmentFile)
+    // would pin this process to that zone for good, so it goes before the
+    // first time call (the logger's timestamps included); the
+    // timezone_reload_request poke below re-reads the file with tzset().
+    unsetenv("TZ");
+    tzset();
+
     // Initialize logging system
     // Log to file in config directory if available, otherwise console only
     std::string log_path = config::get_log_file();
@@ -646,14 +658,20 @@ int main(int /* argc */, char* /* argv */[]) {
     // Channel Guide (app/channel_schedule.h): one live channel per main-menu
     // row, held by playlist_playback through a pointer. rebuild_channels()
     // is the ONE place the list is built and handed over — in List style
-    // (the default) it hands over nullptr and nothing of the guide runs. For
-    // now it runs once, here at boot, before the media info store's first
-    // read has landed (so only trimmed items have a length yet); a playlist
-    // reload, a media info change (media_info.poll() == true) and a Menu
-    // Style change must call it too — set_channels after EVERY rebuild
-    // re-anchors the tuned channel.
+    // (the default) it hands over nullptr and nothing of the guide runs. It
+    // runs here at boot, before the media info store's first read has
+    // landed (so only trimmed items have a length yet), and again on every
+    // change underneath it: a web-admin playlist reload (beside
+    // apply_reloaded_playlists), a media info change (media_info.poll() ==
+    // true — the lengths arriving after boot are what let guide style tune
+    // at power-on) and a Menu Style change (sync_menu_style, below: the
+    // Settings row or a settings restore). set_channels after EVERY rebuild
+    // re-anchors the tuned channel. channels_generation counts rebuilds for
+    // the redraw signature.
     std::vector<app::Channel> channels;
-    auto rebuild_channels = [&state, &media_info, &channels, &playlist_playback]() {
+    uint64_t channels_generation = 0;
+    auto rebuild_channels = [&state, &media_info, &channels, &playlist_playback,
+                             &channels_generation]() {
         if (state.display_settings.menu_style == app::MenuStyle::ChannelGuide) {
             channels = app::build_channels(state.playlists, media_info.map());
             playlist_playback.set_channels(&channels);
@@ -661,8 +679,22 @@ int main(int /* argc */, char* /* argv */[]) {
             channels.clear();
             playlist_playback.set_channels(nullptr);
         }
+        ++channels_generation;
     };
     rebuild_channels();
+    // The style the channel list was last built for: a change (Settings →
+    // Display → Menu Style, or a settings restore) rebuilds it — List hands
+    // playback nullptr.
+    app::MenuStyle channels_menu_style = state.display_settings.menu_style;
+    auto sync_menu_style = [&state, &channels_menu_style, &rebuild_channels]() {
+        if (state.display_settings.menu_style == channels_menu_style) return;
+        channels_menu_style = state.display_settings.menu_style;
+        rebuild_channels();
+        LOG_INFO("Menu style -> {}",
+                 channels_menu_style == app::MenuStyle::ChannelGuide ? "Channel Guide" : "List");
+    };
+    // The channel last watched is saved when a tune changes it (app/guide_nav.h).
+    app::LastChannelWatch last_channel_watch{state.tuned_channel, state.last_channel_id};
 
     // Initialize settings menu
     ui::SettingsMenuManager settings_menu(&state);
@@ -1008,6 +1040,24 @@ int main(int /* argc */, char* /* argv */[]) {
     // frame in guide style (app/auto_tune.h). Kept across frames so the
     // vectors reuse their storage.
     app::AutoTuneInput auto_tune;
+
+    // The Channel Guide as painted this frame (ui/channel_guide_view.h),
+    // laid out in the drawing block and handed to the renderer by pointer
+    // (Renderer::set_channel_guide); lives across frames so the pointer is
+    // always to a live view.
+    ui::GuideView guide_view;
+    // The guide prints local time = UTC + utc_offset_s. The offset comes
+    // from localtime_r (no file I/O once tzset() has run) and is recomputed
+    // at most once a UTC minute — a zone's offset only changes on a minute
+    // boundary — or after the timezone_reload_request poke's tzset().
+    int utc_offset_s = 0;
+    int64_t utc_offset_minute = std::numeric_limits<int64_t>::min();
+    auto local_utc_offset = [](double now_utc) {
+        const std::time_t t = static_cast<std::time_t>(std::floor(now_utc));
+        std::tm local{};
+        if (localtime_r(&t, &local) == nullptr) return 0;
+        return static_cast<int>(local.tm_gmtoff);
+    };
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -1516,7 +1566,12 @@ int main(int /* argc */, char* /* argv */[]) {
                     break;
             }
         }
-        
+
+        // Settings → Display → Menu Style may have flipped the style in the
+        // dispatch above: rebuild the channels for it (List: none) before
+        // anything below reads guide_style(). An enum compare per frame.
+        sync_menu_style();
+
         // Update player state (polls GStreamer pipeline state)
         player.update_state();
 
@@ -1631,6 +1686,15 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
 
+        // The channel last watched: a tune's load (in the ticks above) sets
+        // last_channel_id; saved when it changed — the id is compared only on
+        // a frame tuned_channel moved (app::LastChannelWatch). The save is
+        // serialized here and written on the settings writer's own thread
+        // (settings_persistence.h), so this loop does no file I/O for it.
+        if (last_channel_watch.changed(state)) {
+            app::SettingsPersistence::save_settings(state);
+        }
+
         // Update fade animation (UI only - no audio changes)
         if (state.is_fading && state.video_active) {
             auto now = std::chrono::steady_clock::now();
@@ -1696,6 +1760,33 @@ int main(int /* argc */, char* /* argv */[]) {
                                               state.playlist_max_visible,
                                               app::picture_focus_may_stay(picture)));
             }
+        }
+
+        // Channel Guide painting, decided once per frame after the input,
+        // the loads and guide_frame (app/guide_nav.h). guide_painted: the
+        // renderer paints the guide (on screen, or a Close's fade-out) —
+        // even in a tune's load gap, where the List draws nothing.
+        // guide_window: the tuned video goes in the guide's window instead
+        // of the whole picture (on screen only: a fade-out shows the video
+        // full-screen under the fading guide). The guide shows a pending
+        // tune as tuned, so channel up/down looks instant. Local time is
+        // UTC + utc_offset_s, the offset refreshed at most once a minute.
+        // No allocation, no file I/O.
+        const bool guide_style_now = playlist_playback.guide_style();
+        const bool guide_painted_now = guide_style_now && app::guide_painted(state);
+        const bool guide_window_now = guide_style_now && app::guide_window_video(state);
+        const int guide_tuned = playlist_playback.pending_tune().value_or(state.tuned_channel);
+        double guide_now_utc = 0.0;
+        int64_t guide_local_minute = 0;
+        if (guide_painted_now) {
+            guide_now_utc = playlist_transport.wall_now_utc();
+            const auto utc_minute = static_cast<int64_t>(std::floor(guide_now_utc / 60.0));
+            if (utc_minute != utc_offset_minute) {
+                utc_offset_s = local_utc_offset(guide_now_utc);
+                utc_offset_minute = utc_minute;
+            }
+            guide_local_minute =
+                static_cast<int64_t>(std::floor((guide_now_utc + utc_offset_s) / 60.0));
         }
 
         // Render video (if playing or loading)
@@ -1819,6 +1910,21 @@ int main(int /* argc */, char* /* argv */[]) {
             sig.add(static_cast<uint64_t>(state.guide_cursor.row));
             sig.add(static_cast<uint64_t>(state.guide_cursor.scroll));
             sig.add(static_cast<uint64_t>(state.guide_cursor.on_picture));
+            // The guide on screen and what it draws with no input: the tuned
+            // channel (a pending tune first), the clock (local minute — a
+            // time-zone poke moves it with no UTC change), the progress bar,
+            // the now line and the "joins at m:ss" note (the UTC second: at
+            // most one redraw a second, and only while the guide is
+            // painted), a channel rebuild, the Picture control appearing.
+            sig.add(static_cast<uint64_t>(guide_painted_now));
+            sig.add(static_cast<uint64_t>(guide_window_now));
+            if (guide_painted_now) {
+                sig.add(static_cast<uint64_t>(static_cast<int64_t>(guide_tuned)));
+                sig.add(static_cast<uint64_t>(guide_local_minute));
+                sig.add(static_cast<uint64_t>(static_cast<int64_t>(std::floor(guide_now_utc))));
+                sig.add(channels_generation);
+                sig.add(static_cast<uint64_t>(state.picture_control_available));
+            }
             sig.add(static_cast<uint64_t>(state.playlists.size()));
             sig.add(static_cast<uint64_t>(state.current_playlist_index));
             sig.add(static_cast<uint64_t>(state.current_item_index));
@@ -1914,17 +2020,39 @@ int main(int /* argc */, char* /* argv */[]) {
         // the closing brace is marked.
         if (draw_this_frame) {
 
+        // The Channel Guide for this frame, laid out from memory only
+        // (ui::layout_channel_guide: the channel list, the playlists, the
+        // clock) and handed to the renderer below; nullptr = not painted.
+        const ui::GuideView* guide_frame_view = nullptr;
+        if (guide_painted_now) {
+            ui::GuideViewInput guide_in;
+            guide_in.crt = state.display_settings.mode == app::DisplayMode::CRT_NATIVE;
+            guide_in.channels = &channels;
+            guide_in.playlists = &state.playlists;
+            guide_in.tuned = guide_tuned;
+            guide_in.cursor = state.guide_cursor;
+            guide_in.picture_available = state.picture_control_available;
+            guide_in.picture_crop = state.picture_crop;
+            guide_in.now_utc = guide_now_utc;
+            guide_in.utc_offset_s = utc_offset_s;
+            guide_view = ui::layout_channel_guide(guide_in);
+            guide_frame_view = &guide_view;
+        }
+
         // Clear screen in these cases:
         // 1. Intro video not ready yet
         // 2. No video should be rendered (after intro completes, during UI)
         // 3. During intro fade-out
         // 4. After intro completes (ensure clean background)
         // 5. When showing UI (ensure clean background)
+        // 6. The video in the Channel Guide's window: it draws only that
+        //    rect, so nothing of a full-screen frame may linger around it
         if ((state.showing_intro_video && !state.intro_ready) ||
             (!should_render_video && !state.video_active) ||
             state.intro_fading_out ||
             state.intro_complete ||
-            (!state.showing_intro_video && !state.video_active)) {
+            (!state.showing_intro_video && !state.video_active) ||
+            guide_window_now) {
             glViewport(0, 0, mode.width, mode.height);
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
@@ -2069,7 +2197,20 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
                 const bool crop = video::picture_crop(
                     media_info.crop_for(picture_key), picture_aspect);
-                gst_renderer.set_picture(content, crop, opening);
+                // Channel Guide on screen: the same picture, crop setting
+                // and all, inside the guide's 4:3 video window — the view's
+                // window on the logical canvas mapped to framebuffer px
+                // (ui::guide_rect_to_fb; non-uniform in CRT Native). No
+                // bezel opening inside the window: fit uses the window.
+                video::IRect picture_target = content;
+                if (guide_window_now && guide_frame_view != nullptr) {
+                    const ui::GuideRect w = ui::guide_rect_to_fb(
+                        guide_frame_view->window, logical_content.w, logical_content.h,
+                        ui::GuideRect{content.x, content.y, content.w, content.h});
+                    picture_target = video::IRect{w.x, w.y, w.w, w.h};
+                    opening = picture_target;
+                }
+                gst_renderer.set_picture(picture_target, crop, opening);
             } else {
                 gst_renderer.clear_picture();
             }
@@ -2166,6 +2307,9 @@ int main(int /* argc */, char* /* argv */[]) {
                 // physical rect) here would shrink the whole main menu.
                 ui_renderer.set_content_viewport(logical_content.w, logical_content.h);
             }
+            // Channel Guide style: render() paints this view in place of the
+            // list (nullptr: no guide this frame).
+            ui_renderer.set_channel_guide(guide_frame_view);
 #ifdef MEDIA_BROWSER_ENABLED
             // Skip main kiosk UI when the Media Browser screen is active;
             // the placeholder (drawn below) replaces it. This avoids
@@ -2318,8 +2462,13 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // Per-video media info: adopt whatever the store's worker read or
         // wrote since the last frame. No file I/O and no file lock here —
-        // it only swaps in a finished result (app/media_info.h).
-        (void)media_info.poll();
+        // it only swaps in a finished result (app/media_info.h). A changed
+        // map can bring video lengths (the first read after boot, a new
+        // upload, the back-fill): in Channel Guide style the channels are
+        // rebuilt from it — the boot build had only trimmed items' lengths.
+        if (media_info.poll() && playlist_playback.guide_style()) {
+            rebuild_channels();
+        }
 
         // Web-admin settings restore poke. The restore endpoint replaces
         // settings.json on disk and then writes this marker — without the
@@ -2349,6 +2498,12 @@ int main(int /* argc */, char* /* argv */[]) {
                     // the air must not land on top of the restored file
                     // after this load (see settings_persistence.h).
                     app::SettingsPersistence::reload_from_disk(state);
+                    // A restored Menu Style rebuilds the channels for it
+                    // (List: none). The restored last channel is what the
+                    // file now holds: a later tune is saved when it differs
+                    // from that.
+                    sync_menu_style();
+                    last_channel_watch.saved_id = state.last_channel_id;
                     // Same per-board reconcile the boot path runs (e.g. a
                     // Pi 4 backup restored onto a Pi 5 saying "headphone").
                     state.audio_settings.sanitize_for_platform(
@@ -2365,6 +2520,30 @@ int main(int /* argc */, char* /* argv */[]) {
                         ui::Toast::show("Settings restored");
                     }
                     LOG_INFO("Settings reloaded from disk (web-admin restore poke)");
+                }
+            }
+        }
+
+        // Web-admin time zone poke. The Content Manager sets the box's zone
+        // with timedatectl (it rewrites /etc/localtime) and then writes this
+        // marker; glibc's localtime_r never re-reads a changed
+        // /etc/localtime by itself, so tzset() does (TZ was dropped at
+        // start-up, so the file decides). Same ~1/s exists + remove as the
+        // settings poke above, and the same accepted cost: one unlink and
+        // one zoneinfo read per web-admin action, never per tick. The guide
+        // recomputes its UTC offset on the next frame it paints.
+        {
+            static int timezone_reload_check = 0;
+            if (++timezone_reload_check >= 60) {
+                timezone_reload_check = 0;
+                const std::string tz_marker =
+                    config::get_data_path() + "/timezone_reload_request";
+                if (fs::exists(tz_marker)) {
+                    std::error_code rm_ec;
+                    fs::remove(tz_marker, rm_ec);
+                    tzset();
+                    utc_offset_minute = std::numeric_limits<int64_t>::min();
+                    LOG_INFO("Time zone reloaded (web-admin poke)");
                 }
             }
         }
@@ -2471,6 +2650,15 @@ int main(int /* argc */, char* /* argv */[]) {
                                         state.platform_profile)),
                                 reload_snap,
                                 [&controller]() { controller.stop(); });
+
+                            // Channel Guide: the channels are the rows just
+                            // replaced — rebuilt in the same step, so no
+                            // tune or boundary ever reads the old list
+                            // against the new playlists (set_channels
+                            // re-finds the tuned channel by identity).
+                            if (playlist_playback.guide_style()) {
+                                rebuild_channels();
+                            }
 
                             // ── Settings game browser ────────────────────
                             if (settings_menu.is_game_browser_active()) {

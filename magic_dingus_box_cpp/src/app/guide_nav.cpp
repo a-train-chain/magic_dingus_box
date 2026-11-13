@@ -99,6 +99,29 @@ bool guide_visible(const AppState& s) {
     return s.ui_visible_when_playing || (!s.video_active && !has_playing_indexes(s));
 }
 
+bool guide_window_video(const AppState& s) {
+    return !s.showing_intro_video && guide_visible(s);
+}
+
+bool guide_painted(const AppState& s) {
+    if (s.showing_intro_video) return false;
+    if (guide_visible(s)) return true;
+#ifdef MEDIA_BROWSER_ENABLED
+    if (s.current_screen == AppScreen::MediaBrowser) return false;
+#endif
+    // A Close's fade-out (guide_input): the overlay is hidden, the alpha
+    // still falling.
+    return s.is_fading && !s.fade_target_ui_visible;
+}
+
+bool LastChannelWatch::changed(const AppState& s) {
+    if (s.tuned_channel == seen_tuned) return false;
+    seen_tuned = s.tuned_channel;
+    if (s.last_channel_id == saved_id) return false;
+    saved_id = s.last_channel_id;
+    return true;
+}
+
 GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts& f) {
     GuideCommand cmd;
     switch (e) {
