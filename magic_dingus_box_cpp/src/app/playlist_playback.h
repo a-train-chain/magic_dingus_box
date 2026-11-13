@@ -241,9 +241,10 @@ public:
     // (app::join_point, the boundary's load — no switch, no sleep, no failure
     // counted) instead of play(): seen on a Pi 5, a join's seek left the
     // pipeline on its keyframe while it reported playing, and three play()s
-    // 8 s apart never moved it. If the reload's own stream stalls before it
-    // has played kChannelPlaysS, that is a failed item through the policy
-    // (the slot's wait, or a give-up); a stall after that is a new one.
+    // 8 s apart never moved it. One free reload per airing: any later stall
+    // on the same airing (however long it played in between) is a failed
+    // item through the policy (the slot's wait, or a give-up); a stall on
+    // another airing gets its own reload.
     // Every stall line logs the pipeline's state (pipeline_state()).
     void tick_stall_watchdog(double now_sec);
 
@@ -345,6 +346,13 @@ private:
         LoadedAiring airing;
     };
     std::optional<ChannelAiring> loaded_airing_;
+    // The airing a stall last reloaded (on_channel_stall): ONE free reload
+    // per airing. Any later stall on it — right after the reload or minutes
+    // into it, after a re-tune too — is a failed item; another airing gets
+    // its own. Not reset by a load (load_on_air resets channel_progress_ at
+    // every boundary, which on a one-item channel would make every freeze
+    // the first); only List style drops it.
+    std::optional<ChannelAiring> stall_reloaded_;
     // How far the playing channel load has got. A mid-item join starts far
     // past the failure policy's "healthy" mark (3 s) and kChannelPlaysS, so
     // on a channel both count from `anchor`: the FIRST position the stream
@@ -356,9 +364,6 @@ private:
         bool loaded = false;           // the playing stream is a channel load
         std::optional<double> anchor;  // first position once playing
         bool proven = false;           // prove_channel() has run for it
-        // The load was a stall's reload (reload_stalled_channel): a stall of
-        // this stream before it is proven counts as a failed item.
-        bool stall_reload = false;
     };
     ChannelProgress channel_progress_;
     // A channel load (a tune's or a boundary's) returned OK at this time
@@ -385,8 +390,8 @@ private:
     // The stalled stream is a channel load whose channel is still tuned and
     // scheduled: a stall there is the channel's (tick_stall_watchdog).
     bool stall_is_channels() const;
-    // A channel's stall: reload it at its live point, or — the reload's own
-    // stream stalled before it was proven — count a failed item.
+    // A channel's stall: reload it at its live point, or — this airing was
+    // stall-reloaded already (stall_reloaded_) — count a failed item.
     // `pipeline_note` is the log line's pipeline state.
     void on_channel_stall(const std::string& pipeline_note);
 

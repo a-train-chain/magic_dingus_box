@@ -2476,6 +2476,19 @@ void reload_up_and_frozen(Guide& g) {
     g.s.update_playback_state(g.t.last_offset(), 200.0);
 }
 
+// `frames` x 100 ms of real progress: the player's and the state's position
+// move with the clock.
+void play_for(Guide& g, int frames) {
+    double pos = g.s.get_position();
+    const double dur = g.s.get_duration();
+    for (int i = 0; i < frames; ++i) {
+        pos += 0.1;
+        g.t.position = pos;
+        g.s.update_playback_state(pos, dur);
+        stall_frames(g, std::chrono::milliseconds(100));
+    }
+}
+
 int count_calls(const FakeTransport& t, const std::string& call) {
     return static_cast<int>(std::count(t.calls.begin(), t.calls.end(), call));
 }
@@ -2520,32 +2533,53 @@ TEST_CASE("a frozen channel is reloaded at its live point once, without a failur
         CHECK(err.count("stalled again") == 1);
         CHECK(err.count("PAUSED -> PLAYING (ASYNC)") == 2);
     }
-    SECTION("the reload plays: a later freeze is a new one, reloaded again") {
+    SECTION("the reload plays 10 s, then freezes on the same airing: a failed item") {
+        // A file that freezes every ~10 s must not reload for its whole slot
+        // (each reload a visible re-join and a load_item_media block): one
+        // free reload per airing, whatever played in between.
         reload_up_and_frozen(g);
-        double pos = g.t.last_offset();
-        g.t.position = pos;
-        for (int i = 0; i < 60; ++i) {  // 6 s of real progress
-            pos += 0.1;
-            g.t.position = pos;
-            g.s.update_playback_state(pos, 200.0);
-            stall_frames(g, milliseconds(100));
-        }
+        play_for(g, 100);  // 10 s of real progress
         CHECK(g.t.calls.size() == 1);
         stall_frames(g, milliseconds(3200));  // frozen again
-        CHECK(g.t.calls == std::vector<std::string>{"load_at Cartoons 1", "load_at Cartoons 1"});
-        CHECK(g.s.guide_wait_until_utc == 0.0);
-        CHECK(err.count("stalled again") == 0);
+        CHECK(g.t.calls == std::vector<std::string>{"load_at Cartoons 1", "stop"});
+        CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
+        CHECK(err.count("stalled again") == 1);
     }
-    SECTION("a tune to the channel starts afresh") {
+    SECTION("the next airing freezes: its own free reload, then a failure") {
+        reload_up_and_frozen(g);
+        play_for(g, 30);
+        // b plays to its end: the boundary loads c (kW0+300 to +600).
+        g.s.update_playback_state(199.6, 200.0);
+        g.t.wall = kW0 + 300.4;
+        g.pb.tick_auto_advance();
+        REQUIRE(g.t.last() == "load_at Cartoons 2");
+        g.t.generation += 1;
+        g.playing();
+        g.s.update_playback_state(g.t.last_offset(), 300.0);
+        stall_frames(g, milliseconds(3200));
+        CHECK(g.t.calls == std::vector<std::string>{"load_at Cartoons 1", "load_at Cartoons 2",
+                                                    "load_at Cartoons 2"});
+        CHECK(err.count("reloading channel 1 at its live point") == 2);
+        CHECK(err.count("stalled again") == 0);
+        reload_up_and_frozen(g);
+        g.s.update_playback_state(g.t.last_offset(), 300.0);
+        stall_frames(g, milliseconds(3200));
+        CHECK(g.t.last() == "stop");
+        CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 600).epsilon(0).margin(1e-6));
+        CHECK(err.count("stalled again") == 1);
+    }
+    SECTION("a re-tune inside the same airing gets no second free reload") {
         reload_up_and_frozen(g);
         g.t.playing_default = false;
         g.pb.tune(1, false);
         run_frames(g.pb, g.t, kSettled);
+        REQUIRE(g.t.last() == "load_at Cartoons 1");
         g.t.playing_default = true;
         reload_up_and_frozen(g);
         stall_frames(g, milliseconds(3200));
-        CHECK(count_calls(g.t, "load_at Cartoons 1") == 3);  // reload, tune, reload
-        CHECK(err.count("stalled again") == 0);
+        CHECK(g.t.last() == "stop");
+        CHECK(count_calls(g.t, "load_at Cartoons 1") == 2);  // the reload, the tune
+        CHECK(err.count("stalled again") == 1);
     }
     CHECK(count_calls(g.t, "play") == 0);
 }

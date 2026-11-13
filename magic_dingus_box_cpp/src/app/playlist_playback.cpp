@@ -5,11 +5,25 @@
 #include "playlist_reload.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <optional>
 #include <utility>
 
 namespace app {
+
+namespace {
+
+// The same airing of a channel's schedule: the same slot (index), still
+// holding the same item, starting at the same time — half a second of
+// slack for the rounding between two on_air() calls, as boundary_join
+// allows (airings are >= kMinScheduledItemS apart).
+bool same_airing(const LoadedAiring& a, const LoadedAiring& b) {
+    return a.index == b.index && a.item.playlist == b.item.playlist &&
+           a.item.item == b.item.item && std::fabs(a.starts_at - b.starts_at) <= 0.5;
+}
+
+}  // namespace
 
 PlaylistPlayback::PlaylistPlayback(AppState& state, PlaylistTransport& transport,
                                    const std::string& playlist_directory)
@@ -357,6 +371,7 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         channel_progress_ = {};
         channel_load_at_.reset();
         loaded_airing_.reset();
+        stall_reloaded_.reset();
         return;
     }
     // Given-up rows stay until a channel proves it plays; only rows the new
@@ -956,13 +971,15 @@ bool PlaylistPlayback::stall_is_channels() const {
 
 void PlaylistPlayback::on_channel_stall(const std::string& pipeline_note) {
     const int channel = state_.tuned_channel;
-    if (channel_progress_.stall_reload && !channel_progress_.proven) {
-        // The reload did not help: its own stream froze before it played
-        // kChannelPlaysS. A failed item, like any other — the channel waits
-        // for the slot's end, or is given up.
+    const bool airing_known = loaded_airing_ && loaded_airing_->channel == channel;
+    if (airing_known && stall_reloaded_ && stall_reloaded_->channel == channel &&
+        same_airing(stall_reloaded_->airing, loaded_airing_->airing)) {
+        // This airing had its free reload: a failed item, like any other —
+        // the channel waits for the slot's end, or is given up. Bounded the
+        // way the List's kMaxRecoveriesBeforeAdvance bounds play().
         std::cerr << "Channel " << channel << " stalled again at "
-                  << state_.get_position() << "s after its reload" << pipeline_note
-                  << " — counting a failed item" << std::endl;
+                  << state_.get_position() << "s on the airing it was reloaded for"
+                  << pipeline_note << " — counting a failed item" << std::endl;
         act_on_failed_item(
             error_policy_.on_failure(transport_.stream_generation(), failure_budget()),
             "stalled");
@@ -973,15 +990,16 @@ void PlaylistPlayback::on_channel_stall(const std::string& pipeline_note) {
     std::cerr << "Playback stalled at " << state_.get_position()
               << "s while reported playing" << pipeline_note << " — reloading channel "
               << channel << " at its live point" << std::endl;
+    // The airing that froze has had its free reload (a stall reload from its
+    // last ~2 s joins the next airing, which keeps one of its own).
+    if (airing_known) stall_reloaded_ = loaded_airing_;
     // A fresh join, as a tune's is: the once-per-item guard re-armed.
     state_.last_advanced_item_index = -1;
     state_.last_advanced_duration = 0.0;
     // The boundary's load (no stop/settle of its own: load_item_media stops
     // and settles the old pipeline itself), so the start bound watches it
     // (kChannelStartTimeout) and the overlay stays as it is.
-    if (load_on_air(channel, *oa, /*keep_overlay=*/true)) {
-        channel_progress_.stall_reload = true;
-    }
+    load_on_air(channel, *oa, /*keep_overlay=*/true);
 }
 
 }  // namespace app
