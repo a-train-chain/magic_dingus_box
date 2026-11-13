@@ -129,3 +129,13 @@ def test_toggle_calls_apiRequest_with_path_and_crop():
     assert call["opts"]["method"] == "POST"
     assert json.loads(call["opts"]["body"]) == {
         "path": "data/media/a.mp4", "crop": False}
+
+
+@pytest.mark.parametrize("aspect", [None, 1.3333])
+def test_a_fitted_video_always_shows_its_checkbox(aspect):
+    # A crop: false the box holds (a kiosk toggle on a video the back-fill
+    # has not reached yet, an unprobeable "Show everything" upload) must
+    # always be undoable from the Content Manager.
+    out = _run([_v("a.mp4", aspect, crop=False)])
+    assert "video-crop" in out["html"]
+    assert '<input type="checkbox" checked' not in out["html"]

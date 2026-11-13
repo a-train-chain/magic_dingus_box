@@ -25,6 +25,11 @@ def _isolated_job_state_dir(tmp_path, monkeypatch):
     the OTA's own rsync --delete cannot erase them; point each test at its
     own scratch dir instead so nothing leaks between tests or into /tmp."""
     monkeypatch.setenv("MAGIC_JOB_STATE_DIR", str(tmp_path / "mdb_jobs"))
+    # create_app() would otherwise start the media back-fill thread, which
+    # probes the test's media dir and writes media_info.json behind the
+    # test's back. test_media_backfill.py drives run_backfill directly and
+    # turns this back on where it checks create_app starts it.
+    monkeypatch.setenv("MAGIC_MEDIA_BACKFILL", "0")
 
 
 @pytest.fixture

@@ -34,9 +34,11 @@ from flask import Flask
 # remote/* imports below use.
 try:  # noqa: E402
     from detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
+    import media_backfill
     import vpn_settings
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
+    from . import media_backfill
     from . import vpn_settings
 
 try:
@@ -476,6 +478,17 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if _part_bytes:
             print(f"[media] swept {_part_bytes / (1024 * 1024):.1f} MB of "
                   "interrupted transcode staging (.part) files", flush=True)
+
+    # Back-fill every video's length and shape into media_info.json, once per
+    # process: videos already on the box before the store existed have none,
+    # so the Content Manager would offer them no Crop checkbox
+    # (media_backfill: one nice-10 daemon thread, one probe at a time, waiting
+    # while a game or movie has the services paused). After the .part sweep
+    # so it never probes a dead encode. MAGIC_MEDIA_BACKFILL=0 turns it off
+    # (the test suite does; its tests call run_backfill directly).
+    if os.environ.get("MAGIC_MEDIA_BACKFILL", "1") != "0":
+        media_backfill.start_backfill_thread(
+            data_dir, poke=lambda: _poke_kiosk_reload("media_info"))
 
     ctx._poke_kiosk_reload = _poke_kiosk_reload
     ctx.device_info_file = device_info_file
