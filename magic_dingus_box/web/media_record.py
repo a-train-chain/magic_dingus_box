@@ -35,9 +35,12 @@ def record_media_info(data_dir: Path, published: Path,
     """Probe `published` and write its length and displayed aspect to the
     store. Never raises: the video is already on disk, and a failed write of
     this best-effort store must not fail the upload/import (the kiosk then
-    plays it cropped, the default). A file the probe cannot read gets nothing
-    written. Returns True when the store was written; `poke` (when given) is
-    called once after a successful write.
+    plays it cropped, the default). A file the probe cannot read gets no
+    length or shape; only an explicit "not cropped" choice (below) is still
+    written for it — its shape is not known to be 4:3, the kiosk learns it
+    from the stream, and the Content Manager shows the checkbox for any
+    crop: false. Returns True when the store was written; `poke` (when
+    given) is called once after a successful write.
 
     `fit_mode` is an upload's Framing choice and sets the video's starting
     Crop: 'fit' writes crop: false; 'crop' clears it (absent = cropped —
@@ -52,20 +55,28 @@ def record_media_info(data_dir: Path, published: Path,
     choice is cleared instead, like 'crop'."""
     try:
         key = media_info.media_key(published, data_dir)
-        probe = media_probe.probe_source(published) if key else None
-        if probe is None:
+        if not key:
             print(f"[media] no media info recorded for {published.name}: "
-                  + ("could not probe it" if key else
-                     "outside the data directory"), file=sys.stderr)
+                  "outside the data directory", file=sys.stderr)
             return False
-        aspect = probe['display_aspect']
-        fields = {'duration_s': probe['duration_s'],
-                  'display_aspect': aspect}
         uncropped = (fit_mode == 'fit') if fit_mode is not None else (crop is False)
-        if uncropped:
-            fields['crop'] = None if is_four_by_three(aspect) else False
-        elif fit_mode is not None:
-            fields['crop'] = None
+        probe = media_probe.probe_source(published)
+        if probe is None:
+            if not uncropped:
+                print(f"[media] no media info recorded for {published.name}: "
+                      "could not probe it", file=sys.stderr)
+                return False
+            print(f"[media] could not probe {published.name}: recording only "
+                  "its Crop choice (off)", file=sys.stderr)
+            fields = {'crop': False}
+        else:
+            aspect = probe['display_aspect']
+            fields = {'duration_s': probe['duration_s'],
+                      'display_aspect': aspect}
+            if uncropped:
+                fields['crop'] = None if is_four_by_three(aspect) else False
+            elif fit_mode is not None:
+                fields['crop'] = None
         media_info.update(data_dir, key, **fields)
     except Exception as e:
         print(f"[media] could not record media info for "

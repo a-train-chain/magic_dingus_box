@@ -84,3 +84,49 @@ def test_a_packages_crop_false_on_a_wide_video_is_stored(tmp_path, monkeypatch):
 ])
 def test_is_four_by_three_matches_the_kiosk(aspect, expected):
     assert is_four_by_three(aspect) is expected
+
+
+# ---------------------------------------------------------------------------
+# A published file the probe cannot read. Its length and shape are unknown,
+# but a "Show everything" choice is still the owner's: it is recorded, so the
+# kiosk (which can learn the shape from the stream) and the Content Manager
+# (which shows the checkbox for any crop: false) honour it and can undo it.
+# ---------------------------------------------------------------------------
+
+def test_unprobeable_show_everything_still_records_the_choice(tmp_path,
+                                                              monkeypatch):
+    f = _video(tmp_path)
+    _probe(monkeypatch, None)
+    pokes = []
+    assert record_media_info(tmp_path, f, fit_mode="fit",
+                             poke=lambda: pokes.append(1)) is True
+    assert media_info.load(tmp_path) == {"media/a.mp4": {"crop": False}}
+    assert pokes == [1]
+
+
+def test_unprobeable_packaged_crop_false_is_recorded(tmp_path, monkeypatch):
+    f = _video(tmp_path)
+    _probe(monkeypatch, None)
+    assert record_media_info(tmp_path, f, crop=False) is True
+    assert media_info.load(tmp_path) == {"media/a.mp4": {"crop": False}}
+
+
+@pytest.mark.parametrize("kwargs", [{"fit_mode": "crop"}, {}, {"crop": None}])
+def test_unprobeable_without_a_fit_choice_writes_nothing(tmp_path, monkeypatch,
+                                                         kwargs):
+    f = _video(tmp_path)
+    _probe(monkeypatch, None)
+    pokes = []
+    assert record_media_info(tmp_path, f, poke=lambda: pokes.append(1),
+                             **kwargs) is False
+    assert not (tmp_path / media_info.FILE_NAME).exists()
+    assert pokes == []
+
+
+def test_outside_the_data_dir_writes_nothing_even_for_fit(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    f = _video(tmp_path / "elsewhere")
+    _probe(monkeypatch, 1.7778)
+    assert record_media_info(data, f, fit_mode="fit") is False
+    assert not (data / media_info.FILE_NAME).exists()

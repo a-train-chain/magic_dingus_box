@@ -446,3 +446,20 @@ def test_a_store_write_failure_never_fails_the_upload(
         assert _run_job(client)["status"] == "complete"
     assert (temp_data_dir / "media" / "clip.mp4").exists()
     assert not _marker(temp_data_dir).exists(), "no poke without a write"
+
+
+def test_unreadable_show_everything_upload_still_records_crop_false(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch):
+    # The owner's explicit choice survives a probe failure (the stub fails
+    # for the published master too); the shape is not known to be 4:3.
+    monkeypatch.setenv("FFPROBE_STUB_MODE", "fail")
+    resp = client.post(
+        "/admin/upload-and-transcode",
+        data={"file": (io.BytesIO(b"raw-upload"), "clip.mov"),
+              "fit_mode": "fit"},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    status = _wait_all(client, [resp.get_json()["data"]["job_id"]])
+    assert list(status.values())[0]["status"] == "complete"
+    assert media_info.load(temp_data_dir) == {"media/clip.mp4": {"crop": False}}
+    assert _marker(temp_data_dir).exists()
