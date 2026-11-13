@@ -45,6 +45,7 @@
 #include "app/game_handoff_kiosk.h"
 #include "app/intro_sequence.h"
 #include "app/intro_sequence_kiosk.h"
+#include "app/media_info.h"
 #include "app/settings_input.h"
 #include "app/movie_quiet_mode.h"
 #include "app/playlist_loader.h"
@@ -68,7 +69,6 @@
 #include "utils/logger.h"
 #include "ui/virtual_keyboard.h"
 
-#include <json/json.h>
 #include <iostream>
 #include <memory>
 #include <chrono>
@@ -520,6 +520,15 @@ int main(int /* argc */, char* /* argv */[]) {
     auto last_status_write = std::chrono::steady_clock::now();
     constexpr auto STATUS_PERIOD = std::chrono::milliseconds(200); // 5 Hz
 
+    // Per-video media info (app/media_info.h): each playlist video's crop
+    // setting, length and display aspect, shared with the web admin. The
+    // file is read and written on the store's own worker thread (under the
+    // web admin's file lock); the loop only polls it, once per frame, and
+    // its answers are in memory. Until the first read lands every video is
+    // cropped — the same as a box without the file.
+    app::MediaInfoStore media_info(config::get_data_path() + "/media_info.json");
+    media_info.request_reload();
+
     // Phone Remote: clear any stale pairing session left from a crashed
     // previous run. Flask only trusts a session that's been freshly issued
     // from the open pairing screen, so wiping it on boot prevents a leaked
@@ -555,8 +564,12 @@ int main(int /* argc */, char* /* argv */[]) {
         if (!bezel_file.good()) continue;
         std::ostringstream bezel_text;
         bezel_text << bezel_file.rdbuf();
+        std::vector<std::string> bezel_problems;
         std::vector<app::BezelInfo> bezels =
-            app::parse_bezel_catalog(bezel_text.str());
+            app::parse_bezel_catalog(bezel_text.str(), &bezel_problems);
+        for (const auto& problem : bezel_problems) {
+            LOG_WARN("{}: {}", bezel_path, problem);
+        }
         if (bezels.empty()) {
             std::cerr << "No bezels parsed from " << bezel_path << std::endl;
             continue;
@@ -1798,7 +1811,10 @@ int main(int /* argc */, char* /* argv */[]) {
         // their existing draw order and are unaffected by CRT effects.
         bool scene_fbo_used = ui_renderer.begin_scene_fbo(state);
 
-        // Render video: it draws only its own rect (in Modern TV the 4:3 area, never the whole framebuffer), so the bars stay as the clear above left them.
+        // Render video. It draws only its own rect (in Modern TV the 4:3
+        // area, never the whole framebuffer), so the bars are whatever the
+        // clear above left there — and that clear runs on every frame once
+        // the intro is complete.
         // This handles both intro video and regular video playback
         if (should_render_video) {
             // Playlist and intro video draw through the picture placement
@@ -1823,8 +1839,11 @@ int main(int /* argc */, char* /* argv */[]) {
                                      drawn_bezel->opening_w, drawn_bezel->opening_h},
                         app::kBezelImageWidth, app::kBezelImageHeight, fb_w, fb_h);
                 }
-                // Crop until the per-video setting exists.
-                const bool crop = true;
+                // The playing video's own setting (app/media_info.h):
+                // cropped unless the operator chose to see it whole. The
+                // intro, and anything without a key, is cropped.
+                const bool crop =
+                    media_info.crop_for(controller.current_media_key());
                 gst_renderer.set_picture(content, crop, opening);
             } else {
                 gst_renderer.clear_picture();
@@ -2072,6 +2091,11 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
         controller.poll_text_input_queue(state);
 
+        // Per-video media info: adopt whatever the store's worker read or
+        // wrote since the last frame. No file I/O and no file lock here —
+        // it only swaps in a finished result (app/media_info.h).
+        (void)media_info.poll();
+
         // Web-admin settings restore poke. The restore endpoint replaces
         // settings.json on disk and then writes this marker — without the
         // reload, the running kiosk's next operator-action save would
@@ -2079,10 +2103,10 @@ int main(int /* argc */, char* /* argv */[]) {
         // Checked ~once a second (restore is rare; no need to stat every
         // frame like the seek queue).
         //
-        // The marker unlinks here and in the playlist poke below are file
-        // writes on this loop, left in place deliberately (reviewed
-        // 2026-11): one per web-admin action, never per tick, and the
-        // marker must be gone before the next poll or the reload repeats.
+        // The marker unlinks here and in the media-info and playlist pokes
+        // below are file writes on this loop, left in place deliberately
+        // (reviewed 2026-11): one per web-admin action, never per tick, and
+        // the marker must be gone before the next poll or the reload repeats.
         {
             static int settings_reload_check = 0;
             if (++settings_reload_check >= 60) {
@@ -2114,6 +2138,28 @@ int main(int /* argc */, char* /* argv */[]) {
                         ui::Toast::show("Settings restored");
                     }
                     LOG_INFO("Settings reloaded from disk (web-admin restore poke)");
+                }
+            }
+        }
+
+        // Web-admin media info poke. The Content Manager writes this marker
+        // after it changes media_info.json (a video's crop setting, a new
+        // upload's length and aspect, a restore). Same protocol as the
+        // settings poke above — poll ~1 Hz, delete the marker, reload — but
+        // the reload itself is only queued: the store's worker reads the
+        // file and the per-frame poll() above adopts it, keeping any crop
+        // change made here that has not reached the disk yet.
+        {
+            static int media_info_reload_check = 0;
+            if (++media_info_reload_check >= 60) {
+                media_info_reload_check = 0;
+                const std::string media_info_marker =
+                    config::get_data_path() + "/media_info_reload_request";
+                if (fs::exists(media_info_marker)) {
+                    std::error_code rm_ec;
+                    fs::remove(media_info_marker, rm_ec);
+                    media_info.request_reload();
+                    LOG_INFO("Media info reload queued (web-admin poke)");
                 }
             }
         }
@@ -2441,16 +2487,16 @@ int main(int /* argc */, char* /* argv */[]) {
     gbm.cleanup();
     display.cleanup();
 
-    // Settings and watch history are written by background threads (the
-    // render loop must never wait on the SD card — WatchdogSec=10), and
-    // the _exit() below skips the destructors that would otherwise drain
-    // them. Wait here for whatever is still queued: normally nothing, or a
-    // write that finishes in milliseconds. Bounded, with ONE 3 s deadline
-    // for both, so a wedged card costs at most 3 s of TimeoutStopSec
-    // (20 s) next to the waits below (10 s + 3 s) and a mid-game stop's
-    // 5 s. If it runs out, the previous settings.json (the save is tmp +
-    // rename) and the last 30 s watch checkpoint are what remain — say so,
-    // while the log is still open.
+    // Settings, per-video crop settings and watch history are written by
+    // background threads (the render loop must never wait on the SD card —
+    // WatchdogSec=10), and the _exit() below skips the destructors that
+    // would otherwise drain them. Wait here for whatever is still queued:
+    // normally nothing, or a write that finishes in milliseconds. Bounded,
+    // with ONE 3 s deadline for all of them, so a wedged card costs at most
+    // 3 s of TimeoutStopSec (20 s) next to the waits below (10 s + 3 s) and
+    // a mid-game stop's 5 s. If it runs out, the previous settings.json and
+    // media_info.json (both saves are tmp + rename) and the last 30 s watch
+    // checkpoint are what remain — say so, while the log is still open.
     {
         const auto persist_deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(3);
@@ -2459,13 +2505,15 @@ int main(int /* argc */, char* /* argv */[]) {
             LOG_WARN("Shutdown: settings.json save did not finish in time — "
                      "the last settings change may be lost");
         }
+        if (!media_info.flush_until(persist_deadline)) {
+            LOG_WARN("Shutdown: media_info.json write did not finish in time — "
+                     "the last crop change may be lost");
+        }
 #ifdef MEDIA_BROWSER_ENABLED
         if (!watch_store.flush_until(persist_deadline)) {
             LOG_WARN("Shutdown: watch history write did not finish in time — "
                      "resume falls back to the last checkpoint on disk");
         }
-#else
-        (void)persist_deadline;
 #endif
     }
 
@@ -2489,10 +2537,11 @@ int main(int /* argc */, char* /* argv */[]) {
     // failure the day there is one.
     //
     // Safe because nothing is left to persist: watch position is queued
-    // above and settings at each change site, both background writers were
-    // drained just before "Shutdown complete", and logging::shutdown() has
-    // already flushed and closed the log. The kernel reclaims the rest,
-    // exactly as it would after the SIGKILL this replaces.
+    // above and settings and crop changes at each change site, the
+    // background writers were drained just before "Shutdown complete", and
+    // logging::shutdown() has already flushed and closed the log. The
+    // kernel reclaims the rest, exactly as it would after the SIGKILL this
+    // replaces.
 #ifdef MEDIA_BROWSER_ENABLED
     // The game-end hook restores the services it quieted (docker start of
     // the arr containers, then qBit resume) asynchronously. A stop mid-game

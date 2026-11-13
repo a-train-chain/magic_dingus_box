@@ -24,6 +24,12 @@ constexpr int kBezelImageHeight = 1080;
 // otherwise the entry still loads and the video uses the whole 4:3 area.
 //
 // Malformed JSON, or a root without a "bezels" array, gives an empty list.
-std::vector<BezelInfo> parse_bezel_catalog(const std::string& json_text);
+//
+// `problems` (optional) receives one line per thing refused, for the
+// caller to log: the parser's own text for malformed JSON, a missing
+// "bezels" array, and each bezel whose "opening" was present but refused
+// (naming the bezel and why). An absent opening is not a problem.
+std::vector<BezelInfo> parse_bezel_catalog(const std::string& json_text,
+                                           std::vector<std::string>* problems = nullptr);
 
 }  // namespace app

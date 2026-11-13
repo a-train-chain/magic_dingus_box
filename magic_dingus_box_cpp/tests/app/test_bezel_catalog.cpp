@@ -14,6 +14,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "app/bezel_catalog.h"
 #include "utils/stb_image.h"
@@ -131,12 +132,51 @@ TEST_CASE("parse_bezel_catalog returns nothing for a malformed catalog",
     CHECK(mixed[0].name == "Kept");
 }
 
+TEST_CASE("parse_bezel_catalog says why a catalog or an opening was refused",
+          "[bezel_catalog]") {
+    // The kiosk logs these: without them a bad catalog was only "No bezels
+    // parsed", and a refused opening was silent.
+    std::vector<std::string> problems;
+    CHECK(app::parse_bezel_catalog(R"({"bezels": [)", &problems).empty());
+    REQUIRE(problems.size() == 1);
+    CHECK(problems[0].rfind("not valid JSON: ", 0) == 0);
+    CHECK(problems[0].size() > std::string("not valid JSON: ").size());  // jsoncpp's text
+
+    problems.clear();
+    CHECK(app::parse_bezel_catalog(R"({"bezels": {}})", &problems).empty());
+    REQUIRE(problems.size() == 1);
+    CHECK(problems[0] == "no \"bezels\" array");
+
+    problems.clear();
+    const auto bezels = app::parse_bezel_catalog(R"({"bezels": [
+        {"name": "Good", "file": "g.png",
+         "opening": {"x": 284, "y": 48, "w": 1348, "h": 984}},
+        {"name": "No opening", "file": null},
+        {"name": "Missing h", "file": "a.png", "opening": {"x": 1, "y": 1, "w": 1}},
+        {"name": "Too wide", "file": "b.png",
+         "opening": {"x": 600, "y": 48, "w": 1348, "h": 984}},
+        {"name": "Array", "file": "c.png", "opening": [1, 2, 3, 4]}
+    ]})", &problems);
+    REQUIRE(bezels.size() == 5);
+    // One line per refused opening, naming the bezel; a valid opening and an
+    // absent one say nothing.
+    REQUIRE(problems.size() == 3);
+    CHECK(problems[0].find("\"Missing h\"") != std::string::npos);
+    CHECK(problems[0].find("\"h\"") != std::string::npos);
+    CHECK(problems[1].find("\"Too wide\"") != std::string::npos);
+    CHECK(problems[1].find("1920x1080") != std::string::npos);
+    CHECK(problems[2].find("\"Array\"") != std::string::npos);
+    CHECK(problems[2].find("not an object") != std::string::npos);
+}
+
 TEST_CASE("every shipped bezel declares the opening its image shows through",
           "[bezel_catalog]") {
     const fs::path catalog = kBezelDir / "bezels.json";
     REQUIRE(fs::exists(catalog));
-    const auto bezels = app::parse_bezel_catalog(read_file(catalog));
+    std::vector<std::string> problems;
+    const auto bezels = app::parse_bezel_catalog(read_file(catalog), &problems);
     REQUIRE_FALSE(bezels.empty());
+    CHECK(problems.empty());
 
     int with_image = 0;
     for (const auto& b : bezels) {

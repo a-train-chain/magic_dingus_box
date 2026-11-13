@@ -15,38 +15,61 @@ std::string string_field(const Json::Value& entry, const char* key) {
 }
 
 // The opening, when it is four integers naming a non-empty rect inside the
-// bezel image. Leaves `bezel` untouched otherwise.
-void read_opening(const Json::Value& entry, BezelInfo& bezel) {
+// bezel image. Leaves `bezel` untouched otherwise and returns why ("" when
+// it was accepted, or when the entry has no opening at all).
+std::string read_opening(const Json::Value& entry, BezelInfo& bezel) {
+    if (!entry.isMember("opening")) return "";
     const Json::Value& o = entry["opening"];
-    if (!o.isObject()) return;
+    if (!o.isObject()) return "not an object";
     for (const char* key : {"x", "y", "w", "h"}) {
-        if (!o[key].isInt()) return;
+        if (!o[key].isInt()) {
+            return std::string("\"") + key + "\" is missing or not an integer";
+        }
     }
     const int x = o["x"].asInt();
     const int y = o["y"].asInt();
     const int w = o["w"].asInt();
     const int h = o["h"].asInt();
-    if (x < 0 || y < 0 || w <= 0 || h <= 0) return;
-    if (x > kBezelImageWidth - w || y > kBezelImageHeight - h) return;
+    if (x < 0 || y < 0 || w <= 0 || h <= 0) {
+        return "negative x/y or an empty size";
+    }
+    if (x > kBezelImageWidth - w || y > kBezelImageHeight - h) {
+        return "extends past the " + std::to_string(kBezelImageWidth) + "x" +
+               std::to_string(kBezelImageHeight) + " image";
+    }
     bezel.has_opening = true;
     bezel.opening_x = x;
     bezel.opening_y = y;
     bezel.opening_w = w;
     bezel.opening_h = h;
+    return "";
 }
 
 }  // namespace
 
-std::vector<BezelInfo> parse_bezel_catalog(const std::string& json_text) {
+std::vector<BezelInfo> parse_bezel_catalog(const std::string& json_text,
+                                           std::vector<std::string>* problems) {
+    auto report = [problems](std::string line) {
+        if (problems) problems->push_back(std::move(line));
+    };
+
     Json::Value root;
     Json::CharReaderBuilder builder;
     std::string errors;
     const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
     if (!reader->parse(json_text.data(), json_text.data() + json_text.size(),
                        &root, &errors)) {
+        // jsoncpp's text ends in a newline; the caller's log adds its own.
+        while (!errors.empty() && (errors.back() == '\n' || errors.back() == ' ')) {
+            errors.pop_back();
+        }
+        report("not valid JSON: " + errors);
         return {};
     }
-    if (!root.isObject() || !root["bezels"].isArray()) return {};
+    if (!root.isObject() || !root["bezels"].isArray()) {
+        report("no \"bezels\" array");
+        return {};
+    }
 
     std::vector<BezelInfo> bezels;
     for (const Json::Value& entry : root["bezels"]) {
@@ -56,8 +79,13 @@ std::vector<BezelInfo> parse_bezel_catalog(const std::string& json_text) {
         bezel.name = string_field(entry, "name");
         bezel.file = string_field(entry, "file");  // null -> "" (procedural)
         bezel.description = string_field(entry, "description");
-        read_opening(entry, bezel);
-        if (!bezel.name.empty()) bezels.push_back(bezel);
+        const std::string refused = read_opening(entry, bezel);
+        if (bezel.name.empty()) continue;
+        if (!refused.empty()) {
+            report("bezel \"" + bezel.name + "\": opening ignored (" + refused +
+                   ") — its video uses the whole 4:3 area");
+        }
+        bezels.push_back(bezel);
     }
     return bezels;
 }

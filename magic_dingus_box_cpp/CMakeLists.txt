@@ -175,6 +175,7 @@ set(APP_SOURCES
     # test_app_unit can link it (also listed there).
     src/app/controller_playback.cpp
     src/app/controller_text_input.cpp
+    src/app/media_info.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
     src/app/mb_filter_persistence.cpp
@@ -827,6 +828,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # constructor (tests/app/controller_test_doubles.cpp, globbed above).
         src/app/controller_playback.cpp
         src/utils/path_resolver.cpp
+        # media_info.json (per-video crop / length / aspect): the store
+        # against real temp files and a stallable write hook; also the
+        # Controller's current_media_key.
+        src/app/media_info.cpp
         # main.cpp's playlist playback control (SELECT/NEXT/PREV, auto-
         # advance, failed-item skip, stall watchdog) against a fake
         # transport, and the web-admin playlist reload's re-anchoring.
