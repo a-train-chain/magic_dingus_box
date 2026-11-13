@@ -439,11 +439,27 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     p.playlist_title = d::playlist_title(in, pc);
     if (pc >= 0 && pc < n_channels && !channels[pc].items.empty()) {
         const app::Channel& ch = channels[pc];
-        if (auto a = app::on_air(ch, in.now_utc)) {
+        if (auto on = app::on_air(ch, in.now_utc)) {
+            // The airing described from the schedule: the on-air one — or,
+            // in its last kMinJoinLeftS, the next one when that is what the
+            // tuned channel plays (a boundary or a tune loads it then, from
+            // its start: it IS that airing, and its exact times beat ones
+            // derived from a position that has not moved yet).
+            app::OnAir shown = *on;
+            if (on_tuned && in.playing.playlist >= 0) {
+                const auto jp = app::join_point(ch, in.now_utc);
+                if (jp && jp->starts_at > on->starts_at) {
+                    const app::ScheduledItem& js = ch.items[jp->index];
+                    if (js.playlist == in.playing.playlist && js.item == in.playing.item) {
+                        shown = *jp;
+                    }
+                }
+            }
+            const app::OnAir* a = &shown;
             const int ai = std::clamp(a->index, 0, static_cast<int>(ch.items.size()) - 1);
             const app::ScheduledItem& si = ch.items[ai];
             // The tuned channel's panel describes the PICTURE: a playing item
-            // that is not the on-air one (a pause or a seek back carried it
+            // that is not that airing's (a pause or a seek back carried it
             // past its slot; NTP moved the clock after the power-on tune;
             // playback ran ahead) is named with times from its own position.
             // The grid stays the schedule.

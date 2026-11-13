@@ -650,3 +650,27 @@ TEST_CASE("CRT geometry: ticks, now line and cells in exact px", "[guide_view]")
     CHECK(cells[0].show_text);
     CHECK_FALSE(cells[0].show_artist);
 }
+
+TEST_CASE("the next item loaded in the on-air one's last 2 s keeps the schedule's times",
+          "[guide_view]") {
+    // A boundary (or a tune) in the on-air item's last kMinJoinLeftS loads
+    // the next item from its start: that IS the schedule's next airing, so
+    // the panel keeps its exact times rather than ones derived from a
+    // position that has not moved yet (8:19:59 -> "8:19 - 8:29").
+    Fixture f;
+    auto in = tuned_one(f, 2, 0.0);
+    in.now_utc = E + 8 * 3600 + 20 * 60 - 1.0;  // 8:19:59: Show 1-1 has 1 s left
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Show 1-2");
+    CHECK(v.panel.start_hm == "8:20");
+    CHECK(v.panel.end_hm == "8:30");
+    CHECK(v.panel.progress == 0.0);
+    CHECK(v.panel.next_hm == "8:30");
+    CHECK(v.panel.next_title == "Show 1-3");
+    // With 1 s left and the ending item still playing: the schedule, as ever.
+    in.playing.item = 1;
+    in.playing.position_s = 599.0;
+    v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Show 1-1");
+    CHECK(v.panel.start_hm == "8:10");
+}
