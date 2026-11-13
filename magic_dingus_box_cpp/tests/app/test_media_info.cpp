@@ -495,3 +495,132 @@ TEST_CASE("media_info store: writes wait for the sidecar lock", "[media_info]") 
     // replaced by rename on every write).
     CHECK(fs::exists(lock_path));
 }
+
+TEST_CASE("media_info store: the file is read under the lock, not before it",
+          "[media_info]") {
+    Sandbox sb;
+    write_file(sb.file, R"({"version": 1, "videos": {"media/b.mp4": {"duration_s": 10.0}}})");
+    const std::string lock_path = sb.file.string() + ".lock";
+    const int fd = ::open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    REQUIRE(fd >= 0);
+    REQUIRE(::flock(fd, LOCK_EX) == 0);
+
+    MediaInfoStore store(sb.file.string());
+    store.set_crop("media/a.mp4", false);
+    // Long enough for the worker to be waiting on the lock (and, if it read
+    // first, to have read the file as it was).
+    CHECK_FALSE(store.flush_until(std::chrono::steady_clock::now() + 200ms));
+
+    // The web admin, holding the lock, saves a new video's probe.
+    write_file(sb.file, R"({"version": 1, "videos": {
+        "media/b.mp4": {"duration_s": 10.0},
+        "media/c.mp4": {"duration_s": 42.0, "display_aspect": 1.7778}
+    }})");
+    ::flock(fd, LOCK_UN);
+    ::close(fd);
+    REQUIRE(flushed(store));
+
+    // The kiosk's write was merged into the web's file, not the one it would
+    // have seen before taking the lock.
+    const auto disk = app::parse_media_info(read_file(sb.file));
+    REQUIRE(disk.has_value());
+    CHECK_FALSE(app::crop_for(*disk, "media/a.mp4"));
+    REQUIRE(disk->count("media/c.mp4") == 1);
+    CHECK(*disk->at("media/c.mp4").duration_s == Catch::Approx(42.0));
+    CHECK(disk->count("media/b.mp4") == 1);
+}
+
+TEST_CASE("media_info store: a reload poke's marker is deleted by the worker",
+          "[media_info]") {
+    Sandbox sb;
+    write_file(sb.file, R"({"version": 1, "videos": {"media/a.mp4": {"crop": false}}})");
+    const fs::path marker = sb.dir / "media_info_reload_request";
+    write_file(marker, "");
+    MediaInfoStore store(sb.file.string());
+
+    // A plain reload (boot) leaves a marker alone.
+    store.request_reload();
+    settle(store);
+    CHECK(fs::exists(marker));
+    CHECK_FALSE(store.crop_for("media/a.mp4"));
+
+    // The poke: the render loop only saw the marker; the job deletes it
+    // (before reading, so a poke that lands mid-read is never lost).
+    write_file(sb.file, R"({"version": 1, "videos": {}})");
+    store.request_reload(marker.string());
+    settle(store);
+    CHECK_FALSE(fs::exists(marker));
+    CHECK(store.crop_for("media/a.mp4"));
+
+    // Already gone (a second poke for the same marker): still just a reload.
+    store.request_reload(marker.string());
+    REQUIRE(flushed(store));
+}
+
+TEST_CASE("media_info store: poll retries stranded work, at most every 30 s",
+          "[media_info]") {
+    Sandbox sb;
+    auto fake_now = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+    const auto clock = [&fake_now] { return fake_now; };
+    HeldSink sink;
+    sink.set_fail(true);  // the card refuses writes
+    MediaInfoStore store(sb.file.string(), sink.sink(), clock);
+    REQUIRE(MediaInfoStore::kRetryInterval == std::chrono::seconds(30));
+
+    // poll() once, then let any job it queued finish.
+    auto poll_at = [&](std::chrono::seconds advance) {
+        fake_now += advance;
+        (void)store.poll();
+        store.wait_idle_for_tests();
+    };
+
+    SECTION("a failed write") {
+        store.set_crop("media/a.mp4", false);
+        store.wait_idle_for_tests();
+        REQUIRE(sink.call_count() == 1);
+
+        poll_at(0s);    // stranded edit noticed: the clock starts
+        CHECK(sink.call_count() == 1);
+        poll_at(29s);
+        CHECK(sink.call_count() == 1);
+        poll_at(1s);    // 30 s after it was noticed
+        CHECK(sink.call_count() == 2);
+        poll_at(1s);    // failed again: not every frame
+        poll_at(28s);
+        CHECK(sink.call_count() == 2);
+        poll_at(1s);
+        CHECK(sink.call_count() == 3);
+
+        // The card recovers: the next retry lands it, then nothing more runs.
+        sink.set_fail(false);
+        poll_at(30s);
+        CHECK(sink.call_count() == 4);
+        const auto disk = app::parse_media_info(read_file(sb.file));
+        REQUIRE(disk.has_value());
+        CHECK_FALSE(app::crop_for(*disk, "media/a.mp4"));
+        poll_at(60s);
+        poll_at(60s);
+        CHECK(sink.call_count() == 4);
+        CHECK_FALSE(store.crop_for("media/a.mp4"));
+    }
+
+    SECTION("a failed read") {
+        // Unreadable: a directory where the file should be.
+        fs::create_directories(sb.file);
+        store.request_reload();
+        store.wait_idle_for_tests();
+
+        // The file becomes readable, but nothing retries before 30 s.
+        fs::remove(sb.file);
+        write_file(sb.file, R"({"version": 1, "videos": {"media/a.mp4": {"crop": false}}})");
+        poll_at(0s);
+        poll_at(29s);
+        (void)store.poll();
+        CHECK(store.crop_for("media/a.mp4"));
+
+        poll_at(1s);    // the retry reads it...
+        (void)store.poll();  // ...and the next frame adopts it
+        CHECK_FALSE(store.crop_for("media/a.mp4"));
+        CHECK(sink.call_count() == 0);  // reads never write
+    }
+}

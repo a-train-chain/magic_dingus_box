@@ -140,7 +140,10 @@ TEST_CASE("parse_bezel_catalog says why a catalog or an opening was refused",
     CHECK(app::parse_bezel_catalog(R"({"bezels": [)", &problems).empty());
     REQUIRE(problems.size() == 1);
     CHECK(problems[0].rfind("not valid JSON: ", 0) == 0);
-    CHECK(problems[0].size() > std::string("not valid JSON: ").size());  // jsoncpp's text
+    CHECK(problems[0].find("Line 1") != std::string::npos);  // jsoncpp's text
+    // One log line: jsoncpp's "* Line N, Column M\n  <message>" is joined.
+    CHECK(problems[0].find('\n') == std::string::npos);
+    CHECK(problems[0].find("; ") != std::string::npos);
 
     problems.clear();
     CHECK(app::parse_bezel_catalog(R"({"bezels": {}})", &problems).empty());

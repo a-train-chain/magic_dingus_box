@@ -88,9 +88,9 @@ bool crop_for(const MediaInfoMap& map, const std::string& key);
 // started with a newer one, so a job must never carry an edit only in its
 // own captures). Until an edit is known to be on disk, it is laid back on
 // top of whatever the worker read, so a reload — or a write's own result —
-// can never undo it on screen. A write that fails keeps its edits pending;
-// they go out with the next set_crop / request_reload, and flush_until
-// retries once.
+// can never undo it on screen. A write (or read) that fails keeps its work
+// waiting: it goes out with the next set_crop / request_reload, poll()
+// retries it every kRetryInterval, and flush_until retries once.
 class MediaInfoStore {
 public:
     // Writes `body` to `path` durably (tmp + fsync + rename + fsync dir).
@@ -98,11 +98,19 @@ public:
     // sidecar lock held.
     using FileSink = std::function<bool(const std::string& path,
                                         const std::string& body)>;
+    // poll()'s clock (render thread).
+    using Clock = std::function<std::chrono::steady_clock::time_point()>;
+
+    // How often poll() retries work a failed job left waiting (a full or
+    // read-only card): often enough that a toggle reaches the disk soon
+    // after the card recovers, rarely enough not to hammer one that hasn't.
+    static constexpr std::chrono::seconds kRetryInterval{30};
 
     explicit MediaInfoStore(std::string path);
     // Test seam: replaces the real durable write with `sink` (which may
-    // stall or fail, then call write_file_durably itself).
-    MediaInfoStore(std::string path, FileSink sink);
+    // stall or fail, then call write_file_durably itself) and, when given,
+    // poll()'s clock (default std::chrono::steady_clock::now).
+    MediaInfoStore(std::string path, FileSink sink, Clock clock = nullptr);
     // Finishes the job in hand and the latest queued one, then joins.
     // Unbounded — main()'s _exit path calls flush_until first instead.
     ~MediaInfoStore() = default;
@@ -113,14 +121,22 @@ public:
     // The real FileSink.
     static bool write_file_durably(const std::string& path, const std::string& body);
 
-    // Queues a read of the file (boot, and the web admin's
-    // media_info_reload_request poke). poll() adopts the result.
-    void request_reload();
+    // Queues a read of the file; poll() adopts the result. At boot with no
+    // argument. For the web admin's media_info_reload_request poke, pass
+    // the marker's path: the worker deletes it just BEFORE it reads (an
+    // unlink is a journaled write, and the poke comes after uploads, when
+    // the card is busiest — never on the render loop). Deleting first means
+    // a poke that lands during the read is kept for the next one; seeing
+    // the marker again before the worker got to it costs only a second,
+    // harmless reload.
+    void request_reload(const std::string& consume_marker = "");
 
     // Once per frame: adopts the newest map the worker produced, with every
     // edit not yet known to be on disk applied on top. True when the map
-    // changed. Never blocks (the worker holds the shared mutex only to swap
-    // state, never across file I/O).
+    // changed. Also resubmits work a failed job left waiting, at most once
+    // per kRetryInterval (none while a job is queued or running). Never
+    // blocks (the worker holds the shared mutex only to swap state, never
+    // across file I/O).
     bool poll();
 
     const MediaInfoMap& map() const { return map_; }
@@ -136,6 +152,10 @@ public:
     // shutdown and tests — NEVER the render loop.
     bool flush_until(std::chrono::steady_clock::time_point deadline);
 
+    // Blocks until no job is queued or running, without flush_until's retry.
+    // Tests only.
+    void wait_idle_for_tests() { worker_.flush(); }
+
 private:
     // key -> crop. The latest edit per key wins.
     using Edits = std::map<std::string, bool>;
@@ -150,13 +170,19 @@ private:
     // did not reach the disk.
     bool read_merge_write(const Edits& batch, std::optional<MediaInfoMap>& on_disk);
     bool edits_waiting();
+    // poll()'s half: resubmit what a failed job left waiting, rate-limited.
+    void retry_stranded_work();
 
     std::string path_;
     std::string lock_path_;
     FileSink sink_;
+    Clock clock_;
 
-    // The render thread's map. Render thread only.
+    // Render thread only: its map, and the stranded-work retry schedule
+    // (armed when poll() first sees work waiting with the worker idle).
     MediaInfoMap map_;
+    bool retry_armed_ = false;
+    std::chrono::steady_clock::time_point next_retry_{};
 
     // Between the render thread and the worker. mu_ is held only to swap
     // these, never across file I/O.
@@ -164,6 +190,7 @@ private:
     Edits pending_;        // edits no job has taken yet
     Edits inflight_;       // edits the running job is writing
     bool reload_requested_ = false;
+    std::string reload_marker_;           // deleted by the next reload job
     std::optional<MediaInfoMap> result_;  // the newest map read, not yet adopted
 
     // LAST member: destroyed (drained and joined) first, while everything

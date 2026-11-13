@@ -229,8 +229,11 @@ bool crop_for(const MediaInfoMap& map, const std::string& key) {
 MediaInfoStore::MediaInfoStore(std::string path)
     : MediaInfoStore(std::move(path), &MediaInfoStore::write_file_durably) {}
 
-MediaInfoStore::MediaInfoStore(std::string path, FileSink sink)
-    : path_(std::move(path)), lock_path_(path_ + ".lock"), sink_(std::move(sink)) {}
+MediaInfoStore::MediaInfoStore(std::string path, FileSink sink, Clock clock)
+    : path_(std::move(path)),
+      lock_path_(path_ + ".lock"),
+      sink_(std::move(sink)),
+      clock_(clock ? std::move(clock) : Clock(&std::chrono::steady_clock::now)) {}
 
 bool MediaInfoStore::write_file_durably(const std::string& path, const std::string& body) {
     // The kiosk's staging name. The web admin stages through its own
@@ -275,10 +278,11 @@ void MediaInfoStore::submit() {
     worker_.submit([this] { return run_job(); });
 }
 
-void MediaInfoStore::request_reload() {
+void MediaInfoStore::request_reload(const std::string& consume_marker) {
     {
         std::lock_guard<std::mutex> lk(mu_);
         reload_requested_ = true;
+        if (!consume_marker.empty()) reload_marker_ = consume_marker;
     }
     submit();
 }
@@ -294,25 +298,55 @@ void MediaInfoStore::set_crop(const std::string& key, bool crop) {
 }
 
 bool MediaInfoStore::poll() {
-    MediaInfoMap next;
+    std::optional<MediaInfoMap> next;
     Edits older;
     Edits newer;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        if (!result_) return false;
-        next = std::move(*result_);
-        result_.reset();
-        older = inflight_;
-        newer = pending_;
+        if (result_) {
+            next = std::move(result_);
+            result_.reset();
+            older = inflight_;
+            newer = pending_;
+        }
     }
+    retry_stranded_work();
+    if (!next) return false;
     // What the worker read predates every edit still in flight or queued:
     // lay them back on top, oldest first, or a reload (or the result of an
     // earlier write) would undo them on screen.
-    for (const auto& [key, crop] : older) apply_edit(next, key, crop);
-    for (const auto& [key, crop] : newer) apply_edit(next, key, crop);
-    if (next == map_) return false;
-    map_ = std::move(next);
+    for (const auto& [key, crop] : older) apply_edit(*next, key, crop);
+    for (const auto& [key, crop] : newer) apply_edit(*next, key, crop);
+    if (*next == map_) return false;
+    map_ = std::move(*next);
     return true;
+}
+
+void MediaInfoStore::retry_stranded_work() {
+    // A queued or running job will take whatever is waiting; leave the
+    // schedule as it is until that job is done.
+    if (worker_.busy()) return;
+    bool waiting = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        waiting = !pending_.empty() || reload_requested_;
+    }
+    if (!waiting) {
+        retry_armed_ = false;
+        return;
+    }
+    // Work waiting with the worker idle means a job failed and left it.
+    // The first retry comes kRetryInterval after it was first seen here,
+    // then one per kRetryInterval while it keeps failing.
+    const auto now = clock_();
+    if (!retry_armed_) {
+        retry_armed_ = true;
+        next_retry_ = now + kRetryInterval;
+        return;
+    }
+    if (now < next_retry_) return;
+    next_retry_ = now + kRetryInterval;
+    submit();
 }
 
 bool MediaInfoStore::edits_waiting() {
@@ -336,17 +370,26 @@ bool MediaInfoStore::flush_until(std::chrono::steady_clock::time_point deadline)
 bool MediaInfoStore::run_job() {
     Edits batch;
     bool want_read = false;
+    std::string marker;
     {
         std::lock_guard<std::mutex> lk(mu_);
         batch.swap(pending_);
         inflight_ = batch;
         want_read = std::exchange(reload_requested_, false);
+        marker = std::exchange(reload_marker_, std::string());
     }
     if (batch.empty() && !want_read) return true;  // an earlier job took it all
 
     std::optional<MediaInfoMap> on_disk;
     bool ok = false;
     try {
+        if (!marker.empty()) {
+            // The web admin's poke, consumed BEFORE the read: a poke written
+            // after this point survives for the next reload. Gone already
+            // (a repeat request) is fine.
+            std::error_code ec;
+            fs::remove(marker, ec);
+        }
         ok = read_merge_write(batch, on_disk);
     } catch (const std::exception& e) {
         // jsoncpp throws on a misuse; never let it cost the edits.

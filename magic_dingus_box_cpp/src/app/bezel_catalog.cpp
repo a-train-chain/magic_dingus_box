@@ -59,11 +59,23 @@ std::vector<BezelInfo> parse_bezel_catalog(const std::string& json_text,
     const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
     if (!reader->parse(json_text.data(), json_text.data() + json_text.size(),
                        &root, &errors)) {
-        // jsoncpp's text ends in a newline; the caller's log adds its own.
-        while (!errors.empty() && (errors.back() == '\n' || errors.back() == ' ')) {
-            errors.pop_back();
+        // One log line: jsoncpp writes "* Line N, Column M\n  <message>\n"
+        // per error; join its lines with "; " and drop the trailing newline.
+        std::string joined;
+        bool line_start = false;
+        for (const char c : errors) {
+            if (c == '\n') {
+                line_start = true;
+                continue;
+            }
+            if (line_start) {
+                if (c == ' ') continue;  // the next line's indent
+                joined += "; ";
+                line_start = false;
+            }
+            joined += c;
         }
-        report("not valid JSON: " + errors);
+        report("not valid JSON: " + joined);
         return {};
     }
     if (!root.isObject() || !root["bezels"].isArray()) {

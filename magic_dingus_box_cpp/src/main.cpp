@@ -2103,10 +2103,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // Checked ~once a second (restore is rare; no need to stat every
         // frame like the seek queue).
         //
-        // The marker unlinks here and in the media-info and playlist pokes
-        // below are file writes on this loop, left in place deliberately
-        // (reviewed 2026-11): one per web-admin action, never per tick, and
-        // the marker must be gone before the next poll or the reload repeats.
+        // The marker unlinks here and in the playlist poke below are file
+        // writes on this loop, left in place deliberately (reviewed
+        // 2026-11): one per web-admin action, never per tick, and the
+        // marker must be gone before the next poll or the reload repeats.
+        // (The media-info poke between them leaves its unlink to the store's
+        // worker.)
         {
             static int settings_reload_check = 0;
             if (++settings_reload_check >= 60) {
@@ -2144,11 +2146,15 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // Web-admin media info poke. The Content Manager writes this marker
         // after it changes media_info.json (a video's crop setting, a new
-        // upload's length and aspect, a restore). Same protocol as the
-        // settings poke above — poll ~1 Hz, delete the marker, reload — but
-        // the reload itself is only queued: the store's worker reads the
-        // file and the per-frame poll() above adopts it, keeping any crop
-        // change made here that has not reached the disk yet.
+        // upload's length and aspect, a restore). Polled ~1 Hz like the
+        // pokes around it, but this loop only LOOKS: the store's worker
+        // deletes the marker and reads the file, and the per-frame poll()
+        // above adopts the result, keeping any crop change made here that
+        // has not reached the disk yet. The unlink stays off this loop
+        // because the poke follows uploads — exactly when the card is
+        // saturated and a journaled write can stall for seconds. Seeing the
+        // marker again before the worker got to it queues one more,
+        // harmless reload.
         {
             static int media_info_reload_check = 0;
             if (++media_info_reload_check >= 60) {
@@ -2156,9 +2162,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 const std::string media_info_marker =
                     config::get_data_path() + "/media_info_reload_request";
                 if (fs::exists(media_info_marker)) {
-                    std::error_code rm_ec;
-                    fs::remove(media_info_marker, rm_ec);
-                    media_info.request_reload();
+                    media_info.request_reload(media_info_marker);
                     LOG_INFO("Media info reload queued (web-admin poke)");
                 }
             }
