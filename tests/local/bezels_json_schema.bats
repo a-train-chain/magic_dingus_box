@@ -29,6 +29,23 @@ BEZELS_DIR="$CPP_DIR/assets/bezels"
     done < <(jq -r '.bezels[] | select(.file != null) | .file' "$BEZELS_JSON")
 }
 
+# Fit-mode video is drawn inside this window (app/bezel_catalog.h); an entry
+# the kiosk cannot use silently falls back to the whole 4:3 area, under the
+# frame. test_app_unit "[bezel_catalog]" holds the values to the PNGs.
+@test "every bezel with a file declares its opening: four positive integers inside 1920x1080" {
+    run jq -r '.bezels[] | select(.file != null)
+        | select(if (.opening | type) != "object" then true
+                 else (.opening as $o
+                       | ([$o.x, $o.y, $o.w, $o.h]
+                          | all(type == "number" and . > 0 and . == floor))
+                         and $o.x + $o.w <= 1920 and $o.y + $o.h <= 1080
+                       | not)
+                 end)
+        | .id' "$BEZELS_JSON"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "missing or bad opening: $output"; false; }
+}
+
 @test "every MDB bezel has a matching .cfg sidecar" {
     while IFS= read -r file; do
         cfg="${file%.png}.cfg"

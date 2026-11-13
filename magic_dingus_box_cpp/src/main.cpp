@@ -39,6 +39,7 @@
 #include "media_browser/mb_services.h"
 #endif
 #include "app/app_state.h"
+#include "app/bezel_catalog.h"
 #include "app/game_quiet_mode.h"
 #include "app/game_handoff.h"
 #include "app/game_handoff_kiosk.h"
@@ -82,6 +83,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <sstream>
 #include <filesystem>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -546,49 +548,22 @@ int main(int /* argc */, char* /* argv */[]) {
         media_browser::start_vpn_health_monitor(state);
 #endif
 
-    // Load available bezels from bezels.json using JsonCpp
-    std::vector<std::string> bezel_json_paths = config::get_bezel_search_paths();
-
-    for (const auto& bezel_path : bezel_json_paths) {
+    // Load available bezels from the first readable bezels.json that
+    // parses (app/bezel_catalog.h).
+    for (const auto& bezel_path : config::get_bezel_search_paths()) {
         std::ifstream bezel_file(bezel_path);
-        if (bezel_file.good()) {
-            Json::Value root;
-            Json::CharReaderBuilder builder;
-            std::string errors;
-
-            if (!Json::parseFromStream(builder, bezel_file, &root, &errors)) {
-                std::cerr << "Failed to parse bezels.json: " << errors << std::endl;
-                bezel_file.close();
-                continue;
-            }
-            bezel_file.close();
-
-            // Parse bezels array
-            if (root.isMember("bezels") && root["bezels"].isArray()) {
-                const Json::Value& bezels = root["bezels"];
-                for (const auto& bezel_json : bezels) {
-                    app::BezelInfo bezel;
-                    bezel.id = bezel_json.get("id", "").asString();
-                    bezel.name = bezel_json.get("name", "").asString();
-
-                    // Handle null file (procedural bezel)
-                    if (bezel_json.isMember("file") && !bezel_json["file"].isNull()) {
-                        bezel.file = bezel_json["file"].asString();
-                    } else {
-                        bezel.file = "";  // Procedural bezel
-                    }
-
-                    bezel.description = bezel_json.get("description", "").asString();
-
-                    if (!bezel.name.empty()) {
-                        state.available_bezels.push_back(bezel);
-                    }
-                }
-            }
-
-            std::cout << "Loaded " << state.available_bezels.size() << " bezels from " << bezel_path << std::endl;
-            break;
+        if (!bezel_file.good()) continue;
+        std::ostringstream bezel_text;
+        bezel_text << bezel_file.rdbuf();
+        std::vector<app::BezelInfo> bezels =
+            app::parse_bezel_catalog(bezel_text.str());
+        if (bezels.empty()) {
+            std::cerr << "No bezels parsed from " << bezel_path << std::endl;
+            continue;
         }
+        state.available_bezels = std::move(bezels);
+        std::cout << "Loaded " << state.available_bezels.size() << " bezels from " << bezel_path << std::endl;
+        break;
     }
     
     // Ensure bezel_index is valid
@@ -1784,7 +1759,30 @@ int main(int /* argc */, char* /* argv */[]) {
             content = video::four_by_three_rect(fb_w, fb_h);
             logical_content = video::four_by_three_rect(ui_canvas.w, ui_canvas.h);
         }
-        
+
+        // The bezel drawn over this frame, or null. Decided once here so
+        // the video's visible opening (below) and the bezel draw (near the
+        // end of the frame) cannot disagree. Modern TV only, and a valid
+        // bezel_index whose entry has an image (procedural draws nothing).
+        //
+        // Skip the bezel entirely while the Media Browser owns the screen.
+        // The Media Browser's content is modern 16:9 (movie posters, movie
+        // playback) — the CRT-frame bezel was designed for the main UI's
+        // 4:3 playlist videos and would just clip widescreen content.
+#ifdef MEDIA_BROWSER_ENABLED
+        const bool bezel_allowed = state.current_screen != app::AppScreen::MediaBrowser;
+#else
+        const bool bezel_allowed = true;
+#endif
+        const app::BezelInfo* drawn_bezel = nullptr;
+        if (bezel_allowed && letterbox_active &&
+            state.display_settings.bezel_index >= 0 &&
+            state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
+            const app::BezelInfo& bezel =
+                state.available_bezels[state.display_settings.bezel_index];
+            if (!bezel.file.empty()) drawn_bezel = &bezel;
+        }
+
         // Enhanced CRT pipeline (Phase 1+): redirect video+UI rendering
         // into an offscreen scene FBO, then composite back to the
         // default framebuffer through a shader that can sample the
@@ -1800,7 +1798,7 @@ int main(int /* argc */, char* /* argv */[]) {
         // their existing draw order and are unaffected by CRT effects.
         bool scene_fbo_used = ui_renderer.begin_scene_fbo(state);
 
-        // Render video - gst will fill the entire framebuffer, so no need to clear if video is ready
+        // Render video: it draws only its own rect (in Modern TV the 4:3 area, never the whole framebuffer), so the bars stay as the clear above left them.
         // This handles both intro video and regular video playback
         if (should_render_video) {
             // Playlist and intro video draw through the picture placement
@@ -1815,9 +1813,16 @@ int main(int /* argc */, char* /* argv */[]) {
             const bool picture_mode = true;
 #endif
             if (picture_mode) {
-                // The visible opening. The active bezel's window is wired
-                // in by the bezel-catalog work; until then, the target.
-                const video::IRect opening = content;
+                // The visible opening: the drawn bezel's transparent
+                // window — its 1920x1080 art is stretched over the whole
+                // framebuffer (Renderer::render_bezel) — else the 4:3 area.
+                video::IRect opening = content;
+                if (drawn_bezel && drawn_bezel->has_opening) {
+                    opening = video::scale_image_rect(
+                        video::IRect{drawn_bezel->opening_x, drawn_bezel->opening_y,
+                                     drawn_bezel->opening_w, drawn_bezel->opening_h},
+                        app::kBezelImageWidth, app::kBezelImageHeight, fb_w, fb_h);
+                }
                 // Crop until the per-video setting exists.
                 const bool crop = true;
                 gst_renderer.set_picture(content, crop, opening);
@@ -1950,29 +1955,15 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
         // The bezel PNG is stretched fullscreen - content is visible through the transparent center.
-        //
-        // Skip the bezel entirely while the Media Browser owns the screen.
-        // The Media Browser's content is modern 16:9 (movie posters, movie
-        // playback) — the CRT-frame bezel was designed for the main UI's
-        // 4:3 playlist videos and would just clip widescreen content.
-#ifdef MEDIA_BROWSER_ENABLED
-        bool bezel_allowed = state.current_screen != app::AppScreen::MediaBrowser;
-#else
-        bool bezel_allowed = true;
-#endif
-        if (bezel_allowed && letterbox_active && !state.available_bezels.empty() &&
-            state.display_settings.bezel_index >= 0 &&
-            state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
-            const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
-            if (!bezel.file.empty()) {
-                // load_bezel() dedupes internally (skips if path matches AND texture is still valid).
-                // We must call it every frame so the bezel is re-uploaded after reset_gl()
-                // (e.g. after returning from RetroArch) — a stale path tracker here would block that.
-                ui_renderer.load_bezel(bezel.file);
-                // Reset viewport to fullscreen for bezel overlay
-                glViewport(0, 0, mode.width, mode.height);
-                ui_renderer.render_bezel();
-            }
+        // drawn_bezel (decided with the 4:3 area above) says whether and which.
+        if (drawn_bezel) {
+            // load_bezel() dedupes internally (skips if path matches AND texture is still valid).
+            // We must call it every frame so the bezel is re-uploaded after reset_gl()
+            // (e.g. after returning from RetroArch) — a stale path tracker here would block that.
+            ui_renderer.load_bezel(drawn_bezel->file);
+            // Reset viewport to fullscreen for bezel overlay
+            glViewport(0, 0, mode.width, mode.height);
+            ui_renderer.render_bezel();
         }
         
 #ifdef MEDIA_BROWSER_ENABLED

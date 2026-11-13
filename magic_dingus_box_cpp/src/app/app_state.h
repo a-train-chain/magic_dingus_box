@@ -65,12 +65,17 @@ enum class AppScreen {
 };
 #endif
 
-// Bezel info structure
+// Bezel info structure (bezels.json; parsed by app/bezel_catalog)
 struct BezelInfo {
     std::string id;
     std::string name;
     std::string file;  // filename (empty for procedural)
     std::string description;
+    // The frame's transparent window, in the bezel image's 1920x1080
+    // pixels (top-left origin). Fit-mode video is drawn inside it. False
+    // for procedural and for any entry without a usable opening.
+    bool has_opening = false;
+    int opening_x = 0, opening_y = 0, opening_w = 0, opening_h = 0;
 };
 
 } // namespace app

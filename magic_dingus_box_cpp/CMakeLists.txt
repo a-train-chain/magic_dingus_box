@@ -163,6 +163,7 @@ set(UI_SOURCES
 list(APPEND UI_SOURCES src/ui/toast.cpp)
 
 set(APP_SOURCES
+    src/app/bezel_catalog.cpp
     src/app/game_launch_recovery.cpp
     src/app/game_launch_validation.cpp
     src/app/game_quiet_mode.cpp
@@ -851,6 +852,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # platform_profile backs filter_for_platform (the Pi 4 game-system
         # gate) — pure logic, no Linux-only deps.
         src/platform/platform_profile.cpp
+        # bezels.json parsing; stb_image lets the test measure each shipped
+        # bezel PNG's transparent window against its declared opening.
+        src/app/bezel_catalog.cpp
+        src/utils/stb_image_impl.cpp
     )
     target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
