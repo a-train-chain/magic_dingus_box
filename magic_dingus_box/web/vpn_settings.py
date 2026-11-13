@@ -99,15 +99,15 @@ def country_state(env: dict) -> dict:
     }
 
 
-def rewrite_env_text(text: str, line: str) -> str:
-    """Replace the VPN_COUNTRIES line in .env text with `line`, keeping every
+def rewrite_env_text(text: str, line: str, key: str = ENV_KEY) -> str:
+    """Replace the `key` (default VPN_COUNTRIES) line in .env text with `line`, keeping every
     other line byte-for-byte. Duplicates collapse into the first position
     (a later duplicate would otherwise silently win); an absent key is
     appended. `line` is a full, already-validated `KEY=VALUE` line."""
     out, placed = [], False
     for raw in text.splitlines(keepends=True):
-        key = raw.strip().split("=", 1)[0].strip() if "=" in raw else ""
-        if key == ENV_KEY and not raw.lstrip().startswith("#"):
+        line_key = raw.strip().split("=", 1)[0].strip() if "=" in raw else ""
+        if line_key == key and not raw.lstrip().startswith("#"):
             if not placed:
                 out.append(line + ("\n" if raw.endswith("\n") else ""))
                 placed = True

@@ -373,6 +373,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         "settings": "settings_reload_request",
         "playlists": "playlists_reload_request",
         "media_info": "media_info_reload_request",
+        "timezone": "timezone_reload_request",
     }
 
     def _poke_kiosk_reload(kind: str) -> None:

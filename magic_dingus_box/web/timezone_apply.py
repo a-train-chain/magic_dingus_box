@@ -1,0 +1,81 @@
+"""Apply the owner's browser time zone to the box.
+
+The Content Manager page reports `Intl.DateTimeFormat().resolvedOptions()
+.timeZone`; the route in admin_system.py validates it here, applies it with
+`sudo -n timedatectl set-timezone`, rewrites services/.env's TZ= line (when
+that file exists) and pokes the kiosk to `tzset()`. Pure helpers, no Flask,
+so they are unit-tested on the Mac.
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+from pathlib import Path
+from typing import Optional
+
+try:
+    from admin_vpn_config import _format_env_line
+    from vpn_settings import atomic_replace, rewrite_env_text
+except ImportError:  # pragma: no cover - package-relative in production
+    from .admin_vpn_config import _format_env_line
+    from .vpn_settings import atomic_replace, rewrite_env_text
+
+ZONEINFO_DIR = Path("/usr/share/zoneinfo")
+_ZONE_RE = re.compile(r"^[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}$")
+_MAX_ZONE_LEN = 64
+
+
+def valid_zone(name, zoneinfo_dir: Path = ZONEINFO_DIR) -> bool:
+    """True when `name` is a plausible zone name AND an existing regular file
+    under `zoneinfo_dir` once resolved (so `..` or a symlink cannot escape).
+    The name comes from a browser: never trust it further than this."""
+    if not isinstance(name, str) or len(name) > _MAX_ZONE_LEN:
+        return False
+    # `$` also matches before a trailing newline; fullmatch does not.
+    if not _ZONE_RE.fullmatch(name):
+        return False
+    try:
+        base = Path(zoneinfo_dir).resolve()
+        target = (base / name).resolve()
+        if base not in target.parents:
+            return False
+        return target.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def read_system_timezone() -> Optional[str]:
+    """The box's current zone (`timedatectl show -p Timezone --value`), or
+    None when it cannot be read."""
+    try:
+        result = subprocess.run(
+            ["timedatectl", "show", "-p", "Timezone", "--value"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def set_system_timezone(zone: str) -> tuple[bool, str]:
+    """`sudo -n timedatectl set-timezone <zone>` (argv, never a shell).
+    Returns (ok, stderr-or-error text). Caller must have run valid_zone()."""
+    try:
+        res = subprocess.run(
+            ["sudo", "-n", "timedatectl", "set-timezone", zone],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+    return res.returncode == 0, (res.stderr or "").strip()
+
+
+def rewrite_env_tz(env_path: Path, zone: str) -> bool:
+    """Set `TZ=<zone>` in the .env file (replace the line or append one),
+    atomically and keeping the file's mode. False when the file is absent."""
+    env_path = Path(env_path)
+    if not env_path.is_file():
+        return False
+    text = env_path.read_text(encoding="utf-8")
+    atomic_replace(env_path, rewrite_env_text(text, _format_env_line("TZ", zone), key="TZ"))
+    return True
