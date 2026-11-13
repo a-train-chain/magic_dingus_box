@@ -7,7 +7,9 @@
 
 #include <optional>
 
+#include "app/app_state.h"
 #include "app/auto_tune.h"
+#include "app/playback_reset.h"
 
 using app::AutoTuneInput;
 using app::decide_auto_tune;
@@ -222,4 +224,106 @@ TEST_CASE("auto-tune: the last channel's row is resolved only when it can change
     CHECK(scans == 3);
     CHECK(cache.get("path:/p/b.yaml", 8, resolve) == -1);
     CHECK(scans == 3);
+}
+
+// ── An orphan stream ──────────────────────────────────────────────────────
+// Pi 5, 2026-11-13 13:02: after a game the player described a torn-down
+// stream (duration 40.1 s, position 1.68 s, not playing), so video_active
+// came up with no channel playing. The rule above read that as "a video
+// plays" and never tuned; no EOS or stall could end it. The guard stops
+// such a stream after a short bound so the rule runs.
+
+namespace {
+
+// The 13:02 state: guide style, on the main screen after the intro,
+// video_active with no playing indexes and the player not playing, nothing
+// pending.
+app::OrphanStreamInput orphan_1302() {
+    app::OrphanStreamInput in;
+    in.guide_style = true;
+    in.intro_complete = true;
+    in.on_main_screen = true;
+    in.video_active = true;
+    in.indexes_set = false;
+    in.playing = false;
+    in.switch_pending = false;
+    in.loading_game = false;
+    in.post_game_pending = false;
+    return in;
+}
+
+}  // namespace
+
+TEST_CASE("orphan stream: video_active, no channel playing, not playing", "[auto_tune]") {
+    app::OrphanStreamInput in = orphan_1302();
+    REQUIRE(app::is_orphan_stream(in));
+
+    SECTION("List style: unchanged, nothing is ever stopped") { in.guide_style = false; }
+    SECTION("the intro (no indexes by design) is not over") { in.intro_complete = false; }
+    SECTION("off the main screen: Media Browser playback has no indexes either") {
+        in.on_main_screen = false;
+    }
+    SECTION("no video") { in.video_active = false; }
+    SECTION("a channel owns it: between items, or paused by the viewer") {
+        in.indexes_set = true;
+    }
+    SECTION("it plays") { in.playing = true; }
+    SECTION("a switch or tune has not got its stream up") { in.switch_pending = true; }
+    SECTION("a game is loading") { in.loading_game = true; }
+    SECTION("the post-game restore is not done") { in.post_game_pending = true; }
+
+    CHECK_FALSE(app::is_orphan_stream(in));
+}
+
+TEST_CASE("orphan stream: stopped once it has lasted the bound", "[auto_tune]") {
+    using app::OrphanStreamGuard;
+    OrphanStreamGuard guard;
+    const double t0 = 1000.0;
+    const double frame = 1.0 / 64.0;  // a frame; exact in binary
+
+    // Not on the first frame, nor at any frame short of the bound: a real
+    // stop's video_active debounce (a few frames) must never trip it.
+    CHECK_FALSE(guard.should_stop(true, t0));
+    CHECK_FALSE(guard.should_stop(true, t0 + 0.2));
+    CHECK_FALSE(guard.should_stop(true, t0 + OrphanStreamGuard::kBoundS - frame));
+    // At the bound: once.
+    CHECK(guard.should_stop(true, t0 + OrphanStreamGuard::kBoundS));
+    // The stop restarts the count: an orphan that survives it gets a whole
+    // new bound before the next stop, not one per frame.
+    CHECK_FALSE(guard.should_stop(true, t0 + OrphanStreamGuard::kBoundS + frame));
+    CHECK_FALSE(guard.should_stop(true, t0 + 2 * OrphanStreamGuard::kBoundS));
+    CHECK(guard.should_stop(true, t0 + 2 * OrphanStreamGuard::kBoundS + frame));
+}
+
+TEST_CASE("orphan stream: any frame that is not one restarts the count", "[auto_tune]") {
+    using app::OrphanStreamGuard;
+    OrphanStreamGuard guard;
+    const double t0 = 50.0;
+    CHECK_FALSE(guard.should_stop(true, t0));
+    CHECK_FALSE(guard.should_stop(true, t0 + 1.5));
+    CHECK_FALSE(guard.should_stop(false, t0 + 1.625));  // a channel took it over
+    CHECK_FALSE(guard.should_stop(true, t0 + 1.75));
+    CHECK_FALSE(guard.should_stop(true, t0 + 1.75 + OrphanStreamGuard::kBoundS - 0.25));
+    CHECK(guard.should_stop(true, t0 + 1.75 + OrphanStreamGuard::kBoundS));
+}
+
+TEST_CASE("orphan stream: the guard's stop lets the nothing-playing rule tune",
+          "[auto_tune]") {
+    // main.cpp's action: controller.stop(), then app::stop_to_menu. On the
+    // same frame the rule's video_active (state.video_active || indexes set)
+    // must read false, so it tunes the last channel watched.
+    app::AppState state;
+    state.video_active = true;
+    state.current_playlist_index = -1;
+    state.current_item_index = -1;
+    state.update_playback_state(1.680522, 40.1);
+
+    app::stop_to_menu(state);
+
+    AutoTuneInput in = ready();
+    in.video_active = state.video_active ||
+                      (state.current_playlist_index >= 0 && state.current_item_index >= 0);
+    CHECK(decide_auto_tune(in) == std::optional<int>(2));
+    CHECK(state.get_duration() == 0.0);
+    CHECK(state.get_position() == 0.0);
 }

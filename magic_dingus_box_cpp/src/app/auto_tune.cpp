@@ -51,4 +51,21 @@ std::optional<int> decide_auto_tune(const AutoTuneInput& in) {
     return std::nullopt;
 }
 
+bool is_orphan_stream(const OrphanStreamInput& in) {
+    return in.guide_style && in.intro_complete && in.on_main_screen &&
+           in.video_active && !in.indexes_set && !in.playing &&
+           !in.switch_pending && !in.loading_game && !in.post_game_pending;
+}
+
+bool OrphanStreamGuard::should_stop(bool orphan, double now_s) {
+    if (!orphan) {
+        since_.reset();
+        return false;
+    }
+    if (!since_) since_ = now_s;
+    if (now_s - *since_ < kBoundS) return false;
+    since_.reset();
+    return true;
+}
+
 }  // namespace app

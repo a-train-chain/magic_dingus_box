@@ -1056,6 +1056,8 @@ int main(int /* argc */, char* /* argv */[]) {
     // only when its id or the channel list changes.
     app::AutoTuneInput auto_tune;
     app::LastChannelRowCache auto_tune_last_row;
+    // Times a stream no channel owns (app::OrphanStreamGuard), guide style.
+    app::OrphanStreamGuard orphan_stream_guard;
 
     // The Channel Guide as painted (ui/channel_guide_view.h), handed to the
     // renderer by pointer (Renderer::set_channel_guide); lives across frames
@@ -1677,6 +1679,38 @@ int main(int /* argc */, char* /* argv */[]) {
                              state.current_screen != app::AppScreen::MediaBrowser;
 #endif
             auto_tune.on_main_screen = on_main_screen;
+            // A stream no channel owns — video_active with the playing
+            // indexes unset and the player not playing — would read as "a
+            // video plays" below forever (nothing ends it: no EOS, and the
+            // stall watchdog only watches a stream that reports playing).
+            // Past a short bound it is stopped and the main UI reset, and the
+            // rule below tunes on this same frame. See app::OrphanStreamGuard.
+            {
+                app::OrphanStreamInput orphan;
+                orphan.guide_style = true;
+                orphan.intro_complete = state.intro_complete;
+                orphan.on_main_screen = on_main_screen;
+                orphan.video_active = state.video_active;
+                orphan.indexes_set = state.current_playlist_index >= 0 &&
+                                     state.current_item_index >= 0;
+                orphan.playing = playlist_transport.is_playing();
+                orphan.switch_pending =
+                    playlist_playback.switch_pending() || state.is_switching_playlist;
+                orphan.loading_game = state.is_loading_game;
+                orphan.post_game_pending = post_game_gate.settling();
+                const double steady_now_s = std::chrono::duration<double>(
+                    playlist_transport.now().time_since_epoch()).count();
+                if (orphan_stream_guard.should_stop(app::is_orphan_stream(orphan),
+                                                    steady_now_s)) {
+                    std::cerr << "Channel Guide: a stream no channel owns sat at "
+                              << state.get_position() << "/" << state.get_duration()
+                              << "s, not playing, for "
+                              << app::OrphanStreamGuard::kBoundS
+                              << " s — stopping it" << std::endl;
+                    controller.stop();
+                    app::stop_to_menu(state);
+                }
+            }
             // Between two items video_active drops while the next stream
             // prerolls, but the playing indexes stay set: every real stop
             // clears them (app::stop_to_menu), so that gap is not "nothing
@@ -1726,6 +1760,10 @@ int main(int /* argc */, char* /* argv */[]) {
                     }
                 }
             }
+        } else {
+            // List style: no stream is ever an orphan, so a count begun in
+            // guide style must not carry over into the next switch back.
+            (void)orphan_stream_guard.should_stop(/*orphan=*/false, 0.0);
         }
 
         // The channel last watched: a tune's load (in the ticks above) sets

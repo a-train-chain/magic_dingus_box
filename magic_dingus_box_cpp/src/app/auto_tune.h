@@ -67,6 +67,52 @@ bool auto_tune_gates_open(const AutoTuneInput& in);
 //   - else nothing.
 std::optional<int> decide_auto_tune(const AutoTuneInput& in);
 
+// ── An orphan stream (defence in depth) ─────────────────────────────────
+// The rule above reads "video_active, or the playing indexes set" as
+// "something plays". A stream the kiosk believes is up (video_active) that
+// no channel owns (the indexes unset) and that is not playing is neither,
+// and nothing ends it: it never reaches EOS, the stall watchdog only
+// watches a stream that reports playing, and the rule never tunes over it.
+// Pi 5, 2026-11-13 13:02: after a game the re-initialized player reported
+// the torn-down stream's last position and duration (fixed at the cause,
+// GstPlayer::cleanup), and the box sat on a black guide window until a
+// channel button was pressed. Whatever produces that state next, it is not
+// a resting state: once it has lasted OrphanStreamGuard::kBoundS, main.cpp
+// stops the stream and resets the main UI (controller.stop(), then
+// app::stop_to_menu), and the rule tunes on the same frame. List style
+// never stops anything here.
+struct OrphanStreamInput {
+    bool guide_style = false;
+    bool intro_complete = false;     // the intro plays with no indexes by design
+    // Not under the Media Browser (its playback has no indexes by design),
+    // Settings or the keyboard — the rule's own on_main_screen.
+    bool on_main_screen = false;
+    bool video_active = false;       // AppState::video_active itself
+    bool indexes_set = false;        // current_playlist_index and current_item_index >= 0
+    bool playing = false;            // the player reports playing
+    bool switch_pending = false;     // a switch or tune has not got its stream up
+    bool loading_game = false;
+    bool post_game_pending = false;  // the post-game display restore is not done
+};
+
+bool is_orphan_stream(const OrphanStreamInput& in);
+
+// Times an orphan. Long enough that a real stop's video_active debounce
+// (Controller::update_state holds it through a few negative reads) never
+// trips it; short enough to read as a hiccup, not a hang.
+class OrphanStreamGuard {
+public:
+    static constexpr double kBoundS = 2.0;
+    // Once per frame, `now_s` = steady clock seconds. True on the frame an
+    // orphan has lasted kBoundS: the caller stops it. A frame that is not an
+    // orphan restarts the count, and so does a stop — an orphan that
+    // survives it gets a whole new bound, never a stop per frame.
+    bool should_stop(bool orphan, double now_s);
+
+private:
+    std::optional<double> since_;
+};
+
 // main.cpp's memo of AutoTuneInput::last_channel. Resolving the last channel
 // watched to its row scans the playlists building an identity string per
 // row; in the resting states the gates stay open every frame (no channel has
