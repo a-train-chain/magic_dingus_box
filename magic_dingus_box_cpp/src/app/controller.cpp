@@ -522,6 +522,20 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
             }
         }
 
+        // The launcher resumed the PulseAudio sinks it suspended for the game
+        // right after the reap. If one of those calls timed out (a pactl
+        // stall at game exit — page-cache eviction on a 1.5 GB Pi 4B, an SD
+        // card saturated by an upload) or failed (the device not free yet),
+        // a sink may still be suspended, and the kiosk's pulsesink wedges on
+        // it: frozen video, no sound, until a restart. Retry once here, a
+        // couple of seconds later; when the resume completed this sends
+        // nothing at all.
+        if (const auto retry = retroarch::retry_resume_if_needed(
+                retroarch_launcher_.last_sink_resume(), audio::default_runner())) {
+            std::cout << "[audio] post-game retry: " << retroarch::describe_resume_all(*retry)
+                      << std::endl;
+        }
+
         // Restore PulseAudio default sink to match user's audio output preference
         // RetroArch uses ALSA directly, so PulseAudio state may have drifted
         std::cout << "Restoring audio output after RetroArch..." << std::endl;

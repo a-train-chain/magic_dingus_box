@@ -482,14 +482,17 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Audio crash recovery, before anything can play. A game session
     // suspends every PulseAudio sink and resumes them when it ends
-    // (retroarch/sink_suspension.h); a kiosk killed mid-game (watchdog
-    // abort, OOM, SIGKILL past TimeoutStopSec) never ran that resume, and
-    // PulseAudio — its own unit, still running — keeps a suspended sink
-    // suspended until told otherwise. Without this the box stays silent
-    // until PulseAudio itself restarts. A no-op on every other start.
+    // (retroarch/sink_suspension.h); a kiosk that died mid-game (watchdog
+    // abort, OOM, SIGKILL past TimeoutStopSec, a throw on the launch chain)
+    // never ran that resume, and PulseAudio — its own unit, still running —
+    // keeps a suspended sink suspended until told otherwise. The kiosk's
+    // pulsesink would wedge on it: frozen video and no sound until
+    // PulseAudio itself restarts. Only sinks listed SUSPENDED get a call — a
+    // sink PulseAudio merely idle-suspended too, harmlessly: `suspend-sink
+    // 0` clears only the user suspend. The log line says which it can know.
     std::cout << "[audio] start-up: "
-              << retroarch::describe_sink_report(
-                     "resumed", retroarch::resume_all_sinks(app::audio::default_runner()))
+              << retroarch::describe_resume_all(
+                     retroarch::resume_all_sinks(app::audio::default_runner()))
               << std::endl;
 
     // Load saved settings (CRT effects, loop, shuffle, etc.)

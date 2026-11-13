@@ -36,6 +36,13 @@ public:
     // showable error instead of a dark screen after the handoff.
     static std::optional<std::string> find_core_dir(const std::string& core_name);
 
+    // The last launch_game()'s resume of the PulseAudio sinks it suspended
+    // (empty when it never got that far, or had no pactl runner). The
+    // controller hands it to retry_resume_if_needed() in its post-game
+    // restore: a resume that timed out or failed leaves a sink the kiosk's
+    // pulsesink would wedge on (sink_suspension.h).
+    const SinkReport& last_sink_resume() const { return last_sink_resume_; }
+
 private:
     // Find RetroArch executable
     std::optional<std::string> find_retroarch();
@@ -56,6 +63,7 @@ private:
 private:
     std::optional<std::string> retroarch_bin_;
     bool retroarch_available_;
+    SinkReport last_sink_resume_;
 };
 
 } // namespace retroarch

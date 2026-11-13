@@ -18,17 +18,25 @@
 // default sink (the TV may be on either HDMI port).
 //
 // The danger is the other direction. A sink suspended this way stays
-// suspended until `pactl suspend-sink <sink> 0`: a new stream does not wake
-// it (a client cannot resume an administratively suspended sink — the
-// playback stall watchdog's CHANGELOG entry records the wedge that makes).
-// One missed resume is a kiosk with no sound. So:
-//   - SinkSuspension resumes, from its destructor, whatever it suspended and
-//     was not explicitly resumed — every early return and exception between
-//     suspend() and the end of the session is covered by scope;
+// suspended until `pactl suspend-sink <sink> 0` (which clears only that
+// "user" suspend — PulseAudio's own idle suspend is separate): a new stream
+// does not wake it, and a client cannot resume it. The kiosk's pulsesink
+// WEDGES on such a sink — the video freezes and the playback stall watchdog
+// loops play() with no way out (CHANGELOG, the stall watchdog entry) — and
+// the box is silent, until the next game, a kiosk restart or a PulseAudio
+// restart. So:
 //   - resume() tries EVERY sink suspend() sent a suspend to, whatever
 //     happened to the others;
-//   - resume_all_sinks() runs once at kiosk start-up, for a kiosk that was
-//     killed mid-game and never reached its resume.
+//   - a session resume that did not complete (a call timed out or failed)
+//     is retried once later in the post-game restore —
+//     retry_resume_if_needed(), a no-op in the normal case;
+//   - SinkSuspension's destructor resumes whatever was not explicitly
+//     resumed, so an early return between suspend() and the end of the
+//     session is covered by scope. NOT an exception on the kiosk's launch
+//     chain: nothing there catches, so a throw ends in std::terminate
+//     without unwinding — the backstop for that is systemd's restart plus:
+//   - resume_all_sinks() at kiosk start-up, for a kiosk that died mid-game
+//     and never reached its resume.
 //
 // Never fatal: a pactl that fails or times out is reported and the launch
 // goes on (the old idle-timer hand-over is then the fallback). suspend()
@@ -40,6 +48,7 @@
 // kiosk passes app::audio::default_runner() (2 s bound, stdout captured).
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,8 +59,18 @@ namespace retroarch {
 using PactlRunner =
     std::function<utils::subprocess::Result(const std::vector<std::string>& argv)>;
 
-// Sink names (second column) of `pactl list short sinks`, in listed order.
-// Lines that do not start with a numeric index are ignored.
+// One line of `pactl list short sinks`: "<index>\t<name>\t<driver>\t
+// <sample spec>\t<state>". `state` is RUNNING / IDLE / SUSPENDED, or "" when
+// the line has no state column.
+struct ListedSink {
+    std::string name;
+    std::string state;
+};
+
+// The listed sinks, in order. Lines that do not start with a numeric index
+// are ignored.
+std::vector<ListedSink> parse_sinks(const std::string& pactl_short_sinks);
+// Just their names.
 std::vector<std::string> parse_sink_names(const std::string& pactl_short_sinks);
 
 // What one pass over the sinks did, for the log.
@@ -63,17 +82,28 @@ struct SinkReport {
     std::vector<std::string> failed;     // pactl exited non-zero (sink gone, ...)
     std::vector<std::string> timed_out;  // hit the bound: outcome unknown
     std::vector<std::string> abandoned;  // suspend() only: never sent after a timeout
+    // resume_all_sinks() only: listed RUNNING or IDLE, so nothing to resume
+    // (a user-suspended sink is always listed SUSPENDED).
+    std::vector<std::string> not_suspended;
 };
 
-// One line for the journal / launcher log, e.g.
-// "suspended 2 PulseAudio sink(s): a, b".
+// One line for the journal / launcher log of a session's suspend() or
+// resume(), e.g. "suspended 2 PulseAudio sink(s): a, b".
 std::string describe_sink_report(const std::string& action, const SinkReport& report);
+
+// The same for resume_all_sinks(), worded for what it can know: a sink
+// listed SUSPENDED may be PulseAudio's own idle suspend, which
+// `suspend-sink 0` leaves alone, so it never claims to have "resumed" one.
+// e.g. "checked 2 PulseAudio sink(s), none suspended".
+std::string describe_resume_all(const SinkReport& report);
 
 class SinkSuspension {
 public:
     // An empty runner makes every call a no-op (no PulseAudio to talk to).
     explicit SinkSuspension(PactlRunner run);
-    // resume() for anything still held.
+    // resume() for anything still held — an early return between suspend()
+    // and the explicit resume(). Never throws: a throw out of a destructor
+    // is std::terminate.
     ~SinkSuspension();
 
     SinkSuspension(const SinkSuspension&) = delete;
@@ -97,8 +127,19 @@ private:
     bool suspend_attempted_ = false;
 };
 
-// Start-up crash recovery: `suspend-sink <sink> 0` for every sink PulseAudio
-// lists now. Tries each one whatever happened to the others.
+// `suspend-sink <sink> 0` for every sink PulseAudio lists as SUSPENDED (or
+// with no state column) now; RUNNING/IDLE ones cannot be user-suspended and
+// are only reported. Tries each one whatever happened to the others. Kiosk
+// start-up (crash recovery) and the post-game retry below.
 SinkReport resume_all_sinks(const PactlRunner& run);
+
+// The post-game retry. `session_resume` is the session's resume() report:
+// when any of its calls timed out (outcome unknown — PulseAudio may still
+// hold the sink suspended) or failed (e.g. the device was not free yet, so
+// the sink could not reopen), run resume_all_sinks() once more and return
+// its report. Otherwise nullopt WITHOUT a single pactl call — the normal
+// case costs nothing.
+std::optional<SinkReport> retry_resume_if_needed(const SinkReport& session_resume,
+                                                 const PactlRunner& run);
 
 }  // namespace retroarch
