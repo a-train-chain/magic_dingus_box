@@ -173,6 +173,30 @@ TEST_CASE("the session bracket works with no optional ops (MEDIA_BROWSER=OFF, "
     CHECK_FALSE(bracket.session_running());
 }
 
+TEST_CASE("a game session takes the Channel Guide back from the viewer",
+          "[game_handoff][guide]") {
+    // Owner decision (2026-11-13, Pi 5 test): after a game the kiosk comes
+    // back to the video full screen. A game launched from Settings opened
+    // over a guide the viewer owned used to keep that ownership through the
+    // game, so the post-game auto-tune's load (keep_overlay=false, which
+    // hides only a guide the viewer does NOT own) left the guide up. The
+    // bracket drops it at the session's start — before the post-game ready
+    // edge that lets the auto-tune run, so nothing can race it.
+    app::AppState state;
+    state.guide_opened_by_viewer = true;
+    state.ui_visible_when_playing = true;
+    app::PostGameGate gate;
+    app::GameSessionBracket bracket(state, gate, {});
+    app::PlaylistItem game;
+    game.title = "Sonic";
+    bracket.begin(game);
+    CHECK_FALSE(state.guide_opened_by_viewer);
+    bracket.end();
+    CHECK_FALSE(state.guide_opened_by_viewer);
+    // Nothing else of the overlay is touched: the auto-tune's load hides it.
+    CHECK(state.ui_visible_when_playing);
+}
+
 // ── Game quiet-mode actions ──────────────────────────────────────────────
 
 TEST_CASE("game quiet actions pause/resume the stack in order on a provisioned box",

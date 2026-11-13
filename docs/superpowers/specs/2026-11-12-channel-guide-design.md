@@ -163,6 +163,11 @@ lowest channel with a schedule.
   call, within decision 7]
 - The guide is not opened by these re-tunes; the video simply comes back,
   as when a TV is switched on.
+- After a game the video always comes back full screen, even when the
+  viewer had the guide open when they launched it (Settings over the
+  guide → Video Games): a game session takes the guide back from the
+  viewer, so the post-game re-tune closes it. [owner decision,
+  2026-11-13, after the Pi 5 test]
 - List style keeps today's behaviour on all of these paths.
 
 ### Clock

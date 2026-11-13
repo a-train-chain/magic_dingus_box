@@ -310,7 +310,9 @@ public:
     //   used in guide style.
     // guide_opened_by_viewer: the viewer owns the guide — SELECT opened it,
     //   or the shown guide got any other input. Cleared by the viewer's
-    //   Close and Tune presses and whenever the overlay hides. A tune's load
+    //   Close and Tune presses, whenever the overlay hides, and when a game
+    //   session begins (GameSessionBracket::begin: after a game the video
+    //   comes back full screen). A tune's load
     //   (PlaylistPlayback, decided when the load RUNS) never hides a guide
     //   the viewer owns — "the guide never closes by itself"; one the
     //   viewer does not own goes, so the video simply comes back.
