@@ -8,10 +8,25 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_tostring.hpp>
+
+#include <limits>
+#include <string>
 
 #include "video/picture_placement.h"
 
 using Catch::Approx;
+
+// A failed IRect check prints the rect, not "{?} == {?}".
+namespace Catch {
+template <>
+struct StringMaker<video::IRect> {
+    static std::string convert(const video::IRect& r) {
+        return "{" + std::to_string(r.x) + ", " + std::to_string(r.y) + ", " +
+               std::to_string(r.w) + ", " + std::to_string(r.h) + "}";
+    }
+};
+}  // namespace Catch
 
 namespace {
 const video::IRect T{0, 0, 960, 720};
@@ -37,12 +52,16 @@ TEST_CASE("fit sits inside the bezel opening; crop ignores the opening",
     CHECK(video::place_picture(16.0/9, T1080, 4.0/3, MDB, false).viewport == video::IRect{284, 161, 1348, 758});
     // The bezel covers the edges of a cropped picture, as today.
     CHECK(video::place_picture(16.0/9, T1080, 4.0/3, MDB, true).viewport == T1080);
+    // Portrait: side bars inside the opening, offset by the opening's x.
+    CHECK(video::place_picture(9.0/16, T1080, 4.0/3, MDB, false).viewport == video::IRect{681, 48, 554, 984});
 }
 
 TEST_CASE("CRT Native: a non-square framebuffer shown as 4:3",
           "[video][picture_placement]") {
     CHECK(video::place_picture(16.0/9, CRT, 4.0/3, CRT, false).viewport == video::IRect{0, 90, 1280, 540});
-    CHECK(video::place_picture(16.0/9, CRT, 4.0/3, CRT, true).tex.u0 == Approx(0.125));
+    auto crop = video::place_picture(16.0/9, CRT, 4.0/3, CRT, true);
+    CHECK(crop.viewport == CRT);
+    CHECK(crop.tex.u0 == Approx(0.125)); CHECK(crop.tex.u1 == Approx(0.875));
 }
 
 TEST_CASE("portrait source crops top and bottom, fits with side bars",
@@ -69,6 +88,29 @@ TEST_CASE("unknown aspect draws the whole frame over the whole target",
     }
     // An empty opening fits inside the target rather than drawing nothing.
     CHECK(video::place_picture(16.0/9, T, 4.0/3, video::IRect{0, 0, 0, 0}, false).viewport == video::IRect{0, 90, 960, 540});
+}
+
+TEST_CASE("an infinite aspect draws the whole frame over the whole target",
+          "[video][picture_placement]") {
+    const double inf = std::numeric_limits<double>::infinity();
+    for (bool crop : {true, false}) {
+        for (auto p : {video::place_picture(inf, T, 4.0/3, T, crop),
+                       video::place_picture(16.0/9, T, inf, T, crop)}) {
+            CHECK(p.viewport == T);
+            CHECK(p.tex.u0 == Approx(0.0)); CHECK(p.tex.u1 == Approx(1.0));
+            CHECK(p.tex.v0 == Approx(0.0)); CHECK(p.tex.v1 == Approx(1.0));
+        }
+    }
+}
+
+TEST_CASE("display aspect multiplies in the pixel aspect ratio",
+          "[video][picture_placement]") {
+    CHECK(video::display_aspect(720, 480, 32, 27) == Approx(16.0/9).epsilon(0.001));  // anamorphic DVD
+    CHECK(video::display_aspect(1920, 1080, 1, 1) == Approx(16.0/9));
+    // No frame yet (or nonsense caps): 0, which place_picture treats as
+    // unknown.
+    CHECK(video::display_aspect(0, 0, 1, 1) == 0.0);
+    CHECK(video::display_aspect(720, 480, 0, 1) == 0.0);
 }
 
 TEST_CASE("placement helpers", "[video][picture_placement]") {

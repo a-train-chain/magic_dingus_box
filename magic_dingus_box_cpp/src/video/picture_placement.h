@@ -39,8 +39,17 @@ struct Placement {
     TexRect tex;
 };
 
+// A frame's display aspect: its pixel grid times its pixel aspect ratio
+// (an anamorphic 720x480 DVD frame with PAR 32:27 shows as 16:9, not 3:2).
+// 0 when anything is missing or nonsense — "unknown" to place_picture.
+inline double display_aspect(int w, int h, int par_n, int par_d) {
+    if (w <= 0 || h <= 0 || par_n <= 0 || par_d <= 0) return 0.0;
+    return (static_cast<double>(w) * par_n) /
+           (static_cast<double>(h) * par_d);
+}
+
 // True when a display aspect is within 2% of 4:3 — close enough that crop
-// and fit draw the same picture, so there is nothing to toggle.
+// and fit draw nearly the same picture, so the toggle would be invisible.
 inline bool is_four_by_three(double display_aspect) {
     constexpr double kFourByThree = 4.0 / 3.0;
     constexpr double kTolerance = 0.02;
@@ -80,13 +89,14 @@ inline IRect scale_image_rect(IRect r, int img_w, int img_h, int fb_w,
 // target:        the 4:3 area in framebuffer pixels.
 // target_aspect: the display aspect target is shown at (4:3).
 // opening:       the visible part of target (pass target with no bezel).
-// An unusable aspect (not yet known, zero) draws the whole frame over the
-// whole target — the picture before any of this existed.
+// An unusable aspect (not yet known, zero, infinite) draws the whole frame
+// over the whole target — the picture before any of this existed.
 inline Placement place_picture(double src_aspect, IRect target,
                                double target_aspect, IRect opening,
                                bool crop) {
     constexpr TexRect kFullFrame{0.0f, 0.0f, 1.0f, 1.0f};
-    if (!(src_aspect > 0.0) || !(target_aspect > 0.0) || target.w <= 0 ||
+    const auto usable = [](double a) { return std::isfinite(a) && a > 0.0; };
+    if (!usable(src_aspect) || !usable(target_aspect) || target.w <= 0 ||
         target.h <= 0) {
         return Placement{target, kFullFrame};
     }

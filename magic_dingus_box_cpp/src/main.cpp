@@ -7,6 +7,7 @@
 #include "platform/frame_presenter.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
+#include "video/picture_placement.h"
 #include "ui/renderer.h"
 #include "ui/settings_menu.h"
 #include "ui/controller_wizard.h"
@@ -1754,10 +1755,11 @@ int main(int /* argc */, char* /* argv */[]) {
         // The 4:3 content rect exists in TWO coordinate spaces and they
         // are no longer the same thing:
         //
-        //   PHYSICAL (content_*)      -> glViewport, real framebuffer px
-        //   LOGICAL  (logical_content_*) -> set_content_viewport, which
-        //                                overwrites the renderer's
-        //                                projection size
+        //   PHYSICAL (content)         -> glViewport and the video's 4:3
+        //                                 area, real framebuffer px
+        //   LOGICAL  (logical_content) -> set_content_viewport, which
+        //                                 overwrites the renderer's
+        //                                 projection size
         //
         // They coincided while the framebuffer was always 1280x720. In
         // Modern TV at 1920x1080 they diverge by 1.5x, and feeding the
@@ -1766,35 +1768,21 @@ int main(int /* argc */, char* /* argv */[]) {
         // render at 2/3 of its intended screen fraction with dead margin
         // right and bottom. The logical rect is derived from the UI's own
         // logical canvas so it stays 960x720 at any output resolution.
-        int content_x = 0, content_y = 0, content_w = mode.width, content_h = mode.height;
+        //
+        // Both rects use a TOP-LEFT origin; glViewport's bottom-left y is
+        // derived where it is called.
+        const int fb_w = static_cast<int>(mode.width);
+        const int fb_h = static_cast<int>(mode.height);
         const config::display::Size ui_canvas = config::display::logical_canvas(
             state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
-        int logical_content_w = ui_canvas.w, logical_content_h = ui_canvas.h;
+        video::IRect content{0, 0, fb_w, fb_h};
+        video::IRect logical_content{0, 0, ui_canvas.w, ui_canvas.h};
 
         if (letterbox_active) {
-            // Calculate 4:3 content area centered in screen
-            // Height stays the same, width is adjusted for 4:3 aspect ratio
-            content_h = mode.height;
-            content_w = mode.height * 4 / 3;  // 4:3 aspect ratio
-            content_x = (mode.width - content_w) / 2;  // Center horizontally
-            content_y = 0;
-
-            // If calculated width is larger than screen, pillarbox based on width
-            if (content_w > static_cast<int>(mode.width)) {
-                content_w = mode.width;
-                content_h = mode.width * 3 / 4;
-                content_x = 0;
-                content_y = (mode.height - content_h) / 2;
-            }
-
-            // Same 4:3 math, logical space. Integer-exact at both
-            // resolutions: 720 -> 960x720, 1080 -> 1440x1080.
-            logical_content_h = ui_canvas.h;
-            logical_content_w = ui_canvas.h * 4 / 3;
-            if (logical_content_w > ui_canvas.w) {
-                logical_content_w = ui_canvas.w;
-                logical_content_h = ui_canvas.w * 3 / 4;
-            }
+            // Integer-exact at both resolutions: 720 -> 960x720,
+            // 1080 -> 1440x1080 (physical and logical alike).
+            content = video::four_by_three_rect(fb_w, fb_h);
+            logical_content = video::four_by_three_rect(ui_canvas.w, ui_canvas.h);
         }
         
         // Enhanced CRT pipeline (Phase 1+): redirect video+UI rendering
@@ -1815,11 +1803,30 @@ int main(int /* argc */, char* /* argv */[]) {
         // Render video - gst will fill the entire framebuffer, so no need to clear if video is ready
         // This handles both intro video and regular video playback
         if (should_render_video) {
-            // Set letterbox mode based on display settings
-            gst_renderer.set_letterbox_mode(letterbox_active);
+            // Playlist and intro video draw through the picture placement
+            // into the 4:3 area: `content` is exactly that outside the
+            // Media Browser — the centred 4:3 rect in Modern TV, the whole
+            // framebuffer (shown as 4:3) in CRT Native. The Media Browser
+            // keeps its own aspect-preserve + inset paths below.
+#ifdef MEDIA_BROWSER_ENABLED
+            const bool picture_mode =
+                state.current_screen != app::AppScreen::MediaBrowser;
+#else
+            const bool picture_mode = true;
+#endif
+            if (picture_mode) {
+                // The visible opening. The active bezel's window is wired
+                // in by the bezel-catalog work; until then, the target.
+                const video::IRect opening = content;
+                // Crop until the per-video setting exists.
+                const bool crop = true;
+                gst_renderer.set_picture(content, crop, opening);
+            } else {
+                gst_renderer.clear_picture();
+            }
 
-            // Aspect-preserve mode: enabled for Modern TV (so Media
-            // Browser's wide movies don't stretch vertically), disabled
+            // Aspect-preserve mode (Media Browser only): enabled for Modern
+            // TV (so wide movies don't stretch vertically), disabled
             // for CRT_NATIVE (the CRT TV's HDMI input does its own
             // 16:9→4:3 conversion, so the Pi should send a fully-filled
             // 1280×720 framebuffer; pre-pillarboxing on the Pi side
@@ -1828,11 +1835,6 @@ int main(int /* argc */, char* /* argv */[]) {
             const bool crt_mode =
                 (state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
             gst_renderer.set_aspect_preserve(!crt_mode);
-
-            // In Modern TV mode, set viewport to 4:3 content area for video
-            if (letterbox_active) {
-                glViewport(content_x, content_y, content_w, content_h);
-            }
 
 #ifdef MEDIA_BROWSER_ENABLED
             // Marquee playback: tell gst_renderer to render INTO an
@@ -1860,9 +1862,9 @@ int main(int /* argc */, char* /* argv */[]) {
             // frame clear is gated on `!state.video_active`, which is
             // false during active playback.
             //
-            // Non-Marquee paths (intro video, playlist playback in the
-            // main kiosk) reset the inset to (0,0,0,0) which means
-            // "use the full screen" — legacy behavior preserved.
+            // Everything else resets the inset to (0,0,0,0), "use the
+            // full screen" (intro and playlist video ignore the inset:
+            // they draw in picture mode, above).
             //
             // CRT shader is already gated off for MediaBrowser (see
             // begin_scene_fbo's AppScreen check) so playback shows a
@@ -1907,12 +1909,13 @@ int main(int /* argc */, char* /* argv */[]) {
         if (!state.showing_intro_video || state.intro_fading_out) {
             // Set viewport to 4:3 content area for UI in Modern TV mode
             // Also update UI renderer's internal dimensions for proper projection matrix
-            glViewport(content_x, content_y, content_w, content_h);
+            glViewport(content.x, fb_h - content.y - content.h,
+                       content.w, content.h);
             if (letterbox_active) {
                 // LOGICAL size — see the two-coordinate-space note where
-                // these are computed. Passing content_w/content_h (the
+                // these are computed. Passing content.w/content.h (the
                 // physical rect) here would shrink the whole main menu.
-                ui_renderer.set_content_viewport(logical_content_w, logical_content_h);
+                ui_renderer.set_content_viewport(logical_content.w, logical_content.h);
             }
 #ifdef MEDIA_BROWSER_ENABLED
             // Skip main kiosk UI when the Media Browser screen is active;
