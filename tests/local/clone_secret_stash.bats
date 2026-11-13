@@ -456,6 +456,25 @@ restore_content() {
     [ -f "$BOX/data/media/personal.mp4" ]
 }
 
+@test "curation: two files that stash under one name stop prepare, nothing overwritten" {
+    # data/media_info.json and a hand-placed data/media/info.json both
+    # flatten to ..._data_media_info.json in the stash.
+    clone_box_fixture
+    printf 'hand-placed\n' > "$BOX/data/media/info.json"
+    printf '{"version":1,"videos":{"media/ship.mp4":{},"media/gone.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation ok
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ERROR:"*"$BOX/data/media_info.json"*"same content-stash name"* ]]
+    # The second file was never moved and the first is intact in the stash...
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    # ...so restore puts the box back exactly.
+    restore_content
+    [ "$(cat "$BOX/data/media/info.json")" = "hand-placed" ]
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+}
+
 # ---------------------------------------------------------------------------
 # Script wiring
 # ---------------------------------------------------------------------------

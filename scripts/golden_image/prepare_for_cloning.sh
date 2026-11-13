@@ -1047,6 +1047,17 @@ if [[ ${#CONTENT_PATHS[@]} -gt 0 ]]; then
     for _src in "${CONTENT_PATHS[@]}"; do
         [[ -f "$_src" ]] || continue
         _key="$(printf '%s' "$_src" | tr '/' '_')"
+        # The key flattens '/' to '_', so two paths can share one name
+        # (data/media_info.json and a hand-placed data/media/info.json). mv
+        # would silently replace the first file's only copy: refuse instead.
+        # Everything moved so far is in the manifest, and restore puts it back.
+        if [[ -e "${CONTENT_STASH}/${_key}" ]]; then
+            log "ERROR: ${_src} has the same content-stash name as a file already"
+            log "       moved to ${CONTENT_STASH}/${_key}. Nothing was overwritten."
+            log "       Run restore_after_cloning.sh (it puts back what was moved and"
+            log "       clears the marker), rename one of the two files, and re-run."
+            exit 1
+        fi
         _sz=$(stat -c %s "$_src" 2>/dev/null || echo 0)
         mv "$_src" "${CONTENT_STASH}/${_key}"
         printf '%s\t%s\n' "$_key" "$_src" >> "${CONTENT_STASH}/manifest"
