@@ -130,6 +130,21 @@ TEST_CASE("a source known to be 4:3 is always drawn cropped",
     for (double a : {0.0, 4.0/3, 16.0/9, 9.0/16}) CHECK(video::picture_crop(true, a));
 }
 
+TEST_CASE("intersect clamps a bezel opening to the 4:3 area",
+          "[video][picture_placement]") {
+    // Inside: unchanged.
+    CHECK(video::intersect(MDB, T1080) == MDB);
+    // A declared window wider than the 4:3 area is cut to it on each side.
+    CHECK(video::intersect(video::IRect{200, -10, 1520, 1100}, T1080) == T1080);
+    CHECK(video::intersect(video::IRect{100, 50, 400, 100}, T1080) ==
+          video::IRect{240, 50, 260, 100});
+    // No overlap: an empty rect, which place_picture treats as no opening.
+    const video::IRect none = video::intersect(video::IRect{0, 0, 200, 100}, T1080);
+    CHECK((none.w <= 0 || none.h <= 0));
+    CHECK(video::place_picture(16.0/9, T1080, 4.0/3, none, false).viewport ==
+          video::IRect{240, 135, 1440, 810});
+}
+
 TEST_CASE("placement helpers", "[video][picture_placement]") {
     CHECK(video::is_four_by_three(640.0/480)); CHECK(video::is_four_by_three(720.0*8/(480*9))); // 720x480, PAR 8:9
     CHECK_FALSE(video::is_four_by_three(1.5)); CHECK_FALSE(video::is_four_by_three(16.0/9));

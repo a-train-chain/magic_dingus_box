@@ -1864,12 +1864,17 @@ int main(int /* argc */, char* /* argv */[]) {
                 // The visible opening: the drawn bezel's transparent
                 // window — its 1920x1080 art is stretched over the whole
                 // framebuffer (Renderer::render_bezel) — else the 4:3 area.
+                // Clamped to the 4:3 area: a declared window reaching past
+                // it must never put fit's picture over the pillarbox bars
+                // (an empty overlap fits inside the 4:3 area instead).
                 video::IRect opening = content;
                 if (drawn_bezel && drawn_bezel->has_opening) {
-                    opening = video::scale_image_rect(
-                        video::IRect{drawn_bezel->opening_x, drawn_bezel->opening_y,
-                                     drawn_bezel->opening_w, drawn_bezel->opening_h},
-                        app::kBezelImageWidth, app::kBezelImageHeight, fb_w, fb_h);
+                    opening = video::intersect(
+                        video::scale_image_rect(
+                            video::IRect{drawn_bezel->opening_x, drawn_bezel->opening_y,
+                                         drawn_bezel->opening_w, drawn_bezel->opening_h},
+                            app::kBezelImageWidth, app::kBezelImageHeight, fb_w, fb_h),
+                        content);
                 }
                 // The playing video's own setting (app/media_info.h):
                 // cropped unless the operator chose to see it whole. The

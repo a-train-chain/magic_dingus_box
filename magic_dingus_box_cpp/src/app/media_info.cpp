@@ -233,7 +233,10 @@ MediaInfoStore::MediaInfoStore(std::string path, FileSink sink, Clock clock)
     : path_(std::move(path)),
       lock_path_(path_ + ".lock"),
       sink_(std::move(sink)),
-      clock_(clock ? std::move(clock) : Clock(&std::chrono::steady_clock::now)) {}
+      // A lambda, not &steady_clock::now: taking the address of a
+      // standard-library function is not guaranteed to work.
+      clock_(clock ? std::move(clock)
+                   : Clock([] { return std::chrono::steady_clock::now(); })) {}
 
 bool MediaInfoStore::write_file_durably(const std::string& path, const std::string& body) {
     // The kiosk's staging name. The web admin stages through its own

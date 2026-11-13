@@ -46,6 +46,19 @@ BEZELS_DIR="$CPP_DIR/assets/bezels"
     [ -z "$output" ] || { echo "missing or bad opening: $output"; false; }
 }
 
+# The kiosk stretches the 1920x1080 art over the whole framebuffer and draws
+# playlist video only inside the centred 4:3 area (1440x1080 at x 240..1680);
+# an opening reaching past it would be clamped there (main.cpp), so the art
+# and its declared window disagree. Keep every opening inside it.
+@test "every bezel opening lies inside the 4:3 area of the 1920x1080 image" {
+    run jq -r '.bezels[] | select(.opening != null)
+        | select(.opening.x < 240 or .opening.x + .opening.w > 1680
+                 or .opening.y < 0 or .opening.y + .opening.h > 1080)
+        | "\(.id): x=\(.opening.x) w=\(.opening.w)"' "$BEZELS_JSON"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "opening outside the 4:3 area: $output"; false; }
+}
+
 @test "every MDB bezel has a matching .cfg sidecar" {
     while IFS= read -r file; do
         cfg="${file%.png}.cfg"

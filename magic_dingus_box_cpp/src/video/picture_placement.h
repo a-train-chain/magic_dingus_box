@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 namespace video {
@@ -93,6 +94,18 @@ inline IRect scale_image_rect(IRect r, int img_w, int img_h, int fb_w,
     const int y0 = static_cast<int>(std::lround(r.y * sy));
     const int x1 = static_cast<int>(std::lround((r.x + r.w) * sx));
     const int y1 = static_cast<int>(std::lround((r.y + r.h) * sy));
+    return IRect{x0, y0, x1 - x0, y1 - y0};
+}
+
+// The part of `a` inside `b`; an empty rect (w or h 0) when they do not
+// overlap. Clamps a bezel's declared opening to the 4:3 area: fit must never
+// place the picture outside the target, whatever bezels.json says.
+inline IRect intersect(IRect a, IRect b) {
+    const int x0 = std::max(a.x, b.x);
+    const int y0 = std::max(a.y, b.y);
+    const int x1 = std::min(a.x + a.w, b.x + b.w);
+    const int y1 = std::min(a.y + a.h, b.y + b.h);
+    if (x1 <= x0 || y1 <= y0) return IRect{0, 0, 0, 0};
     return IRect{x0, y0, x1 - x0, y1 - y0};
 }
 
