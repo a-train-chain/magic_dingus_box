@@ -287,6 +287,17 @@ public:
     // Channel Guide: the channel last tuned, as a playlist_identity() string
     // ("shuffle" = channel 00, "" = none). Persisted as playback.last_channel.
     std::string last_channel_id;
+    // Channel Guide, written by PlaylistPlayback (render thread only):
+    // tuned_channel: the channel (= UI row) on screen, or waiting for its
+    //   next item after a failed one; -1 = none. 00 stays 00 while the
+    //   playing playlist is the on-air item's source playlist.
+    // guide_gave_up: channels given up after repeated failures since the
+    //   last successful load (the nothing-playing rule skips them).
+    // guide_wait_until_utc: after a failed item, the UTC second its
+    //   scheduled slot ends — the channel is not re-tuned before then.
+    int tuned_channel = -1;
+    std::vector<int> guide_gave_up;
+    double guide_wait_until_utc = 0;
     bool master_shuffle_active; // True if Master Shuffle is playing (picks random video from ANY playlist)
     
     // Shuffle queue - ensures all videos play once before reshuffling

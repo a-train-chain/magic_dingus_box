@@ -110,7 +110,7 @@ void wait_with_callback(int milliseconds, std::function<void()> callback) {
     }
 }
 
-utils::Result<> Controller::load_item_media(AppState& state, const app::PlaylistItem& item, const std::string& playlist_directory, std::function<void()> progress_callback) {
+utils::Result<> Controller::load_item_media(AppState& state, const app::PlaylistItem& item, const std::string& playlist_directory, std::function<void()> progress_callback, double start_offset_s) {
     if (item.source_type == "local") {
         std::cout << "Starting playlist transition..." << std::endl;
 
@@ -132,8 +132,10 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         std::cout << "Loading file: " << item.path << std::endl;
         // Trim points from the playlist. These were hardcoded to 0.0/0.0, so a
         // playlist authored with in/out points played every item in full.
+        // start_offset_s: a Channel Guide tune joins the item mid-way.
         auto load_result = load_file_with_resolution(item.path, playlist_directory,
-                                                     item.start, item.end, false);
+                                                     item.start + start_offset_s,
+                                                     item.end, false);
         if (load_result) {
             std::cout << "File loaded successfully, starting playback..." << std::endl;
 
@@ -179,7 +181,8 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         // Trim points from the playlist. These were hardcoded to 0.0/0.0, so a
         // playlist authored with in/out points played every item in full.
         auto load_result = load_file_with_resolution(item.path, playlist_directory,
-                                                     item.start, item.end, false);
+                                                     item.start + start_offset_s,
+                                                     item.end, false);
         if (load_result) {
             std::cout << "File loaded successfully, starting playback..." << std::endl;
             play();

@@ -26,8 +26,9 @@ int count(const std::string& name) {
     return static_cast<int>(std::count(e.begin(), e.end(), name));
 }
 
-bool FakeVideoPlayer::load_file(const std::string& path, double, double, bool) {
+bool FakeVideoPlayer::load_file(const std::string& path, double start, double, bool) {
     events().push_back("load_file " + std::filesystem::path(path).filename().string());
+    last_start = start;
     ++generation;
     if (fail_paths.count(path)) return false;
     playing = false;
@@ -57,18 +58,21 @@ RetroArchLauncher::RetroArchLauncher() : retroarch_available_(false) {}
 namespace app {
 
 // controller.cpp's load_item_media, minus the waits: the same calls in the
-// same order for a video item (stop, 200 ms settle, load, play, the
-// up-to-1000 ms wait for playback — which exits at once here because
-// play() sets playing), a scripted result for a game.
+// same order for a video item (stop, 200 ms settle, load from
+// item.start + start_offset_s, play, the up-to-1000 ms wait for playback —
+// which exits at once here because play() sets playing), a scripted result
+// for a game.
 utils::Result<> Controller::load_item_media(AppState&, const app::PlaylistItem& item,
                                             const std::string& playlist_directory,
-                                            std::function<void()>) {
+                                            std::function<void()>,
+                                            double start_offset_s) {
     using test_doubles::events;
     if (item.source_type == "local" || item.source_type == "video") {
         stop();
         events().push_back("settle");
         auto load_result = load_file_with_resolution(item.path, playlist_directory,
-                                                     item.start, item.end, false);
+                                                     item.start + start_offset_s,
+                                                     item.end, false);
         if (!load_result) {
             return utils::Result<>::fail("Failed to load playlist item: " + item.path +
                                          " (" + load_result.error() + ")");

@@ -41,9 +41,11 @@ public:
     uint64_t generation = 0;
     // load_file() returns false for these resolved paths.
     std::set<std::string> fail_paths;
+    // The `start` the last load_file() was given.
+    double last_start = 0.0;
 
     bool initialize(const std::string&) override { return true; }
-    bool load_file(const std::string& path, double, double, bool) override;
+    bool load_file(const std::string& path, double start, double, bool) override;
     void play() override { events().push_back("play"); playing = true; }
     void pause() override { paused = true; }
     void toggle_pause() override { paused = !paused; }

@@ -7,6 +7,7 @@
 // per-frame ticks); the kiosk adapter (app/controller_transport.h)
 // forwards 1:1.
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
@@ -17,10 +18,18 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "app/channel_schedule.h"
+#include "app/media_info.h"
 #include "app/playback_reset.h"
 #include "app/playlist_playback.h"
 
+using Catch::Approx;
+
 namespace {
+
+// A start of channel 01's and channel 02's schedule cycles (600 s and 50 s
+// long in the guide tests below): the epoch plus 1000 x 600 s.
+const double kW0 = app::kScheduleEpochUtc + 600.0 * 1000;
 
 struct FakeTransport : app::PlaylistTransport {
     std::vector<std::string> calls;
@@ -39,8 +48,20 @@ struct FakeTransport : app::PlaylistTransport {
     // Milliseconds since `t0` at which each load-type call happened.
     std::chrono::steady_clock::time_point t0 = clock;
     std::vector<long long> load_at_ms;
+    // The wall clock behind wall_now_utc() (UTC seconds). advance() moves it
+    // with the steady clock; a test may also jump it on its own.
+    double wall = kW0;
+    // load_playlist_item_at's offset_s, and the wall clock at that call.
+    std::vector<double> offsets;
+    std::vector<double> load_wall;
 
-    void advance(std::chrono::milliseconds d) { clock += d; }
+    void advance(std::chrono::milliseconds d) {
+        clock += d;
+        wall += static_cast<double>(d.count()) / 1000.0;
+    }
+    // The last call / offset, or "" / -1 when there was none.
+    std::string last() const { return calls.empty() ? "" : calls.back(); }
+    double last_offset() const { return offsets.empty() ? -1.0 : offsets.back(); }
     long long elapsed_ms() const {
         return std::chrono::duration_cast<std::chrono::milliseconds>(clock - t0).count();
     }
@@ -66,6 +87,14 @@ struct FakeTransport : app::PlaylistTransport {
         load_at_ms.push_back(elapsed_ms());
         return load_ok ? utils::Result<>::ok() : utils::Result<>::fail("boom");
     }
+    utils::Result<> load_playlist_item_at(app::AppState&, const app::Playlist& pl, int idx,
+                                          const std::string&, double offset_s) override {
+        calls.push_back("load_at " + pl.title + " " + std::to_string(idx));
+        load_at_ms.push_back(elapsed_ms());
+        offsets.push_back(offset_s);
+        load_wall.push_back(wall);
+        return load_ok ? utils::Result<>::ok() : utils::Result<>::fail("boom");
+    }
     void load_next_item(app::AppState&, const std::string&) override { calls.push_back("next_item"); }
     void load_previous_item(app::AppState&, const std::string&) override { calls.push_back("prev_item"); }
     void play_random_global_video(app::AppState&, const std::string&) override {
@@ -83,6 +112,7 @@ struct FakeTransport : app::PlaylistTransport {
     bool has_error() const override { return error; }
     double player_position() const override { return position; }
     std::chrono::steady_clock::time_point now() const override { return clock; }
+    double wall_now_utc() const override { return wall; }
 };
 
 // Redirects a stream for the scope; count() = lines containing `needle`.
@@ -1110,4 +1140,399 @@ TEST_CASE("Master Shuffle holds are silent", "[playlist_playback][log]") {
     for (int i = 0; i < 60; ++i) pb.tick_auto_advance();
     CHECK(cap.count("NOT auto-advancing") == 0);
     CHECK(t.calls.empty());
+}
+
+// ── Channel Guide style: live channels ───────────────────────────────────
+// Every video playlist is a channel on a wall-clock schedule
+// (app/channel_schedule.h). A tune reuses the switch above (stop, settle,
+// re-poll, load) and joins whatever is on air when the load RUNS; NEXT/PREV
+// step channels; an item's end rejoins the schedule.
+
+namespace {
+
+// Known lengths for put_menu()'s videos: channel 01 (Cartoons) is a 100 s,
+// b 200 s, c 300 s — a 600 s cycle; 02 (Movies) is m, 50 s; 03 (games only)
+// and 04 (empty) have no schedule; 00 mixes all four videos.
+app::MediaInfoMap guide_lengths() {
+    app::MediaInfoMap info;
+    info["a.mp4"].duration_s = 100.0;
+    info["b.mp4"].duration_s = 200.0;
+    info["c.mp4"].duration_s = 300.0;
+    info["m.mp4"].duration_s = 50.0;
+    return info;
+}
+
+struct Guide {
+    app::AppState s;
+    FakeTransport t;
+    std::vector<app::Channel> channels;
+    app::PlaylistPlayback pb{s, t, kDir};
+
+    Guide() {
+        put_menu(s);
+        channels = app::build_channels(s.playlists, guide_lengths());
+        pb.set_channels(&channels);
+    }
+    // The tuned stream is up: what Controller::update_state and the switch
+    // completion do on the frames after a load.
+    void playing() {
+        s.video_active = true;
+        s.is_switching_playlist = false;
+        s.playback_started_ = true;
+    }
+};
+
+const auto kSettled = std::chrono::milliseconds(300);
+
+}  // namespace
+
+TEST_CASE("a tune joins the on-air item after the settle, at the offset when the load runs",
+          "[playlist_playback][guide]") {
+    using std::chrono::milliseconds;
+    Guide g;
+    put_playing(g.s, 2, 0);
+    g.s.ui_visible_when_playing = true;  // the guide is up
+    g.t.wall = kW0 + 130;                // 01: b (100-300 s), 30 s in
+
+    g.pb.tune(1, /*keep_overlay=*/false);
+    CHECK(g.t.calls == std::vector<std::string>{"stop"});
+    CHECK(g.pb.switch_pending());
+    CHECK(g.s.is_switching_playlist);
+    CHECK(g.s.tuned_channel == -1);  // set when the load runs
+
+    g.t.advance(milliseconds(199));
+    g.pb.tick_switch_timeout();
+    CHECK(g.t.calls.size() == 1);
+    CHECK(g.t.offsets.empty());
+
+    g.t.wall += 20.0;  // the wall clock moves on while the switch waits
+    g.t.advance(milliseconds(1));
+    g.pb.tick_switch_timeout();
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1"});
+    CHECK(g.t.load_at_ms == std::vector<long long>{200});
+    REQUIRE(g.t.offsets.size() == 1);
+    // 30 s in at the press, plus the 20.2 s that passed before the load.
+    CHECK(g.t.last_offset() == Approx(50.2));
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.s.current_playlist_index == 1);
+    CHECK(g.s.current_item_index == 1);
+    CHECK(g.s.last_channel_id == "path:/p/cartoons.yaml");
+    CHECK_FALSE(g.s.master_shuffle_active);
+    CHECK_FALSE(g.s.ui_visible_when_playing);  // a tune closes the guide
+    CHECK(g.s.is_switching_playlist);          // released when the stream plays
+    CHECK_FALSE(g.pb.switch_pending());
+}
+
+TEST_CASE("NEXT and PREV change channel live and leave the guide as it is",
+          "[playlist_playback][guide]") {
+    Guide g;
+    put_playing(g.s, 1, 0);
+    g.s.tuned_channel = 1;
+    g.t.wall = kW0 + 10;
+
+    SECTION("guide up: channel up tunes 02 and the guide stays up") {
+        g.s.ui_visible_when_playing = true;
+        g.pb.on_next();
+        CHECK(g.t.calls == std::vector<std::string>{"stop"});  // the switch's stop
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0"});
+        CHECK(g.t.last_offset() == Approx(10.2).margin(0.05));
+        CHECK(g.s.tuned_channel == 2);
+        CHECK(g.s.ui_visible_when_playing);
+    }
+    SECTION("guide hidden: channel up keeps it hidden") {
+        g.pb.on_next();
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 2);
+        CHECK_FALSE(g.s.ui_visible_when_playing);
+    }
+    SECTION("channel down from 01 is the 00 mix") {
+        g.pb.on_prev();
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 0);
+    }
+}
+
+TEST_CASE("channel up/down wraps and skips channels with no schedule",
+          "[playlist_playback][guide]") {
+    Guide g;
+    REQUIRE(g.channels[3].items.empty());  // games only
+    REQUIRE(g.channels[4].items.empty());  // no items
+    put_playing(g.s, 2, 0);
+
+    SECTION("up from 02 passes 03 and 04 and wraps to 00") {
+        g.s.tuned_channel = 2;
+        g.pb.on_next();
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 0);
+    }
+    SECTION("down from 00 wraps past 04 and 03 to 02") {
+        g.s.tuned_channel = 0;
+        g.pb.on_prev();
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 2);
+        CHECK(g.t.last() == "load_at Movies 0");
+    }
+    SECTION("nothing tuned: up starts at 00, down at the last channel with a schedule") {
+        g.pb.on_next();
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 0);
+        g.playing();
+        g.s.tuned_channel = -1;
+        g.pb.on_prev();
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 2);
+    }
+    SECTION("a channel with no schedule cannot be tuned directly") {
+        g.pb.tune(3, false);
+        g.pb.tune(4, false);
+        g.pb.tune(5, false);
+        g.pb.tune(-1, false);
+        CHECK(g.t.calls.empty());
+        CHECK_FALSE(g.s.is_switching_playlist);
+    }
+}
+
+TEST_CASE("channel changes while a tune is pending are dropped",
+          "[playlist_playback][guide]") {
+    Guide g;
+    put_playing(g.s, 1, 0);
+    g.s.tuned_channel = 1;
+    g.pb.on_next();  // to 02
+    g.pb.on_next();
+    g.pb.on_prev();
+    g.pb.tune(0, false);
+    g.pb.on_play_pause();
+    CHECK(g.t.calls == std::vector<std::string>{"stop"});
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0"});
+    CHECK(g.s.tuned_channel == 2);
+}
+
+TEST_CASE("tuning 00 joins the mix: tuned channel 00, the source playlist plays",
+          "[playlist_playback][guide]") {
+    Guide g;
+    // 383 s into the mix's 650 s cycle: every item boundary in it is a
+    // multiple of 50 s, so this is well inside an item.
+    g.t.wall = kW0 + 333;
+    g.pb.tune(0, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.load_wall.size() == 1);
+    const auto oa = app::on_air(g.channels[0], g.t.load_wall[0]);
+    REQUIRE(oa);
+    const app::ScheduledItem& want = g.channels[0].items[oa->index];
+
+    CHECK(g.s.tuned_channel == 0);
+    CHECK(g.s.current_playlist_index == want.playlist);
+    CHECK(g.s.current_playlist_index >= 1);  // a real playlist, not the virtual row
+    CHECK(g.s.current_item_index == want.item);
+    CHECK(g.t.last_offset() == Approx(oa->offset_s));
+    CHECK(g.s.last_channel_id == "shuffle");
+    // The List style's Master Shuffle stepping is not used on 00.
+    CHECK_FALSE(g.s.master_shuffle_active);
+    CHECK(g.pb.failure_budget() == video::PlaybackErrorPolicy::kMaxFailureBudget);
+}
+
+TEST_CASE("at an item's end the channel rejoins its schedule",
+          "[playlist_playback][guide]") {
+    Guide g;
+    g.t.wall = kW0 + 130;  // 01: b, scheduled to end at kW0 + 300
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.last() == "load_at Cartoons 1");
+    g.playing();
+    g.s.update_playback_state(199.6, 200.0);  // b's end, as decide_auto_advance sees it
+
+    SECTION("on time: the next item, as far in as playback lags") {
+        g.t.wall = kW0 + 300.4;
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 2");
+        CHECK(g.t.last_offset() == Approx(0.4));
+        CHECK(g.s.current_item_index == 2);
+        CHECK(g.s.last_advanced_item_index == 1);
+    }
+    SECTION("behind schedule (a pause, a seek back): whatever is on now") {
+        g.t.wall = kW0 + 300 + 120;
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 2");
+        CHECK(g.t.last_offset() == Approx(120.0));
+    }
+    SECTION("far behind: whole items are skipped, as on live TV") {
+        g.t.wall = kW0 + 600 + 150;  // the next cycle's b, 50 s in
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 1");
+        CHECK(g.t.last_offset() == Approx(50.0));
+    }
+    SECTION("an end reached a hair early joins the next item from its start") {
+        // Never b again with 0.3 s left: it would be inside its own end
+        // window with the once-per-item guard already set.
+        g.t.wall = kW0 + 299.7;
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 2");
+        CHECK(g.t.last_offset() == 0.0);
+    }
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.t.offsets.size() == 2);
+    CHECK(g.s.ui_visible_when_playing == false);  // a boundary never opens the guide
+}
+
+TEST_CASE("a rebuilt channel list is used at the next boundary",
+          "[playlist_playback][guide]") {
+    Guide g;
+    g.t.wall = kW0 + 130;  // 01: b
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    g.playing();
+
+    // Mid-item the library changes: c loses its length, so 01 is a, b — a
+    // 300 s cycle. The old list goes away entirely.
+    auto info = guide_lengths();
+    info.erase("c.mp4");
+    std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, info);
+    REQUIRE(rebuilt[1].items.size() == 2);
+    g.pb.set_channels(&rebuilt);
+    g.channels.clear();
+    CHECK(g.s.tuned_channel == 1);
+
+    g.s.update_playback_state(199.6, 200.0);
+    g.t.wall = kW0 + 300.5;  // old list: c, 0.5 s in; new list: a, 0.5 s in
+    g.pb.tick_auto_advance();
+    CHECK(g.t.last() == "load_at Cartoons 0");
+    CHECK(g.t.last_offset() == Approx(0.5));
+}
+
+TEST_CASE("a reload that renumbers the rows keeps the tuned channel",
+          "[playlist_playback][guide]") {
+    Guide g;
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    g.playing();
+
+    SECTION("a playlist imported ahead of it: 01 is now 02") {
+        app::Playlist news;
+        news.title = "News";
+        news.path = "/p/news.yaml";
+        news.items = {video_item("n")};
+        g.s.playlists.insert(g.s.playlists.begin() + 1, news);
+        g.s.current_playlist_index = 2;  // apply_reloaded_playlists re-anchors it
+        std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, guide_lengths());
+        g.pb.set_channels(&rebuilt);
+        CHECK(g.s.tuned_channel == 2);
+
+        g.s.update_playback_state(199.6, 200.0);
+        g.t.wall = kW0 + 300.4;
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 2");
+        CHECK(g.s.tuned_channel == 2);
+    }
+    SECTION("its playlist deleted: nothing is tuned") {
+        g.s.playlists.erase(g.s.playlists.begin() + 1);
+        std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, guide_lengths());
+        g.pb.set_channels(&rebuilt);
+        CHECK(g.s.tuned_channel == -1);
+    }
+}
+
+TEST_CASE("an item that fails in guide style waits for the channel's next item",
+          "[playlist_playback][guide]") {
+    Guide g;
+    g.t.wall = kW0 + 130;  // 01: b, scheduled to end at kW0 + 300
+
+    SECTION("its load fails") {
+        g.t.load_ok = false;
+        g.pb.tune(1, false);
+        run_frames(g.pb, g.t, kSettled);
+    }
+    SECTION("its pipeline errors mid-item") {
+        g.pb.tune(1, false);
+        run_frames(g.pb, g.t, kSettled);
+        g.playing();
+        g.t.error = true;
+        g.pb.tick_pipeline_error();
+    }
+    // Stopped, not skipped ahead to c: the channel is dark until b's slot
+    // ends, when the nothing-playing rule re-tunes it.
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1", "stop"});
+    CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.s.last_channel_id == "path:/p/cartoons.yaml");
+    CHECK(g.s.guide_gave_up.empty());
+    CHECK(g.s.error_message.empty());
+    CHECK(g.s.current_playlist_index == -1);  // stop_to_menu: a drawable menu
+    CHECK_FALSE(g.s.video_active);
+    CHECK_FALSE(g.s.is_switching_playlist);
+    CHECK_FALSE(g.pb.switch_pending());
+}
+
+TEST_CASE("a channel that keeps failing is given up: nothing tuned, the channel noted",
+          "[playlist_playback][guide]") {
+    Guide g;
+
+    SECTION("one item: its first failure is the whole budget") {
+        g.t.wall = kW0 + 10;
+        g.pb.tune(2, false);
+        run_frames(g.pb, g.t, kSettled);
+        g.playing();
+        CHECK(g.pb.failure_budget() == 1);
+        g.t.error = true;
+        g.pb.tick_pipeline_error();
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0", "stop"});
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        CHECK(g.s.last_channel_id == "path:/p/movies.yaml");
+    }
+    SECTION("three items: every failure counts, waits included") {
+        g.t.load_ok = false;
+        g.t.wall = kW0 + 130;
+        CHECK(g.channels[1].items.size() == 3);
+        for (int i = 0; i < 3; ++i) {
+            g.pb.tune(1, false);  // what the nothing-playing rule does
+            run_frames(g.pb, g.t, kSettled);
+            if (i < 2) {
+                REQUIRE(g.s.tuned_channel == 1);
+                g.t.wall = g.s.guide_wait_until_utc + 0.5;
+            }
+        }
+        CHECK(g.t.calls == std::vector<std::string>{
+                               "stop", "load_at Cartoons 1", "stop",
+                               "stop", "load_at Cartoons 2", "stop",
+                               "stop", "load_at Cartoons 0", "stop"});
+        CHECK(g.s.guide_gave_up == std::vector<int>{1});
+    }
+    CHECK(g.s.tuned_channel == -1);
+    CHECK(g.s.error_message == "Couldn't play these videos");
+    CHECK(g.s.current_playlist_index == -1);
+    CHECK_FALSE(g.s.video_active);
+}
+
+TEST_CASE("List style: no tuning, and NEXT/PREV step the playlist as before",
+          "[playlist_playback][guide]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 1);
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    CHECK_FALSE(pb.guide_style());
+
+    pb.tune(1, false);
+    pb.on_channel_step(1);
+    CHECK(t.calls.empty());
+    pb.on_next();
+    pb.on_prev();
+    CHECK(t.calls == std::vector<std::string>{"next_item", "prev_item"});
+    CHECK(s.tuned_channel == -1);
+
+    SECTION("leaving guide style forgets the tuned channel") {
+        std::vector<app::Channel> channels = app::build_channels(s.playlists, guide_lengths());
+        pb.set_channels(&channels);
+        CHECK(pb.guide_style());
+        s.tuned_channel = 1;
+        s.guide_gave_up = {2};
+        s.guide_wait_until_utc = kW0;
+        pb.set_channels(nullptr);
+        CHECK_FALSE(pb.guide_style());
+        CHECK(s.tuned_channel == -1);
+        CHECK(s.guide_gave_up.empty());
+        CHECK(s.guide_wait_until_utc == 0.0);
+    }
 }

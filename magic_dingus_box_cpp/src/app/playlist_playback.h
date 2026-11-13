@@ -53,12 +53,25 @@
 // After the stuck-switch timeout's recovery stop(), the old 200 ms settle
 // sleep is a 200 ms window in which SELECT is ignored, so no new load can
 // follow that stop sooner than it could before.
+//
+// ── Channel Guide style (set_channels non-null) ──────────────────────────
+// Every video playlist is a live channel (app/channel_schedule.h). tune()
+// rides the switch above (same stop, waits, re-entrancy rules and timeout;
+// pending_.target is the channel) and joins the on-air item when the load
+// runs. NEXT/PREV change channel. An item's natural end loads what is on the
+// tuned channel NOW instead of the next index. A failed item is not skipped
+// ahead: playback stops until its scheduled slot ends
+// (AppState::guide_wait_until_utc), and a give-up marks the channel in
+// guide_gave_up; main.cpp's nothing-playing rule re-tunes in both cases.
+// The List style (nullptr) never reaches any of this.
 
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "app_state.h"
+#include "channel_schedule.h"
 #include "playback_stall_watchdog.h"
 #include "../utils/result.h"
 #include "../video/playback_error_policy.h"
@@ -82,6 +95,13 @@ public:
                                                const Playlist& playlist,
                                                int item_index,
                                                const std::string& playlist_directory) = 0;
+    // load_playlist_item, joining the item offset_s seconds past its own
+    // start (a Channel Guide tune: the item's scheduled position).
+    virtual utils::Result<> load_playlist_item_at(AppState& state,
+                                                  const Playlist& playlist,
+                                                  int item_index,
+                                                  const std::string& playlist_directory,
+                                                  double offset_s) = 0;
     virtual void load_next_item(AppState& state, const std::string& playlist_directory) = 0;
     virtual void load_previous_item(AppState& state, const std::string& playlist_directory) = 0;
     virtual void play_random_global_video(AppState& state,
@@ -103,6 +123,9 @@ public:
     // steady_clock::now() in the kiosk; a hand-advanced clock in the tests.
     // Every switch deadline and the stuck-switch timeout read this.
     virtual std::chrono::steady_clock::time_point now() const = 0;
+    // Wall-clock UTC seconds (system_clock in the kiosk; hand-set in the
+    // tests). Only the Channel Guide schedule reads it; waits stay steady.
+    virtual double wall_now_utc() const = 0;
 };
 
 class PlaylistPlayback {
@@ -120,9 +143,44 @@ public:
     void on_select();
     void on_play_pause();
     // NEXT/PREV: step the playlist (or Master Shuffle history) while one
-    // plays; seek +/-10 s otherwise.
+    // plays; seek +/-10 s otherwise. In Channel Guide style: channel up /
+    // down (on_channel_step).
     void on_next();
     void on_prev();
+
+    // ── Channel Guide style (live channels) ──────────────────────────────
+    // The channel list (app/channel_schedule.h; channel N = UI row N), or
+    // nullptr for the List style — the default, and today's behaviour on
+    // every path. Held by pointer and read afresh at every tune and item
+    // boundary, so a rebuilt list takes effect at the next one; nothing
+    // keeps an index into an old list. Call it again after EVERY rebuild
+    // (even into the same vector): a reload renumbers the rows, so the
+    // tuned channel is re-found by AppState::last_channel_id (-1 when its
+    // playlist is gone). nullptr also forgets the tuned / given-up channels.
+    void set_channels(const std::vector<Channel>* channels);
+    bool guide_style() const { return channels_ != nullptr; }
+    // Tune `channel` live. The playlist switch above, unchanged — stop now,
+    // then the settle / re-poll wait per frame, then the load — except that
+    // the load joins whatever is on air when it RUNS (on_air at
+    // wall_now_utc() then), so the wait does not put playback behind. Even
+    // from a stopped pipeline, so every tune computes its offset the same
+    // way. The load sets tuned_channel and last_channel_id ("shuffle" for
+    // 00) whether or not the item loads — a failed item is the channel's
+    // to resume (see act_on_failed_item); success also clears
+    // guide_gave_up and hides the overlay unless keep_overlay.
+    // Dropped (like SELECT) in List style, for a channel with no schedule,
+    // during the intro, and while a switch is pending or in flight.
+    void tune(int channel, bool keep_overlay);
+    // Channel up (+1) / down (-1): the next channel with a schedule,
+    // wrapping (from nothing tuned, up starts at 00 and down at the last
+    // channel). The overlay stays as it is.
+    void on_channel_step(int delta);
+    // A tune or item boundary joins the on-air item only with at least this
+    // much of it left; otherwise the item after it, from its start. The
+    // boundary fires up to 0.5 s before an item's end (decide_auto_advance),
+    // so re-joining the ending item would put the load inside its own end
+    // window with the once-per-item guard set: held at EOS for good.
+    static constexpr double kMinJoinLeftS = 2.0;
 
     // ── Per-frame ticks, in main-loop order ──────────────────────────────
     // After controller.update_state: advance a pending playlist switch
@@ -168,14 +226,17 @@ private:
     AppState& state_;
     PlaylistTransport& transport_;
     const std::string& playlist_directory_;
+    const std::vector<Channel>* channels_ = nullptr;
 
     // A mid-playback switch between its stop() and its load.
     enum class SwitchPhase { Idle, Settling, Polling };
     struct PendingSwitch {
         SwitchPhase phase = SwitchPhase::Idle;
-        int target = -1;  // the selected_index SELECT was pressed on
+        int target = -1;  // the selected_index SELECT was pressed on (a tune: the channel)
         std::chrono::steady_clock::time_point next_check{};
         int repolls = 0;  // 50 ms re-polls used so far
+        bool tune = false;          // a Channel Guide tune, not a SELECT
+        bool keep_overlay = false;  // tune(): leave the overlay as it is
     };
     PendingSwitch pending_;
     // The player's stream generation when the switching flag was raised.
@@ -192,6 +253,19 @@ private:
     const char* pending_switch_obsolete_reason() const;
     // The tail of the old blocking switch: warning + load + failure path.
     void finish_switch(int target);
+
+    // ── Channel Guide ────────────────────────────────────────────────────
+    // Channel `c` of the current list (nullptr in List style / out of range).
+    const Channel* channel_at(int c) const;
+    // A tune's load, once its switch wait is over.
+    void finish_tune(int channel, bool keep_overlay);
+    // An item's natural end: load what is on the tuned channel now.
+    void rejoin_schedule();
+    // Load channel `channel`'s scheduled item `oa` at its offset.
+    void load_on_air(int channel, const OnAir& oa, bool keep_overlay);
+    // Scheduled end (UTC) of the channel item last loaded: when it fails,
+    // the channel picks up again from there.
+    double guide_item_ends_at_ = 0.0;
 
     // A GStreamer error (corrupt/truncated file, unsupported codec) or a
     // stall the watchdog could not revive used to strand an unattended

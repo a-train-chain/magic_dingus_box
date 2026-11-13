@@ -2,8 +2,10 @@
 
 #include "auto_advance.h"
 #include "playback_reset.h"
+#include "playlist_reload.h"
 
 #include <iostream>
+#include <optional>
 #include <utility>
 
 namespace app {
@@ -27,6 +29,13 @@ bool PlaylistPlayback::owns_pipeline() const {
 }
 
 int PlaylistPlayback::failure_budget() const {
+    if (const Channel* ch = channel_at(state_.tuned_channel)) {
+        // On a channel: one attempt per scheduled item, the 00 mix capped
+        // like Master Shuffle — not the size of whichever source playlist
+        // the failing item happens to come from.
+        return video::PlaybackErrorPolicy::failure_budget(
+            static_cast<int>(ch->items.size()), state_.tuned_channel == 0);
+    }
     int size = 1;
     if (state_.current_playlist_index >= 0 &&
         state_.current_playlist_index <
@@ -41,6 +50,20 @@ int PlaylistPlayback::failure_budget() const {
 void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d,
                                           const char* why) {
     using Decision = video::PlaybackErrorPolicy::Decision;
+    if (d == Decision::Advance && guide_style()) {
+        // Live TV does not jump ahead to the next programme: the channel
+        // stays dark until this item's slot ends, then main.cpp's
+        // nothing-playing rule re-tunes it — joining the item after it
+        // rather than reloading this one. The failure has been counted.
+        const bool on_channel = channel_at(state_.tuned_channel) != nullptr;
+        std::cerr << "Channel " << state_.tuned_channel << " item failed (" << why
+                  << ") — the channel resumes with its next scheduled item"
+                  << std::endl;
+        transport_.stop();
+        app::stop_to_menu(state_);
+        state_.guide_wait_until_utc = on_channel ? guide_item_ends_at_ : 0.0;
+        return;
+    }
     if (d == Decision::Advance) {
         std::cerr << "Playlist item " << state_.current_item_index
                   << " failed (" << why << ") — skipping to next item"
@@ -59,6 +82,16 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
         // Same end state as load_next_item's all-items-failed branch.
         transport_.stop();
         app::stop_to_menu(state_, "Couldn't play these videos");
+        if (guide_style()) {
+            // Re-tuning the channel that just failed repeatedly would loop:
+            // note it, and leave nothing tuned for the nothing-playing rule
+            // to move on from.
+            if (state_.tuned_channel >= 0) {
+                state_.guide_gave_up.push_back(state_.tuned_channel);
+            }
+            state_.tuned_channel = -1;
+            state_.guide_wait_until_utc = 0.0;
+        }
     }
 }
 
@@ -222,6 +255,10 @@ void PlaylistPlayback::on_play_pause() {
 }
 
 void PlaylistPlayback::on_next() {
+    if (guide_style()) {
+        on_channel_step(+1);  // channel up
+        return;
+    }
     // If video is playing, advance to next playlist item
     // In Master Shuffle mode, pick another random video
     // Otherwise, seek forward in current video
@@ -250,6 +287,10 @@ void PlaylistPlayback::on_next() {
 }
 
 void PlaylistPlayback::on_prev() {
+    if (guide_style()) {
+        on_channel_step(-1);  // channel down
+        return;
+    }
     // If video is playing, go to previous playlist item
     // In Master Shuffle mode, pick another random video
     // Otherwise, seek backward in current video
@@ -266,6 +307,179 @@ void PlaylistPlayback::on_prev() {
     } else if (!state_.is_switching_playlist && state_.video_active) {
         // Only seek if we have an active video (not intro)
         transport_.seek(-10.0);
+    }
+}
+
+// ── Channel Guide style ──────────────────────────────────────────────────
+
+namespace {
+
+// AppState::last_channel_id of channel 00 (its row has no playlist file).
+constexpr const char* kShuffleChannelId = "shuffle";
+
+// What a tune or an item boundary joins on `ch` at `now_utc`: the on-air
+// item at its scheduled offset, or — with under kMinJoinLeftS of it left —
+// the item after it, from its start (see kMinJoinLeftS). nullopt: nothing
+// is scheduled.
+std::optional<OnAir> join_point(const Channel& ch, double now_utc) {
+    auto oa = on_air(ch, now_utc);
+    if (!oa) return std::nullopt;
+    const double left = ch.items[oa->index].length_s - oa->offset_s;
+    if (left >= PlaylistPlayback::kMinJoinLeftS) return oa;
+    OnAir next;
+    next.index = (oa->index + 1) % static_cast<int>(ch.items.size());
+    next.offset_s = 0.0;
+    next.starts_at = oa->ends_at;
+    next.ends_at = next.starts_at + ch.items[next.index].length_s;
+    return next;
+}
+
+}  // namespace
+
+const Channel* PlaylistPlayback::channel_at(int c) const {
+    if (!channels_ || c < 0 || c >= static_cast<int>(channels_->size())) return nullptr;
+    return &(*channels_)[c];
+}
+
+void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
+    channels_ = channels;
+    if (!guide_style()) {
+        // List style: nothing is tuned, and nothing is owed a retry.
+        state_.tuned_channel = -1;
+        state_.guide_gave_up.clear();
+        state_.guide_wait_until_utc = 0.0;
+        return;
+    }
+    if (state_.tuned_channel < 0) return;
+    // A reload renumbers the rows: re-find the tuned channel by the identity
+    // it was tuned under rather than keep an index into the old list.
+    const std::string& id = state_.last_channel_id;
+    int row = id == kShuffleChannelId ? 0 : find_playlist_by_identity(state_.playlists, id);
+    if (!channel_at(row)) row = -1;
+    state_.tuned_channel = row;
+}
+
+void PlaylistPlayback::tune(int channel, bool keep_overlay) {
+    const Channel* ch = channel_at(channel);  // nullptr in List style
+    if (!ch || ch->items.empty()) return;     // nothing to join
+    // SELECT's gates (see on_select): no tune over the intro, behind a
+    // pending switch or the stuck-switch timeout's settle, or over a switch
+    // still in flight.
+    if (state_.showing_intro_video) return;
+    if (switch_pending() || transport_.now() < timeout_settle_until_) return;
+    if (state_.is_switching_playlist) return;
+
+    // SELECT's mid-playback switch, with the channel as its target.
+    state_.is_switching_playlist = true;
+    switch_start_generation_ = transport_.stream_generation();
+    state_.playlist_switch_start_time = transport_.now();
+    // Point at the channel's row before the stop, as SELECT does: it keeps
+    // the indexes through the stop, and the pending switch's "re-pointed"
+    // check covers a tune too. The on-air item replaces it at the load.
+    state_.current_playlist_index = channel;
+    state_.current_item_index = 0;
+    state_.last_advanced_item_index = -1;
+    state_.last_advanced_duration = 0.0;
+
+    transport_.stop();
+    pending_.phase = SwitchPhase::Settling;
+    pending_.target = channel;
+    pending_.next_check = transport_.now() + kSwitchSettle;
+    pending_.repolls = 0;
+    pending_.tune = true;
+    pending_.keep_overlay = keep_overlay;
+}
+
+void PlaylistPlayback::on_channel_step(int delta) {
+    if (!guide_style() || delta == 0 || channels_->empty()) return;
+    const int n = static_cast<int>(channels_->size());
+    const int step = delta > 0 ? 1 : -1;
+    const int from = state_.tuned_channel;
+    // From nothing tuned, up starts at 00 and down at the last channel.
+    int c = (from >= 0 && from < n) ? from : (step > 0 ? -1 : n);
+    for (int i = 0; i < n; ++i) {
+        c = ((c + step) % n + n) % n;
+        if (c == from) return;  // no other channel has a schedule
+        if (!(*channels_)[c].items.empty()) {
+            tune(c, state_.ui_visible_when_playing);
+            return;
+        }
+    }
+}
+
+void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
+    if (transport_.is_playing()) {
+        std::cerr << "Warning: Video did not stop cleanly after "
+                  << (kSwitchMaxRepolls * kSwitchRepoll.count())
+                  << "ms, proceeding anyway" << std::endl;
+    }
+    // On air NOW, not at the press: the wait must not put playback behind.
+    const Channel* ch = channel_at(channel);
+    const auto oa = ch ? join_point(*ch, transport_.wall_now_utc()) : std::nullopt;
+    if (!oa) {
+        // The list was rebuilt during the wait and the channel lost its
+        // schedule (or the style went back to List).
+        std::cerr << "Tune to channel " << channel << " failed: nothing scheduled"
+                  << std::endl;
+        app::stop_to_menu(state_);
+        return;
+    }
+    load_on_air(channel, *oa, keep_overlay);
+}
+
+void PlaylistPlayback::rejoin_schedule() {
+    const int channel = state_.tuned_channel;
+    const Channel* ch = channel_at(channel);
+    const auto oa = ch ? join_point(*ch, transport_.wall_now_utc()) : std::nullopt;
+    if (!oa) {
+        // Not on a channel (a List-style item still playing when the style
+        // changed) or the channel lost its schedule: end here, and the
+        // nothing-playing rule tunes live from the menu.
+        std::cout << "Item ended with no channel schedule to rejoin — stopping" << std::endl;
+        transport_.stop();
+        app::stop_to_menu(state_);
+        return;
+    }
+    load_on_air(channel, *oa, /*keep_overlay=*/true);
+}
+
+void PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay) {
+    const ScheduledItem& si = (*channels_)[channel].items[oa.index];
+    if (si.playlist < 1 || si.playlist >= static_cast<int>(state_.playlists.size()) ||
+        si.item < 0 ||
+        si.item >= static_cast<int>(state_.playlists[si.playlist].items.size())) {
+        // A channel list older than the playlists it points into.
+        std::cerr << "Channel " << channel << " schedule is stale — stopping" << std::endl;
+        transport_.stop();
+        app::stop_to_menu(state_);
+        return;
+    }
+    const Playlist& pl = state_.playlists[si.playlist];
+
+    // The channel is tuned whether or not the item loads: a failed item is
+    // the channel's to resume (act_on_failed_item), and a give-up must name
+    // this channel, not the one tuned before it.
+    state_.master_shuffle_active = false;
+    state_.current_playlist_index = si.playlist;
+    state_.current_item_index = si.item;
+    state_.tuned_channel = channel;
+    state_.last_channel_id = channel == 0 ? kShuffleChannelId : playlist_identity(pl);
+    guide_item_ends_at_ = oa.ends_at;
+
+    std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
+              << " at " << oa.offset_s << "s" << std::endl;
+    auto result = transport_.load_playlist_item_at(state_, pl, si.item,
+                                                   playlist_directory_, oa.offset_s);
+    if (!result) {
+        std::cerr << "Failed to load channel item: " << result.error() << std::endl;
+        act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
+        return;
+    }
+    state_.guide_gave_up.clear();
+    state_.guide_wait_until_utc = 0.0;
+    if (!keep_overlay) {
+        // A tune closes the guide; channel up/down leaves it as it is.
+        state_.ui_visible_when_playing = false;
     }
 }
 
@@ -318,9 +532,13 @@ void PlaylistPlayback::advance_pending_switch() {
         return;
     }
 
-    const int target = pending_.target;
+    const PendingSwitch done = pending_;
     pending_ = PendingSwitch{};
-    finish_switch(target);
+    if (done.tune) {
+        finish_tune(done.target, done.keep_overlay);
+    } else {
+        finish_switch(done.target);
+    }
 }
 
 void PlaylistPlayback::finish_switch(int target) {
@@ -500,7 +718,11 @@ void PlaylistPlayback::tick_auto_advance() {
                 state_.last_advanced_item_index = state_.current_item_index;
                 state_.last_advanced_duration = adv.duration;
                 // Note: load_next_item handles errors internally (skips broken files)
-                if (state_.master_shuffle_active) {
+                if (guide_style()) {
+                    // Live: whatever is on the tuned channel now, at its
+                    // scheduled offset — drift is corrected here.
+                    rejoin_schedule();
+                } else if (state_.master_shuffle_active) {
                     // Saves the current item to the shuffle history first
                     // (virtual row excluded — see on_next()).
                     transport_.master_shuffle_advance(state_, playlist_directory_);
