@@ -39,7 +39,9 @@
 #include "media_browser/mb_services.h"
 #endif
 #include "app/app_state.h"
+#include "app/auto_tune.h"
 #include "app/bezel_catalog.h"
+#include "app/channel_schedule.h"
 #include "app/game_quiet_mode.h"
 #include "app/game_handoff.h"
 #include "app/game_handoff_kiosk.h"
@@ -640,6 +642,27 @@ int main(int /* argc */, char* /* argv */[]) {
     app::PlaylistPlayback playlist_playback(state, playlist_transport,
                                             playlist_directory);
     
+    // Channel Guide (app/channel_schedule.h): one live channel per main-menu
+    // row, held by playlist_playback through a pointer. rebuild_channels()
+    // is the ONE place the list is built and handed over — in List style
+    // (the default) it hands over nullptr and nothing of the guide runs. For
+    // now it runs once, here at boot, before the media info store's first
+    // read has landed (so only trimmed items have a length yet); a playlist
+    // reload, a media info change (media_info.poll() == true) and a Menu
+    // Style change must call it too — set_channels after EVERY rebuild
+    // re-anchors the tuned channel.
+    std::vector<app::Channel> channels;
+    auto rebuild_channels = [&state, &media_info, &channels, &playlist_playback]() {
+        if (state.display_settings.menu_style == app::MenuStyle::ChannelGuide) {
+            channels = app::build_channels(state.playlists, media_info.map());
+            playlist_playback.set_channels(&channels);
+        } else {
+            channels.clear();
+            playlist_playback.set_channels(nullptr);
+        }
+    };
+    rebuild_channels();
+
     // Initialize settings menu
     ui::SettingsMenuManager settings_menu(&state);
     state.settings_menu = &settings_menu;
@@ -979,6 +1002,11 @@ int main(int /* argc */, char* /* argv */[]) {
         /*enter_media_browser=*/[&mb_host]() { mb_host.enter_from_settings(); },
 #endif
     };
+
+    // The Channel Guide's nothing-playing rule's inputs, refilled every
+    // frame in guide style (app/auto_tune.h). Kept across frames so the
+    // vectors reuse their storage.
+    app::AutoTuneInput auto_tune;
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -1478,6 +1506,63 @@ int main(int /* argc */, char* /* argv */[]) {
         // PlaylistPlayback::tick_auto_advance.
         playlist_playback.tick_auto_advance();
         
+        // Channel Guide: nothing playing is never a resting state. One rule,
+        // every frame, after the ticks above — it covers power-on (all four
+        // intro exits set intro_complete), the post-game ready edge, leaving
+        // the Media Browser or Settings, a failed item's slot ending and a
+        // give-up. List style gathers nothing. See app/auto_tune.h.
+        auto_tune.guide_style = playlist_playback.guide_style();
+        if (auto_tune.guide_style) {
+            auto_tune.intro_complete = state.intro_complete;
+            // Not under Settings (its game browser, Controller Setup wizard
+            // and pairing screen included), the Wi-Fi keyboard or the Media
+            // Browser: the video comes back once they close.
+            bool on_main_screen = !settings_menu.is_active() && !keyboard.is_active();
+#ifdef MEDIA_BROWSER_ENABLED
+            on_main_screen = on_main_screen &&
+                             state.current_screen != app::AppScreen::MediaBrowser;
+#endif
+            auto_tune.on_main_screen = on_main_screen;
+            // Between two items video_active drops while the next stream
+            // prerolls, but the playing indexes stay set: every real stop
+            // clears them (app::stop_to_menu), so that gap is not "nothing
+            // playing" — re-tuning there would stop every item boundary.
+            auto_tune.video_active =
+                state.video_active ||
+                (state.current_playlist_index >= 0 && state.current_item_index >= 0);
+            // After a tune's load runs, switch_pending() is false but the
+            // stream is not up until is_switching_playlist clears.
+            auto_tune.switch_pending =
+                playlist_playback.switch_pending() || state.is_switching_playlist;
+            auto_tune.loading_game = state.is_loading_game;
+            auto_tune.post_game_pending = post_game_gate.settling();
+            auto_tune.now_utc = playlist_transport.wall_now_utc();
+            auto_tune.wait_until_utc = state.guide_wait_until_utc;
+            const std::string& last_id = state.last_channel_id;
+            if (last_id.empty()) {
+                auto_tune.last_channel = -1;
+            } else if (last_id == app::kShuffleChannelId) {
+                auto_tune.last_channel = 0;
+            } else {
+                auto_tune.last_channel =
+                    app::find_playlist_by_identity(state.playlists, last_id);
+            }
+            auto_tune.tunable.assign(channels.size(), false);
+            for (size_t c = 0; c < channels.size(); ++c) {
+                auto_tune.tunable[c] = !channels[c].items.empty();
+            }
+            auto_tune.gave_up = state.guide_gave_up;
+            if (const auto channel = app::decide_auto_tune(auto_tune)) {
+                playlist_playback.tune(*channel, /*keep_overlay=*/false);
+                // tune() drops a call it cannot take yet (the stuck-switch
+                // timeout's 200 ms settle); log only one it took.
+                if (playlist_playback.switch_pending()) {
+                    std::cout << "Nothing playing: tuning channel " << *channel
+                              << std::endl;
+                }
+            }
+        }
+
         // Update fade animation (UI only - no audio changes)
         if (state.is_fading && state.video_active) {
             auto now = std::chrono::steady_clock::now();
