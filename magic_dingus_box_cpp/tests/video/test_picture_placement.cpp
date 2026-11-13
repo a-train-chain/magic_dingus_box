@@ -113,6 +113,23 @@ TEST_CASE("display aspect multiplies in the pixel aspect ratio",
     CHECK(video::display_aspect(720, 480, 0, 1) == 0.0);
 }
 
+TEST_CASE("a source known to be 4:3 is always drawn cropped",
+          "[video][picture_placement]") {
+    // A stored "not cropped" on a 4:3 video (a "Show everything" upload, a
+    // restored backup, a package) would shrink it inside a bezel's opening,
+    // and neither the overlay nor the Content Manager offers a control for a
+    // 4:3 video to undo it.
+    CHECK(video::picture_crop(false, 4.0/3));
+    CHECK(video::picture_crop(false, 640.0/480));
+    CHECK(video::picture_crop(false, 1.3599));         // inside +2 %
+    CHECK(video::picture_crop(false, 720.0*8/(480*9)));  // 720x480, PAR 8:9
+    // Any other shape keeps its setting; so does a shape not known yet.
+    CHECK_FALSE(video::picture_crop(false, 16.0/9));
+    CHECK_FALSE(video::picture_crop(false, 1.3605));   // outside +2 %
+    CHECK_FALSE(video::picture_crop(false, 0.0));
+    for (double a : {0.0, 4.0/3, 16.0/9, 9.0/16}) CHECK(video::picture_crop(true, a));
+}
+
 TEST_CASE("placement helpers", "[video][picture_placement]") {
     CHECK(video::is_four_by_three(640.0/480)); CHECK(video::is_four_by_three(720.0*8/(480*9))); // 720x480, PAR 8:9
     CHECK_FALSE(video::is_four_by_three(1.5)); CHECK_FALSE(video::is_four_by_three(16.0/9));

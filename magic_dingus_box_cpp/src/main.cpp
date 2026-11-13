@@ -1873,9 +1873,23 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
                 // The playing video's own setting (app/media_info.h):
                 // cropped unless the operator chose to see it whole. The
-                // intro, and anything without a key, is cropped.
-                const bool crop =
-                    media_info.crop_for(controller.current_media_key());
+                // intro, and anything without a key, is cropped. A source
+                // known to be 4:3 is always cropped (video::picture_crop):
+                // no control is offered for one, so a stored "not cropped"
+                // could never be undone. Its aspect is the one placement
+                // uses — the frame being drawn — else the store's.
+                const std::string& picture_key = controller.current_media_key();
+                double picture_aspect =
+                    gst_renderer.source_display_aspect().value_or(0.0);
+                if (!(picture_aspect > 0.0)) {
+                    const auto& videos = media_info.map();
+                    const auto it = videos.find(picture_key);
+                    if (it != videos.end() && it->second.display_aspect) {
+                        picture_aspect = *it->second.display_aspect;
+                    }
+                }
+                const bool crop = video::picture_crop(
+                    media_info.crop_for(picture_key), picture_aspect);
                 gst_renderer.set_picture(content, crop, opening);
             } else {
                 gst_renderer.clear_picture();

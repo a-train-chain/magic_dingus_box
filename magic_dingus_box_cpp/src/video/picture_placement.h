@@ -57,6 +57,17 @@ inline bool is_four_by_three(double display_aspect) {
     return std::fabs(display_aspect / kFourByThree - 1.0) <= kTolerance;
 }
 
+// The crop a playlist picture is drawn with: the video's stored setting,
+// except that a source KNOWN to be 4:3 is always cropped. For one, fit
+// would only shrink the picture inside a bezel's opening (thin bars inside
+// the frame), and neither the overlay nor the Content Manager offers a
+// control for a 4:3 video — so a stored "not cropped" (a "Show everything"
+// upload, a restored backup, a package) could never be undone. An unknown
+// aspect (0) keeps the stored setting.
+inline bool picture_crop(bool stored_crop, double display_aspect) {
+    return stored_crop || is_four_by_three(display_aspect);
+}
+
 // The centred 4:3 rect inside w x h: pillarboxed when w x h is wider than
 // 4:3, letterboxed when taller. Integer-exact: 1280x720 -> 960x720,
 // 1920x1080 -> 1440x1080.

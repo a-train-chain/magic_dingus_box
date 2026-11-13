@@ -312,6 +312,24 @@ def test_transcode_publish_records_media_info(
     assert _marker(temp_data_dir).exists(), "the kiosk must be poked"
 
 
+def test_a_show_everything_upload_of_a_4_3_video_stores_no_crop(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch):
+    # Nothing offers a Crop control for a 4:3 video, so crop: false on one
+    # could never be undone.
+    monkeypatch.setenv("FFPROBE_STUB_WIDTH", "640")
+    monkeypatch.setenv("FFPROBE_STUB_HEIGHT", "480")
+    resp = client.post(
+        "/admin/upload-and-transcode",
+        data={"file": (io.BytesIO(b"raw-upload"), "clip.mov"),
+              "fit_mode": "fit"},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    status = _wait_all(client, [resp.get_json()["data"]["job_id"]])
+    assert list(status.values())[0]["status"] == "complete"
+    assert media_info.load(temp_data_dir) == {"media/clip.mp4": {
+        "duration_s": 10.0, "display_aspect": 1.3333}}
+
+
 def test_a_crop_upload_clears_a_stale_entrys_crop(
         client, temp_data_dir: Path, stub_bin: Path):
     # A key left behind by a deleted video must not hand its setting to the

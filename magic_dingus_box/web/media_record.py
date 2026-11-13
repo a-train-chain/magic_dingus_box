@@ -5,9 +5,10 @@ Shared by the upload routes (admin_media) and the package import
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 # Same dual import form as admin.py: flat when tests put web/ on sys.path,
 # package-relative in production.
@@ -16,6 +17,15 @@ try:
     import media_probe
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from . import media_info, media_probe
+
+
+def is_four_by_three(aspect: Any) -> bool:
+    """True when a display aspect is within 2 % (relative) of 4:3 — the
+    kiosk's video::is_four_by_three and the Content Manager's cropControl."""
+    if (not isinstance(aspect, (int, float)) or isinstance(aspect, bool)
+            or not math.isfinite(aspect) or aspect <= 0):
+        return False
+    return abs(aspect / (4 / 3) - 1) <= 0.02
 
 
 def record_media_info(data_dir: Path, published: Path,
@@ -34,7 +44,12 @@ def record_media_info(data_dir: Path, published: Path,
     never written as true), so a stale entry left by a deleted video of the
     same name cannot hand its setting on. `crop=False` (an imported package's
     stored setting) writes crop: false. Both None leaves an existing setting
-    alone."""
+    alone.
+
+    Never crop: false for a video whose probed shape is 4:3 (within 2 %,
+    is_four_by_three): there it changes nothing but the size inside a
+    bezel, and no control is offered for a 4:3 video to undo it — so the
+    choice is cleared instead, like 'crop'."""
     try:
         key = media_info.media_key(published, data_dir)
         probe = media_probe.probe_source(published) if key else None
@@ -43,12 +58,14 @@ def record_media_info(data_dir: Path, published: Path,
                   + ("could not probe it" if key else
                      "outside the data directory"), file=sys.stderr)
             return False
+        aspect = probe['display_aspect']
         fields = {'duration_s': probe['duration_s'],
-                  'display_aspect': probe['display_aspect']}
-        if fit_mode is not None:
-            fields['crop'] = False if fit_mode == 'fit' else None
-        elif crop is False:
-            fields['crop'] = False
+                  'display_aspect': aspect}
+        uncropped = (fit_mode == 'fit') if fit_mode is not None else (crop is False)
+        if uncropped:
+            fields['crop'] = None if is_four_by_three(aspect) else False
+        elif fit_mode is not None:
+            fields['crop'] = None
         media_info.update(data_dir, key, **fields)
     except Exception as e:
         print(f"[media] could not record media info for "
