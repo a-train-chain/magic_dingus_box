@@ -12,7 +12,8 @@
 // nothing to choose.
 function cropControl(video) {
     const aspect = video.display_aspect;
-    if (typeof aspect !== 'number' || Math.abs(aspect - 4 / 3) < 0.02) return '';
+    // Within 2 % of 4:3, relative: the kiosk's video::is_four_by_three.
+    if (typeof aspect !== 'number' || !(aspect > 0) || Math.abs(aspect / (4 / 3) - 1) <= 0.02) return '';
     return `<label class="video-crop" title="Fill the 4:3 screen, trimming the edges. Untick to show the whole picture with black borders.">
         <input type="checkbox" ${video.crop === false ? '' : 'checked'}
             onchange="setVideoCrop('${escapeJs(video.path)}', this.checked)"> Crop</label>`;

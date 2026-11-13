@@ -3,6 +3,7 @@ under node with a fake DOM. Skipped where node is absent."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,7 +15,7 @@ STATIC = Path(__file__).resolve().parents[1] / "static"
 HARNESS = r"""
 const vm = require('vm');
 const fs = require('fs');
-const [mediaPath, videosJson] = process.argv.slice(1);
+const [mediaPath, videosJson, escapeJsSrc] = process.argv.slice(1);
 const videos = JSON.parse(videosJson);
 
 const container = { innerHTML: '' };
@@ -32,8 +33,6 @@ const ctx = {
         data: String(url).endsWith('/admin/media') ? videos : [] }) }),
     escapeHtml: (s) => String(s).replace(/[&<>"']/g,
         c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
-    escapeJs: (s) => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-        .replace(/"/g, '&quot;'),
     normalizeVideoPath: (p) => p,
     formatFileSize: (n) => `${n} B`,
     getCsrfHeaders: () => ({ 'X-CSRF-Token': 'tok' }),
@@ -43,6 +42,7 @@ const ctx = {
     alert() {},
 };
 vm.createContext(ctx);
+vm.runInContext(escapeJsSrc, ctx, { filename: 'manager.js (escapeJs)' });
 vm.runInContext(fs.readFileSync(mediaPath, 'utf8'), ctx, { filename: 'manager_media.js' });
 
 (async () => {
@@ -58,12 +58,22 @@ vm.runInContext(fs.readFileSync(mediaPath, 'utf8'), ctx, { filename: 'manager_me
 """
 
 
+def _real_escape_js() -> str:
+    """escapeJs exactly as manager.js defines it (same extraction as
+    test_escape_js.py), so these tests cannot drift from the real escaper."""
+    src = (STATIC / "manager.js").read_text(encoding="utf-8")
+    m = re.search(r"^function escapeJs\(str\) \{.*?^\}", src, re.S | re.M)
+    assert m, "escapeJs not found in manager.js"
+    return m.group(0)
+
+
 def _run(videos):
     node = shutil.which("node")
     if node is None:
         pytest.skip("node not installed")
     res = subprocess.run(
-        [node, "-e", HARNESS, str(STATIC / "manager_media.js"), json.dumps(videos)],
+        [node, "-e", HARNESS, str(STATIC / "manager_media.js"), json.dumps(videos),
+         _real_escape_js()],
         capture_output=True, text=True, timeout=30)
     assert res.returncode == 0, res.stderr
     return json.loads(res.stdout)
@@ -93,7 +103,22 @@ def test_unticked_when_the_video_is_fitted():
 
 def test_filename_in_the_handler_is_escaped():
     out = _run([_v("it's \"x\".mp4", 1.7778)])
-    assert "it's \"x\"" not in out["html"].split("video-crop")[1].split(">")[0]
+    handler = out["html"].split("video-crop")[1].split("<input")[1].split(">")[0]
+    # The real escapeJs: quotes become \\x27 / \\x22, inert as HTML.
+    assert "data/media/it\\x27s \\x22x\\x22.mp4" in handler
+    assert "it's" not in handler and '"x"' not in handler
+
+
+@pytest.mark.parametrize("aspect, shown", [
+    (1.3333, False),   # 4:3
+    (1.3599, False),   # just inside +2 % (1.36)
+    (1.3068, False),   # just inside -2 % (1.30667)
+    (1.3605, True),    # just outside +2 %
+    (1.3066, True),    # just outside -2 %
+])
+def test_four_by_three_is_within_two_percent_relative(aspect, shown):
+    out = _run([_v("a.mp4", aspect)])
+    assert ("video-crop" in out["html"]) is shown
 
 
 def test_toggle_calls_apiRequest_with_path_and_crop():

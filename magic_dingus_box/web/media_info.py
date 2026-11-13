@@ -133,3 +133,13 @@ def remove(data_dir: Path, key: str) -> None:
         if key in videos:
             del videos[key]
             _write(data_dir, videos)
+
+
+def restore(data_dir: Path, text: str) -> None:
+    """Replace the whole store with `text` (a backup's copy), under the same
+    lock the kiosk's writers take. Raises ValueError unless `text` is a JSON
+    object."""
+    if not isinstance(json.loads(text), dict):
+        raise ValueError("media_info.json must be a JSON object")
+    with _Lock(data_dir):
+        _atomic_write_text(Path(data_dir) / FILE_NAME, text)

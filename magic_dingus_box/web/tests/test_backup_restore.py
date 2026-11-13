@@ -120,3 +120,53 @@ def test_restore_without_settings_does_not_poke(client, temp_data_dir,
         content_type="multipart/form-data")
     assert resp.status_code == 200
     assert not (temp_data_dir / "settings_reload_request").exists()
+
+
+# ---- media_info.json: per-video store travels with the backup ----
+
+def test_backup_includes_media_info_when_present(client, temp_data_dir,
+                                                 kiosk_config_dir):
+    doc = {"version": 1, "videos": {"media/x.mp4": {"crop": False}}}
+    (temp_data_dir / "media_info.json").write_text(json.dumps(doc))
+
+    resp = client.get("/admin/backup")
+    zf = zipfile.ZipFile(io.BytesIO(resp.data))
+    assert "data/media_info.json" in zf.namelist()
+    assert json.loads(zf.read("data/media_info.json")) == doc
+    assert json.loads(zf.read("manifest.json"))["contents"]["media_info"] is True
+
+
+def test_backup_without_media_info_omits_it(client, kiosk_config_dir):
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/admin/backup").data))
+    assert "data/media_info.json" not in zf.namelist()
+    assert json.loads(zf.read("manifest.json"))["contents"]["media_info"] is False
+
+
+def _restore(client, files):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    buf.seek(0)
+    return client.post("/admin/restore",
+                       data={"file": (buf, "backup.zip")},
+                       content_type="multipart/form-data")
+
+
+def test_restore_writes_media_info_and_pokes_the_kiosk(client, temp_data_dir,
+                                                       kiosk_config_dir):
+    doc = {"version": 1, "videos": {"media/x.mp4": {"crop": False}}}
+    resp = _restore(client, {"data/media_info.json": json.dumps(doc)})
+    assert resp.status_code == 200
+    assert json.loads((temp_data_dir / "media_info.json").read_text()) == doc
+    assert (temp_data_dir / "media_info_reload_request").exists()
+    assert resp.get_json()["data"]["restored"]["media_info"] is True
+
+
+def test_restore_rejects_a_media_info_that_is_not_an_object(client, temp_data_dir,
+                                                            kiosk_config_dir):
+    resp = _restore(client, {"data/media_info.json": "[1, 2]"})
+    assert resp.status_code == 200
+    assert not (temp_data_dir / "media_info.json").exists()
+    assert not (temp_data_dir / "media_info_reload_request").exists()
+    assert resp.get_json()["data"]["errors"]

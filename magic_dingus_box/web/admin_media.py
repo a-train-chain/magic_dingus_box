@@ -30,6 +30,7 @@ try:
     from admin_security import _is_within
     import media_info
     import media_probe
+    from media_record import record_media_info
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _sanitize_filename, _staged_save_upload, error_response,
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     )
     from .admin_security import _is_within
     from . import media_info, media_probe
+    from .media_record import record_media_info
 
 
 def _max_transcodes_for(pi_model: str, env_value: Optional[str]) -> int:
@@ -119,36 +121,11 @@ def register(app, ctx) -> None:
     _detect_pi_model = ctx._detect_pi_model
 
     def _record_media_info(published: Path, fit_mode: Optional[str]) -> None:
-        """Record a just-published video in media_info.json, then poke the
-        kiosk once. Never raises: the video is already on disk, and a failed
-        write of this best-effort store must not fail the upload (the kiosk
-        then plays it cropped, the default).
-
-        Writes the PUBLISHED file's length and displayed aspect. `fit_mode`
-        is the upload's Framing choice and sets the video's starting Crop:
-        'fit' writes crop: false; 'crop' clears it (absent = cropped — never
-        written as true), so a stale entry left by a deleted video of the same
-        name cannot hand its setting on. None (the raw upload, which has no
-        Framing choice) leaves an existing setting alone. A file the probe
-        cannot read gets nothing written."""
-        try:
-            key = media_info.media_key(published, data_dir)
-            probe = media_probe.probe_source(published) if key else None
-            if probe is None:
-                print(f"[media] no media info recorded for {published.name}: "
-                      + ("could not probe it" if key else
-                         "outside the data directory"), file=sys.stderr)
-                return
-            fields = {'duration_s': probe['duration_s'],
-                      'display_aspect': probe['display_aspect']}
-            if fit_mode is not None:
-                fields['crop'] = False if fit_mode == 'fit' else None
-            media_info.update(data_dir, key, **fields)
-        except Exception as e:
-            print(f"[media] could not record media info for "
-                  f"{published.name}: {e}", file=sys.stderr)
-            return
-        _poke_kiosk_reload("media_info")
+        """Record a just-published video in media_info.json (probe, starting
+        Crop from the upload's Framing choice), then poke the kiosk once.
+        Never raises; see media_record.record_media_info."""
+        record_media_info(data_dir, published, fit_mode=fit_mode,
+                          poke=lambda: _poke_kiosk_reload("media_info"))
 
     # ===== MEDIA MANAGEMENT =====
 

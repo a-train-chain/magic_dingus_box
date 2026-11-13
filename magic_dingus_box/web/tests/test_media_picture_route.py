@@ -2,6 +2,7 @@
 the store entry's removal on delete."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import media_info
@@ -64,6 +65,14 @@ def test_crop_must_be_a_boolean(client, temp_data_dir):
     resp = _post(client, "data/media/x.mp4", "no")
     assert resp.status_code == 400
     assert resp.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_clearing_the_only_field_leaves_no_empty_entry(client, temp_data_dir):
+    _video(temp_data_dir)
+    media_info.update(temp_data_dir, "media/x.mp4", crop=False)
+    media_info.update(temp_data_dir, "media/x.mp4", crop=None)
+    doc = json.loads((temp_data_dir / media_info.FILE_NAME).read_text())
+    assert "media/x.mp4" not in doc["videos"]
 
 
 def test_missing_video_is_404(client, temp_data_dir):

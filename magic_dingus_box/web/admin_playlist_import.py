@@ -7,6 +7,7 @@ POST /admin/playlists/import, /admin/playlists/import-package/precheck and
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import sys
@@ -31,6 +32,7 @@ try:
         _time_bounds_error, format_playlist_yaml, load_playlist_yaml,
     )
     from admin_security import _is_within
+    from media_record import record_media_info
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
@@ -42,6 +44,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
         _time_bounds_error, format_playlist_yaml, load_playlist_yaml,
     )
     from .admin_security import _is_within
+    from .media_record import record_media_info
 
 
 def register(app, ctx) -> None:
@@ -538,6 +541,7 @@ def register(app, ctx) -> None:
                     # Extract media files
                     videos_imported = 0
                     videos_skipped = 0
+                    imported_videos = []
                     for media_file in media_files:
                         # Get just the filename (strip directory path)
                         filename = os.path.basename(media_file)
@@ -622,6 +626,37 @@ def register(app, ctx) -> None:
 
                         total_extracted += actual_written
                         videos_imported += 1
+                        imported_videos.append(output_path)
+
+                    # Per-video info: probe each video that just arrived, and let a
+                    # package-root media_info.json ({"videos": {"<basename>":
+                    # {"crop": false}}}) carry its Crop settings onto them by
+                    # basename. Only crop crosses over: length and shape come from
+                    # the probe of the file actually on this box. Best-effort and
+                    # never fails the import.
+                    package_crops = {}
+                    if "media_info.json" in namelist:
+                        try:
+                            pkg_doc = json.loads(_read_zip_entry_capped(
+                                zf, "media_info.json").decode("utf-8"))
+                            pkg_videos = pkg_doc.get("videos") if isinstance(pkg_doc, dict) else None
+                            for k, v in (pkg_videos or {}).items():
+                                if isinstance(v, dict) and v.get("crop") is False:
+                                    # Keyed like the files were saved (sanitized).
+                                    package_crops[re.sub(
+                                        r'[^\w\s\-\.\[\]]', '',
+                                        os.path.basename(str(k))).strip()] = False
+                        except Exception as e:
+                            print(f"Ignoring package media_info.json: {e}",
+                                  file=sys.stderr)
+
+                recorded_any = False
+                for video_path in imported_videos:
+                    recorded_any |= record_media_info(
+                        data_dir, video_path,
+                        crop=package_crops.get(video_path.name))
+                if recorded_any:
+                    _poke_kiosk_reload("media_info")
 
                 # Update playlist paths to use sanitized filenames (matching what we saved)
                 for item in playlist_data.get('items', []):
