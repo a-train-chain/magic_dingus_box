@@ -65,4 +65,8 @@ GuidePress guide_press(const GuideCursor& c, int tuned, bool row_tunable) {
     return GuidePress::Tune;
 }
 
+bool guide_visible(bool overlay_up, bool video_active, bool loading) {
+    return overlay_up || (!video_active && !loading);
+}
+
 }  // namespace app

@@ -545,8 +545,12 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     // boundary load's bound (tick_pipeline_error) waits for it.
     state_.playback_started_ = false;
     state_.guide_wait_until_utc = 0.0;
-    if (!keep_overlay) {
-        // A tune closes the guide; channel up/down leaves it as it is.
+    if (!keep_overlay && !state_.guide_opened_by_viewer) {
+        // A tune closes the guide; channel up/down leaves it as it is. Never
+        // one the viewer owns NOW (any input to it since it appeared — e.g.
+        // SELECT during the power-on re-tune's settle): the guide never
+        // closes by itself. The viewer's own Tune press drops that
+        // ownership first (main.cpp), so it still closes the guide.
         state_.ui_visible_when_playing = false;
     }
     return true;

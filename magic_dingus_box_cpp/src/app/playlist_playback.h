@@ -175,7 +175,9 @@ public:
     // way. The load sets tuned_channel and last_channel_id ("shuffle" for
     // 00) whether or not the item loads — a failed item is the channel's
     // to resume (see act_on_failed_item); success hides the overlay unless
-    // keep_overlay. It never clears guide_gave_up (kChannelPlaysS).
+    // keep_overlay, or the viewer owns the guide when the load runs
+    // (AppState::guide_opened_by_viewer). It never clears guide_gave_up
+    // (kChannelPlaysS).
     // Dropped (like SELECT) in List style, for a channel with no schedule,
     // during the intro, and while a switch is pending or in flight.
     void tune(int channel, bool keep_overlay);

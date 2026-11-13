@@ -308,11 +308,13 @@ public:
     //   guide-style ROTATE / SELECT / NEXT / PREV branches and clamped every
     //   frame; the List style's selected_index / picture_focus are not used
     //   in guide style.
-    // guide_opened_by_viewer: SELECT opened the guide over the video. Cleared
-    //   whenever the overlay hides (Close, Tune, anything else that hides
-    //   it). The nothing-playing rule's re-tune keeps the guide open only
-    //   then — "the guide never closes by itself" — and otherwise hides it,
-    //   so the video simply comes back.
+    // guide_opened_by_viewer: the viewer owns the guide — SELECT opened it,
+    //   or the shown guide got any input (ROTATE, a SELECT that is not a
+    //   Tune or Close, NEXT/PREV). Cleared by the viewer's Close and Tune
+    //   presses and whenever the overlay hides. A tune's load
+    //   (PlaylistPlayback, decided when the load RUNS) never hides a guide
+    //   the viewer owns — "the guide never closes by itself"; one the
+    //   viewer does not own goes, so the video simply comes back.
     GuideCursor guide_cursor;
     bool guide_opened_by_viewer = false;
     bool master_shuffle_active; // True if Master Shuffle is playing (picks random video from ANY playlist)

@@ -66,4 +66,25 @@ enum class GuidePress {
 // (-1 none); `row_tunable` whether the cursor's row has a schedule.
 GuidePress guide_press(const GuideCursor& c, int tuned, bool row_tunable);
 
+// The guide is on screen: the overlay is up (`overlay_up` =
+// AppState::ui_visible_when_playing), or nothing is playing or loading —
+// the menu is drawn whenever there is no video. Not in the load gap of a
+// tune or an item boundary (`loading` = the playing indexes are set while
+// video_active is false) with the overlay hidden: nothing is drawn there,
+// so SELECT opens the guide rather than pressing an invisible row.
+bool guide_visible(bool overlay_up, bool video_active, bool loading);
+
+// The frame the guide appears on screen (main.cpp: a guide put up without
+// SELECT — a failed item's stop_to_menu, leaving the Media Browser with
+// nothing playing — starts on the tuned row, as SELECT's does). One bool,
+// fed every frame.
+struct GuideShownEdge {
+    bool was_shown = false;
+    bool rose(bool shown) {
+        const bool appeared = shown && !was_shown;
+        was_shown = shown;
+        return appeared;
+    }
+};
+
 }  // namespace app

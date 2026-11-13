@@ -235,3 +235,36 @@ TEST_CASE("a press tunes another channel, closes on the tuned one, toggles the p
         CHECK(app::guide_press({0, 0, true}, 1, false) == GuidePress::TogglePicture);
     }
 }
+
+TEST_CASE("the guide is on screen with the overlay up or with nothing playing or loading",
+          "[guide_nav]") {
+    // guide_visible(overlay_up, video_active, loading)
+    SECTION("over a playing video: only with the overlay up") {
+        CHECK(app::guide_visible(true, true, true));
+        CHECK_FALSE(app::guide_visible(false, true, true));
+    }
+    SECTION("nothing playing or loading: always (the menu is drawn then)") {
+        CHECK(app::guide_visible(false, false, false));
+        CHECK(app::guide_visible(true, false, false));
+    }
+    SECTION("a load gap (a tune's settle, an item boundary): only with the overlay up") {
+        CHECK(app::guide_visible(true, false, true));
+        CHECK_FALSE(app::guide_visible(false, false, true));
+    }
+}
+
+TEST_CASE("the guide's appearance is a rising edge, once per appearance", "[guide_nav]") {
+    app::GuideShownEdge edge;
+    CHECK_FALSE(edge.rose(false));
+    CHECK(edge.rose(true));        // appears
+    CHECK_FALSE(edge.rose(true));  // stays
+    CHECK_FALSE(edge.rose(true));
+    CHECK_FALSE(edge.rose(false));  // goes
+    CHECK_FALSE(edge.rose(false));
+    CHECK(edge.rose(true));  // appears again
+
+    SECTION("on screen from the very first frame counts as appearing") {
+        app::GuideShownEdge first;
+        CHECK(first.rose(true));
+    }
+}

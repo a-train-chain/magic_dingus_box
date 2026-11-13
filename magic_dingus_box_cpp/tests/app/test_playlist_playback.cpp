@@ -1376,6 +1376,43 @@ TEST_CASE("a re-tune from nothing playing hides the guide unless it is kept",
     }
 }
 
+TEST_CASE("a tune's load hides the guide only if the viewer does not own it THEN",
+          "[playlist_playback][guide]") {
+    // The hide is decided when the load runs, not at the call: main.cpp
+    // sets AppState::guide_opened_by_viewer on any input to the shown
+    // guide, and clears it before the viewer's own Tune press.
+    Guide g;
+    app::stop_to_menu(g.s);
+    g.s.ui_visible_when_playing = false;  // as after the intro hand-off
+    g.t.wall = kW0 + 10;
+
+    SECTION("SELECT opens the guide during the power-on re-tune's settle: it stays") {
+        g.pb.tune(1, /*keep_overlay=*/false);  // the nothing-playing rule
+        run_frames(g.pb, g.t, std::chrono::milliseconds(100));
+        REQUIRE(g.pb.switch_pending());
+        g.s.ui_visible_when_playing = true;  // main.cpp's SELECT-open
+        g.s.guide_opened_by_viewer = true;
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 1);
+        CHECK(g.s.ui_visible_when_playing);
+    }
+    SECTION("a guide the viewer owns at the call stays too") {
+        g.s.ui_visible_when_playing = true;
+        g.s.guide_opened_by_viewer = true;
+        g.pb.tune(1, /*keep_overlay=*/false);
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.ui_visible_when_playing);
+    }
+    SECTION("the viewer's own Tune press (ownership cleared first) closes it") {
+        g.s.ui_visible_when_playing = true;
+        g.s.guide_opened_by_viewer = false;
+        g.pb.tune(2, /*keep_overlay=*/false);
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 2);
+        CHECK_FALSE(g.s.ui_visible_when_playing);
+    }
+}
+
 TEST_CASE("pending_tune is empty for a List-style switch", "[playlist_playback][guide]") {
     app::AppState s;
     put_menu(s);
