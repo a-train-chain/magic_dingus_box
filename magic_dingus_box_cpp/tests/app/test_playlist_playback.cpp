@@ -1561,6 +1561,59 @@ TEST_CASE("ahead of schedule at the natural end: the next item, never the ended 
     CHECK(g.s.tuned_channel == 1);
 }
 
+TEST_CASE("a rebuild that re-phases the tuned channel: the next boundary joins it live",
+          "[playlist_playback][guide]") {
+    // An upload to the tuned channel's playlist (media_info.poll() -> a
+    // rebuild) changes its cycle: 01 gains d (420 s), 600 s -> 1020 s, and
+    // the epoch-anchored schedule moves every airing. b keeps its index, so
+    // only the airing check tells the boundary that "the live airing began
+    // before b's old end" is a re-phase, not playback running ahead.
+    Guide g;
+    StreamCapture out(std::cout);
+    g.t.wall = kW0 + 130;  // 01: b, 30 s in (old schedule: 100-300 s)
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.last() == "load_at Cartoons 1");
+    g.playing();
+
+    g.s.playlists[1].items.push_back(video_item("d"));
+    auto info = guide_lengths();
+    info["d.mp4"].duration_s = 420.0;
+    std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, info);
+    REQUIRE(rebuilt[1].items.size() == 4);
+    REQUIRE(rebuilt[1].items[1].item == 1);  // b: same item, same index
+    g.pb.set_channels(&rebuilt);
+    g.channels.clear();
+
+    // b ends on its old time. New schedule (cycle start kW0 - 240): c airs
+    // 60-360 s, so it is 240.4 s in — not c from its start, out of phase.
+    g.s.update_playback_state(199.6, 200.0);
+    g.t.wall = kW0 + 300.4;
+    g.pb.tick_auto_advance();
+    CHECK(g.t.last() == "load_at Cartoons 2");
+    CHECK(g.t.last_offset() == Approx(240.4));
+}
+
+TEST_CASE("an identical rebuild (a crop-only media info change) keeps the ahead guard",
+          "[playlist_playback][guide]") {
+    Guide g;
+    StreamCapture out(std::cout);
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    g.playing();
+    auto info = guide_lengths();
+    info["b.mp4"].crop = false;  // nothing the schedule reads
+    std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, info);
+    g.pb.set_channels(&rebuilt);
+    g.channels.clear();
+    g.s.update_playback_state(199.6, 200.0);
+    g.t.wall = kW0 + 290;  // 10 s ahead of b's end
+    g.pb.tick_auto_advance();
+    CHECK(g.t.last() == "load_at Cartoons 2");
+    CHECK(g.t.last_offset() == 0.0);
+}
+
 TEST_CASE("once the schedule has passed the loaded item, a boundary joins it live again",
           "[playlist_playback][guide]") {
     // The I1 guard only refuses the loaded airing (and earlier ones): behind

@@ -312,6 +312,12 @@ TEST_CASE("boundary_join never goes back to the airing last loaded", "[channel_s
         CHECK(j->index == 1);
         CHECK(j->offset_s == Approx(50));
     }
+    SECTION("an identical rebuild (a crop-only media info change) keeps the guard") {
+        const app::Channel same = c;  // a new list, the same schedule
+        auto j = app::boundary_join(same, E + 290, b);
+        CHECK(j->index == 2);
+        CHECK(j->offset_s == 0.0);
+    }
     SECTION("a rebuilt channel that moved the loaded item: plain join_point") {
         auto rebuilt = channel_of({100, 200, 300});
         rebuilt.items[1].item = 7;  // index 1 is another item now
@@ -322,6 +328,57 @@ TEST_CASE("boundary_join never goes back to the airing last loaded", "[channel_s
         out_of_range.index = 9;
         j = app::boundary_join(c, E + 290, out_of_range);
         CHECK(j->index == 1);
+    }
+}
+
+TEST_CASE("boundary_join resyncs after a rebuild that re-phased the channel",
+          "[channel_schedule]") {
+    // The schedule is anchored to a fixed epoch, so a rebuild that changes
+    // the channel's cycle (an upload to its playlist, a trim edit, the
+    // duration back-fill) moves every airing — the loaded item keeps its
+    // index, but the live airing now usually started before the loaded one
+    // ended. That is NOT playback running ahead: the boundary must join the
+    // live airing, or the channel stays out of phase until it is re-tuned.
+    // Times are deliberately NOT multiples of both cycles (1800 s, 2220 s).
+    auto old_ch = channel_of({600, 600, 600});
+    const auto loaded = app::on_air(old_ch, E + 12345);  // item 2, 12000-12600
+    REQUIRE(loaded);
+    REQUIRE(loaded->index == 2);
+    app::LoadedAiring last;
+    last.index = loaded->index;
+    last.item = old_ch.items[2];
+    last.starts_at = loaded->starts_at;
+    last.ends_at = loaded->ends_at;
+
+    auto grown = channel_of({600, 600, 600, 420});  // a 4th item, 420 s
+    REQUIRE(grown.items[2].item == last.item.item);  // the same item, same index
+    // The loaded item's natural end, as the boundary fires.
+    const double end = last.ends_at - 0.4;
+    const auto live = app::join_point(grown, end);
+    REQUIRE(live);
+    CHECK(live->index == 2);
+    CHECK(live->offset_s == Approx(299.6));  // the re-phased item 2, 299.6 s in
+    auto j = app::boundary_join(grown, end, last);
+    REQUIRE(j);
+    CHECK(j->index == live->index);
+    CHECK(j->offset_s == Approx(live->offset_s));
+    CHECK(j->starts_at == Approx(live->starts_at));
+
+    // And every later boundary stays in phase: each load is recorded from
+    // what it joined, which is now the live schedule's own airing.
+    app::OnAir cur = *j;
+    for (int k = 0; k < 8; ++k) {
+        last.index = cur.index;
+        last.item = grown.items[cur.index];
+        last.starts_at = cur.starts_at;
+        last.ends_at = cur.ends_at;
+        const double t = cur.ends_at - 0.4;
+        const auto next = app::boundary_join(grown, t, last);
+        const auto want = app::join_point(grown, t);
+        REQUIRE(next);
+        CHECK(next->index == want->index);
+        CHECK(next->starts_at == Approx(want->starts_at));
+        cur = *next;
     }
 }
 

@@ -141,11 +141,25 @@ std::optional<OnAir> boundary_join(const Channel& channel, double now_utc,
     if (last->index < 0 || last->index >= n) return jp;
     const ScheduledItem& held = channel.items[last->index];
     if (held.playlist != last->item.playlist || held.item != last->item.item) return jp;
-    // Airings are contiguous: one that starts before the loaded airing ends
-    // IS the loaded airing or an earlier one. Half a second of slack absorbs
-    // the rounding between two on_air() calls; the loaded airing itself
-    // starts a whole item (>= kMinScheduledItemS) before its end.
+    // Half a second of slack absorbs the rounding between two on_air()
+    // calls; an airing is a whole item (>= kMinScheduledItemS) long.
     constexpr double kSlackS = 0.5;
+    // The loaded airing must still be an airing of THIS schedule. A rebuild
+    // that changed the channel's cycle (an upload to its playlist, a trim
+    // edit, the duration back-fill) moves every airing — the schedule is
+    // anchored to a fixed epoch — while the item keeps its index. Then a
+    // live airing that began before the loaded one's old end is a re-phase,
+    // not playback running ahead, and the guard would keep the channel out
+    // of phase for good: join it live instead. A rebuild that changes
+    // nothing the schedule reads (a crop toggle) keeps every airing.
+    constexpr double kProbeS = 0.25;  // inside the item
+    const auto still = on_air(channel, last->starts_at + kProbeS);
+    if (!still || still->index != last->index ||
+        std::fabs(still->starts_at - last->starts_at) > kSlackS) {
+        return jp;
+    }
+    // Airings are contiguous: one that starts before the loaded airing ends
+    // IS the loaded airing or an earlier one — playback is ahead.
     if (jp->starts_at >= last->ends_at - kSlackS) return jp;
     OnAir loaded;
     loaded.index = last->index;

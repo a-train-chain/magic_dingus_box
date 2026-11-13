@@ -323,9 +323,11 @@ private:
     double guide_item_ends_at_ = 0.0;
     double guide_item_length_ = 0.0;
     // The airing the last channel load loaded, and on which channel: the
-    // next boundary on that channel never rejoins it (boundary_join). A
-    // reload that renumbers the channel drops the guard for that one
-    // boundary (the channel number or the scheduled item no longer match).
+    // next boundary on that channel never rejoins it (boundary_join). Kept
+    // across set_channels; boundary_join itself drops the guard for that
+    // one boundary when a rebuild made it stale — the channel renumbered
+    // (channel or scheduled item no longer match) or re-phased (its cycle
+    // changed, so the item no longer airs at that time: join it live).
     struct ChannelAiring {
         int channel = -1;
         LoadedAiring airing;

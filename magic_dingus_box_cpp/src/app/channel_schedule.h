@@ -106,8 +106,11 @@ struct LoadedAiring {
 // would play its tail again. Instead the airing right after the loaded one,
 // from its start (it has not started yet: the on-air airing is the loaded
 // one or an earlier one). Once the schedule is past the loaded airing this
-// is plain join_point. `last` is not trusted when the channel no longer
-// holds that item at that index (a rebuild changed it): plain join_point.
+// is plain join_point. `last` is not trusted — plain join_point — when the
+// channel no longer holds that item at that index, or no longer airs it at
+// that time: a rebuild that changed the channel's cycle (an upload, a trim
+// edit, the back-fill) re-phases every airing, and the live airing then
+// starting before the loaded one's old end is not playback running ahead.
 std::optional<OnAir> boundary_join(const Channel& channel, double now_utc,
                                    const std::optional<LoadedAiring>& last);
 
