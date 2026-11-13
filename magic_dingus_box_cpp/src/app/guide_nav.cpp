@@ -99,10 +99,6 @@ bool guide_visible(const AppState& s) {
     return s.ui_visible_when_playing || (!s.video_active && !has_playing_indexes(s));
 }
 
-bool guide_window_video(const AppState& s) {
-    return !s.showing_intro_video && guide_visible(s);
-}
-
 bool guide_painted(const AppState& s) {
     if (s.showing_intro_video) return false;
     if (guide_visible(s)) return true;

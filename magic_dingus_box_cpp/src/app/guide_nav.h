@@ -111,17 +111,17 @@ struct GuideShownEdge {
 // invisible row. Input and the renderer use this one definition.
 bool guide_visible(const AppState& s);
 
-// The tuned video is drawn in the guide's window rather than over the whole
-// picture: the guide is on screen (guide_visible) and the intro is over (the
-// intro has no overlay, but before its first frame nothing is "playing").
-bool guide_window_video(const AppState& s);
-
-// The renderer paints the guide this frame, in Channel Guide style: while it
-// is on screen (guide_visible — the load gap of a tune with the overlay up
-// included, where the List style draws nothing), and through a Close's
-// fade-out, when the overlay is already hidden but still fading (the video
-// is back full-screen underneath). Never over the intro or the Media
-// Browser.
+// The renderer paints the guide this frame, in Channel Guide style — and
+// the tuned video is drawn in the guide's window rather than over the whole
+// picture for exactly as long: while the guide is on screen (guide_visible —
+// the load gap of a tune with the overlay up included, where the List style
+// draws nothing), and through a Close's fade-out, when the overlay is
+// already hidden but the guide is still fading (the video stays in its
+// window, the full picture comes back when the fade ends: main.cpp clears
+// is_fading once the fade's time is up, before it reads this). A fade-in
+// (SELECT opening it) is on screen at once. Never over the intro (before
+// its first frame nothing is "playing", which guide_visible would count) or
+// the Media Browser.
 bool guide_painted(const AppState& s);
 
 // Saving the channel last tuned (AppState::last_channel_id, persisted as

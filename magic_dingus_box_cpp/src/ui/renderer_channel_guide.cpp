@@ -63,7 +63,6 @@ constexpr GuideMetrics kCrt{14, 12, 7, 14, 22, 44, false, 14, 17, 14, 14, 24, 10
 constexpr int kLabel = 13;  // hint row and small labels
 constexpr int kBody = 14;   // cell titles, channel names, ticks, artist
 
-const char* const kSourceLabel = "16:9 SOURCE";
 const char* const kNoSchedule = "NO SCHEDULE YET";
 
 }  // namespace
@@ -327,8 +326,8 @@ void Renderer::render_channel_guide(const GuideView& view, float alpha, bool win
                 frame(ix - 6.0f, cy - 12.0f, (x + 8.0f) - (ix - 6.0f), 24.0f, 2.0f, t.accent);
             }
             if (p.show_source) {
-                const float sw = spaced_w(kSourceLabel, kLabel, 1.0f);
-                spaced(kSourceLabel, ir - sw, b_at(kLabel), kLabel, t.dim, 1.0f);
+                const float sw = spaced_w(p.source_label, kLabel, 1.0f);
+                spaced(p.source_label, ir - sw, b_at(kLabel), kLabel, t.dim, 1.0f);
             }
         } else if (p.bottom == GuideBottom::PressToWatch) {
             spaced("PRESS TO WATCH", ix, b_at(kLabel), kLabel, t.accent, 2.0f);

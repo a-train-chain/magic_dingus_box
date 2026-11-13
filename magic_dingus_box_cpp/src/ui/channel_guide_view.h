@@ -22,8 +22,44 @@
 #include "app/app_state.h"
 #include "app/channel_schedule.h"
 #include "app/guide_nav.h"
+#include "video/picture_placement.h"
 
 namespace ui {
+
+// The label beside the Picture control (which is offered only for a source
+// that is not 4:3): the playing video's display aspect, named only when the
+// name is true. Within 2 % of a common aspect it is named — 16:9, 1.85:1,
+// 2.39:1 (2.35 and 2.40 too: one scope family), 21:9 — the nearest one when
+// two are in reach (2.35 and 21:9's 2.33 are 0.7 % apart); a source taller
+// than wide is PORTRAIT; any other aspect wider than 4:3 is WIDE. Nothing for
+// an unknown aspect (0, negative, not finite), for 4:3 (video::
+// is_four_by_three's 2 %), and for one between square and 4:3, which no
+// word above names truthfully.
+inline std::string guide_source_label(double display_aspect) {
+    const double a = display_aspect;
+    if (!std::isfinite(a) || a <= 0.0) return "";
+    if (a < 1.0) return "PORTRAIT SOURCE";
+    if (a <= 4.0 / 3.0 || video::is_four_by_three(a)) return "";
+    struct Named {
+        double aspect;
+        const char* label;
+    };
+    static constexpr Named kNamed[] = {
+        {16.0 / 9.0, "16:9 SOURCE"},   {1.85, "1.85:1 SOURCE"}, {2.35, "2.39:1 SOURCE"},
+        {2.39, "2.39:1 SOURCE"},       {2.40, "2.39:1 SOURCE"}, {21.0 / 9.0, "21:9 SOURCE"},
+    };
+    constexpr double kTolerance = 0.02;
+    const char* best = nullptr;
+    double best_off = kTolerance;
+    for (const Named& n : kNamed) {
+        const double off = std::fabs(a / n.aspect - 1.0);
+        if (off <= best_off) {
+            best = n.label;
+            best_off = off;
+        }
+    }
+    return best ? best : "WIDE SOURCE";
+}
 
 enum class GuideTone { Fg, Dim, Gold, Green, Steel, Red };
 enum class GuideBottom { Picture, PressToWatch, None };
@@ -40,6 +76,8 @@ struct GuideViewInput {
     app::GuideCursor cursor;
     bool picture_available = false;
     bool picture_crop = false;
+    // The playing video's display aspect (0 = unknown), for the source label.
+    double source_aspect = 0;
     double now_utc = 0;
     int utc_offset_s = 0;
 };
@@ -57,6 +95,7 @@ struct GuidePanel {
     GuideBottom bottom = GuideBottom::PressToWatch;
     std::string join_note;  // "joins at m:ss" (another channel)
     bool show_artist = false, show_next = false, show_source = false;
+    std::string source_label;  // guide_source_label (shown when show_source)
     // The Picture control's checkbox (ticked = cropped) and its gold focus
     // (the cursor is on it); drawn only when bottom == Picture.
     bool picture_crop = true;
@@ -371,7 +410,12 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
         p.bottom = in.picture_available ? GuideBottom::Picture : GuideBottom::None;
     else
         p.bottom = pc_tunable ? GuideBottom::PressToWatch : GuideBottom::None;
-    p.show_source = !crt && p.bottom == GuideBottom::Picture;
+    // The source label: TV only, beside the Picture control, and only when
+    // the aspect has a true name.
+    if (!crt && p.bottom == GuideBottom::Picture) {
+        p.source_label = guide_source_label(in.source_aspect);
+    }
+    p.show_source = !p.source_label.empty();
     p.picture_crop = in.picture_crop;
     p.picture_focus = in.cursor.on_picture;
 

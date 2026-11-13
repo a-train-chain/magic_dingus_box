@@ -5,6 +5,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -185,9 +187,11 @@ TEST_CASE("the picture control shows on the tuned row when available", "[guide_v
     in.tuned = 1;
     in.cursor.row = 1;
     in.picture_available = true;
+    in.source_aspect = 16.0 / 9.0;
     auto v = ui::layout_channel_guide(in);
     CHECK(v.panel.bottom == ui::GuideBottom::Picture);
     CHECK(v.panel.show_source);
+    CHECK(v.panel.source_label == "16:9 SOURCE");
     CHECK(v.window_bug == "01");
     in.cursor = app::GuideCursor{0, 0, true};
     v = ui::layout_channel_guide(in);
@@ -322,6 +326,81 @@ TEST_CASE("the view carries the canvas and the Picture control's state", "[guide
     CHECK_FALSE(v.panel.picture_focus);
     in.crt = true;
     CHECK(ui::layout_channel_guide(in).crt);
+}
+
+TEST_CASE("the source label names the playing aspect only when the name is true",
+          "[guide_view]") {
+    using ui::guide_source_label;
+    SECTION("common aspects, within 2 %") {
+        CHECK(guide_source_label(16.0 / 9.0) == "16:9 SOURCE");
+        CHECK(guide_source_label(1.78) == "16:9 SOURCE");
+        CHECK(guide_source_label(16.0 / 9.0 * 1.019) == "16:9 SOURCE");
+        CHECK(guide_source_label(1.85) == "1.85:1 SOURCE");
+        CHECK(guide_source_label(2.39) == "2.39:1 SOURCE");
+        CHECK(guide_source_label(2.35) == "2.39:1 SOURCE");
+        CHECK(guide_source_label(2.40) == "2.39:1 SOURCE");
+        CHECK(guide_source_label(2.43) == "2.39:1 SOURCE");
+        CHECK(guide_source_label(21.0 / 9.0) == "21:9 SOURCE");
+    }
+    SECTION("two names in reach: the nearer one") {
+        // 2.34 is 0.29 % from 21:9 and 0.43 % from 2.35.
+        CHECK(guide_source_label(2.34) == "21:9 SOURCE");
+        CHECK(guide_source_label(2.345) == "2.39:1 SOURCE");
+    }
+    SECTION("taller than wide: portrait") {
+        CHECK(guide_source_label(9.0 / 16.0) == "PORTRAIT SOURCE");
+        CHECK(guide_source_label(0.99) == "PORTRAIT SOURCE");
+    }
+    SECTION("wider than 4:3 with no common name: wide") {
+        CHECK(guide_source_label(1.6) == "WIDE SOURCE");   // 16:10, 10 % off 16:9
+        CHECK(guide_source_label(2.0) == "WIDE SOURCE");   // 8 % off 1.85
+        CHECK(guide_source_label(1.40) == "WIDE SOURCE");  // past 4:3's 2 %
+        CHECK(guide_source_label(2.76) == "WIDE SOURCE");  // Ultra Panavision
+    }
+    SECTION("nothing to name truthfully: no label") {
+        CHECK(guide_source_label(0.0) == "");
+        CHECK(guide_source_label(-1.0) == "");
+        CHECK(guide_source_label(std::nan("")) == "");
+        CHECK(guide_source_label(std::numeric_limits<double>::infinity()) == "");
+        CHECK(guide_source_label(4.0 / 3.0) == "");
+        CHECK(guide_source_label(4.0 / 3.0 * 1.019) == "");  // 4:3 by is_four_by_three
+        CHECK(guide_source_label(1.0) == "");
+        CHECK(guide_source_label(1.25) == "");  // 5:4: between square and 4:3
+    }
+}
+
+TEST_CASE("the panel carries the source label beside the Picture control only",
+          "[guide_view]") {
+    Fixture f;
+    auto in = f.in();
+    in.tuned = 1;
+    in.cursor.row = 1;
+    in.picture_available = true;
+    in.source_aspect = 2.39;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.source_label == "2.39:1 SOURCE");
+    CHECK(v.panel.show_source);
+    SECTION("unknown aspect: the control, no label") {
+        in.source_aspect = 0.0;
+        v = ui::layout_channel_guide(in);
+        CHECK(v.panel.bottom == ui::GuideBottom::Picture);
+        CHECK(v.panel.source_label.empty());
+        CHECK_FALSE(v.panel.show_source);
+    }
+    SECTION("CRT drops it") {
+        in.crt = true;
+        v = ui::layout_channel_guide(in);
+        CHECK(v.panel.bottom == ui::GuideBottom::Picture);
+        CHECK(v.panel.source_label.empty());
+        CHECK_FALSE(v.panel.show_source);
+    }
+    SECTION("no Picture control (another channel): no label") {
+        in.cursor.row = 2;
+        v = ui::layout_channel_guide(in);
+        CHECK(v.panel.bottom == ui::GuideBottom::PressToWatch);
+        CHECK(v.panel.source_label.empty());
+        CHECK_FALSE(v.panel.show_source);
+    }
 }
 
 TEST_CASE("the video window in framebuffer px", "[guide_view]") {

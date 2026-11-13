@@ -1058,6 +1058,21 @@ int main(int /* argc */, char* /* argv */[]) {
         if (localtime_r(&t, &local) == nullptr) return 0;
         return static_cast<int>(local.tm_gmtoff);
     };
+    // The playing video's display aspect: the frame being drawn's, else the
+    // one the web admin recorded (app/media_info.h); 0 = unknown. One
+    // definition for the picture's crop decision and the guide's source
+    // label (ui::guide_source_label). In memory only.
+    auto playing_display_aspect = [&gst_renderer, &media_info, &controller]() {
+        double aspect = gst_renderer.source_display_aspect().value_or(0.0);
+        if (!(aspect > 0.0)) {
+            const auto& videos = media_info.map();
+            const auto it = videos.find(controller.current_media_key());
+            if (it != videos.end() && it->second.display_aspect) {
+                aspect = *it->second.display_aspect;
+            }
+        }
+        return aspect;
+    };
 
     while (running && !g_shutdown_requested) {
         // DRM master could not be re-acquired after a game: the screen is
@@ -1763,18 +1778,18 @@ int main(int /* argc */, char* /* argv */[]) {
         }
 
         // Channel Guide painting, decided once per frame after the input,
-        // the loads and guide_frame (app/guide_nav.h). guide_painted: the
-        // renderer paints the guide (on screen, or a Close's fade-out) —
-        // even in a tune's load gap, where the List draws nothing.
-        // guide_window: the tuned video goes in the guide's window instead
-        // of the whole picture (on screen only: a fade-out shows the video
-        // full-screen under the fading guide). The guide shows a pending
-        // tune as tuned, so channel up/down looks instant. Local time is
-        // UTC + utc_offset_s, the offset refreshed at most once a minute.
-        // No allocation, no file I/O.
+        // the loads, the fade-flag clear and guide_frame (app/guide_nav.h).
+        // guide_painted: the renderer paints the guide (on screen, or a
+        // Close's fade-out) — even in a tune's load gap, where the List
+        // draws nothing — and for exactly as long the tuned video goes in
+        // the guide's window instead of the whole picture: through a
+        // fade-out it stays there, and the full picture comes back on the
+        // frame the fade ends. The guide shows a pending tune as tuned, so
+        // channel up/down looks instant. Local time is UTC + utc_offset_s,
+        // the offset refreshed at most once a minute. No allocation, no
+        // file I/O.
         const bool guide_style_now = playlist_playback.guide_style();
         const bool guide_painted_now = guide_style_now && app::guide_painted(state);
-        const bool guide_window_now = guide_style_now && app::guide_window_video(state);
         const int guide_tuned = playlist_playback.pending_tune().value_or(state.tuned_channel);
         double guide_now_utc = 0.0;
         int64_t guide_local_minute = 0;
@@ -1917,7 +1932,6 @@ int main(int /* argc */, char* /* argv */[]) {
             // most one redraw a second, and only while the guide is
             // painted), a channel rebuild, the Picture control appearing.
             sig.add(static_cast<uint64_t>(guide_painted_now));
-            sig.add(static_cast<uint64_t>(guide_window_now));
             if (guide_painted_now) {
                 sig.add(static_cast<uint64_t>(static_cast<int64_t>(guide_tuned)));
                 sig.add(static_cast<uint64_t>(guide_local_minute));
@@ -2033,6 +2047,7 @@ int main(int /* argc */, char* /* argv */[]) {
             guide_in.cursor = state.guide_cursor;
             guide_in.picture_available = state.picture_control_available;
             guide_in.picture_crop = state.picture_crop;
+            guide_in.source_aspect = playing_display_aspect();
             guide_in.now_utc = guide_now_utc;
             guide_in.utc_offset_s = utc_offset_s;
             guide_view = ui::layout_channel_guide(guide_in);
@@ -2045,14 +2060,15 @@ int main(int /* argc */, char* /* argv */[]) {
         // 3. During intro fade-out
         // 4. After intro completes (ensure clean background)
         // 5. When showing UI (ensure clean background)
-        // 6. The video in the Channel Guide's window: it draws only that
-        //    rect, so nothing of a full-screen frame may linger around it
+        // 6. The video in the Channel Guide's window (the guide painted, its
+        //    fade-out included): it draws only that rect, so nothing of a
+        //    full-screen frame may linger around it
         if ((state.showing_intro_video && !state.intro_ready) ||
             (!should_render_video && !state.video_active) ||
             state.intro_fading_out ||
             state.intro_complete ||
             (!state.showing_intro_video && !state.video_active) ||
-            guide_window_now) {
+            guide_painted_now) {
             glViewport(0, 0, mode.width, mode.height);
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
@@ -2184,26 +2200,19 @@ int main(int /* argc */, char* /* argv */[]) {
                 // known to be 4:3 is always cropped (video::picture_crop):
                 // no control is offered for one, so a stored "not cropped"
                 // could never be undone. Its aspect is the one placement
-                // uses — the frame being drawn — else the store's.
-                const std::string& picture_key = controller.current_media_key();
-                double picture_aspect =
-                    gst_renderer.source_display_aspect().value_or(0.0);
-                if (!(picture_aspect > 0.0)) {
-                    const auto& videos = media_info.map();
-                    const auto it = videos.find(picture_key);
-                    if (it != videos.end() && it->second.display_aspect) {
-                        picture_aspect = *it->second.display_aspect;
-                    }
-                }
+                // uses — the frame being drawn — else the store's
+                // (playing_display_aspect).
                 const bool crop = video::picture_crop(
-                    media_info.crop_for(picture_key), picture_aspect);
-                // Channel Guide on screen: the same picture, crop setting
-                // and all, inside the guide's 4:3 video window — the view's
-                // window on the logical canvas mapped to framebuffer px
-                // (ui::guide_rect_to_fb; non-uniform in CRT Native). No
-                // bezel opening inside the window: fit uses the window.
+                    media_info.crop_for(controller.current_media_key()),
+                    playing_display_aspect());
+                // Channel Guide painted (on screen, or fading out): the same
+                // picture, crop setting and all, inside the guide's 4:3 video
+                // window — the view's window on the logical canvas mapped to
+                // framebuffer px (ui::guide_rect_to_fb; non-uniform in CRT
+                // Native). No bezel opening inside the window: fit uses the
+                // window. The whole picture once the guide is gone.
                 video::IRect picture_target = content;
-                if (guide_window_now && guide_frame_view != nullptr) {
+                if (guide_frame_view != nullptr) {
                     const ui::GuideRect w = ui::guide_rect_to_fb(
                         guide_frame_view->window, logical_content.w, logical_content.h,
                         ui::GuideRect{content.x, content.y, content.w, content.h});

@@ -720,44 +720,31 @@ TEST_CASE("the guide's appearance is a rising edge, once per appearance", "[guid
 
 // ── Painting (main.cpp / Renderer::render) ───────────────────────────────
 
-TEST_CASE("the video goes in the guide's window while the guide is on screen",
+TEST_CASE("the guide is painted, and the video sits in its window, while on screen and "
+          "through a Close's fade-out",
           "[guide_nav]") {
     app::AppState s;
     SECTION("over a playing channel: only with the overlay up") {
         put_playing(s);
-        CHECK_FALSE(app::guide_window_video(s));
+        CHECK_FALSE(app::guide_painted(s));
         s.ui_visible_when_playing = true;
-        CHECK(app::guide_window_video(s));
+        CHECK(app::guide_painted(s));
     }
-    SECTION("a tune's load gap with the guide up: the window (dark until the stream)") {
-        put_loading(s);
-        s.ui_visible_when_playing = true;
-        CHECK(app::guide_window_video(s));
-        s.ui_visible_when_playing = false;
-        CHECK_FALSE(app::guide_window_video(s));
-    }
-    SECTION("never the intro, even before its first frame (nothing playing yet)") {
-        put_nothing_playing(s);
-        s.ui_visible_when_playing = false;
-        s.showing_intro_video = true;
-        CHECK_FALSE(app::guide_window_video(s));
-        s.showing_intro_video = false;
-        CHECK(app::guide_window_video(s));
-    }
-}
-
-TEST_CASE("the guide is painted while on screen and through a Close's fade-out",
-          "[guide_nav]") {
-    app::AppState s;
-    SECTION("on screen: painted, the load gap included") {
+    SECTION("a tune's load gap with the guide up: painted (the window dark until the stream)") {
         put_loading(s);
         s.ui_visible_when_playing = true;
         CHECK(app::guide_painted(s));
+        s.ui_visible_when_playing = false;
+        CHECK_FALSE(app::guide_painted(s));
+    }
+    SECTION("nothing playing: painted, overlay flag or not") {
         put_nothing_playing(s);
+        CHECK(app::guide_painted(s));
         s.ui_visible_when_playing = false;
         CHECK(app::guide_painted(s));
     }
-    SECTION("a Close over a video: hidden at once, painted until the fade ends") {
+    SECTION("a Close over a video: hidden at once, painted with the video in its window "
+            "until the fade ends") {
         put_playing(s, 3);
         s.ui_visible_when_playing = true;
         s.guide_cursor = {3, 1, false};
@@ -765,10 +752,20 @@ TEST_CASE("the guide is painted while on screen and through a Close's fade-out",
         REQUIRE_FALSE(s.ui_visible_when_playing);
         REQUIRE(s.is_fading);
         CHECK_FALSE(app::guide_visible(s));
-        CHECK_FALSE(app::guide_window_video(s));  // the video is back full-screen
-        CHECK(app::guide_painted(s));             // the guide fades over it
-        s.is_fading = false;                      // the fade ended
+        CHECK(app::guide_painted(s));  // fading out, the video still in its window
+        s.is_fading = false;           // the fade ended: the whole picture
         CHECK_FALSE(app::guide_painted(s));
+    }
+    SECTION("SELECT reopening it mid-fade: on screen at once, the fade cancelled") {
+        put_playing(s, 3);
+        s.ui_visible_when_playing = true;
+        s.guide_cursor = {3, 1, false};
+        input(s, app::GuideEvent::Select, 0);  // Close: fading out
+        REQUIRE(s.is_fading);
+        input(s, app::GuideEvent::Select, 0);  // open again
+        CHECK_FALSE(s.is_fading);
+        CHECK(app::guide_visible(s));
+        CHECK(app::guide_painted(s));
     }
     SECTION("a fade IN with the overlay hidden is not the guide's") {
         put_playing(s);
@@ -776,10 +773,13 @@ TEST_CASE("the guide is painted while on screen and through a Close's fade-out",
         s.fade_target_ui_visible = true;
         CHECK_FALSE(app::guide_painted(s));
     }
-    SECTION("never over the intro") {
+    SECTION("never over the intro, even before its first frame (nothing playing yet)") {
         put_nothing_playing(s);
+        s.ui_visible_when_playing = false;
         s.showing_intro_video = true;
         CHECK_FALSE(app::guide_painted(s));
+        s.showing_intro_video = false;
+        CHECK(app::guide_painted(s));
     }
 #ifdef MEDIA_BROWSER_ENABLED
     SECTION("never over the Media Browser, a fade included") {
