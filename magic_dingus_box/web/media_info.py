@@ -8,7 +8,11 @@ Same file, lock and write order as the kiosk's app/media_info.{h,cpp}:
 
 Keys are paths relative to the data directory with "/" separators, computed
 lexically (no symlink resolution). `crop` is only ever written as false;
-absent means cropped. Fields this module does not know are kept untouched.
+absent means cropped. Like the kiosk, a write merges into the JSON it read:
+fields, entries and top-level keys this module does not know (an entry that
+is not an object included) are kept, and so is the file's "version". A
+missing, empty or corrupt file (root or "videos" not an object) is written
+fresh.
 
 Writers (this module and the kiosk, in different processes) serialize on
 flock(LOCK_EX) of the SIDECAR media_info.json.lock, held across read ->
@@ -54,29 +58,39 @@ def _is_number(v: Any) -> bool:
             and math.isfinite(v))
 
 
-def _read_raw(data_dir: Path) -> dict:
-    """The file's videos object as-is; {} for missing/empty/corrupt."""
+def _read_root(data_dir: Path) -> dict:
+    """The whole file as-is, with a "videos" object (added when absent); a
+    fresh root for a missing, empty or corrupt file — the kiosk's
+    parse_root."""
     try:
         text = (Path(data_dir) / FILE_NAME).read_text(encoding="utf-8")
         root = json.loads(text)
     except (OSError, ValueError):
-        return {}
+        root = None
     if not isinstance(root, dict):
-        return {}
-    videos = root.get("videos")
-    if not isinstance(videos, dict):
-        return {}
-    return {k: v for k, v in videos.items() if isinstance(v, dict)}
+        return {"version": VERSION, "videos": {}}
+    if "videos" not in root:
+        root["videos"] = {}
+    elif not isinstance(root["videos"], dict):
+        return {"version": VERSION, "videos": {}}
+    return root
+
+
+def _read_raw(data_dir: Path) -> dict:
+    """The file's object entries as-is; {} for missing/empty/corrupt."""
+    return {k: v for k, v in _read_root(data_dir)["videos"].items()
+            if isinstance(v, dict)}
 
 
 def load(data_dir: Path) -> dict[str, dict]:
-    """key -> {duration_s?, display_aspect?, crop?}; wrong-typed fields are
-    treated as absent, like the kiosk's parser."""
+    """key -> {duration_s?, display_aspect?, crop?}; wrong-typed fields, and
+    a length or aspect that is not a positive number, are treated as absent,
+    like the kiosk's parser."""
     out: dict[str, dict] = {}
     for key, entry in _read_raw(data_dir).items():
         clean: dict = {}
         dur, aspect = entry.get("duration_s"), entry.get("display_aspect")
-        if _is_number(dur) and dur >= 0:
+        if _is_number(dur) and dur > 0:
             clean["duration_s"] = dur
         if _is_number(aspect) and aspect > 0:
             clean["display_aspect"] = aspect
@@ -103,18 +117,22 @@ class _Lock:
             os.close(self._fd)
 
 
-def _write(data_dir: Path, videos: dict) -> None:
-    doc = {"version": VERSION, "videos": videos}
+def _write(data_dir: Path, root: dict) -> None:
+    root.setdefault("version", VERSION)
     _atomic_write_text(Path(data_dir) / FILE_NAME,
-                       json.dumps(doc, indent=2) + "\n")
+                       json.dumps(root, indent=2) + "\n")
 
 
 def update(data_dir: Path, key: str, **fields) -> None:
     """Merge `fields` into `key`'s entry; a None value removes that field and
-    an entry left empty is removed. Unknown fields are preserved."""
+    an entry left empty is removed. Unknown fields are preserved. An entry
+    that is not an object is replaced when there is a value to set, and left
+    as it is otherwise (the kiosk's apply_edit)."""
     with _Lock(data_dir):
-        videos = _read_raw(data_dir)
-        entry = dict(videos.get(key, {}))
+        root = _read_root(data_dir)
+        videos = root["videos"]
+        current = videos.get(key)
+        entry = dict(current) if isinstance(current, dict) else {}
         for name, value in fields.items():
             if value is None:
                 entry.pop(name, None)
@@ -122,17 +140,17 @@ def update(data_dir: Path, key: str, **fields) -> None:
                 entry[name] = value
         if entry:
             videos[key] = entry
-        else:
-            videos.pop(key, None)
-        _write(data_dir, videos)
+        elif isinstance(current, dict):
+            del videos[key]
+        _write(data_dir, root)
 
 
 def remove(data_dir: Path, key: str) -> None:
     with _Lock(data_dir):
-        videos = _read_raw(data_dir)
-        if key in videos:
-            del videos[key]
-            _write(data_dir, videos)
+        root = _read_root(data_dir)
+        if key in root["videos"]:
+            del root["videos"][key]
+            _write(data_dir, root)
 
 
 def restore(data_dir: Path, text: str) -> None:
@@ -150,9 +168,11 @@ def restore(data_dir: Path, text: str) -> None:
              if isinstance(k, str) and isinstance(v, dict)
              and v.get("crop") is False]
     with _Lock(data_dir):
-        videos = _read_raw(data_dir)
+        root = _read_root(data_dir)
+        videos = root["videos"]
         for key in crops:
-            entry = dict(videos.get(key, {}))
+            current = videos.get(key)
+            entry = dict(current) if isinstance(current, dict) else {}
             entry["crop"] = False
             videos[key] = entry
-        _write(data_dir, videos)
+        _write(data_dir, root)

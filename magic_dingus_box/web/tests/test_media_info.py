@@ -125,3 +125,65 @@ def test_imports_as_a_package_module_without_web_on_sys_path():
         [sys.executable, "-c", "import magic_dingus_box.web.media_info"],
         cwd=str(REPO), capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+# ---------------------------------------------------------------------------
+# Same as the kiosk's writer (app/media_info.cpp): it merges into the JSON it
+# read, so top-level keys and entries it does not understand survive a write
+# from either side, and a length must be > 0 to count.
+# ---------------------------------------------------------------------------
+
+def _seed_odd_store(d: Path) -> None:
+    (d / "media_info.json").write_text(json.dumps({
+        "version": 1, "future": {"a": 1},
+        "videos": {"media/a.mp4": {"duration_s": 10, "x": "kept"},
+                   "media/num.mp4": 7, "media/str.mp4": "odd"}}))
+
+
+@pytest.mark.parametrize("write", [
+    lambda d: media_info.update(d, "media/a.mp4", crop=False),
+    lambda d: media_info.update(d, "media/new.mp4", display_aspect=1.5),
+    lambda d: media_info.remove(d, "media/gone.mp4"),
+    lambda d: media_info.remove(d, "media/a.mp4"),
+    lambda d: media_info.restore(
+        d, json.dumps({"videos": {"media/b.mp4": {"crop": False}}})),
+])
+def test_writes_keep_unknown_top_level_keys_and_non_object_entries(tmp_path, write):
+    _seed_odd_store(tmp_path)
+    write(tmp_path)
+    raw = json.loads((tmp_path / "media_info.json").read_text())
+    assert raw["version"] == 1
+    assert raw["future"] == {"a": 1}
+    assert raw["videos"]["media/num.mp4"] == 7
+    assert raw["videos"]["media/str.mp4"] == "odd"
+
+
+def test_a_write_keeps_the_files_version(tmp_path):
+    (tmp_path / "media_info.json").write_text(
+        json.dumps({"version": 2, "videos": {}}))
+    media_info.update(tmp_path, "media/a.mp4", crop=False)
+    assert json.loads((tmp_path / "media_info.json").read_text())["version"] == 2
+
+
+def test_a_non_object_entry_is_replaced_by_a_value_and_kept_by_a_clear(tmp_path):
+    _seed_odd_store(tmp_path)
+    media_info.update(tmp_path, "media/num.mp4", crop=None)   # nothing to set
+    raw = json.loads((tmp_path / "media_info.json").read_text())
+    assert raw["videos"]["media/num.mp4"] == 7
+    media_info.update(tmp_path, "media/num.mp4", crop=False)
+    raw = json.loads((tmp_path / "media_info.json").read_text())
+    assert raw["videos"]["media/num.mp4"] == {"crop": False}
+
+
+def test_a_corrupt_store_is_replaced_by_a_valid_one_on_write(tmp_path):
+    (tmp_path / "media_info.json").write_text('{"version":1,"videos":[]}')
+    media_info.update(tmp_path, "media/a.mp4", crop=False)
+    assert json.loads((tmp_path / "media_info.json").read_text()) == {
+        "version": 1, "videos": {"media/a.mp4": {"crop": False}}}
+
+
+@pytest.mark.parametrize("dur", [0, 0.0, -1])
+def test_a_length_that_is_not_positive_reads_as_absent(tmp_path, dur):
+    (tmp_path / "media_info.json").write_text(json.dumps({"version": 1, "videos": {
+        "media/a.mp4": {"duration_s": dur, "display_aspect": 1.5}}}))
+    assert media_info.load(tmp_path) == {"media/a.mp4": {"display_aspect": 1.5}}
