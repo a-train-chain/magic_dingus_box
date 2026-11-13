@@ -269,7 +269,9 @@ MDB bezels).
   are dropped.
 - **Grid**: header row = date (dim) + time ticks (steel blue, first with
   AM/PM). Each row = channel cell (number in Zen Dots, or the shuffle icon for
-  00; short name in mono caps) + program cells positioned on the time axis,
+  00; short name in mono caps — on CRT Native in 12 px, from x 36 with a
+  4 px right margin, so ~12 letters fit the 132 px column instead of 9;
+  owner decision 2026-11-13 after the Pi 5 test) + program cells positioned on the time axis,
   3 px gaps showing the background as grid lines. A cell narrower than 30 px
   shows no text; narrower than 64 px shows no artist; a program that began
   before the window starts with "◂". A red (`highlight2`) "now" line with a
@@ -282,7 +284,9 @@ MDB bezels).
   **red** = the now line only.
 - **Type**: Zen Dots for clock, channel numbers, playlist titles; DejaVu Sans
   Mono for everything else; sizes from the existing theme (14 / 18 / 22 …),
-  with 13 px only for the hint row and small labels as in the mockup.
+  with 13 px only for the hint row and small labels as in the mockup, and
+  12 px for the CRT canvas's channel names (the 14 px floor below binds the
+  720-tall canvas).
 - **Hints row**: knob icon + "TURN channels", "PRESS watch", "PRESS on green to
   hide guide" (TV); first two only on CRT. Logo at the right end.
 - CRT effects (scanlines, warmth…) and the bezel apply exactly as to the list

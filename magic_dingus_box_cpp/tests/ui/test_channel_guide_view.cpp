@@ -445,11 +445,20 @@ TEST_CASE("channel names truncate to the column's real width", "[guide_view]") {
     auto v = ui::layout_channel_guide(f.in());
     CHECK(v.grid.name_x == 56);
     CHECK(v.grid.name_w == 132);
+    CHECK(v.grid.name_px == 14);  // TV: the body size (the spec's 14 px floor)
     CHECK(v.grid.rows[1].name == std::string(14, 'A') + "\xE2\x80\xA6");  // 15 chars
+    // CRT Native: the widest channel number ends at x 33 (measured on the
+    // box), so the name starts at 36 with a 4 px right margin, in 12 px mono
+    // (advance 0.602 em = 7.22 px): 12 characters, not 9.
     v = ui::layout_channel_guide(f.in(true));
-    CHECK(v.grid.name_x == 40);
-    CHECK(v.grid.name_w == 84);
-    CHECK(v.grid.rows[1].name == std::string(8, 'A') + "\xE2\x80\xA6");  // 9 chars
+    CHECK(v.grid.name_x == 36);
+    CHECK(v.grid.name_w == 92);  // 132 - 36 - 4
+    CHECK(v.grid.name_px == 12);
+    CHECK(v.grid.rows[1].name == std::string(11, 'A') + "\xE2\x80\xA6");  // 12 chars
+    CHECK(v.grid.rows[0].name == "MASTER SHUF\xE2\x80\xA6");  // was "MASTER S…"
+    f.playlists[1].title = "Saturday AMs";  // exactly 12: whole
+    v = ui::layout_channel_guide(f.in(true));
+    CHECK(v.grid.rows[1].name == "SATURDAY AMS");
 }
 
 // ── The tuned channel's panel describes the picture (final review I3) ────

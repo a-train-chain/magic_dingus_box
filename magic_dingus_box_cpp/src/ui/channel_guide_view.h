@@ -146,9 +146,11 @@ struct GuideRow {
 struct GuideGrid {
     GuideRect rect;       // absolute
     int header_h = 0, row_h = 0, column_w = 0;
-    // Channel name: left edge (grid-relative, after the bar and number) and the
-    // width available to it (right margin already kept clear).
+    // Channel name: left edge (grid-relative, after the bar and number), the
+    // width available to it (right margin already kept clear) and the mono
+    // font's pixel size the names are truncated for and drawn at.
     int name_x = 0, name_w = 0;
+    int name_px = 14;
     std::string date_label;
     std::vector<GuideTick> ticks;
     int now_x = 0;
@@ -177,7 +179,8 @@ struct GuideView {
 
 namespace guide_detail {
 
-constexpr double kCharAdvance = 0.602 * 14.0;  // DejaVu Sans Mono at 14 px
+constexpr double kMonoAdvanceEm = 0.602;          // DejaVu Sans Mono's advance, per px
+constexpr double kCharAdvance = kMonoAdvanceEm * 14.0;  // ... at 14 px
 constexpr int kCellPadX = 10;                  // per side
 constexpr int kMinTextW = 30, kMinArtistW = 64;
 constexpr const char* kArrow = "\xE2\x97\x82 ";    // "◂ "
@@ -377,9 +380,16 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     const int last = std::min(n_channels, first + app::kGuideVisibleRows);
     v.grid.up_arrow = first > 0;
     v.grid.down_arrow = first + app::kGuideVisibleRows < n_channels;
-    v.grid.name_x = crt ? 40 : 56;
-    v.grid.name_w = v.grid.column_w - v.grid.name_x - 8;
-    const int name_chars = std::max(0, static_cast<int>(std::floor(v.grid.name_w / d::kCharAdvance)));
+    // CRT Native: its widest channel number ends at x 33 (measured on the
+    // box), so the name starts at 36, keeps a 4 px right margin and is set in
+    // 12 px mono — 12 characters in the 132 px column instead of 9 at 14 px
+    // (owner decision, 2026-11-13). The spec's 14 px floor binds the 720
+    // canvas only; TV is unchanged.
+    v.grid.name_x = crt ? 36 : 56;
+    v.grid.name_w = v.grid.column_w - v.grid.name_x - (crt ? 4 : 8);
+    v.grid.name_px = crt ? 12 : 14;
+    const double name_advance = d::kMonoAdvanceEm * v.grid.name_px;
+    const int name_chars = std::max(0, static_cast<int>(std::floor(v.grid.name_w / name_advance)));
     for (int r = first; r < last; ++r) {
         const app::Channel& ch = channels[r];
         GuideRow row;

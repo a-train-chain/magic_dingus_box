@@ -65,9 +65,11 @@ constexpr Metrics kCrt{14, 12, 7, 14, 22, 44, false, 14, 17, 14, 14, 24, 10, 14,
 // 13 px is for the hint row and the panel's small labels only (eyebrow,
 // AM/PM, CH, progress times, NEXT row, PICTURE / what crop does, the source
 // label, PRESS TO WATCH, joins at m:ss). Everything in the GRID is at least
-// kBody — the spec's anti-goal: no cell text under 14 px on the 720 canvas.
+// kBody — the spec's anti-goal: no cell text under 14 px on the 720 canvas —
+// except the CRT canvas's channel names: 12 px (GuideGrid::name_px, which the
+// view truncates for), so ~12 letters fit its 132 px column.
 constexpr int kLabel = 13;
-constexpr int kBody = 14;  // grid: cell titles and artists, names, ticks, the date
+constexpr int kBody = 14;  // grid: cell titles and artists, ticks, the date; TV names
 constexpr float kHintIcon = 15.0f;
 
 // Fixed labels as strings once, not a temporary per frame.
@@ -497,7 +499,8 @@ void Renderer::GuidePainter::grid() {
             zen_text(row.number_text, gx + m_.chan_pad, baseline_in(ry, rh, m_.chan_num, true),
                      m_.chan_num, num_c);
         }
-        text(row.name, gx + g.name_x, baseline_in(ry, rh, gp::kBody, false), gp::kBody,
+        // At the view's name size (14 TV, 12 CRT): the size its truncation assumed.
+        text(row.name, gx + g.name_x, baseline_in(ry, rh, g.name_px, false), g.name_px,
              tone(row.name_tone));
 
         const float cells_x = gx + col_w + 3.0f;
