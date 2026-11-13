@@ -175,3 +175,20 @@ def test_probe_failed_filter_keeps_the_display_shape_with_square_pixels(
     assert geo["width"] % 2 == 0 and geo["height"] % 2 == 0
     # Never enlarged: the stored height is at most the source's.
     assert geo["height"] <= int(size.split("x")[1])
+
+
+def test_quality_labels_are_true_for_every_shape():
+    # A master keeps its source's shape, so "720 tall" was false for a
+    # portrait clip (608x1080 under HD 720). The values are the API's and
+    # stay as they are.
+    import re
+    html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
+    select = re.search(r'<select id="targetResolution".*?</select>', html, re.S)
+    assert select, "Quality picker not found"
+    options = re.findall(r'<option value="([^"]+)"[^>]*>(?:<svg.*?</svg>)?\s*([^<]+)</option>',
+                         select.group(0), re.S)
+    assert [(v, label.strip()) for v, label in options] == [
+        ("crt_hd", "HD 720 (recommended)"),
+        ("crt", "Classic 480 (smallest files)")]
+    assert all(v in TRANSCODE_RESOLUTIONS for v, _ in options)
+    assert "tall" not in select.group(0)
