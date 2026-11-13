@@ -139,6 +139,35 @@ def test_each_preset_caps_large_high_rate_upload(
     assert 'crop' not in info
 
 
+def test_unprobeable_source_fallback_keeps_square_pixels(
+        client, temp_data_dir, real_ffmpeg, monkeypatch):
+    # With no probe the job bounds the clip with a bare ffmpeg filter. A tall
+    # 1080x1920 clip used to come out 608x1080 with SAR 1215:1216.
+    import media_probe
+    monkeypatch.setattr(media_probe, 'probe_source', lambda path: None)
+    source = temp_data_dir.parent / 'tall.mp4'
+    subprocess.run([
+        'ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+        'testsrc2=size=1080x1920:rate=30', '-t', '0.5',
+        '-c:v', 'libx264', '-preset', 'ultrafast', str(source)], check=True)
+    response = client.post('/admin/upload-and-transcode', data={
+        'file': (io.BytesIO(source.read_bytes()), 'tall.mp4'),
+        'normalize_audio': 'false',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 200, response.get_json()
+    job_id = response.get_json()['data']['job_id']
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        status = client.get('/admin/transcode-status/' + job_id).get_json()['data']
+        if status['status'] in ('complete', 'error'):
+            break
+        time.sleep(0.05)
+    assert status['status'] == 'complete', status
+    output = _probe(temp_data_dir / 'media' / status['output_filename'])
+    assert (output['width'], output['height']) == (608, 1080)
+    assert output.get('sample_aspect_ratio') in ('1:1', None)
+
+
 def test_sideways_phone_clip_is_stored_upright(client, temp_data_dir, real_ffmpeg):
     # A portrait phone clip: 1280x720 frames with a 90-degree display
     # rotation. The master must be upright (ffmpeg auto-rotates) and sized

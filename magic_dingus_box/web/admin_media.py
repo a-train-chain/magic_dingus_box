@@ -177,15 +177,65 @@ def register(app, ctx) -> None:
                 return match.group(1).strip()
             return filename
 
-        media_list = [{
-            'filename': f.name,
-            'title': _get_clean_title(f.name),
-            'path': str(f.relative_to(data_dir.parent)),  # Relative to parent of data dir
-            'size': f.stat().st_size,
-            'modified': f.stat().st_mtime
-        } for f in sorted(files)]
+        # One read of the shared store for the whole list. A video with no
+        # entry (or outside the data dir, like dev_data) has an unknown
+        # shape and the default setting: cropped.
+        info = media_info.load(data_dir)
+
+        def _entry(f: Path) -> dict:
+            key = media_info.media_key(f, data_dir)
+            rec = info.get(key, {}) if key else {}
+            return {
+                'filename': f.name,
+                'title': _get_clean_title(f.name),
+                'path': str(f.relative_to(data_dir.parent)),  # Relative to parent of data dir
+                'size': f.stat().st_size,
+                'modified': f.stat().st_mtime,
+                'display_aspect': rec.get('display_aspect'),
+                'crop': rec.get('crop') is not False,
+            }
+
+        media_list = [_entry(f) for f in sorted(files)]
 
         return success_response(data=media_list)
+
+    @app.post("/admin/media/picture")
+    @require_csrf
+    def set_media_picture():  # type: ignore[no-redef]
+        """Set one video's Crop on/off — the same store the kiosk's Picture
+        control writes, so a change on either side shows on the other.
+        Body: {"path": "data/media/x.mp4", "crop": false}."""
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return error_response("VALIDATION_ERROR", "JSON body required")
+        path, crop = body.get("path"), body.get("crop")
+        if not isinstance(path, str) or not path or "\0" in path:
+            return error_response("VALIDATION_ERROR", "path required")
+        if not isinstance(crop, bool):
+            return error_response("VALIDATION_ERROR", "crop must be true or false")
+
+        # Only uploaded videos (data/media) have a store entry.
+        target = (data_dir.parent / path).resolve()
+        if not _is_within(target, media_dir.resolve()):
+            return error_response("VALIDATION_ERROR", "Invalid path")
+        key = media_info.media_key(target, data_dir.resolve())
+        if key is None:
+            return error_response("VALIDATION_ERROR", "Invalid path")
+        if not target.is_file():
+            return error_response("NOT_FOUND", "File not found", status=404)
+
+        try:
+            # Ticked = cropped = the default, so it is stored as absence;
+            # only a fitted video is written (crop: false).
+            media_info.update(data_dir, key, crop=None if crop else False)
+        except OSError as e:
+            print(f"[media] could not save crop for {key}: {e}", file=sys.stderr)
+            return error_response(
+                "STORAGE_ERROR",
+                "Could not save the setting (the disk may be full or read-only)",
+                status=500)
+        _poke_kiosk_reload("media_info")
+        return success_response(data={"crop": crop})
 
     MEDIA_VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.webm')
 
@@ -250,6 +300,16 @@ def register(app, ctx) -> None:
 
         if target.exists() and target.is_file():
             target.unlink()
+            # Drop its store entry so a later video of the same name does
+            # not inherit this one's setting. Best effort: the file is gone.
+            try:
+                key = media_info.media_key(target, data_dir)
+                if key:
+                    media_info.remove(data_dir, key)
+                    _poke_kiosk_reload("media_info")
+            except Exception as e:
+                print(f"[media] could not remove media info for "
+                      f"{target.name}: {e}", file=sys.stderr)
             return success_response(message="File deleted")
         return error_response("NOT_FOUND", "File not found", status=404)
 
@@ -266,7 +326,8 @@ def register(app, ctx) -> None:
     # A master keeps the SOURCE's aspect: the kiosk crops or fits each video
     # into its 4:3 area at playback, per video (media_info.json), so the
     # file itself is never cropped or padded. media_probe.master_size sizes
-    # it to cover the preset's box (Crop-on playback is never upscaled),
+    # it to cover the preset's box (Crop-on playback is not upscaled, unless
+    # the source is smaller than the box or the 1080-tall cap binds),
     # never up, never outside 1920x1080. 'crt_hd' (the default) stores a
     # 4:3 source at 960x720 — 1:1 in the 4:3 area at 720p output — and a
     # 16:9 one at 1280x720. 'modern' is an alias of 'crt_hd'.
@@ -404,11 +465,13 @@ def register(app, ctx) -> None:
                 src['width'] * src['sar'], src['height'], resolution)
             vf = f'scale={w}:{h},setsar=1'
         else:
-            # Probe failed — let ffmpeg bound it: inside 1920x1080, shape
-            # kept (pixel aspect too), never enlarged. No preset cover-sizing
+            # Probe failed — let ffmpeg bound it: inside 1920x1080, display
+            # shape kept (width taken as iw*sar so the pixels come out
+            # square), never enlarged. No preset cover-sizing
             # for a file we couldn't inspect.
-            vf = ("scale=w='min(iw,1920)':h='min(ih,1080)':"
-                  "force_original_aspect_ratio=decrease:force_divisible_by=2")
+            vf = ("scale=w='min(iw*sar,1920)':h='min(ih,1080)':"
+                  "force_original_aspect_ratio=decrease:"
+                  "force_divisible_by=2,setsar=1")
 
         # Bound concurrent encodes. Each transcode is a full libx264 encode;
         # on a Pi 4 sharing RAM/CPU with the kiosk (and possibly the Media

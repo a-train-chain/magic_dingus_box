@@ -6,7 +6,8 @@ upload routes (admin_media) and the Channel Guide's backfill job use it.
 Masters keep the source's own aspect. The kiosk crops or fits each video per
 its media_info.json setting at PLAYBACK, so the file must never be cropped or
 padded: master_size() picks the smallest size that still COVERS the preset's
-4:3 box (Crop-on playback is then never upscaled), never larger than the
+4:3 box (Crop-on playback is then not upscaled, unless the source is
+smaller than the box or the 1080-tall cap binds), never larger than the
 source, never outside 1920x1080 — the Pi 4B's hardware H.264 envelope; a
 portrait 1080x1920 store is worth revisiting only after a Pi 4B test shows it
 decodes in hardware.

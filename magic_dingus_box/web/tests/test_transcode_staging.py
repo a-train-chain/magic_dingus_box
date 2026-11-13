@@ -400,12 +400,14 @@ def test_unreadable_published_file_writes_nothing(
 def test_unreadable_source_is_bounded_by_ffmpeg_and_writes_nothing(
         client, temp_data_dir: Path, stub_bin: Path, monkeypatch):
     # No probe, no master_size: ffmpeg keeps the shape inside 1920x1080 on
-    # its own, and nothing is recorded for a file we could not read.
+    # its own. The stub ffprobe fails for every path, including the
+    # published output, so nothing is recorded here; in production the
+    # published master usually probes fine and IS recorded.
     monkeypatch.setenv("FFPROBE_STUB_MODE", "fail")
     assert _run_job(client)["status"] == "complete"
-    assert _vf(stub_bin) == ("scale=w='min(iw,1920)':h='min(ih,1080)':"
+    assert _vf(stub_bin) == ("scale=w='min(iw*sar,1920)':h='min(ih,1080)':"
                              "force_original_aspect_ratio=decrease:"
-                             "force_divisible_by=2")
+                             "force_divisible_by=2,setsar=1")
     assert not (temp_data_dir / media_info.FILE_NAME).exists()
     assert not _marker(temp_data_dir).exists()
 

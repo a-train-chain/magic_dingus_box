@@ -6,6 +6,34 @@
 
 // ===== VIDEO MANAGEMENT =====
 
+// A video whose shape differs from the 4:3 area gets a Crop checkbox (ticked =
+// fill the area and trim the overflow, the default; unticked = whole frame
+// with black borders). A 4:3 video, or one whose shape is unknown, has
+// nothing to choose.
+function cropControl(video) {
+    const aspect = video.display_aspect;
+    if (typeof aspect !== 'number' || Math.abs(aspect - 4 / 3) < 0.02) return '';
+    return `<label class="video-crop" title="Fill the 4:3 screen, trimming the edges. Untick to show the whole picture with black borders.">
+        <input type="checkbox" ${video.crop === false ? '' : 'checked'}
+            onchange="setVideoCrop('${escapeJs(video.path)}', this.checked)"> Crop</label>`;
+}
+
+async function setVideoCrop(path, crop) {
+    try {
+        await apiRequest(`${currentDevice.url}/admin/media/picture`, {
+            method: 'POST',
+            headers: getCsrfHeaders(),
+            body: JSON.stringify({ path, crop })
+        });
+        const video = AppState.media.videos.find(v => v.path === path);
+        if (video) video.crop = crop;
+    } catch (e) {
+        console.error('Crop change failed:', e);
+        alert('Could not change Crop: ' + e.message);
+        loadVideos();  // put the checkbox back to what the box has
+    }
+}
+
 async function loadVideos() {
     if (!AppState.device.current) return;
 
@@ -111,6 +139,7 @@ async function loadVideos() {
                     : '<span class="usage-badge unused">⚠ Not used</span>'}
                                     </td>
                                     <td class="video-actions">
+                                        ${cropControl(video)}
                                         <button class="btn-remove" onclick="deleteVideo('${escapeJs(video.path)}', '${escapeJs(video.filename)}')">Delete</button>
                                     </td>
                                 </tr>
