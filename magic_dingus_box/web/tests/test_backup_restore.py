@@ -170,3 +170,35 @@ def test_restore_rejects_a_media_info_that_is_not_an_object(client, temp_data_di
     assert not (temp_data_dir / "media_info.json").exists()
     assert not (temp_data_dir / "media_info_reload_request").exists()
     assert resp.get_json()["data"]["errors"]
+
+
+def test_restore_merges_crop_onto_the_current_store(client, temp_data_dir,
+                                                    kiosk_config_dir):
+    import media_info
+    # A video added after the backup was taken, plus one the backup knows.
+    media_info.update(temp_data_dir, "media/new.mp4",
+                      duration_s=99.0, display_aspect=1.7778)
+    media_info.update(temp_data_dir, "media/old.mp4", duration_s=5.0)
+    backup = {"version": 1, "videos": {
+        "media/old.mp4": {"crop": False, "duration_s": 1.0},
+        "media/gone.mp4": {"crop": False}}}
+    resp = _restore(client, {"data/media_info.json": json.dumps(backup)})
+    assert resp.status_code == 200
+    store = media_info.load(temp_data_dir)
+    assert store["media/new.mp4"] == {"duration_s": 99.0, "display_aspect": 1.7778}
+    assert store["media/old.mp4"] == {"duration_s": 5.0, "crop": False}
+    assert store["media/gone.mp4"] == {"crop": False}
+    assert (temp_data_dir / "media_info_reload_request").exists()
+
+
+def test_restore_does_not_write_junk_or_nan(client, temp_data_dir,
+                                            kiosk_config_dir):
+    import media_info
+    bad = ('{"videos": {"media/a.mp4": {"crop": false, "duration_s": NaN,'
+           ' "display_aspect": "wide"}, "media/b.mp4": {"crop": "no"},'
+           ' "media/c.mp4": 7}}')
+    resp = _restore(client, {"data/media_info.json": bad})
+    assert resp.status_code == 200
+    raw = (temp_data_dir / "media_info.json").read_text()
+    assert "NaN" not in raw and "wide" not in raw
+    assert media_info.load(temp_data_dir) == {"media/a.mp4": {"crop": False}}

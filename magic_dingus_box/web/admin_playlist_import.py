@@ -47,6 +47,12 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .media_record import record_media_info
 
 
+def _safe_media_basename(name: str) -> str:
+    """The name an imported video is saved under: characters outside
+    word/space/-/./[] dropped, then stripped ('' when nothing is left)."""
+    return re.sub(r'[^\w\s\-\.\[\]]', '', name).strip()
+
+
 def register(app, ctx) -> None:
     """Register this module's routes on `app`. Called exactly once, from
     admin.create_app(); `ctx` carries the create_app() state these routes
@@ -549,8 +555,7 @@ def register(app, ctx) -> None:
                             continue
 
                         # Sanitize filename
-                        safe_filename = re.sub(r'[^\w\s\-\.\[\]]', '', filename)
-                        safe_filename = safe_filename.strip()
+                        safe_filename = _safe_media_basename(filename)
                         if not safe_filename:
                             continue
 
@@ -635,17 +640,19 @@ def register(app, ctx) -> None:
                     # the probe of the file actually on this box. Best-effort and
                     # never fails the import.
                     package_crops = {}
-                    if "media_info.json" in namelist:
+                    # Beside the playlist file that was found (any depth).
+                    pkg_info = (os.path.dirname(playlist_file) + "/" if
+                                os.path.dirname(playlist_file) else "") + "media_info.json"
+                    if pkg_info in namelist:
                         try:
                             pkg_doc = json.loads(_read_zip_entry_capped(
-                                zf, "media_info.json").decode("utf-8"))
+                                zf, pkg_info).decode("utf-8"))
                             pkg_videos = pkg_doc.get("videos") if isinstance(pkg_doc, dict) else None
                             for k, v in (pkg_videos or {}).items():
                                 if isinstance(v, dict) and v.get("crop") is False:
                                     # Keyed like the files were saved (sanitized).
-                                    package_crops[re.sub(
-                                        r'[^\w\s\-\.\[\]]', '',
-                                        os.path.basename(str(k))).strip()] = False
+                                    package_crops[_safe_media_basename(
+                                        os.path.basename(str(k)))] = False
                         except Exception as e:
                             print(f"Ignoring package media_info.json: {e}",
                                   file=sys.stderr)
@@ -682,8 +689,7 @@ def register(app, ctx) -> None:
                         # — every item silently unplayable.
                         basename = os.path.basename(path)
                         # Sanitize the basename the same way we sanitized the files
-                        safe_basename = re.sub(r'[^\w\s\-\.\[\]]', '', basename)
-                        safe_basename = safe_basename.strip()
+                        safe_basename = _safe_media_basename(basename)
                         if safe_basename:
                             item['path'] = f"media/{safe_basename}"
 

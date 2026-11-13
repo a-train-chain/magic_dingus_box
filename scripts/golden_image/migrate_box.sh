@@ -30,6 +30,7 @@ set -euo pipefail
 #   - playlists (see the same-system dedupe note in restore)
 #   - config/ (settings.json, controller_profiles.json)
 #   - device identity (device_info.json + hostname)
+#   - per-video info (media_info.json: each video's Crop setting)
 #   - Media Browser state (services/.env, services/config/*)
 #   - Phone Remote pairings (paired_remotes.json, flask_secret.key,
 #     pairing_audit.log)
@@ -68,7 +69,7 @@ backup)
 
     # Optional per-box files — absent on boxes that never used the
     # feature (old releases predate the Phone Remote entirely).
-    for f in paired_remotes.json flask_secret.key pairing_audit.log; do
+    for f in paired_remotes.json flask_secret.key pairing_audit.log media_info.json; do
         rsync -az "$BOX:$INSTALL_DIR/$DATA_REL/$f" \
             "$BACKUP_DIR/content/$DATA_REL/$f" 2>/dev/null \
             || log "  (no $f on this box — fine)"
@@ -182,7 +183,7 @@ restore)
         "$BACKUP_DIR/content/./config" \
         "$BOX:$INSTALL_DIR/"
 
-    for f in paired_remotes.json flask_secret.key pairing_audit.log; do
+    for f in paired_remotes.json flask_secret.key pairing_audit.log media_info.json; do
         [[ -f "$BACKUP_DIR/content/$DATA_REL/$f" ]] && \
             rsync -az "$BACKUP_DIR/content/$DATA_REL/$f" "$BOX:$INSTALL_DIR/$DATA_REL/$f"
     done

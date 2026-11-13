@@ -136,10 +136,23 @@ def remove(data_dir: Path, key: str) -> None:
 
 
 def restore(data_dir: Path, text: str) -> None:
-    """Replace the whole store with `text` (a backup's copy), under the same
-    lock the kiosk's writers take. Raises ValueError unless `text` is a JSON
-    object."""
-    if not isinstance(json.loads(text), dict):
+    """Merge a backup's per-video Crop settings onto the CURRENT store, under
+    the same lock the kiosk's writers take. Only `crop` crosses over (as
+    false; anything else is ignored): length and shape always come from this
+    box's own probes, and keys the backup lacks are left untouched. Raises
+    ValueError unless `text` is a JSON object."""
+    root = json.loads(text)
+    if not isinstance(root, dict):
         raise ValueError("media_info.json must be a JSON object")
+    backup_videos = root.get("videos")
+    crops = [k for k, v in (backup_videos.items()
+                            if isinstance(backup_videos, dict) else [])
+             if isinstance(k, str) and isinstance(v, dict)
+             and v.get("crop") is False]
     with _Lock(data_dir):
-        _atomic_write_text(Path(data_dir) / FILE_NAME, text)
+        videos = _read_raw(data_dir)
+        for key in crops:
+            entry = dict(videos.get(key, {}))
+            entry["crop"] = False
+            videos[key] = entry
+        _write(data_dir, videos)

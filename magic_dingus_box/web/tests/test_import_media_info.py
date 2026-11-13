@@ -11,13 +11,14 @@ import media_info
 import media_probe
 
 
-def _package(extra=None):
+def _package(extra=None, prefix="", video="clip.mp4", item_path=None):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("playlist.yaml",
-                    "title: Pkg\nitems:\n- title: Clip\n  path: media/clip.mp4\n"
+        zf.writestr(prefix + "playlist.yaml",
+                    "title: Pkg\nitems:\n- title: Clip\n"
+                    f"  path: {item_path or 'media/' + video}\n"
                     "  source_type: local\n")
-        zf.writestr("media/clip.mp4", b"not really a video")
+        zf.writestr(prefix + "media/" + video, b"not really a video")
         for name, content in (extra or {}).items():
             zf.writestr(name, content)
     buf.seek(0)
@@ -75,3 +76,31 @@ def test_a_malformed_package_media_info_is_ignored(client, temp_data_dir,
     resp = _import(client, _package({"media_info.json": "{nope"}))
     assert resp.status_code == 200
     assert media_info.load(temp_data_dir)["media/clip.mp4"]["duration_s"] == 12.5
+
+
+def test_nested_package_media_info_beside_the_playlist_is_used(client, temp_data_dir,
+                                                               monkeypatch):
+    _fake_probe(monkeypatch)
+    doc = {"videos": {"clip.mp4": {"crop": False}}}
+    pkg = _package({"MyPkg/media_info.json": json.dumps(doc)}, prefix="MyPkg/")
+    assert _import(client, pkg).status_code == 200
+    assert media_info.load(temp_data_dir)["media/clip.mp4"]["crop"] is False
+
+
+def test_package_key_that_is_a_path_lands_on_the_imported_key(client, temp_data_dir,
+                                                              monkeypatch):
+    _fake_probe(monkeypatch)
+    doc = {"videos": {"media/clip.mp4": {"crop": False}}}
+    assert _import(client, _package({"media_info.json": json.dumps(doc)})
+                   ).status_code == 200
+    assert media_info.load(temp_data_dir)["media/clip.mp4"]["crop"] is False
+
+
+def test_package_key_is_matched_after_sanitising(client, temp_data_dir,
+                                                 monkeypatch):
+    _fake_probe(monkeypatch)
+    doc = {"videos": {"clip's.mp4": {"crop": False}}}
+    pkg = _package({"media_info.json": json.dumps(doc)}, video="clip's.mp4")
+    assert _import(client, pkg).status_code == 200
+    # Saved as clips.mp4 (the apostrophe is dropped).
+    assert media_info.load(temp_data_dir)["media/clips.mp4"]["crop"] is False
