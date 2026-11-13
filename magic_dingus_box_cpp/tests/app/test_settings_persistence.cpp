@@ -114,6 +114,8 @@ TEST_CASE("settings: every persisted field round-trips", "[settings]") {
     a.display_settings.mb_flicker_intensity = 0.5f;
     a.display_settings.mb_library_sort = AppState::DisplaySettings::MbLibrarySort::Year;
     a.display_settings.mb_library_filter = AppState::DisplaySettings::MbLibraryFilter::MissingFiles;
+    a.display_settings.menu_style = app::MenuStyle::ChannelGuide;
+    a.last_channel_id = "playlist:Saturday Cartoons";
     a.playlist_loop = false;
     a.shuffle = true;
     a.master_volume = 37;
@@ -140,6 +142,8 @@ TEST_CASE("settings: every persisted field round-trips", "[settings]") {
     CHECK(b.display_settings.mb_library_sort == AppState::DisplaySettings::MbLibrarySort::Year);
     CHECK(b.display_settings.mb_library_filter ==
           AppState::DisplaySettings::MbLibraryFilter::MissingFiles);
+    CHECK(b.display_settings.menu_style == app::MenuStyle::ChannelGuide);
+    CHECK(b.last_channel_id == "playlist:Saturday Cartoons");
     CHECK_FALSE(b.playlist_loop);
     CHECK(b.shuffle);
     CHECK(b.master_volume == 37);
@@ -167,6 +171,8 @@ TEST_CASE("settings: the checked-in fixture is what the kiosk writes", "[setting
     AppState s;
     REQUIRE(SettingsPersistence::load_settings(s));
     CHECK(s.display_settings.mode == DisplayMode::MODERN_TV);
+    CHECK(s.display_settings.menu_style == app::MenuStyle::ChannelGuide);
+    CHECK(s.last_channel_id == "shuffle");
     CHECK(s.master_volume == 80);
     CHECK(s.audio_settings.output == AudioOutput::HDMI);
     CHECK_FALSE(fs::exists(sb.corrupt()));
@@ -198,6 +204,25 @@ TEST_CASE("settings: missing sections and keys fall back to defaults", "[setting
     CHECK(s.display_settings.bezel_index == 0);
     CHECK(s.playlist_loop);       // playback section absent: struct default
     CHECK(s.master_volume == 100);
+}
+
+TEST_CASE("settings: menu style and last channel default to List and none",
+          "[settings]") {
+    SettingsSandbox sb;
+    sb.write(R"({"display": {"mode": "modern_tv"}, "playback": {"shuffle": true}})");
+    AppState s;
+    s.display_settings.menu_style = app::MenuStyle::ChannelGuide;  // must be reset
+    REQUIRE(SettingsPersistence::load_settings(s));
+    CHECK(s.display_settings.menu_style == app::MenuStyle::List);
+    CHECK(s.last_channel_id.empty());
+}
+
+TEST_CASE("settings: an unknown menu_style loads as List", "[settings]") {
+    SettingsSandbox sb;
+    sb.write(R"({"display": {"menu_style": "hologram"}})");
+    AppState s;
+    REQUIRE(SettingsPersistence::load_settings(s));
+    CHECK(s.display_settings.menu_style == app::MenuStyle::List);
 }
 
 TEST_CASE("settings: out-of-range volume is clamped", "[settings]") {

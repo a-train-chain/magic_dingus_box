@@ -18,6 +18,14 @@ enum class DisplayMode {
     MODERN_TV     // 4:3 centered with bezel overlay
 };
 
+// How the main menu presents playlists. List is the classic menu; ChannelGuide
+// is the optional live-channel overlay. Persisted as display.menu_style
+// ("list" | "channel_guide").
+enum class MenuStyle {
+    List,
+    ChannelGuide
+};
+
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
 // ALSA `amixer numid=3` method — see app/audio_router.h. Sink names are
 // resolved at runtime against the sinks that actually exist on this board
@@ -276,6 +284,9 @@ public:
     bool loop;
     bool playlist_loop;  // Whether to loop back to start of playlist when finished
     bool shuffle;        // Whether to play videos in random order
+    // Channel Guide: the channel last tuned, as a playlist_identity() string
+    // ("shuffle" = channel 00, "" = none). Persisted as playback.last_channel.
+    std::string last_channel_id;
     bool master_shuffle_active; // True if Master Shuffle is playing (picks random video from ANY playlist)
     
     // Shuffle queue - ensures all videos play once before reshuffling
@@ -444,6 +455,7 @@ public:
     // Display settings for CRT effects and display mode
     struct DisplaySettings {
         DisplayMode mode = DisplayMode::CRT_NATIVE;
+        MenuStyle menu_style = MenuStyle::List;  // display.menu_style
         int bezel_index = 0;  // Index into bezels array (0 = procedural/none)
         
         float scanline_intensity = 0.0f;      // 0.0 - 1.0

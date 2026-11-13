@@ -201,6 +201,17 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                      rebuild_current_submenu();
                      app::SettingsPersistence::save_settings(*app_state_); 
                  }),
+        MenuItem(std::string("Menu Style: ") +
+                     (settings.menu_style == app::MenuStyle::ChannelGuide ? "Channel Guide"
+                                                                          : "List"),
+                 MenuSection::TOGGLE_MENU_STYLE, "List / Channel guide",
+                 [&]() {
+                     settings.menu_style = (settings.menu_style == app::MenuStyle::List)
+                                               ? app::MenuStyle::ChannelGuide
+                                               : app::MenuStyle::List;
+                     rebuild_current_submenu();
+                     app::SettingsPersistence::save_settings(*app_state_);
+                 }),
     };
     
     // Show bezel option only in Modern TV mode
