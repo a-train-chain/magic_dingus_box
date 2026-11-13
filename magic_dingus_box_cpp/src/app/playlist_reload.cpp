@@ -167,7 +167,7 @@ void apply_reloaded_playlists(AppState& state,
     set_overlay_cursor(state, clamp_overlay(overlay_cursor(state),
                                             static_cast<int>(state.playlists.size()),
                                             state.playlist_max_visible,
-                                            state.picture_control_available));
+                                            cursor_may_use_picture(state)));
 }
 
 OpenGameListRemap remap_open_game_list(const std::vector<Playlist>& game_playlists,

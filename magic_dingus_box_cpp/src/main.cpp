@@ -1359,7 +1359,8 @@ int main(int /* argc */, char* /* argv */[]) {
                     if (ui_available && !state.playlists.empty()) {
                         // One row per turn, clamped at both ends; from the
                         // last row, down reaches the Picture control when it
-                        // is offered. The scroll window uses the on-screen
+                        // is shown (a cursor already on it keeps it through
+                        // a load gap). The scroll window uses the on-screen
                         // row count the renderer published last frame, not a
                         // hardcoded 8 — 8 (sized for CRT) scrolled the list
                         // early in Modern TV mode, where 14 rows are visible,
@@ -1370,7 +1371,7 @@ int main(int /* argc */, char* /* argv */[]) {
                                        app::overlay_cursor(state), ev.delta,
                                        static_cast<int>(state.playlists.size()),
                                        state.playlist_max_visible,
-                                       state.picture_control_available));
+                                       app::cursor_may_use_picture(state)));
 
                         // If video is active, show UI briefly
                         if (state.video_active) {
@@ -1491,37 +1492,40 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // The overlay's Picture (crop) control (app/overlay_nav.h), decided
         // after this frame's loads (auto-advance, NEXT/PREV) so it follows
-        // the video now playing. Offered while a playlist video owns the
-        // pipeline and its display aspect is not 4:3 — for a 4:3 video crop
+        // the video now playing. Shown while a playlist video whose display
+        // aspect is not 4:3 plays under the overlay — for a 4:3 video crop
         // and whole frame draw the same picture. The aspect the web admin
         // recorded wins; until it has one, the last decoded frame's (which
         // may still be the previous video's for the frames before the new
-        // one's first). picture_crop mirrors the store for the renderer. A
-        // cursor left on a control that went away returns to the last
-        // playlist row. All in memory: no file I/O here.
+        // one's first). A cursor on the control stays through the load gap
+        // between items (video_active drops while the next stream
+        // prerolls) and returns to the last playlist row only when the new
+        // video has no control. picture_crop mirrors the store for the
+        // renderer. All in memory: no file I/O here.
         {
             const std::string& media_key = controller.current_media_key();
-            std::optional<double> aspect;
-            if (!media_key.empty()) {
+            app::PictureFacts picture;
+            picture.owns_pipeline = playlist_playback.owns_pipeline();
+            picture.has_key = !media_key.empty();
+            if (picture.has_key) {
                 const auto& videos = media_info.map();
                 const auto it = videos.find(media_key);
                 if (it != videos.end() && it->second.display_aspect) {
-                    aspect = it->second.display_aspect;
+                    picture.aspect = it->second.display_aspect;
                 } else {
-                    aspect = gst_renderer.source_display_aspect();
+                    picture.aspect = gst_renderer.source_display_aspect();
                 }
             }
-            state.picture_control_available =
-                playlist_playback.owns_pipeline() && state.video_active &&
-                !media_key.empty() && aspect.has_value() &&
-                !video::is_four_by_three(*aspect);
+            picture.video_active = state.video_active;
+            picture.overlay_visible = state.ui_visible_when_playing;
+            state.picture_control_available = app::picture_control_visible(picture);
             state.picture_crop = media_info.crop_for(media_key);
             if (state.picture_focus) {
                 app::set_overlay_cursor(
                     state, app::clamp_overlay(app::overlay_cursor(state),
                                               static_cast<int>(state.playlists.size()),
                                               state.playlist_max_visible,
-                                              state.picture_control_available));
+                                              app::picture_focus_may_stay(picture)));
             }
         }
 

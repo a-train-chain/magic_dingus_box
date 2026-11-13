@@ -274,7 +274,39 @@ TEST_CASE("SELECT with the Picture focus over hidden UI only reveals the UI",
     CHECK(s.current_item_index == 2);
 }
 
-TEST_CASE("SELECT with a stale Picture focus does nothing once playback is gone",
+TEST_CASE("SELECT in the load gap between items still toggles, or only reveals",
+          "[playlist_playback][picture]") {
+    // NEXT / auto-advance: video_active is briefly false while the next
+    // stream prerolls, and the focus stays on the control through it.
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 2);
+    s.video_active = false;
+    s.selected_index = 4;
+    s.picture_focus = true;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    SECTION("overlay up: the press toggles, nothing starts") {
+        s.ui_visible_when_playing = true;
+        pb.on_select();
+        CHECK(t.calls == std::vector<std::string>{"toggle_picture"});
+        CHECK(s.ui_visible_when_playing);
+    }
+    SECTION("overlay hidden: the press only reveals it") {
+        s.ui_visible_when_playing = false;
+        pb.on_select();
+        CHECK(t.calls.empty());
+        CHECK(s.ui_visible_when_playing);
+        CHECK(s.ui_visibility_timer == 3.0);
+    }
+    CHECK(s.current_playlist_index == 1);
+    CHECK(s.current_item_index == 2);
+    CHECK_FALSE(s.is_switching_playlist);
+    CHECK(s.picture_focus);
+}
+
+TEST_CASE("SELECT with a stale Picture focus does nothing once a game takes the pipeline",
           "[playlist_playback][picture]") {
     // The focus is cleared each frame when the control goes away; a press
     // landing before that (a game took the pipeline) must neither toggle a

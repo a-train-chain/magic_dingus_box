@@ -160,6 +160,155 @@ TEST_CASE("clamp_overlay without the control only repairs the window", "[overlay
     CHECK(same(app::clamp_overlay({1, 0, false}, 2, 8, false), {1, 0, false}));
 }
 
+// ── Is the control there? ────────────────────────────────────────────────
+
+namespace {
+
+// A 16:9 playlist video playing under the visible overlay.
+app::PictureFacts playing_wide() {
+    app::PictureFacts f;
+    f.owns_pipeline = true;
+    f.has_key = true;
+    f.aspect = 16.0 / 9.0;
+    f.video_active = true;
+    f.overlay_visible = true;
+    return f;
+}
+
+}  // namespace
+
+TEST_CASE("a wide playlist video under the overlay shows the control", "[overlay_nav]") {
+    const app::PictureFacts f = playing_wide();
+    CHECK(app::picture_control_visible(f));
+    CHECK(app::picture_focus_may_stay(f));
+
+    // Taller than 4:3 (a phone clip) too.
+    app::PictureFacts tall = playing_wide();
+    tall.aspect = 9.0 / 16.0;
+    CHECK(app::picture_control_visible(tall));
+}
+
+TEST_CASE("the focus rides through the load gap between items", "[overlay_nav]") {
+    // Auto-advance / NEXT / PREV: the player is reset, video_active drops
+    // for the frames until the new stream prerolls, and the new video's
+    // aspect may not be known yet. The control is not drawn, but the cursor
+    // may stay on it.
+    app::PictureFacts gap = playing_wide();
+    gap.video_active = false;
+    gap.aspect.reset();
+    CHECK(app::picture_focus_may_stay(gap));
+    CHECK_FALSE(app::picture_control_visible(gap));
+
+    // Still the previous frame's aspect: same answer.
+    gap.aspect = 16.0 / 9.0;
+    CHECK(app::picture_focus_may_stay(gap));
+    CHECK_FALSE(app::picture_control_visible(gap));
+
+    // Playing again, aspect not known yet: may stay, not drawn yet.
+    app::PictureFacts unknown = playing_wide();
+    unknown.aspect.reset();
+    CHECK(app::picture_focus_may_stay(unknown));
+    CHECK_FALSE(app::picture_control_visible(unknown));
+}
+
+TEST_CASE("the focus leaves when the next video has no control", "[overlay_nav]") {
+    SECTION("the next video is 4:3, once its aspect is known") {
+        app::PictureFacts f = playing_wide();
+        f.aspect = 4.0 / 3.0;
+        CHECK_FALSE(app::picture_focus_may_stay(f));
+        CHECK_FALSE(app::picture_control_visible(f));
+        // Within 2% of 4:3 counts as 4:3.
+        f.aspect = 1.35;
+        CHECK_FALSE(app::picture_focus_may_stay(f));
+        // ... even mid-gap.
+        f.video_active = false;
+        CHECK_FALSE(app::picture_focus_may_stay(f));
+    }
+    SECTION("a game, the Media Browser or the intro took the pipeline") {
+        app::PictureFacts f = playing_wide();
+        f.owns_pipeline = false;
+        CHECK_FALSE(app::picture_focus_may_stay(f));
+        CHECK_FALSE(app::picture_control_visible(f));
+    }
+    SECTION("the load failed and cleared the key") {
+        app::PictureFacts f = playing_wide();
+        f.has_key = false;
+        f.aspect.reset();
+        f.video_active = false;
+        CHECK_FALSE(app::picture_focus_may_stay(f));
+        CHECK_FALSE(app::picture_control_visible(f));
+    }
+}
+
+TEST_CASE("a hidden overlay hides the control but keeps the focus", "[overlay_nav]") {
+    app::PictureFacts f = playing_wide();
+    f.overlay_visible = false;
+    CHECK_FALSE(app::picture_control_visible(f));
+    CHECK(app::picture_focus_may_stay(f));
+}
+
+TEST_CASE("frame by frame: focus survives an item change, leaves for a 4:3 one",
+          "[overlay_nav]") {
+    // main.cpp each frame: clamp with may-stay while the focus is set; a
+    // turn is told cursor_may_use_picture.
+    app::AppState s;
+    s.playlists.resize(5);
+    s.playlist_max_visible = 3;
+    s.selected_index = 4;
+    s.playlist_scroll_offset = 2;
+    s.picture_focus = true;
+    auto frame = [&s](const app::PictureFacts& f) {
+        s.picture_control_available = app::picture_control_visible(f);
+        if (s.picture_focus) {
+            app::set_overlay_cursor(
+                s, app::clamp_overlay(app::overlay_cursor(s),
+                                      static_cast<int>(s.playlists.size()),
+                                      s.playlist_max_visible,
+                                      app::picture_focus_may_stay(f)));
+        }
+    };
+
+    frame(playing_wide());
+    CHECK(s.picture_focus);
+
+    // NEXT: a dozen frames of preroll with video_active down.
+    app::PictureFacts gap = playing_wide();
+    gap.video_active = false;
+    gap.aspect.reset();
+    for (int i = 0; i < 12; ++i) frame(gap);
+    CHECK(s.picture_focus);
+    CHECK_FALSE(s.picture_control_available);
+
+    // A turn down in the gap stays on the control; it is not knocked off.
+    app::set_overlay_cursor(
+        s, app::rotate_overlay(app::overlay_cursor(s), +1,
+                               static_cast<int>(s.playlists.size()),
+                               s.playlist_max_visible, app::cursor_may_use_picture(s)));
+    CHECK(s.picture_focus);
+
+    // The new video is wide too: the control is back, focus never left.
+    frame(playing_wide());
+    CHECK(s.picture_focus);
+    CHECK(s.picture_control_available);
+
+    // The next one is 4:3: back to the last playlist row.
+    app::PictureFacts square = playing_wide();
+    square.aspect = 4.0 / 3.0;
+    frame(square);
+    CHECK_FALSE(s.picture_focus);
+    CHECK(s.selected_index == 4);
+    CHECK(s.playlist_scroll_offset == 2);
+
+    // Without the focus, a gap does not let a turn onto a control that is
+    // not drawn.
+    frame(gap);
+    app::set_overlay_cursor(
+        s, app::rotate_overlay(app::overlay_cursor(s), +1,
+                               static_cast<int>(s.playlists.size()),
+                               s.playlist_max_visible, app::cursor_may_use_picture(s)));
+    CHECK_FALSE(s.picture_focus);
+}
+
 TEST_CASE("AppState holds the overlay cursor", "[overlay_nav]") {
     app::AppState s;
     s.selected_index = 4;

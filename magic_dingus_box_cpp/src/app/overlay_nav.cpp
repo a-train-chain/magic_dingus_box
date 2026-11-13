@@ -1,5 +1,7 @@
 #include "overlay_nav.h"
 
+#include "../video/picture_placement.h"
+
 #include <algorithm>
 
 namespace app {
@@ -58,6 +60,21 @@ void set_overlay_cursor(AppState& state, const OverlayCursor& c) {
     state.selected_index = c.selected;
     state.playlist_scroll_offset = c.scroll;
     state.picture_focus = c.on_picture;
+}
+
+bool picture_focus_may_stay(const PictureFacts& f) {
+    const bool known_four_by_three =
+        f.aspect.has_value() && video::is_four_by_three(*f.aspect);
+    return f.owns_pipeline && f.has_key && !known_four_by_three;
+}
+
+bool picture_control_visible(const PictureFacts& f) {
+    return picture_focus_may_stay(f) && f.video_active && f.overlay_visible &&
+           f.aspect.has_value();
+}
+
+bool cursor_may_use_picture(const AppState& state) {
+    return state.picture_control_available || state.picture_focus;
 }
 
 }  // namespace app

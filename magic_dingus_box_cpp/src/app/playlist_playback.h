@@ -153,10 +153,14 @@ public:
     static constexpr std::chrono::milliseconds kSwitchTimeout{2000};
     static constexpr std::chrono::milliseconds kTimeoutSettle{200};
 
-    // ── Failed-item handling (exposed for the tests) ─────────────────────
+    // ── Who owns the pipeline ────────────────────────────────────────────
     // True while a main-menu playlist item owns the shared pipeline (not
-    // the intro, a switch, a game launch, or Media Browser playback).
+    // the intro, a switch, a game launch, or Media Browser playback). Also
+    // read by main.cpp each frame for the overlay's Picture control
+    // (app/overlay_nav.h, PictureFacts::owns_pipeline).
     bool owns_pipeline() const;
+
+    // ── Failed-item handling (exposed for the tests) ─────────────────────
     int failure_budget() const;
     void act_on_failed_item(video::PlaybackErrorPolicy::Decision d, const char* why);
 
