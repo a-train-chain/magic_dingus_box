@@ -100,8 +100,8 @@ def country_state(env: dict) -> dict:
 
 
 def rewrite_env_text(text: str, line: str, key: str = ENV_KEY) -> str:
-    """Replace the `key` (default VPN_COUNTRIES) line in .env text with `line`, keeping every
-    other line byte-for-byte. Duplicates collapse into the first position
+    """Replace the `key` (default VPN_COUNTRIES) line in .env text with
+    `line`, keeping every other line byte-for-byte. Duplicates collapse into the first position
     (a later duplicate would otherwise silently win); an absent key is
     appended. `line` is a full, already-validated `KEY=VALUE` line."""
     out, placed = [], False

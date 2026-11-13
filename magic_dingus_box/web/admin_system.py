@@ -22,7 +22,6 @@ from typing import Optional
 
 from flask import request, send_file
 
-
 # Same dual import form as admin.py: flat when tests put web/ on
 # sys.path, package-relative in production.
 try:
@@ -195,10 +194,24 @@ def register(app, ctx) -> None:
         """Apply the zone the Content Manager's browser reports. The latest
         browser to connect wins; an unchanged zone does nothing."""
         data = request.get_json(silent=True)
-        zone = data.get("zone") if isinstance(data, dict) else None
-        if not timezone_apply.valid_zone(zone, timezone_apply.ZONEINFO_DIR):
+        reported = data.get("zone") if isinstance(data, dict) else None
+        zone = timezone_apply.resolve_zone(reported, timezone_apply.ZONEINFO_DIR)
+        if zone is None:
             return error_response("VALIDATION_ERROR", "Unknown time zone")
+        # services/.env is rewritten by a running Media Browser setup/reset;
+        # touch nothing while one runs. The next page load retries.
+        if ctx._maintenance_precheck():
+            return success_response(data={"changed": False})
+        env_path = ctx.SERVICES_ENV
         if timezone_apply.read_system_timezone() == zone:
+            # Cheap + quiet path; but revisit a .env whose rewrite once failed.
+            if (env_path.is_file()
+                    and timezone_apply.env_tz(env_path) != zone):
+                try:
+                    timezone_apply.rewrite_env_tz(env_path, zone)
+                except Exception as e:  # noqa: BLE001
+                    print(f"TZ= rewrite in services/.env failed: {e!r}",
+                          file=sys.stderr)
             return success_response(data={"changed": False})
         resp = _require_nopasswd_sudo()
         if resp:
@@ -209,8 +222,7 @@ def register(app, ctx) -> None:
             return error_response(
                 "INTERNAL_ERROR", "Could not set the time zone", status=500)
         try:
-            timezone_apply.rewrite_env_tz(
-                data_dir.parent.parent / "services" / ".env", zone)
+            timezone_apply.rewrite_env_tz(env_path, zone)
         except Exception as e:  # noqa: BLE001 - the system zone is already set
             print(f"TZ= rewrite in services/.env failed: {e!r}", file=sys.stderr)
         _poke_kiosk_reload("timezone")

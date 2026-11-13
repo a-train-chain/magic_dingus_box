@@ -1,6 +1,7 @@
 """Time zone from the owner's browser: validation, .env rewrite, the route."""
 from __future__ import annotations
 
+import inspect
 import io
 import os
 import stat
@@ -26,6 +27,13 @@ def zoneinfo(tmp_path):
     secret.write_text("x")
     (d / "Evil").symlink_to(secret)  # symlink escaping the dir
     (d / "Dir").mkdir()
+    (d / "Etc" / "UTC").write_text("TZif")
+    (d / "UTC").unlink()
+    (d / "UTC").symlink_to("Etc/UTC")  # symlink resolving INSIDE the dir
+    (d / "Asia").mkdir()
+    (d / "Asia" / "Kolkata").write_text("TZif")
+    (d / "Europe").mkdir()
+    (d / "Europe" / "Kyiv").write_text("TZif")
     return d
 
 
@@ -148,10 +156,118 @@ def test_route_requires_csrf(temp_data_dir, rig, monkeypatch):
     app = create_app(temp_data_dir, config={"TESTING": True})
     r = app.test_client().post("/admin/system/timezone",
                                json={"zone": "America/Los_Angeles"})
-    assert r.status_code in (400, 403)
+    assert r.status_code == 403
+    assert r.get_json()["error"]["code"] == "CSRF_ERROR"
     assert _set_calls(rig[0]) == []
 
 
 def test_backup_excludes_the_zone(client, temp_data_dir):
     zf = zipfile.ZipFile(io.BytesIO(client.get("/admin/backup").data))
     assert not any("timezone" in n.lower() or n.endswith(".env") for n in zf.namelist())
+
+
+def test_valid_zone_accepts_symlink_inside_dir(zoneinfo):
+    assert valid_zone("UTC", zoneinfo) is True
+
+
+def test_resolve_zone_legacy_aliases(zoneinfo):
+    r = timezone_apply.resolve_zone
+    assert r("Asia/Calcutta", zoneinfo) == "Asia/Kolkata"
+    assert r("Europe/Kiev", zoneinfo) == "Europe/Kyiv"
+    assert r("Asia/Kolkata", zoneinfo) == "Asia/Kolkata"
+    # a legacy name that IS a file is used as given
+    (zoneinfo / "Asia" / "Saigon").write_text("TZif")
+    assert r("Asia/Saigon", zoneinfo) == "Asia/Saigon"
+    # alias target missing -> None; unknown -> None
+    assert r("Asia/Dacca", zoneinfo) is None
+    assert r("Nope/Zone", zoneinfo) is None
+    assert r(None, zoneinfo) is None
+    for legacy in ("Asia/Calcutta", "Europe/Kiev", "Asia/Saigon", "Asia/Katmandu",
+                   "Asia/Rangoon", "Atlantic/Faeroe", "America/Buenos_Aires",
+                   "Asia/Dacca", "Asia/Thimbu", "Pacific/Ponape", "Pacific/Truk"):
+        assert legacy in timezone_apply.LEGACY_ZONE_ALIASES
+
+
+def test_route_applies_canonical_alias(client, rig):
+    calls, _ = rig
+    r = client.post("/admin/system/timezone", json={"zone": "Asia/Calcutta"})
+    assert r.get_json()["data"]["changed"] is True
+    assert _set_calls(calls) == [
+        ["sudo", "-n", "timedatectl", "set-timezone", "Asia/Kolkata"]]
+
+
+def _env(temp_data_dir, text):
+    env = temp_data_dir.parent.parent / "services" / ".env"
+    env.parent.mkdir(parents=True, exist_ok=True)
+    env.write_text(text)
+    return env
+
+
+def test_route_busy_maintenance_changes_nothing(client, temp_data_dir, rig, app):
+    calls, _ = rig
+    env = _env(temp_data_dir, "TZ=UTC\n")
+    # a running maintenance job: the precheck returns a 409 response
+    from admin_common import error_response
+    fn = inspect.unwrap(app.view_functions["set_timezone"])
+    ctx = fn.__closure__[fn.__code__.co_freevars.index("ctx")].cell_contents
+    orig = ctx._maintenance_precheck
+    ctx._maintenance_precheck = lambda: error_response("JOB_ALREADY_RUNNING", "x", status=409)
+    try:
+        r = client.post("/admin/system/timezone", json={"zone": "America/Los_Angeles"})
+    finally:
+        ctx._maintenance_precheck = orig
+    assert r.status_code == 200
+    assert r.get_json()["data"]["changed"] is False
+    assert calls == []
+    assert env.read_text() == "TZ=UTC\n"
+    assert not (temp_data_dir / "timezone_reload_request").exists()
+
+
+def test_equal_zone_repairs_stale_env_quietly(client, temp_data_dir, rig, capsys):
+    calls, state = rig
+    state["current"] = "America/Los_Angeles"
+    env = _env(temp_data_dir, "A=1\nTZ=UTC\n")
+    r = client.post("/admin/system/timezone", json={"zone": "America/Los_Angeles"})
+    assert r.get_json()["data"]["changed"] is False
+    assert env.read_text() == "A=1\nTZ=America/Los_Angeles\n"
+    assert _set_calls(calls) == []
+    assert not (temp_data_dir / "timezone_reload_request").exists()
+    assert capsys.readouterr().err == ""
+
+
+def test_equal_zone_matching_env_is_not_rewritten(client, temp_data_dir, rig, monkeypatch):
+    _, state = rig
+    state["current"] = "America/Los_Angeles"
+    _env(temp_data_dir, "TZ=America/Los_Angeles\n")
+
+    def boom(*a, **k):
+        raise AssertionError("must not rewrite")
+    monkeypatch.setattr(timezone_apply, "rewrite_env_tz", boom)
+    r = client.post("/admin/system/timezone", json={"zone": "America/Los_Angeles"})
+    assert r.status_code == 200
+
+
+def test_sudo_required_blocks_set_and_poke(client, temp_data_dir, rig, monkeypatch):
+    calls, _ = rig
+    import admin
+    from admin_common import error_response
+    monkeypatch.setattr(admin, "_require_nopasswd_sudo",
+                        lambda: error_response("sudo_required", "no sudo", status=500))
+    r = client.post("/admin/system/timezone", json={"zone": "America/Los_Angeles"})
+    assert r.status_code == 500
+    assert _set_calls(calls) == []
+    assert not (temp_data_dir / "timezone_reload_request").exists()
+
+
+def test_env_rewrite_failure_is_swallowed(client, temp_data_dir, rig, monkeypatch):
+    calls, _ = rig
+    _env(temp_data_dir, "TZ=UTC\n")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(timezone_apply, "rewrite_env_tz", boom)
+    r = client.post("/admin/system/timezone", json={"zone": "America/Los_Angeles"})
+    assert r.status_code == 200
+    assert r.get_json()["data"]["changed"] is True
+    assert len(_set_calls(calls)) == 1
+    assert (temp_data_dir / "timezone_reload_request").exists()

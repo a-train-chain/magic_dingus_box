@@ -3,8 +3,9 @@
 The Content Manager page reports `Intl.DateTimeFormat().resolvedOptions()
 .timeZone`; the route in admin_system.py validates it here, applies it with
 `sudo -n timedatectl set-timezone`, rewrites services/.env's TZ= line (when
-that file exists) and pokes the kiosk to `tzset()`. Pure helpers, no Flask,
-so they are unit-tested on the Mac.
+that file exists) and pokes the kiosk to `tzset()`. Route-independent helpers
+(they import the .env helpers from vpn_settings, nothing request-bound), so
+they are unit-tested on the Mac.
 """
 from __future__ import annotations
 
@@ -42,6 +43,55 @@ def valid_zone(name, zoneinfo_dir: Path = ZONEINFO_DIR) -> bool:
         return target.is_file()
     except (OSError, ValueError):
         return False
+
+
+# Browsers (Chrome) still report some legacy names; Debian Trixie moved those
+# links into tzdata-legacy, so on a box without it the name is not a file.
+LEGACY_ZONE_ALIASES = {
+    "Asia/Calcutta": "Asia/Kolkata",
+    "Europe/Kiev": "Europe/Kyiv",
+    "Asia/Saigon": "Asia/Ho_Chi_Minh",
+    "Asia/Katmandu": "Asia/Kathmandu",
+    "Asia/Rangoon": "Asia/Yangon",
+    "Atlantic/Faeroe": "Atlantic/Faroe",
+    "America/Buenos_Aires": "America/Argentina/Buenos_Aires",
+    "Asia/Dacca": "Asia/Dhaka",
+    "Asia/Thimbu": "Asia/Thimphu",
+    "Pacific/Ponape": "Pacific/Pohnpei",
+    "Pacific/Truk": "Pacific/Chuuk",
+}
+
+
+def resolve_zone(name, zoneinfo_dir: Path = ZONEINFO_DIR) -> Optional[str]:
+    """The zone to apply for a browser-reported `name`: the name itself when
+    it is a valid zoneinfo file, else its canonical alias when that is, else
+    None."""
+    if valid_zone(name, zoneinfo_dir):
+        return name
+    alias = LEGACY_ZONE_ALIASES.get(name) if isinstance(name, str) else None
+    if alias and valid_zone(alias, zoneinfo_dir):
+        return alias
+    return None
+
+
+def env_tz(env_path: Path) -> Optional[str]:
+    """The `TZ=` value in the .env file, or None (absent file/line)."""
+    try:
+        text = Path(env_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    value = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k.strip() == "TZ":
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            value = v  # a later duplicate wins in compose, so it wins here
+    return value
 
 
 def read_system_timezone() -> Optional[str]:
