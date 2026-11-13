@@ -4,6 +4,7 @@
 #include "playback_reset.h"
 #include "playlist_reload.h"
 
+#include <algorithm>
 #include <iostream>
 #include <optional>
 #include <utility>
@@ -86,8 +87,11 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
             // Re-tuning the channel that just failed repeatedly would loop:
             // note it, and leave nothing tuned for the nothing-playing rule
             // to move on from.
-            if (state_.tuned_channel >= 0) {
-                state_.guide_gave_up.push_back(state_.tuned_channel);
+            auto& gave_up = state_.guide_gave_up;
+            if (state_.tuned_channel >= 0 &&
+                std::find(gave_up.begin(), gave_up.end(), state_.tuned_channel) ==
+                    gave_up.end()) {
+                gave_up.push_back(state_.tuned_channel);
             }
             state_.tuned_channel = -1;
             state_.guide_wait_until_utc = 0.0;
@@ -314,9 +318,6 @@ void PlaylistPlayback::on_prev() {
 
 namespace {
 
-// AppState::last_channel_id of channel 00 (its row has no playlist file).
-constexpr const char* kShuffleChannelId = "shuffle";
-
 // What a tune or an item boundary joins on `ch` at `now_utc`: the on-air
 // item at its scheduled offset, or — with under kMinJoinLeftS of it left —
 // the item after it, from its start (see kMinJoinLeftS). nullopt: nothing
@@ -348,10 +349,16 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         state_.tuned_channel = -1;
         state_.guide_gave_up.clear();
         state_.guide_wait_until_utc = 0.0;
-        channel_join_pos_.reset();
-        channel_unproven_ = false;
+        channel_progress_ = {};
+        tune_awaiting_stream_ = false;
         return;
     }
+    // Given-up rows stay until a channel proves it plays; only rows the new
+    // list no longer has are dropped.
+    auto& gave_up = state_.guide_gave_up;
+    gave_up.erase(std::remove_if(gave_up.begin(), gave_up.end(),
+                                 [this](int c) { return channel_at(c) == nullptr; }),
+                  gave_up.end());
     if (state_.tuned_channel < 0) return;
     // A reload renumbers the rows: re-find the tuned channel by the identity
     // it was tuned under rather than keep an index into the old list.
@@ -375,6 +382,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     state_.is_switching_playlist = true;
     switch_start_generation_ = transport_.stream_generation();
     state_.playlist_switch_start_time = transport_.now();
+    tune_awaiting_stream_ = false;
     // Point at the channel's row before the stop, as SELECT does: it keeps
     // the indexes through the stop, and the pending switch's "re-pointed"
     // check covers a tune too. The on-air item replaces it at the load.
@@ -409,12 +417,20 @@ void PlaylistPlayback::on_channel_step(int delta) {
     }
 }
 
-void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
-    if (transport_.is_playing()) {
-        std::cerr << "Warning: Video did not stop cleanly after "
-                  << (kSwitchMaxRepolls * kSwitchRepoll.count())
-                  << "ms, proceeding anyway" << std::endl;
+void PlaylistPlayback::land_on_channel(int channel) {
+    // Whether or not its item then loads: a failed item is the channel's to
+    // resume (act_on_failed_item), and a give-up must name this channel,
+    // not the one tuned before it.
+    state_.tuned_channel = channel;
+    if (channel == 0) {
+        state_.last_channel_id = kShuffleChannelId;
+    } else if (channel > 0 && channel < static_cast<int>(state_.playlists.size())) {
+        state_.last_channel_id = playlist_identity(state_.playlists[channel]);
     }
+}
+
+void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
+    warn_if_still_playing();
     // On air NOW, not at the press: the wait must not put playback behind.
     const Channel* ch = channel_at(channel);
     const auto oa = ch ? join_point(*ch, transport_.wall_now_utc()) : std::nullopt;
@@ -423,19 +439,35 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
         // schedule (or the style went back to List).
         std::cerr << "Tune to channel " << channel << " failed: nothing scheduled"
                   << std::endl;
+        if (ch) land_on_channel(channel);  // not past a list that shrank
         app::stop_to_menu(state_);
         return;
     }
-    load_on_air(channel, *oa, keep_overlay);
+    // Each channel gets its own failure run: failures on the channel being
+    // left must not use up this one's budget.
+    if (channel != state_.tuned_channel) {
+        error_policy_ = video::PlaybackErrorPolicy{};
+    }
+    // The stream has not come up yet; the stuck-switch timeout counts it as
+    // a failed item if it never does (tick_switch_timeout).
+    tune_awaiting_stream_ = load_on_air(channel, *oa, keep_overlay);
 }
 
-double PlaylistPlayback::played_position(double player_pos) const {
-    return channel_join_pos_ ? player_pos - *channel_join_pos_ : player_pos;
+double PlaylistPlayback::played_position(double player_pos) {
+    ChannelProgress& p = channel_progress_;
+    if (!p.loaded) return player_pos;  // not a channel load: as before
+    if (!p.anchor) {
+        // Not up yet: GstPlayer still reports the REQUESTED start here.
+        if (!state_.video_active || transport_.has_error()) return 0.0;
+        p.anchor = player_pos;
+    }
+    return player_pos - *p.anchor;
 }
 
 void PlaylistPlayback::prove_channel() {
-    if (!channel_unproven_) return;
-    channel_unproven_ = false;
+    ChannelProgress& p = channel_progress_;
+    if (!p.loaded || p.proven) return;
+    p.proven = true;
     if (!state_.guide_gave_up.empty()) {
         std::cout << "Channel " << state_.tuned_channel
                   << " plays — the channels given up on may be tried again" << std::endl;
@@ -460,7 +492,9 @@ void PlaylistPlayback::rejoin_schedule() {
     load_on_air(channel, *oa, /*keep_overlay=*/true);
 }
 
-void PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay) {
+bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay) {
+    land_on_channel(channel);
+    channel_progress_ = {};
     const ScheduledItem& si = (*channels_)[channel].items[oa.index];
     if (si.playlist < 1 || si.playlist >= static_cast<int>(state_.playlists.size()) ||
         si.item < 0 ||
@@ -469,39 +503,31 @@ void PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
         std::cerr << "Channel " << channel << " schedule is stale — stopping" << std::endl;
         transport_.stop();
         app::stop_to_menu(state_);
-        return;
+        return false;
     }
     const Playlist& pl = state_.playlists[si.playlist];
-
-    // The channel is tuned whether or not the item loads: a failed item is
-    // the channel's to resume (act_on_failed_item), and a give-up must name
-    // this channel, not the one tuned before it.
     state_.master_shuffle_active = false;
     state_.current_playlist_index = si.playlist;
     state_.current_item_index = si.item;
-    state_.tuned_channel = channel;
-    state_.last_channel_id = channel == 0 ? kShuffleChannelId : playlist_identity(pl);
     guide_item_ends_at_ = oa.ends_at;
 
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
               << " at " << oa.offset_s << "s" << std::endl;
-    channel_join_pos_.reset();
-    channel_unproven_ = false;
     auto result = transport_.load_playlist_item_at(state_, pl, si.item,
                                                    playlist_directory_, oa.offset_s);
     if (!result) {
         std::cerr << "Failed to load channel item: " << result.error() << std::endl;
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
-        return;
+        return false;
     }
     // Loaded is not playing: guide_gave_up waits for prove_channel().
-    channel_join_pos_ = pl.items[si.item].start + oa.offset_s;
-    channel_unproven_ = true;
+    channel_progress_.loaded = true;
     state_.guide_wait_until_utc = 0.0;
     if (!keep_overlay) {
         // A tune closes the guide; channel up/down leaves it as it is.
         state_.ui_visible_when_playing = false;
     }
+    return true;
 }
 
 // ── Per-frame ticks ──────────────────────────────────────────────────────
@@ -562,12 +588,19 @@ void PlaylistPlayback::advance_pending_switch() {
     }
 }
 
-void PlaylistPlayback::finish_switch(int target) {
+// The end of a switch's bounded wait: a player still playing after it is
+// logged, and the load goes ahead anyway.
+void PlaylistPlayback::warn_if_still_playing() const {
     if (transport_.is_playing()) {
         std::cerr << "Warning: Video did not stop cleanly after "
                   << (kSwitchMaxRepolls * kSwitchRepoll.count())
                   << "ms, proceeding anyway" << std::endl;
     }
+}
+
+void PlaylistPlayback::finish_switch(int target) {
+    warn_if_still_playing();
+    channel_progress_ = {};  // not a channel load (see ChannelProgress)
 
     // Then start the new playlist
     bool load_success = false;
@@ -630,6 +663,8 @@ void PlaylistPlayback::tick_switch_timeout() {
     // must not cut a switch short that the old code would have completed.
     advance_pending_switch();
     if (switch_pending()) return;
+    // A switch the flag no longer marks has no stream left to wait for.
+    if (!state_.is_switching_playlist) tune_awaiting_stream_ = false;
 
     // Completion. Controller::update_state clears the flag only when
     // video_active goes false -> true, and during a switch it holds
@@ -643,6 +678,7 @@ void PlaylistPlayback::tick_switch_timeout() {
         state_.get_duration() > 0.0 && transport_.is_playing()) {
         std::cout << "Playlist switch completed - new stream playing, clearing flag" << std::endl;
         state_.is_switching_playlist = false;
+        tune_awaiting_stream_ = false;
         return;
     }
 
@@ -658,6 +694,21 @@ void PlaylistPlayback::tick_switch_timeout() {
                       << ", current_playlist=" << state_.current_playlist_index
                       << ", current_item=" << state_.current_item_index << std::endl;
             state_.is_switching_playlist = false;
+
+            if (std::exchange(tune_awaiting_stream_, false) && !state_.video_active &&
+                state_.current_playlist_index >= 0) {
+                // Channel Guide: the tune's load returned OK but its stream
+                // never came up. A failed item for the tuned channel — its
+                // budget, its wait, its give-up; the failure path stops the
+                // pipeline — so the nothing-playing rule cannot re-tune a
+                // dead channel forever. Not when something else re-pointed
+                // playback meanwhile (a game session's return resets the
+                // indexes): that stream was taken away, not broken.
+                act_on_failed_item(error_policy_.on_load_failure(failure_budget()),
+                                   "never started");
+                timeout_settle_until_ = now + kTimeoutSettle;
+                return;
+            }
 
             // Also reset video state to ensure clean recovery
             if (!transport_.is_playing() && !state_.video_active) {
@@ -688,16 +739,16 @@ void PlaylistPlayback::tick_pipeline_error() {
         return;
     }
     if (owns_pipeline()) {
-        // On a channel, progress counts from the load's join point (see
-        // channel_join_pos_); otherwise this is the player's position.
+        // On a channel, progress counts from where the playing stream
+        // started (ChannelProgress); otherwise this is the player's position.
         const double played = played_position(transport_.player_position());
         const auto decision = error_policy_.on_frame(
             transport_.stream_generation(), transport_.has_error(),
             played, failure_budget());
         if (decision != video::PlaybackErrorPolicy::Decision::None) {
             act_on_failed_item(decision, "pipeline error");
-        } else if (channel_unproven_ && played >= kChannelPlaysS &&
-                   !transport_.has_error()) {
+        } else if (channel_progress_.loaded && !channel_progress_.proven &&
+                   played >= kChannelPlaysS && !transport_.has_error()) {
             prove_channel();
         }
     }

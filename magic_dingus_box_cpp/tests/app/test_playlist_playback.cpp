@@ -1543,8 +1543,9 @@ TEST_CASE("List style: no tuning, and NEXT/PREV step the playlist as before",
 namespace {
 
 // Tunes `channel` at `wall` and brings its new stream up (a new stream
-// generation, as load_file makes). Returns the player position the load
-// started at: the item's own start trim plus its scheduled offset.
+// generation, as load_file makes), then runs the stream's first frame with
+// the player at the position the load asked for: the item's own start trim
+// plus its scheduled offset. Returns that position.
 double tune_and_play(Guide& g, int channel, double wall) {
     g.t.wall = wall;
     g.pb.tune(channel, false);
@@ -1554,7 +1555,10 @@ double tune_and_play(Guide& g, int channel, double wall) {
     g.t.generation += 1;
     g.playing();
     const auto& item = g.s.playlists[g.s.current_playlist_index].items[g.s.current_item_index];
-    return item.start + g.t.last_offset();
+    const double join = item.start + g.t.last_offset();
+    g.t.position = join;
+    g.pb.tick_pipeline_error();
+    return join;
 }
 
 }  // namespace
@@ -1668,4 +1672,197 @@ TEST_CASE("a channel item that reaches its natural end clears the give-up list",
     g.pb.tick_auto_advance();
     CHECK(g.s.guide_gave_up.empty());
     CHECK(g.t.last() == "load_at Cartoons 2");
+}
+
+// ── Review follow-ups ────────────────────────────────────────────────────
+
+TEST_CASE("a tuned item that never starts is a failed item for its channel",
+          "[playlist_playback][guide][give_up]") {
+    // The load returned OK but no stream ever came up: the 2 s stuck-switch
+    // timeout is the only thing that notices. Counted like a failed load,
+    // so the nothing-playing rule cannot re-tune a dead channel forever.
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture err(std::cerr);
+
+    SECTION("01: the channel waits for its next item") {
+        g.t.wall = kW0 + 130;  // b, scheduled to end at kW0 + 300
+        g.pb.tune(1, false);
+        run_frames(g.pb, g.t, milliseconds(2100));
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1", "stop"});
+        CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
+        CHECK(g.s.tuned_channel == 1);
+        CHECK(g.s.guide_gave_up.empty());
+    }
+    SECTION("02, one item: its only failure gives it up") {
+        g.t.wall = kW0 + 10;
+        g.pb.tune(2, false);
+        run_frames(g.pb, g.t, milliseconds(2100));
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0", "stop"});
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        CHECK(g.s.tuned_channel == -1);
+        CHECK(g.s.error_message == "Couldn't play these videos");
+    }
+    CHECK(err.count("CRITICAL: Playlist switch timeout") == 1);
+    CHECK_FALSE(g.s.is_switching_playlist);
+    CHECK(g.s.current_playlist_index == -1);  // a drawable menu
+}
+
+TEST_CASE("a tuned stream taken away by a game session is not the channel's failure",
+          "[playlist_playback][guide][give_up]") {
+    Guide g;
+    StreamCapture err(std::cerr);
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.last() == "load_at Cartoons 1");
+    // A game launched before the stream came up; its return reset the
+    // kiosk (prepare_kiosk_state_after_game) and left the switch flag up.
+    g.t.advance(std::chrono::seconds(30));
+    g.s.current_playlist_index = -1;
+    g.s.current_item_index = -1;
+    g.pb.tick_switch_timeout();
+    // The stuck-switch timeout's own recovery, as for any switch.
+    CHECK(err.count("MPV appears stuck") == 1);
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1", "stop"});
+    CHECK_FALSE(g.s.is_switching_playlist);
+    CHECK(g.s.guide_wait_until_utc == 0.0);  // no failure counted
+    CHECK(g.s.guide_gave_up.empty());
+}
+
+TEST_CASE("a tuned stream that comes up is not counted when a later switch times out",
+          "[playlist_playback][guide][give_up]") {
+    using std::chrono::milliseconds;
+    Guide g;
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    g.playing();  // update_state saw it start and released the switch flag
+    run_frames(g.pb, g.t, milliseconds(3000));
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1"});
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.s.guide_wait_until_utc == 0.0);
+}
+
+TEST_CASE("each channel gets its own failure run",
+          "[playlist_playback][guide][give_up]") {
+    // Three failures on 00 (budget 10), then channel up to 01 (budget 3):
+    // 01's first failure is its first, not the run's fourth.
+    Guide g;
+    g.t.load_ok = false;
+    g.t.wall = kW0 + 333;
+    for (int i = 0; i < 3; ++i) {
+        g.pb.tune(0, false);
+        run_frames(g.pb, g.t, kSettled);
+        REQUIRE(g.s.tuned_channel == 0);
+        g.t.wall = g.s.guide_wait_until_utc + 0.5;
+    }
+    REQUIRE(g.s.guide_gave_up.empty());
+
+    g.pb.on_next();
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.s.guide_gave_up.empty());
+    CHECK(g.s.error_message.empty());
+    CHECK(g.s.guide_wait_until_utc > 0.0);  // waiting for 01's next item
+}
+
+TEST_CASE("progress counts from the first position the playing stream reports",
+          "[playlist_playback][guide][give_up]") {
+    // The start seek snaps to a keyframe (KEY_UNIT | SNAP_NEAREST): here
+    // the stream comes up 4 s past the offset it was asked for. Those 4 s
+    // were never played and must not count toward the 5 s proof.
+    Guide g;
+    g.s.guide_gave_up = {2};
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    g.t.generation += 1;
+    const double asked = g.t.last_offset();  // b has no start trim
+
+    // The switch is released but the stream is not up yet: GstPlayer still
+    // reports the requested start. Not an anchor.
+    g.s.is_switching_playlist = false;
+    g.t.position = asked;
+    g.pb.tick_pipeline_error();
+
+    g.playing();
+    g.t.position = asked + 4.0;  // the first position once it plays
+    g.pb.tick_pipeline_error();
+    g.t.position = asked + 5.0;  // 1 s played
+    g.pb.tick_pipeline_error();
+    CHECK(g.s.guide_gave_up == std::vector<int>{2});
+    g.t.position = asked + 8.9;
+    g.pb.tick_pipeline_error();
+    CHECK(g.s.guide_gave_up == std::vector<int>{2});
+    g.t.position = asked + 9.0;  // 5 s played
+    g.pb.tick_pipeline_error();
+    CHECK(g.s.guide_gave_up.empty());
+}
+
+TEST_CASE("guide_gave_up holds each channel once and only rows the list has",
+          "[playlist_playback][guide][give_up]") {
+    Guide g;
+
+    SECTION("giving up a channel already given up does not add it twice") {
+        g.s.guide_gave_up = {2};
+        g.t.load_ok = false;
+        g.pb.tune(2, false);  // a press on a given-up channel; one item: gives up
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.error_message == "Couldn't play these videos");
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+    }
+    SECTION("a rebuilt list drops rows past its end") {
+        g.s.guide_gave_up = {1, 4};
+        g.s.playlists.pop_back();  // the empty playlist (row 4) is deleted
+        std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, guide_lengths());
+        g.pb.set_channels(&rebuilt);
+        CHECK(g.s.guide_gave_up == std::vector<int>{1});
+    }
+}
+
+TEST_CASE("a tune whose load cannot run still lands on its channel",
+          "[playlist_playback][guide]") {
+    Guide g;
+    g.t.wall = kW0 + 10;  // 01: a, 10 s in
+    put_playing(g.s, 2, 0);
+    g.s.tuned_channel = 2;
+    g.s.last_channel_id = "path:/p/movies.yaml";
+
+    SECTION("the channel lost its schedule during the wait") {
+        g.pb.tune(1, false);
+        auto info = guide_lengths();
+        info.erase("a.mp4");
+        info.erase("b.mp4");
+        info.erase("c.mp4");
+        std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, info);
+        REQUIRE(rebuilt[1].items.empty());
+        g.pb.set_channels(&rebuilt);
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.t.calls == std::vector<std::string>{"stop"});
+    }
+    SECTION("its schedule points past the playlist (a list older than the playlists)") {
+        g.channels[1].items[0].item = 99;
+        g.pb.tune(1, false);
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "stop"});
+    }
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.s.last_channel_id == "path:/p/cartoons.yaml");
+    CHECK(g.s.current_playlist_index == -1);
+    CHECK_FALSE(g.s.is_switching_playlist);
+}
+
+TEST_CASE("Media Browser entry abandons a pending tune", "[playlist_playback][guide]") {
+    Guide g;
+    put_playing(g.s, 1, 0);
+    g.s.tuned_channel = 1;
+    g.pb.on_next();  // to 02
+    app::reset_main_ui_for_media_browser(g.s);
+    run_frames(g.pb, g.t, std::chrono::milliseconds(3000));
+    CHECK(g.t.calls == std::vector<std::string>{"stop"});  // never loaded
+    CHECK_FALSE(g.pb.switch_pending());
+    CHECK_FALSE(g.s.is_switching_playlist);
+    CHECK(g.s.tuned_channel == 1);  // the tune never ran
+    CHECK(g.s.guide_gave_up.empty());
 }

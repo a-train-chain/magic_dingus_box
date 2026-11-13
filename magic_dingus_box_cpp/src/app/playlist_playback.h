@@ -155,11 +155,14 @@ public:
     // The channel list (app/channel_schedule.h; channel N = UI row N), or
     // nullptr for the List style — the default, and today's behaviour on
     // every path. Held by pointer and read afresh at every tune and item
-    // boundary, so a rebuilt list takes effect at the next one; nothing
-    // keeps an index into an old list. Call it again after EVERY rebuild
-    // (even into the same vector): a reload renumbers the rows, so the
-    // tuned channel is re-found by AppState::last_channel_id (-1 when its
-    // playlist is gone). nullptr also forgets the tuned / given-up channels.
+    // boundary, so a rebuilt list takes effect at the next one. Call it
+    // again after EVERY rebuild (even into the same vector): a reload
+    // renumbers the rows, so the tuned channel is re-found by
+    // AppState::last_channel_id (-1 when its playlist is gone). The
+    // guide_gave_up rows are NOT re-anchored — a reload can shift them —
+    // and live until a channel proves it plays (kChannelPlaysS); only rows
+    // past the new list's end are dropped. nullptr also forgets the tuned /
+    // given-up channels.
     void set_channels(const std::vector<Channel>* channels);
     bool guide_style() const { return channels_ != nullptr; }
     // Tune `channel` live. The playlist switch above, unchanged — stop now,
@@ -186,9 +189,11 @@ public:
     static constexpr double kMinJoinLeftS = 2.0;
     // A channel has proven it plays — and guide_gave_up is cleared, so the
     // channels given up on get another try — once its stream is this far
-    // past the load's join point, or an item reached its natural end. A
-    // load alone proves nothing: a library whose files all load but fail
-    // to decode must still run every channel out instead of cycling.
+    // past the first position it reported while playing, or an item reached
+    // its natural end. A load alone proves nothing: a library whose files
+    // all load but fail to decode must still run every channel out instead
+    // of cycling. A tune whose stream never comes up before the stuck-switch
+    // timeout is a failed item, like a failed load.
     static constexpr double kChannelPlaysS = 5.0;
 
     // ── Per-frame ticks, in main-loop order ──────────────────────────────
@@ -262,6 +267,8 @@ private:
     const char* pending_switch_obsolete_reason() const;
     // The tail of the old blocking switch: warning + load + failure path.
     void finish_switch(int target);
+    // The end of a switch's bounded wait: warns if the player still plays.
+    void warn_if_still_playing() const;
 
     // ── Channel Guide ────────────────────────────────────────────────────
     // Channel `c` of the current list (nullptr in List style / out of range).
@@ -270,22 +277,33 @@ private:
     void finish_tune(int channel, bool keep_overlay);
     // An item's natural end: load what is on the tuned channel now.
     void rejoin_schedule();
-    // Load channel `channel`'s scheduled item `oa` at its offset.
-    void load_on_air(int channel, const OnAir& oa, bool keep_overlay);
+    // tuned_channel + last_channel_id, set when a tune's load runs.
+    void land_on_channel(int channel);
+    // Load channel `channel`'s scheduled item `oa` at its offset; true when
+    // the load returned OK.
+    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay);
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
     // the channel picks up again from there.
     double guide_item_ends_at_ = 0.0;
-    // The player position the playing channel load started at (the item's
-    // start trim + its scheduled offset); nullopt when the stream is not a
-    // channel load. A mid-item join starts far past the failure policy's
-    // "healthy" mark and kChannelPlaysS, so on a channel both count from
-    // here (played_position).
-    std::optional<double> channel_join_pos_;
-    // The playing channel load has not proven it plays yet.
-    bool channel_unproven_ = false;
-    // Seconds played since the channel load's join point; the player's own
-    // position when the stream is not a channel load (List style).
-    double played_position(double player_pos) const;
+    // How far the playing channel load has got. A mid-item join starts far
+    // past the failure policy's "healthy" mark (3 s) and kChannelPlaysS, so
+    // on a channel both count from `anchor`: the FIRST position the stream
+    // reports once it plays (video_active) — not the offset the load asked
+    // for, since the start seek snaps to a keyframe (KEY_UNIT |
+    // SNAP_NEAREST), seconds either side, and GstPlayer reports the
+    // requested start until it lands. Before the anchor, nothing has played.
+    struct ChannelProgress {
+        bool loaded = false;           // the playing stream is a channel load
+        std::optional<double> anchor;  // first position once playing
+        bool proven = false;           // prove_channel() has run for it
+    };
+    ChannelProgress channel_progress_;
+    // A tune's load returned OK and its stream has not come up yet.
+    bool tune_awaiting_stream_ = false;
+    // Seconds played since the anchor (taking it on the first playing
+    // frame); the player's own position when the stream is not a channel
+    // load (List style).
+    double played_position(double player_pos);
     // The channel plays: clear guide_gave_up (once per load).
     void prove_channel();
 

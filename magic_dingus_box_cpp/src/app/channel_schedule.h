@@ -31,6 +31,10 @@ struct Channel {
     double total_s = 0;
 };
 
+// AppState::last_channel_id of channel 00, the Master Shuffle mix (its row
+// has no playlist file, so it has no playlist_identity of its own).
+inline constexpr const char* kShuffleChannelId = "shuffle";
+
 // Lexical only (no filesystem): strips a leading "./" and "data/", giving the
 // media_info.json key form, e.g. "media/x.mp4".
 std::string media_key_of_item(const PlaylistItem& item);
