@@ -40,6 +40,7 @@ constexpr std::optional<int> none = std::nullopt;
 
 TEST_CASE("auto-tune: each gate alone blocks", "[auto_tune]") {
     AutoTuneInput in = ready();
+    REQUIRE(app::auto_tune_gates_open(in));
     REQUIRE(decide_auto_tune(in) == std::optional<int>(2));
 
     SECTION("List style") { in.guide_style = false; }
@@ -53,6 +54,18 @@ TEST_CASE("auto-tune: each gate alone blocks", "[auto_tune]") {
         in.wait_until_utc = in.now_utc + 1.0;
     }
 
+    CHECK_FALSE(app::auto_tune_gates_open(in));
+    CHECK(decide_auto_tune(in) == none);
+}
+
+TEST_CASE("auto-tune: the gates read only the flags and the clock", "[auto_tune]") {
+    // main.cpp resolves last_channel / tunable / gave_up (an identity scan
+    // that builds a string per row) only once the gates are open.
+    AutoTuneInput in = ready();
+    in.last_channel = -1;
+    in.tunable.clear();
+    in.gave_up = {0, 1};
+    CHECK(app::auto_tune_gates_open(in));
     CHECK(decide_auto_tune(in) == none);
 }
 

@@ -1538,27 +1538,33 @@ int main(int /* argc */, char* /* argv */[]) {
             auto_tune.post_game_pending = post_game_gate.settling();
             auto_tune.now_utc = playlist_transport.wall_now_utc();
             auto_tune.wait_until_utc = state.guide_wait_until_utc;
-            const std::string& last_id = state.last_channel_id;
-            if (last_id.empty()) {
-                auto_tune.last_channel = -1;
-            } else if (last_id == app::kShuffleChannelId) {
-                auto_tune.last_channel = 0;
-            } else {
-                auto_tune.last_channel =
-                    app::find_playlist_by_identity(state.playlists, last_id);
-            }
-            auto_tune.tunable.assign(channels.size(), false);
-            for (size_t c = 0; c < channels.size(); ++c) {
-                auto_tune.tunable[c] = !channels[c].items.empty();
-            }
-            auto_tune.gave_up = state.guide_gave_up;
-            if (const auto channel = app::decide_auto_tune(auto_tune)) {
-                playlist_playback.tune(*channel, /*keep_overlay=*/false);
-                // tune() drops a call it cannot take yet (the stuck-switch
-                // timeout's 200 ms settle); log only one it took.
-                if (playlist_playback.switch_pending()) {
-                    std::cout << "Nothing playing: tuning channel " << *channel
-                              << std::endl;
+            // The target only matters once every gate is open. Resolving it
+            // scans the playlists building an identity string per row, so
+            // it is skipped on the frames a video plays (nearly all of them)
+            // and whenever anything else holds the rule back.
+            if (app::auto_tune_gates_open(auto_tune)) {
+                const std::string& last_id = state.last_channel_id;
+                if (last_id.empty()) {
+                    auto_tune.last_channel = -1;
+                } else if (last_id == app::kShuffleChannelId) {
+                    auto_tune.last_channel = 0;
+                } else {
+                    auto_tune.last_channel =
+                        app::find_playlist_by_identity(state.playlists, last_id);
+                }
+                auto_tune.tunable.assign(channels.size(), false);
+                for (size_t c = 0; c < channels.size(); ++c) {
+                    auto_tune.tunable[c] = !channels[c].items.empty();
+                }
+                auto_tune.gave_up = state.guide_gave_up;
+                if (const auto channel = app::decide_auto_tune(auto_tune)) {
+                    playlist_playback.tune(*channel, /*keep_overlay=*/false);
+                    // tune() drops a call it cannot take yet (the stuck-switch
+                    // timeout's 200 ms settle); log only one it took.
+                    if (playlist_playback.switch_pending()) {
+                        std::cout << "Nothing playing: tuning channel " << *channel
+                                  << std::endl;
+                    }
                 }
             }
         }

@@ -12,11 +12,14 @@ bool contains(const std::vector<int>& v, int x) {
 
 }  // namespace
 
+bool auto_tune_gates_open(const AutoTuneInput& in) {
+    return in.guide_style && in.intro_complete && in.on_main_screen && !in.video_active &&
+           !in.switch_pending && !in.loading_game && !in.post_game_pending &&
+           in.now_utc >= in.wait_until_utc;
+}
+
 std::optional<int> decide_auto_tune(const AutoTuneInput& in) {
-    const bool may_tune = in.guide_style && in.intro_complete && in.on_main_screen &&
-                          !in.video_active && !in.switch_pending && !in.loading_game &&
-                          !in.post_game_pending && in.now_utc >= in.wait_until_utc;
-    if (!may_tune) return std::nullopt;
+    if (!auto_tune_gates_open(in)) return std::nullopt;
 
     const int n = static_cast<int>(in.tunable.size());
     // Has a schedule and was not given up on.

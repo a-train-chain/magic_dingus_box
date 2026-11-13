@@ -19,10 +19,12 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "app/auto_tune.h"
 #include "app/channel_schedule.h"
 #include "app/media_info.h"
 #include "app/playback_reset.h"
 #include "app/playlist_playback.h"
+#include "app/playlist_reload.h"
 
 using Catch::Approx;
 
@@ -1865,4 +1867,192 @@ TEST_CASE("Media Browser entry abandons a pending tune", "[playlist_playback][gu
     CHECK_FALSE(g.s.is_switching_playlist);
     CHECK(g.s.tuned_channel == 1);  // the tune never ran
     CHECK(g.s.guide_gave_up.empty());
+}
+
+// ── Task 5 review follow-ups: nothing can spin, nothing stays dark ───────
+
+namespace {
+
+// main.cpp's nothing-playing rule (app/auto_tune.h), its inputs gathered as
+// main.cpp gathers them, on the main screen with nothing else up.
+void nothing_playing_rule(Guide& g) {
+    app::AutoTuneInput in;
+    in.guide_style = g.pb.guide_style();
+    in.intro_complete = g.s.intro_complete;
+    in.on_main_screen = true;
+    in.video_active = g.s.video_active ||
+                      (g.s.current_playlist_index >= 0 && g.s.current_item_index >= 0);
+    in.switch_pending = g.pb.switch_pending() || g.s.is_switching_playlist;
+    in.now_utc = g.t.wall;
+    in.wait_until_utc = g.s.guide_wait_until_utc;
+    if (!app::auto_tune_gates_open(in)) return;
+    const std::string& id = g.s.last_channel_id;
+    in.last_channel = id.empty()                    ? -1
+                      : id == app::kShuffleChannelId ? 0
+                                                     : app::find_playlist_by_identity(g.s.playlists, id);
+    for (const auto& ch : g.channels) in.tunable.push_back(!ch.items.empty());
+    in.gave_up = g.s.guide_gave_up;
+    if (const auto c = app::decide_auto_tune(in)) g.pb.tune(*c, /*keep_overlay=*/false);
+}
+
+// main.cpp's per-frame playback ticks, in its order, every 16 ms for `total`
+// (Controller::update_state is the test's to simulate), optionally followed
+// by the nothing-playing rule.
+void guide_frames(Guide& g, std::chrono::milliseconds total, bool with_rule = false) {
+    const auto end = g.t.clock + total;
+    while (g.t.clock < end) {
+        g.t.advance(std::chrono::milliseconds(16));
+        g.pb.tick_switch_timeout();
+        g.pb.tick_pipeline_error();
+        g.pb.tick_auto_advance();
+        if (with_rule) nothing_playing_rule(g);
+    }
+}
+
+// Tunes 01 (b, 30 s in), brings it up, and plays it to its end: the
+// boundary loads c, 0.4 s in. The new stream is not up yet, and the state
+// still reads b's end (update_state has not run since).
+void reach_boundary(Guide& g) {
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    g.playing();
+    g.s.update_playback_state(199.6, 200.0);
+    g.t.wall = kW0 + 300.4;
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1",
+                                                  "load_at Cartoons 2"});
+}
+
+}  // namespace
+
+TEST_CASE("a stale channel list stops once, then waits 2 s before the next tune",
+          "[playlist_playback][guide]") {
+    // A list older than the playlists it points into (a rebuild that was
+    // missed). Without the wait, the nothing-playing rule would re-tune it
+    // every ~200 ms: stop, settle, stale, stop, ...
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture err(std::cerr);
+    for (auto& si : g.channels[1].items) si.item = 99;
+    g.s.last_channel_id = "path:/p/cartoons.yaml";
+    g.t.wall = kW0 + 130;
+
+    guide_frames(g, kSettled, /*with_rule=*/true);  // tune 01; its load finds it stale
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "stop"});
+    CHECK(err.count("schedule is stale") == 1);
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.s.current_playlist_index == -1);
+    const double stale_wall = g.s.guide_wait_until_utc - 2.0;
+    CHECK(stale_wall > kW0 + 130);
+    CHECK(stale_wall <= g.t.wall);
+
+    guide_frames(g, milliseconds(1800), /*with_rule=*/true);  // < 2 s since the stop
+    CHECK(g.t.calls.size() == 2);
+
+    guide_frames(g, milliseconds(500), /*with_rule=*/true);  // past it: one more try
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "stop", "stop", "stop"});
+    CHECK(err.count("schedule is stale") == 2);
+}
+
+TEST_CASE("a boundary load whose stream never comes up is a failed item for its channel",
+          "[playlist_playback][guide][give_up]") {
+    // No switch flag at a boundary, so the stuck-switch timeout does not see
+    // it, and the stall watchdog needs video_active: without a bound the
+    // indexes stay set and the screen stays dark for good.
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    reach_boundary(g);
+    // The new stream must confirm itself (update_state sets it once it
+    // plays) — and the stale end position the state still reads does not
+    // load the boundary a second time meanwhile.
+    CHECK_FALSE(g.s.playback_started_);
+
+    guide_frames(g, milliseconds(1950));
+    CHECK(g.t.calls.size() == 3);
+    CHECK(err.count("never started") == 0);
+
+    guide_frames(g, milliseconds(100));  // past 2 s
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1",
+                                                "load_at Cartoons 2", "stop"});
+    CHECK(err.count("never started") == 1);
+    // 01's budget is 3: c's slot is waited out, then the rule re-tunes.
+    CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 600).epsilon(0).margin(1e-6));
+    CHECK(g.s.tuned_channel == 1);
+    CHECK(g.s.guide_gave_up.empty());
+    CHECK(g.s.current_playlist_index == -1);  // a drawable menu
+    CHECK_FALSE(g.s.video_active);
+
+    guide_frames(g, milliseconds(3000));
+    CHECK(g.t.calls.size() == 4);  // counted once
+    CHECK(err.count("never started") == 1);
+}
+
+TEST_CASE("a boundary load is bounded once, whatever ends the wait",
+          "[playlist_playback][guide][give_up]") {
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    reach_boundary(g);
+    guide_frames(g, milliseconds(500));
+    std::vector<std::string> want = {"stop", "load_at Cartoons 1", "load_at Cartoons 2"};
+    int pipeline_errors = 0;
+
+    SECTION("its stream comes up: nothing is counted") {
+        g.s.playback_started_ = true;          // update_state confirmed it
+        g.s.update_playback_state(1.4, 300);   // c, playing
+    }
+    SECTION("an error arrives first: counted once, as a pipeline error") {
+        g.t.error = true;
+        want.push_back("stop");
+        pipeline_errors = 1;
+    }
+    SECTION("the pipeline is taken away (Media Browser entry): not the channel's failure") {
+        app::reset_main_ui_for_media_browser(g.s);
+    }
+    guide_frames(g, milliseconds(3000));
+    CHECK(g.t.calls == want);
+    CHECK(err.count("never started") == 0);
+    CHECK(err.count("(pipeline error)") == pipeline_errors);
+}
+
+TEST_CASE("a tune that never starts is counted once with every tick running",
+          "[playlist_playback][guide][give_up]") {
+    // Tunes have their own bound (the stuck-switch timeout); the boundary
+    // bound must not count them a second time.
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    guide_frames(g, milliseconds(5000));
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1", "stop"});
+    CHECK(err.count("never started") == 1);
+    CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
+}
+
+TEST_CASE("List style: a playlist boundary is never bounded",
+          "[playlist_playback][guide]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.playback_started_ = true;
+    s.update_playback_state(99.8, 100.0);
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    StreamCapture out(std::cout);
+    pb.tick_auto_advance();
+    REQUIRE(t.calls == std::vector<std::string>{"next_item"});
+    s.playback_started_ = false;  // what load_next_item does
+    for (int i = 0; i < 300; ++i) {  // 4.8 s
+        t.advance(std::chrono::milliseconds(16));
+        pb.tick_switch_timeout();
+        pb.tick_pipeline_error();
+    }
+    CHECK(t.calls == std::vector<std::string>{"next_item"});
+    CHECK(s.current_playlist_index == 1);
 }

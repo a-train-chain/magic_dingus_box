@@ -36,9 +36,14 @@ struct AutoTuneInput {
     std::vector<int> gave_up;        // channels given up on, newest last
 };
 
-// The channel to tune now, or nullopt. Tunes only when all of: guide style,
-// the intro over, on the main screen, no video, no switch pending, no game
-// loading, the post-game restore done, and now_utc >= wait_until_utc.
+// The gates alone: guide style, the intro over, on the main screen, no
+// video, no switch pending, no game loading, the post-game restore done,
+// and now_utc >= wait_until_utc. Reads only those fields, so main.cpp fills
+// last_channel / tunable / gave_up (an identity scan) only when it is true —
+// never on the frames a video plays.
+bool auto_tune_gates_open(const AutoTuneInput& in);
+
+// The channel to tune now, or nullopt. Tunes only when auto_tune_gates_open.
 // A channel can be picked when it has a schedule and was not given up on.
 // The target, in order:
 //   - the last channel watched;

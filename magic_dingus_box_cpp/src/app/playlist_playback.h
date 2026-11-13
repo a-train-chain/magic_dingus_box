@@ -64,7 +64,9 @@
 // (AppState::guide_wait_until_utc), and a give-up marks the channel in
 // guide_gave_up — cleared only once a channel PLAYS (kChannelPlaysS), so a
 // library that loads but never decodes runs out of channels; main.cpp's
-// nothing-playing rule re-tunes in both cases.
+// nothing-playing rule re-tunes in both cases. A stream that never comes up
+// is a failed item too: a tune's through the stuck-switch timeout, a
+// boundary's through kBoundaryStartTimeout.
 // The List style (nullptr) never reaches any of this.
 
 #include <chrono>
@@ -187,6 +189,11 @@ public:
     // so re-joining the ending item would put the load inside its own end
     // window with the once-per-item guard set: held at EOS for good.
     static constexpr double kMinJoinLeftS = 2.0;
+    // A channel list older than the playlists it points into (a rebuild
+    // that was missed) stops playback and holds the nothing-playing rule
+    // off for this long, so it can never become a stop-and-tune cycle every
+    // ~200 ms (guide_wait_until_utc).
+    static constexpr double kStaleScheduleWaitS = 2.0;
     // A channel has proven it plays — and guide_gave_up is cleared, so the
     // channels given up on get another try — once its stream is this far
     // past the first position it reported while playing, or an item reached
@@ -224,6 +231,10 @@ public:
     static constexpr int kSwitchMaxRepolls = 10;
     static constexpr std::chrono::milliseconds kSwitchTimeout{2000};
     static constexpr std::chrono::milliseconds kTimeoutSettle{200};
+    // Channel Guide: a schedule boundary's load (no switch, so the stuck-
+    // switch timeout never sees it) gets as long as a switch to bring its
+    // stream up; past that the item failed (tick_pipeline_error).
+    static constexpr std::chrono::milliseconds kBoundaryStartTimeout = kSwitchTimeout;
 
     // ── Who owns the pipeline ────────────────────────────────────────────
     // True while a main-menu playlist item owns the shared pipeline (not
@@ -300,6 +311,11 @@ private:
     ChannelProgress channel_progress_;
     // A tune's load returned OK and its stream has not come up yet.
     bool tune_awaiting_stream_ = false;
+    // A schedule boundary's load returned OK at this time (steady clock)
+    // and its stream has not come up yet (playback_started_). Dropped when
+    // it comes up, when anything else takes the pipeline, and when a
+    // failure is counted — so it is never counted twice.
+    std::optional<std::chrono::steady_clock::time_point> boundary_load_at_;
     // Seconds played since the anchor (taking it on the first playing
     // frame); the player's own position when the stream is not a channel
     // load (List style).
