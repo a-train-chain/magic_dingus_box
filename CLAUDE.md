@@ -337,6 +337,14 @@ This guarantees correct compositing without X11/compositor overhead.
   is downscaled regardless — a higher-resolution master is strictly better
   for CRT too. Default changes affect NEW uploads only; existing files
   cannot regain detail they never had.
+  **Every encode forces a keyframe at least every 2 s** (`-force_key_frames
+  expr:gte(t,n_forced*2)`, frame-rate independent; scene-cut keyframes
+  kept, since 2026-11): the Channel Guide joins a channel with a KEY_UNIT
+  seek, which on the Pi 5 lands on the keyframe BEFORE the target, and
+  libx264's default 250-frame GOP (~8.3 s at 30 fps) started channels up
+  to 8 s behind their schedule. Existing files are not re-encoded, and a
+  smart-upload that is already compatible is stored as-is (its own GOP).
+  `test_upload_compatibility.py` measures the gaps with the real ffmpeg.
 - **Per-video info `<data>/media_info.json`** (2026-11; kiosk ⇄ web file channel): `{"version":1,"videos":{"media/x.mp4":{"duration_s","display_aspect","crop":false}}}`, keyed by data-dir-relative path. `crop` is written only as `false`; absent = cropped (default). Writers — the kiosk (`app/media_info.{h,cpp}`, background writer, never on the render loop) and the web admin (`web/media_info.py`, `media_probe.py`, `media_record.py`) — serialize on `flock` of the sidecar `media_info.json.lock`, never on the data file (replaced by rename). A web-side change touches the `media_info_reload_request` marker and the kiosk re-reads it. Videos with no length/shape recorded (on the box before the store existed) are filled once per web-admin process by `web/media_backfill.py` (a nice-10 thread, one ffprobe at a time, waiting while `/tmp/mdb_playback_services_paused` exists; `MAGIC_MEDIA_BACKFILL=0` disables, as the test conftest does). A source known to be 4:3 is never stored or drawn uncropped (no control is offered for one). Clone prep ships a copy pruned to the shipping videos (`mdb_prune_media_info`). Backup/restore/import/migrate carry it; every deploy/OTA/release exclude list keeps it. The kiosk's CROP checkbox lives in the playlist overlay (turn past the last playlist; shown only for non-4:3 video).
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
 - **Server: gunicorn, ONE worker, gthread threads** (`web/serve.py`, since

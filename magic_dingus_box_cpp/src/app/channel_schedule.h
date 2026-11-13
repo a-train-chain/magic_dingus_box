@@ -99,8 +99,10 @@ struct LoadedAiring {
 // What an item boundary (the loaded item's natural end) joins: join_point,
 // except that it never goes back to the airing last loaded, or to one
 // before it. Playback can be AHEAD of the schedule at a natural end — the
-// start seek snaps to a keyframe up to half a GOP later than asked
-// (KEY_UNIT | SNAP_NEAREST, ~8-10 s GOPs in web transcodes), a knob seek
+// start seek snaps to a keyframe (KEY_UNIT | SNAP_NEAREST: on the Pi 5 it
+// measured the one BEFORE the target, but nothing guarantees the side; web
+// transcodes carry one every 2 s since 2026-11, older files and copied-in
+// uploads ~8-10 s), a knob seek
 // forward skipped part of the item, a file ends before its stored length —
 // and then the on-air item is still the one that just ended: rejoining it
 // would play its tail again. Instead the airing right after the loaded one,
