@@ -271,3 +271,53 @@ def test_env_rewrite_failure_is_swallowed(client, temp_data_dir, rig, monkeypatc
     assert r.get_json()["data"]["changed"] is True
     assert len(_set_calls(calls)) == 1
     assert (temp_data_dir / "timezone_reload_request").exists()
+
+
+# ── A browser that reports UTC to hide its zone (final review M6) ─────────
+# Firefox resistFingerprinting, Tor and Brave's strict mode report "UTC"
+# whatever the real zone is. A box already on a named zone keeps it.
+
+def _utc_files(zoneinfo):
+    (zoneinfo / "Etc" / "GMT").write_text("TZif")
+    (zoneinfo / "GMT").write_text("TZif")
+
+
+@pytest.mark.parametrize("reported", ["UTC", "Etc/UTC", "Etc/GMT", "GMT"])
+def test_route_ignores_utc_from_browser_on_a_named_zone(
+        client, temp_data_dir, rig, zoneinfo, reported):
+    calls, state = rig
+    _utc_files(zoneinfo)
+    state["current"] = "America/Los_Angeles"
+    env = _env(temp_data_dir, "TZ=America/Los_Angeles\n")
+    r = client.post("/admin/system/timezone", json={"zone": reported})
+    assert r.status_code == 200
+    assert r.get_json()["data"]["changed"] is False
+    assert _set_calls(calls) == []
+    assert env.read_text() == "TZ=America/Los_Angeles\n"  # not "repaired" to UTC
+    assert not (temp_data_dir / "timezone_reload_request").exists()
+
+
+def test_route_applies_utc_when_the_zone_is_unknown(client, temp_data_dir, rig, zoneinfo):
+    # timedatectl cannot say: nothing named to protect, as before.
+    calls, state = rig
+    _utc_files(zoneinfo)
+    state["current"] = ""
+    r = client.post("/admin/system/timezone", json={"zone": "Etc/GMT"})
+    assert r.get_json()["data"]["changed"] is True
+    assert _set_calls(calls) == [["sudo", "-n", "timedatectl", "set-timezone", "Etc/GMT"]]
+
+
+def test_route_still_moves_a_utc_box_to_a_named_zone(client, temp_data_dir, rig):
+    calls, state = rig
+    state["current"] = "Etc/UTC"
+    r = client.post("/admin/system/timezone", json={"zone": "America/Los_Angeles"})
+    assert r.get_json()["data"]["changed"] is True
+    assert len(_set_calls(calls)) == 1
+
+
+def test_is_utc_zone():
+    for name in ("UTC", "Etc/UTC", "Etc/GMT", "GMT", "Etc/UCT", "Etc/Universal",
+                 "Etc/Zulu", "Etc/GMT0", "Etc/GMT+0", "Etc/GMT-0", "GMT0"):
+        assert timezone_apply.is_utc_zone(name) is True, name
+    for name in ("America/Los_Angeles", "Etc/GMT+5", "Europe/London", "", None):
+        assert timezone_apply.is_utc_zone(name) is False, name

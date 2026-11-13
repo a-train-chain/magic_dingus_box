@@ -3,9 +3,10 @@
 The Content Manager page reports `Intl.DateTimeFormat().resolvedOptions()
 .timeZone`; the route in admin_system.py validates it here, applies it with
 `sudo -n timedatectl set-timezone`, rewrites services/.env's TZ= line (when
-that file exists) and pokes the kiosk to `tzset()`. Route-independent helpers
-(they import the .env helpers from vpn_settings, nothing request-bound), so
-they are unit-tested on the Mac.
+that file exists) and pokes the kiosk to `tzset()` — except that a UTC report
+never moves a box off a named zone (keeps_named_zone: privacy modes report
+UTC). Route-independent helpers (they import the .env helpers from
+vpn_settings, nothing request-bound), so they are unit-tested on the Mac.
 """
 from __future__ import annotations
 
@@ -72,6 +73,29 @@ def resolve_zone(name, zoneinfo_dir: Path = ZONEINFO_DIR) -> Optional[str]:
     if alias and valid_zone(alias, zoneinfo_dir):
         return alias
     return None
+
+
+# Names for UTC itself (zero offset, no DST). Etc/GMT+5 and friends are real
+# fixed offsets and are NOT in here.
+UTC_ZONE_NAMES = frozenset({
+    "UTC", "Etc/UTC", "GMT", "Etc/GMT", "UCT", "Etc/UCT", "Universal",
+    "Etc/Universal", "Zulu", "Etc/Zulu", "GMT0", "Etc/GMT0", "GMT+0",
+    "Etc/GMT+0", "GMT-0", "Etc/GMT-0", "Greenwich", "Etc/Greenwich",
+})
+
+
+def is_utc_zone(name) -> bool:
+    """True when `name` is a name for UTC itself."""
+    return isinstance(name, str) and name in UTC_ZONE_NAMES
+
+
+def keeps_named_zone(reported: str, current: Optional[str]) -> bool:
+    """True when a browser's UTC must not replace the box's zone: privacy
+    modes (Firefox resistFingerprinting, Tor, Brave strict) report UTC
+    whatever the owner's real zone is, so a UTC report says nothing about a
+    box already on a named (non-UTC) zone. With the box's zone unknown, or
+    already UTC, the report is applied as any other."""
+    return is_utc_zone(reported) and bool(current) and not is_utc_zone(current)
 
 
 def env_tz(env_path: Path) -> Optional[str]:

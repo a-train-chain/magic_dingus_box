@@ -1,9 +1,10 @@
 """Device identity, health and backup/restore routes.
 
-/admin/device/info, /admin/device/name, /admin/health,
-/admin/health/detailed, /admin/backup and /admin/restore, plus the
-device-name validators and get_device_info()/get_app_version(), which the
-support and update routes reuse through ctx.
+/admin/device/info, /admin/device/name, /admin/system/timezone (the
+Content Manager browser's zone; helpers in timezone_apply.py),
+/admin/health, /admin/health/detailed, /admin/backup and /admin/restore,
+plus the device-name validators and get_device_info()/get_app_version(),
+which the support and update routes reuse through ctx.
 """
 from __future__ import annotations
 
@@ -192,7 +193,10 @@ def register(app, ctx) -> None:
     @require_csrf
     def set_timezone():  # type: ignore[no-redef]
         """Apply the zone the Content Manager's browser reports. The latest
-        browser to connect wins; an unchanged zone does nothing."""
+        browser to connect wins; an unchanged zone does nothing, and neither
+        does a UTC report on a box already on a named zone (privacy modes
+        report UTC whatever the real zone is). Applied on every box, List
+        style included: a correct system zone is right for the whole box."""
         data = request.get_json(silent=True)
         reported = data.get("zone") if isinstance(data, dict) else None
         zone = timezone_apply.resolve_zone(reported, timezone_apply.ZONEINFO_DIR)
@@ -203,7 +207,12 @@ def register(app, ctx) -> None:
         if ctx._maintenance_precheck():
             return success_response(data={"changed": False})
         env_path = ctx.SERVICES_ENV
-        if timezone_apply.read_system_timezone() == zone:
+        current = timezone_apply.read_system_timezone()
+        # A browser in a privacy mode reports UTC whatever its real zone:
+        # never let that move a box off a named zone (nor its .env TZ=).
+        if timezone_apply.keeps_named_zone(zone, current):
+            return success_response(data={"changed": False})
+        if current == zone:
             # Cheap + quiet path; but revisit a .env whose rewrite once failed.
             if (env_path.is_file()
                     and timezone_apply.env_tz(env_path) != zone):
