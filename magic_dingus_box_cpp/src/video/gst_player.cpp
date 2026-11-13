@@ -716,6 +716,10 @@ void GstPlayer::stop() {
     }
 
     // Force update of our internal state immediately
+    forget_stream();
+}
+
+void GstPlayer::forget_stream() {
     is_playing_ = false;
     is_paused_ = false;
     at_eos_ = false;
@@ -993,6 +997,10 @@ void GstPlayer::cleanup() {
         appsink_ = nullptr;
     }
     initialized_ = false;
+    // The stream went with the pipeline. stop() is a no-op from here on (not
+    // initialized) and initialize() builds an empty playbin whose queries
+    // all fail, so nothing else would ever clear this: see forget_stream().
+    forget_stream();
 }
 
 } // namespace video

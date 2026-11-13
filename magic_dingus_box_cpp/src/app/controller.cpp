@@ -248,6 +248,10 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         state.loading_phase = "STOPPING VIDEO";
         state.loading_progress.store(0.15f);
 
+        // A video was playing when the game was picked. Read BEFORE the
+        // cleanup, which now makes is_playing() false (see below).
+        const bool video_was_playing = is_playing();
+
         // Stop GStreamer completely before launching RetroArch
         // This ensures all resources (EGL, DRM, threads) are released
         if (player_) {
@@ -258,15 +262,21 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         } // Wait for stop to complete
         wait_with_callback(300, progress_callback);
         state.loading_progress.store(0.35f);
-        
-        // Verify player stopped with retry loop
-        int retry_count = 0;
-        const int max_retries = 10;
-        while (is_playing() && retry_count < max_retries) {
-            wait_with_callback(100, progress_callback);
-            retry_count++;
+
+        // This used to poll is_playing() up to 10 x 100 ms. cleanup() left
+        // that flag true (GstPlayer::forget_stream), so over a playing video
+        // the poll always ran out and logged "did not stop cleanly" — about a
+        // pipeline cleanup() had already set to NULL and released; nothing
+        // could ever update the flag again until a re-initialize. So every
+        // game ever started over a playing video has had this extra second
+        // between the pipeline teardown and RetroArch's start, and nothing
+        // downstream (PulseAudio letting go of the HDMI device RetroArch
+        // opens, for one) has been measured without it. Kept as a fixed wait,
+        // only where it always happened, until it is timed on both boards.
+        if (video_was_playing) {
+            wait_with_callback(1000, progress_callback);
         }
-        
+
         if (is_playing()) {
             std::cerr << "Warning: GStreamer did not stop cleanly before RetroArch launch" << std::endl;
         } else {

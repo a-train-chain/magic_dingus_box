@@ -160,6 +160,18 @@ private:
     void fire_seek();
 
     void update_position();
+
+    // Forget everything this player reports about a stream: playing /
+    // paused / EOS / error, position, duration, their query memos, the seek
+    // coalescer and the deferred start. stop() and cleanup() both end with
+    // it, so a pipeline that is gone can never be described by them.
+    // cleanup() used to skip it: is_playing() kept reading true through a
+    // whole game session, and after the post-game initialize() the new,
+    // empty playbin failed every query, so get_position()/get_duration()
+    // served the torn-down stream's last values — Controller::update_state
+    // then saw "duration 40.1, position 1.68" and raised video_active for a
+    // stream that did not exist (Pi 5, 2026-11-13).
+    void forget_stream();
 };
 
 } // namespace video
