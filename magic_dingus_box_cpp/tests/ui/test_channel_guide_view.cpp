@@ -124,7 +124,7 @@ TEST_CASE("narrow cells drop text then artist", "[guide_view]") {
 
 TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view]") {
     Fixture f;
-    // 332 px wide cell -> floor((332 - 20) / 8.428) = 37 characters.
+    // A 338 px cell -> floor((338 - 20) / 8.428) = 37 characters.
     f.channels[1].items.clear();
     const double base = 8 * 3600.0 + 10 * 60;
     f.channels[1].items.push_back(ScheduledItem{1, 0, base});
@@ -133,10 +133,9 @@ TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view]") 
     f.playlists[1].items[1].title = std::string(60, 'x');
     auto v = ui::layout_channel_guide(f.in());
     auto& c = v.grid.rows[1].cells[0];
-    REQUIRE(c.w == 338);  // 40 chars at this width: (338-20)/8.428 = 37.7 -> 37
+    REQUIRE(c.w == 338);
     CHECK(c.label == std::string(36, 'x') + "\xE2\x80\xA6");
     // Multi-byte characters are never cut in half.
-    f.playlists[1].items[1].title = std::string(60, '\0');
     std::string uni;
     for (int i = 0; i < 60; ++i) uni += "\xC3\xA9";  // é
     f.playlists[1].items[1].title = uni;
@@ -284,4 +283,35 @@ TEST_CASE("TV hints", "[guide_view]") {
     CHECK(v.hints[0].key == "TURN");
     CHECK(v.hints[0].label == "channels");
     CHECK(v.hints[2].label == "on green to hide guide");
+}
+
+TEST_CASE("the bottom row: None on a tuned 4:3 row and on a no-schedule row", "[guide_view]") {
+    Fixture f;
+    auto in = f.in();
+    in.tuned = 1;
+    in.cursor.row = 1;
+    in.picture_available = false;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.bottom == ui::GuideBottom::None);
+    CHECK(v.panel.join_note.empty());
+    in.cursor.row = 7;  // no schedule
+    in.cursor.scroll = 3;
+    v = ui::layout_channel_guide(in);
+    CHECK(v.panel.bottom == ui::GuideBottom::None);
+    in.tuned = -1;
+    v = ui::layout_channel_guide(in);
+    CHECK(v.panel.bottom == ui::GuideBottom::None);
+}
+
+TEST_CASE("channel names truncate to the column's real width", "[guide_view]") {
+    Fixture f;
+    f.playlists[1].title = std::string(40, 'a');
+    auto v = ui::layout_channel_guide(f.in());
+    CHECK(v.grid.name_x == 56);
+    CHECK(v.grid.name_w == 132);
+    CHECK(v.grid.rows[1].name == std::string(14, 'A') + "\xE2\x80\xA6");  // 15 chars
+    v = ui::layout_channel_guide(f.in(true));
+    CHECK(v.grid.name_x == 40);
+    CHECK(v.grid.name_w == 84);
+    CHECK(v.grid.rows[1].name == std::string(8, 'A') + "\xE2\x80\xA6");  // 9 chars
 }

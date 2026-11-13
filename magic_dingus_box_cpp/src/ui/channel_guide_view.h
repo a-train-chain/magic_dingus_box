@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -27,7 +26,7 @@
 namespace ui {
 
 enum class GuideTone { Fg, Dim, Gold, Green, Steel, Red };
-enum class GuideBottom { Picture, PressToWatch };
+enum class GuideBottom { Picture, PressToWatch, None };
 
 struct GuideRect {
     int x = 0, y = 0, w = 0, h = 0;
@@ -88,6 +87,9 @@ struct GuideRow {
 struct GuideGrid {
     GuideRect rect;       // absolute
     int header_h = 0, row_h = 0, column_w = 0;
+    // Channel name: left edge (grid-relative, after the bar and number) and the
+    // width available to it (right margin already kept clear).
+    int name_x = 0, name_w = 0;
     std::string date_label;
     std::vector<GuideTick> ticks;
     int now_x = 0;
@@ -270,7 +272,9 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     const int last = std::min(n_channels, first + app::kGuideVisibleRows);
     v.grid.up_arrow = first > 0;
     v.grid.down_arrow = first + app::kGuideVisibleRows < n_channels;
-    const int name_chars = d::chars_for_width(v.grid.column_w - 44 + 2 * d::kCellPadX);
+    v.grid.name_x = crt ? 40 : 56;
+    v.grid.name_w = v.grid.column_w - v.grid.name_x - 8;
+    const int name_chars = std::max(0, static_cast<int>(std::floor(v.grid.name_w / d::kCharAdvance)));
     for (int r = first; r < last; ++r) {
         const app::Channel& ch = channels[r];
         GuideRow row;
@@ -353,7 +357,14 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     }
     p.show_artist = !crt && !p.artist.empty();
     p.show_next = !crt && !p.next_title.empty();
-    p.bottom = (on_tuned && in.picture_available) ? GuideBottom::Picture : GuideBottom::PressToWatch;
+    // Picture control on the tuned row (only when the video is not 4:3);
+    // nothing on the tuned row otherwise, nothing on a row with no schedule
+    // (a press does nothing); PRESS TO WATCH on another tunable channel.
+    const bool pc_tunable = pc >= 0 && pc < n_channels && !channels[pc].items.empty();
+    if (on_tuned)
+        p.bottom = in.picture_available ? GuideBottom::Picture : GuideBottom::None;
+    else
+        p.bottom = pc_tunable ? GuideBottom::PressToWatch : GuideBottom::None;
     p.show_source = !crt && p.bottom == GuideBottom::Picture;
 
     v.hints.push_back({"TURN", "channels"});
