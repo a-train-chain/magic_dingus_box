@@ -237,6 +237,7 @@ set(RETROARCH_SOURCES
     src/retroarch/controller_profile.cpp
     src/retroarch/joydev_index.cpp
     src/retroarch/capture_session.cpp
+    src/retroarch/sink_suspension.cpp
 )
 
 # Retroarch sources shared by BOTH test_retroarch_unit and
@@ -263,6 +264,8 @@ set(RETROARCH_TESTABLE_SOURCES
     src/retroarch/controller_profile.cpp
     src/retroarch/joydev_index.cpp
     src/retroarch/capture_session.cpp
+    # PulseAudio -> RetroArch audio hand-over (pure; the launcher drives it).
+    src/retroarch/sink_suspension.cpp
 )
 
 set(ALL_SOURCES
