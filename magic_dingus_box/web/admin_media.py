@@ -443,12 +443,10 @@ def register(app, ctx) -> None:
             vf = f'scale={w}:{h},setsar=1'
         else:
             # Probe failed — let ffmpeg bound it: inside 1920x1080, display
-            # shape kept (width taken as iw*sar so the pixels come out
-            # square), never enlarged. No preset cover-sizing
-            # for a file we couldn't inspect.
-            vf = ("scale=w='min(iw*sar,1920)':h='min(ih,1080)':"
-                  "force_original_aspect_ratio=decrease:"
-                  "force_divisible_by=2,setsar=1")
+            # shape kept with square pixels (anamorphic sources included),
+            # never taller. No preset cover-sizing for a file we couldn't
+            # inspect.
+            vf = media_probe.PROBE_FAILED_VF
 
         # Bound concurrent encodes. Each transcode is a full libx264 encode;
         # on a Pi 4 sharing RAM/CPU with the kiosk (and possibly the Media

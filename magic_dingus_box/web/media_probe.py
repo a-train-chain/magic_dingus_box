@@ -45,6 +45,18 @@ MAX_MASTER_W, MAX_MASTER_H = 1920, 1080
 
 PROBE_TIMEOUT_S = 30
 
+# ffmpeg -vf for a source the probe could not read (no master_size): keep the
+# display shape inside 1920x1080, never taller than the source, square
+# pixels, even sides. force_original_aspect_ratio works from the STORED size,
+# not the displayed one, so an anamorphic source (720x480 at SAR 32:27, shown
+# 16:9) is first brought to square pixels at its display width; bounding it
+# straight away and then setting SAR 1 stored it 720x480 — squeezed to 3:2.
+# (Unknown SAR reads as 1 in ffmpeg's scale expressions.)
+PROBE_FAILED_VF = ("scale='trunc(iw*sar/2)*2':ih,setsar=1,"
+                   "scale=w='min(iw,1920)':h='min(ih,1080)':"
+                   "force_original_aspect_ratio=decrease:"
+                   "force_divisible_by=2,setsar=1")
+
 
 def run_ffprobe(path) -> Optional[dict]:
     """ffprobe's JSON for the first video stream and the container, or None

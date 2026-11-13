@@ -268,6 +268,7 @@ def test_name_is_released_after_the_job_finishes(
 import io
 
 import media_info
+import media_probe
 
 
 def _vf(argv_log: Path) -> str:
@@ -423,9 +424,7 @@ def test_unreadable_source_is_bounded_by_ffmpeg_and_writes_nothing(
     # published master usually probes fine and IS recorded.
     monkeypatch.setenv("FFPROBE_STUB_MODE", "fail")
     assert _run_job(client)["status"] == "complete"
-    assert _vf(stub_bin) == ("scale=w='min(iw*sar,1920)':h='min(ih,1080)':"
-                             "force_original_aspect_ratio=decrease:"
-                             "force_divisible_by=2,setsar=1")
+    assert _vf(stub_bin) == media_probe.PROBE_FAILED_VF
     assert not (temp_data_dir / media_info.FILE_NAME).exists()
     assert not _marker(temp_data_dir).exists()
 

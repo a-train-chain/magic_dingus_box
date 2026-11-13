@@ -122,3 +122,56 @@ def test_imports_as_a_package_module_without_web_on_sys_path(module):
         [sys.executable, "-c", f"import magic_dingus_box.web.{module}"],
         cwd=str(REPO), capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+# ---------------------------------------------------------------------------
+# The probe-failure fallback filter, run through the REAL ffmpeg: without a
+# probe there is no master_size, so the filter alone must keep the display
+# shape. force_original_aspect_ratio works from the STORED size, so an
+# anamorphic source (720x480 at SAR 32:27, shown 16:9) must be brought to
+# square pixels at its display width first, or it is stored 720x480 square
+# (3:2) — squeezed.
+# ---------------------------------------------------------------------------
+
+def _ffmpeg_or_skip():
+    import shutil
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg/ffprobe not installed")
+
+
+def _encode(src_filter: str, out: Path, vf: str = None, src: Path = None):
+    argv = ["ffmpeg", "-v", "error", "-y"]
+    if src is None:
+        argv += ["-f", "lavfi", "-i", src_filter, "-t", "0.4"]
+    else:
+        argv += ["-i", str(src)]
+    if vf:
+        argv += ["-vf", vf]
+    argv += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             str(out)]
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize("size, sar, aspect", [
+    ("720x480", "32/27", 16 / 9),      # anamorphic NTSC widescreen DVD
+    ("720x576", "16/11", 20 / 11),     # anamorphic PAL (display ~1.82)
+    ("720x480", "8/9", 4 / 3),         # anamorphic NTSC 4:3
+    ("1280x720", "1/1", 16 / 9),       # square pixels: unchanged
+    ("3840x2160", "1/1", 16 / 9),      # bounded to 1920x1080
+])
+def test_probe_failed_filter_keeps_the_display_shape_with_square_pixels(
+        tmp_path, size, sar, aspect):
+    _ffmpeg_or_skip()
+    src = tmp_path / "src.mp4"
+    out = tmp_path / "out.mp4"
+    _encode(f"testsrc=size={size}:rate=10,setsar={sar}", src)
+    _encode("", out, vf=media_probe.PROBE_FAILED_VF, src=src)
+    geo = media_probe.probe_source(out)
+    assert geo is not None
+    assert geo["sar"] == pytest.approx(1.0), geo
+    assert geo["width"] / geo["height"] == pytest.approx(aspect, rel=0.01), geo
+    assert geo["width"] <= 1920 and geo["height"] <= 1080
+    assert geo["width"] % 2 == 0 and geo["height"] % 2 == 0
+    # Never enlarged: the stored height is at most the source's.
+    assert geo["height"] <= int(size.split("x")[1])
