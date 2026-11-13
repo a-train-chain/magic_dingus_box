@@ -186,6 +186,7 @@ sudo usermod -a -G video,input $USER
   - `renderer` - Immediate-mode 2D renderer (quads, text, alpha blending), implemented across `renderer.cpp` (core/primitives), `renderer_shaders`, `renderer_text`, `renderer_main_menu`, `renderer_settings`, `renderer_mb`, `renderer_crt` and `renderer_batch`; private shared bits in `renderer_internal.h`. Primitives inside a `Renderer::BatchScope` (the whole `render(state)` pass, the MB screen + modals, the toast) accumulate into one CPU vertex batch (`ui_batch.h`, GL side `renderer_batch.cpp`) and are submitted per texture run; every non-batched GL site in the `renderer*.cpp` files calls `flush_ui_batch()` first, so draw order is unchanged. `MDB_BATCH_UI=0` restores one draw per primitive for A/B; the journal logs UI draw calls/frame per minute.
   - Redraw gate (`app/redraw_gate.h`, wired in `main.cpp`): render/swap/flip are skipped on iterations where nothing on screen can change — the main menu, an idle open Settings menu (`SettingsMenuManager::is_static_for_redraw`), and MB Browse/Search/Library/Detail/SeriesDetail when idle (`MbScreen::wants_continuous_redraw` + `redraw_signature`). The static menu with CRT flicker/interlacing draws every other vblank (`ui/crt_time.h`). `MDB_REDRAW_GATE=0` disables. A new screen or animation must either keep `wants_continuous_redraw()` true or put its state in the signature.
   - `theme` - Color palette and layout constants
+  - Bezels (`assets/bezels/bezels.json`, parsed outside main.cpp): each frame declares its visible `opening` (x,y,w,h in image px); fit-mode video is placed inside the opening, not the full canvas
   - `font_manager` - stb_truetype font rasterization → GL textures
   - `settings_menu` - Settings UI state machine
   - `virtual_keyboard` - On-screen QWERTY keyboard
@@ -304,23 +305,28 @@ This guarantees correct compositing without X11/compositor overhead.
 - **Transcode presets are MASTERS, not display formats** (retuned 2026-07-26).
   The kiosk scales stored content to whichever display mode is active, so
   keep the best master storage allows and let playback derive the rest.
-  Aspect matters as much as resolution: the main kiosk renders playlist
-  video into a **4:3** viewport (`vp_w = canvas_h*4/3` → 960x720 at 720p,
-  1440x1080 at 1080p output) — the deliberate CRT look — so a 16:9 master
-  gets letterboxed *inside* that pillarbox and ends up smaller on screen.
-  4:3 masters are therefore correct for playlist content even on a
-  widescreen TV.
-  | preset | size | aspect | use |
-  |---|---|---|---|
-  | `crt` | 640x480 | 4:3 | legacy / smallest files |
-  | **`crt_hd`** | **960x720** | **4:3** | **default** — 2.25x the old detail, 1:1 at 720p output |
-  | `crt_fhd` | 1440x1080 | 4:3 | max detail, 1:1 at 1080p output, ~2.25x the files |
-  | `modern` | 1280x720 | 16:9 | genuinely widescreen source material only |
+  Aspect: playlist video is drawn in a **4:3** area (`vp_w = canvas_h*4/3`
+  → 960x720 at 720p, 1440x1080 at 1080p output) — the deliberate CRT look.
+  Since 2026-11 a master KEEPS THE SOURCE'S ASPECT (`media_probe.master_size`:
+  covers the preset's 4:3 box, never upscaled, capped inside 1920x1080) and
+  the kiosk places each video per video with the pure `video::place_picture`:
+  **crop** (default) fills the 4:3 area, trimming the overflow; **fit** shows
+  the whole frame inside it. Non-4:3 masters are never stretched (the old
+  renderer stretched them) and never letterboxed inside a pillarbox. The
+  choice is the video's `crop` flag (below); the upload's Framing option is
+  only its starting value.
+  | preset | 4:3 source stored at | note |
+  |---|---|---|
+  | `crt` | 640x480 | legacy / smallest files |
+  | **`crt_hd`** | **960x720** | **default** — 1:1 at 720p output (a 16:9 source: 1280x720) |
+  | `crt_fhd` | 1440x1080 | max detail, 1:1 at 1080p output, ~2.25x the files |
+  | `modern` | = `crt_hd` | alias, kept for old clients |
   Note 640x480 was never a pixel-exact CRT path: the Pi 5 has no composite
   output, so CRT rigs go through an HDMI→composite converter and the signal
   is downscaled regardless — a higher-resolution master is strictly better
   for CRT too. Default changes affect NEW uploads only; existing files
   cannot regain detail they never had.
+- **Per-video info `<data>/media_info.json`** (2026-11; kiosk ⇄ web file channel): `{"version":1,"videos":{"media/x.mp4":{"duration_s","display_aspect","crop":false}}}`, keyed by data-dir-relative path. `crop` is written only as `false`; absent = cropped (default). Writers — the kiosk (`app/media_info.{h,cpp}`, background writer, never on the render loop) and the web admin (`web/media_info.py`, `media_probe.py`, `media_record.py`) — serialize on `flock` of the sidecar `media_info.json.lock`, never on the data file (replaced by rename). A web-side change touches the `media_info_reload_request` marker and the kiosk re-reads it. Backup/restore/import/migrate carry it; every deploy/OTA/release exclude list keeps it. The kiosk's CROP checkbox lives in the playlist overlay (turn past the last playlist; shown only for non-4:3 video).
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
 - **Server: gunicorn, ONE worker, gthread threads** (`web/serve.py`, since
   2026-10). `magic-dingus-web.service` still runs
