@@ -124,6 +124,64 @@ TEST_CASE("narrow cells drop text then artist", "[guide_view]") {
     CHECK(c[2].show_artist);
 }
 
+TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_view]") {
+    // Just over the 30 px text threshold a label truncates to "…" alone,
+    // which reads as a stray dash on the TV (Pi 5 test, 2026-11-13); with the
+    // began-before arrow, "◂…" / "◂ …". A label keeps its text only when at
+    // least one character of the title fits.
+    Fixture f;
+    const double base = 8 * 3600.0 + 10 * 60;  // the window starts here
+    // 01: cells from the window's start, 32 px (1 char) then 40 px (2 chars).
+    f.channels[1].items = {ScheduledItem{1, 0, base}, ScheduledItem{1, 1, 62},
+                           ScheduledItem{1, 2, 76}, ScheduledItem{1, 3, 600}};
+    f.channels[1].total_s = base + 62 + 76 + 600;
+    // 02-04: a programme that began 30 s before the window, its cell 40, 48
+    // and 56 px wide (2, 3, 4 chars with the arrow).
+    const double lens[] = {76, 90, 104};
+    for (int n = 2; n <= 4; ++n) {
+        const double l = lens[n - 2];
+        f.channels[n].items = {ScheduledItem{n, 0, base - 30}, ScheduledItem{n, 1, 30 + l},
+                               ScheduledItem{n, 2, 600}};
+        f.channels[n].total_s = base + l + 600;
+    }
+    auto v = ui::layout_channel_guide(f.in());
+    const auto& r1 = v.grid.rows[1].cells;
+    REQUIRE(r1.size() >= 2);
+    CHECK(r1[0].w == 32);
+    CHECK(r1[0].label == "\xE2\x80\xA6");  // "…"
+    CHECK_FALSE(r1[0].show_text);
+    CHECK(r1[1].w == 40);
+    CHECK(r1[1].label == "S\xE2\x80\xA6");  // "S…": a letter of the title
+    CHECK(r1[1].show_text);
+    const char* arrow_labels[] = {"\xE2\x97\x82\xE2\x80\xA6", "\xE2\x97\x82 \xE2\x80\xA6",
+                                  "\xE2\x97\x82 S\xE2\x80\xA6"};
+    const int widths[] = {40, 48, 56};
+    for (int n = 2; n <= 4; ++n) {
+        const auto& c = v.grid.rows[n].cells;
+        REQUIRE_FALSE(c.empty());
+        INFO("channel " << n);
+        CHECK(c[0].w == widths[n - 2]);
+        CHECK(c[0].label == arrow_labels[n - 2]);
+        CHECK(c[0].show_text == (n == 4));
+    }
+}
+
+TEST_CASE("a label or artist line with no character of its text is not shown",
+          "[guide_view]") {
+    namespace d = ui::guide_detail;
+    CHECK_FALSE(d::has_text_chars(""));
+    CHECK_FALSE(d::has_text_chars("\xE2\x80\xA6"));                 // …
+    CHECK_FALSE(d::has_text_chars("\xE2\x97\x82\xE2\x80\xA6"));     // ◂…
+    CHECK_FALSE(d::has_text_chars("\xE2\x97\x82 \xE2\x80\xA6"));    // ◂ …
+    CHECK_FALSE(d::has_text_chars("\xE2\x97\x82 "));                // ◂ (empty title)
+    CHECK(d::has_text_chars("S\xE2\x80\xA6"));
+    CHECK(d::has_text_chars("\xE2\x97\x82 S\xE2\x80\xA6"));
+    CHECK(d::has_text_chars("A"));
+    // The artist line: an artist fitted to one character is not drawn.
+    CHECK_FALSE(d::has_text_chars(d::fit("Artist 1", 1)));
+    CHECK(d::has_text_chars(d::fit("Artist 1", 5)));
+}
+
 TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view]") {
     Fixture f;
     // A 338 px cell -> floor((338 - 20) / 8.428) = 37 characters.

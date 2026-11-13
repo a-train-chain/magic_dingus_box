@@ -212,6 +212,19 @@ inline std::string fit(const std::string& s, int chars) {
     return utf8_prefix(s, static_cast<std::size_t>(chars - 1)) + kEllipsis;
 }
 
+// A fitted label (or artist line) that keeps at least one character of its
+// text: not "", "…", or the began-before arrow with nothing but "…" or a
+// space after it ("◂…", "◂ …", "◂ "). Just over the 30 px text threshold a
+// title fits to "…" alone, which reads as a stray dash on the TV: such a
+// cell shows no text.
+inline bool has_text_chars(const std::string& s) {
+    const std::string arrow = "\xE2\x97\x82";  // "◂" (kArrow without its space)
+    std::size_t i = s.compare(0, arrow.size(), arrow) == 0 ? arrow.size() : 0;
+    while (i < s.size() && s[i] == ' ') ++i;
+    const std::string rest = s.substr(i);
+    return !rest.empty() && rest != kEllipsis;
+}
+
 inline int chars_for_width(int w) {
     return std::max(0, static_cast<int>(std::floor((w - 2 * kCellPadX) / kCharAdvance)));
 }
@@ -428,6 +441,9 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                     const auto* it = d::item_of(in, si);
                     c.artist = d::fit(it ? it->artist : "", chars);
                 }
+                // Never a lone "…" (or "◂ …"): no character of the title fits.
+                c.show_text = c.show_text && d::has_text_chars(c.label);
+                c.show_artist = c.show_artist && c.show_text && d::has_text_chars(c.artist);
                 c.bold = now_cell;
                 c.ring = now_cell && row.cursor_bar;
                 c.tone = now_cell && is_tuned ? GuideTone::Green : GuideTone::Fg;
