@@ -1,9 +1,10 @@
 # Per-video crop toggle — design
 
-Status: DRAFT (2026-11-12), awaiting the owner's approval. The second
+Status: IMPLEMENTED (2026-11-12, branch `crop-toggle`; plan
+`docs/superpowers/plans/2026-11-12-video-crop-toggle.md`). The second
 overlay style the owner planned is designed in
-`2026-11-12-channel-guide-design.md`, which depends on this one; this is
-built first. Nothing here is built.
+`2026-11-12-channel-guide-design.md`, which depends on this one; this was
+built first.
 
 ## Intent
 
