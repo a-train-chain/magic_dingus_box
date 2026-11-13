@@ -441,6 +441,8 @@ restore_content() {
     orig="$(cat "$BOX/data/media_info.json")"
     run_curation ok
     [ "$status" -eq 0 ]
+    # "shipping a copy" is said once it is true: after the move.
+    [[ "$output" == *"Curated content moved"*"media_info.json: shipping a copy pruned"* ]] || false
     # What the dd sees: the store pruned to the shipping video, no build-tree
     # copy, and nothing anywhere in the tree naming the curated video.
     grep -q 'media/ship.mp4' "$BOX/data/media_info.json"
@@ -454,6 +456,36 @@ restore_content() {
     restore_content
     [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
     [ -f "$BOX/data/media/personal.mp4" ]
+}
+
+@test "curation: a drive-less stop caused only by the store says so" {
+    # A store naming a video that is no longer on the box (e.g. after a
+    # backup restore) is the only file that needs the content stash.
+    clone_box_fixture
+    printf '{"version":1,"videos":{"media/ship.mp4":{},"media/gone.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation not-mounted
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ERROR: 1 curated file(s) need the content stash"* ]] || false
+    [[ "$output" == *"The only one is $BOX/data/media_info.json"* ]] || false
+    [[ "$output" == *"Removing those entries"*"attaching the drive"*"is enough"* ]] || false
+    [[ "$output" != *"shipping a copy pruned"* ]] || false
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    # An unreadable store: same cause, its own remedy.
+    printf '{oops' > "$BOX/data/media_info.json"
+    run_curation not-mounted
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"The only one is $BOX/data/media_info.json"*"unreadable"* ]] || false
+    [[ "$output" != *"held back, the image ships none"* ]] || false
+    # Alongside other curated files it is named as one of them.
+    printf '%s\n' "$orig" > "$BOX/data/media_info.json"
+    : > "$BOX/data/media/personal.mp4"
+    run_curation not-mounted
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ERROR: 2 curated file(s)"* ]] || false
+    [[ "$output" == *"One of them is $BOX/data/media_info.json"* ]] || false
+    [[ "$output" != *"Removing those entries"* ]] || false
 }
 
 # An interrupted store write leaves a staging copy naming every video: the
@@ -519,7 +551,9 @@ no_store_stragglers() {
     orig="$(cat "$BOX/data/media_info.json")"
     run_curation ok
     [ "$status" -eq 1 ]
-    [[ "$output" == *"ERROR:"*"$BOX/data/media_info.json"*"same content-stash name"* ]]
+    [[ "$output" == *"ERROR:"*"$BOX/data/media_info.json"*"same content-stash name"* ]] || false
+    # The store's name is fixed: the message names the OTHER file to rename.
+    [[ "$output" == *"rename $BOX/data/media/info.json and re-run"* ]] || false
     # The second file was never moved and the first is intact in the stash...
     [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
     # ...so restore puts the box back exactly.

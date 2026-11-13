@@ -38,9 +38,10 @@ def record_media_info(data_dir: Path, published: Path,
     plays it cropped, the default). A file the probe cannot read gets no
     length or shape; only an explicit "not cropped" choice (below) is still
     written for it — its shape is not known to be 4:3, the kiosk learns it
-    from the stream, and the Content Manager shows the checkbox for any
-    crop: false. Returns True when the store was written; `poke` (when
-    given) is called once after a successful write.
+    from the stream, and the Content Manager shows the checkbox for a
+    crop: false whose shape is unknown (never for a known-4:3 video, which
+    the kiosk always crops). Returns True when the store was written;
+    `poke` (when given) is called once after a successful write.
 
     `fit_mode` is an upload's Framing choice and sets the video's starting
     Crop: 'fit' writes crop: false; 'crop' clears it (absent = cropped —
