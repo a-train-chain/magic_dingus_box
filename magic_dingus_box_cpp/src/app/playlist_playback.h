@@ -62,11 +62,14 @@
 // tuned channel NOW instead of the next index. A failed item is not skipped
 // ahead: playback stops until its scheduled slot ends
 // (AppState::guide_wait_until_utc), and a give-up marks the channel in
-// guide_gave_up; main.cpp's nothing-playing rule re-tunes in both cases.
+// guide_gave_up — cleared only once a channel PLAYS (kChannelPlaysS), so a
+// library that loads but never decodes runs out of channels; main.cpp's
+// nothing-playing rule re-tunes in both cases.
 // The List style (nullptr) never reaches any of this.
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -166,8 +169,8 @@ public:
     // from a stopped pipeline, so every tune computes its offset the same
     // way. The load sets tuned_channel and last_channel_id ("shuffle" for
     // 00) whether or not the item loads — a failed item is the channel's
-    // to resume (see act_on_failed_item); success also clears
-    // guide_gave_up and hides the overlay unless keep_overlay.
+    // to resume (see act_on_failed_item); success hides the overlay unless
+    // keep_overlay. It never clears guide_gave_up (kChannelPlaysS).
     // Dropped (like SELECT) in List style, for a channel with no schedule,
     // during the intro, and while a switch is pending or in flight.
     void tune(int channel, bool keep_overlay);
@@ -181,6 +184,12 @@ public:
     // so re-joining the ending item would put the load inside its own end
     // window with the once-per-item guard set: held at EOS for good.
     static constexpr double kMinJoinLeftS = 2.0;
+    // A channel has proven it plays — and guide_gave_up is cleared, so the
+    // channels given up on get another try — once its stream is this far
+    // past the load's join point, or an item reached its natural end. A
+    // load alone proves nothing: a library whose files all load but fail
+    // to decode must still run every channel out instead of cycling.
+    static constexpr double kChannelPlaysS = 5.0;
 
     // ── Per-frame ticks, in main-loop order ──────────────────────────────
     // After controller.update_state: advance a pending playlist switch
@@ -266,6 +275,19 @@ private:
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
     // the channel picks up again from there.
     double guide_item_ends_at_ = 0.0;
+    // The player position the playing channel load started at (the item's
+    // start trim + its scheduled offset); nullopt when the stream is not a
+    // channel load. A mid-item join starts far past the failure policy's
+    // "healthy" mark and kChannelPlaysS, so on a channel both count from
+    // here (played_position).
+    std::optional<double> channel_join_pos_;
+    // The playing channel load has not proven it plays yet.
+    bool channel_unproven_ = false;
+    // Seconds played since the channel load's join point; the player's own
+    // position when the stream is not a channel load (List style).
+    double played_position(double player_pos) const;
+    // The channel plays: clear guide_gave_up (once per load).
+    void prove_channel();
 
     // A GStreamer error (corrupt/truncated file, unsupported codec) or a
     // stall the watchdog could not revive used to strand an unattended

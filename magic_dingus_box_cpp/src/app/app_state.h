@@ -291,8 +291,10 @@ public:
     // tuned_channel: the channel (= UI row) on screen, or waiting for its
     //   next item after a failed one; -1 = none. 00 stays 00 while the
     //   playing playlist is the on-air item's source playlist.
-    // guide_gave_up: channels given up after repeated failures since the
-    //   last successful load (the nothing-playing rule skips them).
+    // guide_gave_up: channels given up after repeated failures since a
+    //   channel last proved it plays (5 s of progress past its join point,
+    //   or an item's natural end — never a load alone); the
+    //   nothing-playing rule skips them.
     // guide_wait_until_utc: after a failed item, the UTC second its
     //   scheduled slot ends — the channel is not re-tuned before then.
     int tuned_channel = -1;

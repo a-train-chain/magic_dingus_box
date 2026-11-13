@@ -348,6 +348,8 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         state_.tuned_channel = -1;
         state_.guide_gave_up.clear();
         state_.guide_wait_until_utc = 0.0;
+        channel_join_pos_.reset();
+        channel_unproven_ = false;
         return;
     }
     if (state_.tuned_channel < 0) return;
@@ -427,7 +429,22 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     load_on_air(channel, *oa, keep_overlay);
 }
 
+double PlaylistPlayback::played_position(double player_pos) const {
+    return channel_join_pos_ ? player_pos - *channel_join_pos_ : player_pos;
+}
+
+void PlaylistPlayback::prove_channel() {
+    if (!channel_unproven_) return;
+    channel_unproven_ = false;
+    if (!state_.guide_gave_up.empty()) {
+        std::cout << "Channel " << state_.tuned_channel
+                  << " plays — the channels given up on may be tried again" << std::endl;
+        state_.guide_gave_up.clear();
+    }
+}
+
 void PlaylistPlayback::rejoin_schedule() {
+    prove_channel();  // the item played to its natural end
     const int channel = state_.tuned_channel;
     const Channel* ch = channel_at(channel);
     const auto oa = ch ? join_point(*ch, transport_.wall_now_utc()) : std::nullopt;
@@ -468,6 +485,8 @@ void PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
 
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
               << " at " << oa.offset_s << "s" << std::endl;
+    channel_join_pos_.reset();
+    channel_unproven_ = false;
     auto result = transport_.load_playlist_item_at(state_, pl, si.item,
                                                    playlist_directory_, oa.offset_s);
     if (!result) {
@@ -475,7 +494,9 @@ void PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
         return;
     }
-    state_.guide_gave_up.clear();
+    // Loaded is not playing: guide_gave_up waits for prove_channel().
+    channel_join_pos_ = pl.items[si.item].start + oa.offset_s;
+    channel_unproven_ = true;
     state_.guide_wait_until_utc = 0.0;
     if (!keep_overlay) {
         // A tune closes the guide; channel up/down leaves it as it is.
@@ -667,11 +688,17 @@ void PlaylistPlayback::tick_pipeline_error() {
         return;
     }
     if (owns_pipeline()) {
+        // On a channel, progress counts from the load's join point (see
+        // channel_join_pos_); otherwise this is the player's position.
+        const double played = played_position(transport_.player_position());
         const auto decision = error_policy_.on_frame(
             transport_.stream_generation(), transport_.has_error(),
-            transport_.player_position(), failure_budget());
+            played, failure_budget());
         if (decision != video::PlaybackErrorPolicy::Decision::None) {
             act_on_failed_item(decision, "pipeline error");
+        } else if (channel_unproven_ && played >= kChannelPlaysS &&
+                   !transport_.has_error()) {
+            prove_channel();
         }
     }
 }

@@ -10,6 +10,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <deque>
 #include <iostream>
@@ -1535,4 +1536,136 @@ TEST_CASE("List style: no tuning, and NEXT/PREV step the playlist as before",
         CHECK(s.guide_gave_up.empty());
         CHECK(s.guide_wait_until_utc == 0.0);
     }
+}
+
+// ── Give-up: only a channel that PLAYS earns the given-up channels a retry ─
+
+namespace {
+
+// Tunes `channel` at `wall` and brings its new stream up (a new stream
+// generation, as load_file makes). Returns the player position the load
+// started at: the item's own start trim plus its scheduled offset.
+double tune_and_play(Guide& g, int channel, double wall) {
+    g.t.wall = wall;
+    g.pb.tune(channel, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.last().rfind("load_at ", 0) == 0);
+    REQUIRE(g.s.current_playlist_index >= 1);
+    g.t.generation += 1;
+    g.playing();
+    const auto& item = g.s.playlists[g.s.current_playlist_index].items[g.s.current_item_index];
+    return item.start + g.t.last_offset();
+}
+
+}  // namespace
+
+TEST_CASE("channels whose items load but never play are all given up; loads never clear the list",
+          "[playlist_playback][guide][give_up]") {
+    // Every file loads, plays 1 s past its join point, then errors — the
+    // decode failure the give-up exists for. A driver shaped like the
+    // nothing-playing rule (the lowest channel with a schedule that is not
+    // given up, once any wait is over) must run out of channels.
+    Guide g;
+    SECTION("untrimmed items") {}
+    SECTION("items with a start trim: progress counts from the join point") {
+        // A file position past the failure policy's 3 s "healthy" mark from
+        // the first frame would end every failure run at once — the channel
+        // would never be given up.
+        for (auto& pl : g.s.playlists) {
+            for (auto& it : pl.items) it.start = 10.0;
+        }
+        g.channels = app::build_channels(g.s.playlists, guide_lengths());
+        g.pb.set_channels(&g.channels);
+    }
+    const std::vector<int> tunable = {0, 1, 2};
+    auto given_up = [&](int c) {
+        return std::find(g.s.guide_gave_up.begin(), g.s.guide_gave_up.end(), c) !=
+               g.s.guide_gave_up.end();
+    };
+    size_t seen = 0;
+    int loads = 0;
+    for (int round = 0; round < 100; ++round) {
+        int target = -1;
+        for (int c : tunable) {
+            if (!given_up(c)) {
+                target = c;
+                break;
+            }
+        }
+        if (target < 0) break;
+        const double join =
+            tune_and_play(g, target, std::max(g.t.wall, g.s.guide_wait_until_utc + 0.5));
+        ++loads;
+        CHECK(g.s.guide_gave_up.size() == seen);  // a successful load clears nothing
+
+        g.t.position = join + 1.0;
+        g.pb.tick_pipeline_error();  // 1 s in: neither healthy nor proven
+        CHECK(g.s.guide_gave_up.size() == seen);
+        g.t.error = true;
+        g.pb.tick_pipeline_error();
+        g.t.error = false;
+        REQUIRE(g.s.guide_gave_up.size() >= seen);  // never cleared
+        seen = g.s.guide_gave_up.size();
+    }
+    std::vector<int> all = g.s.guide_gave_up;
+    std::sort(all.begin(), all.end());
+    CHECK(all == tunable);
+    // Each channel got exactly its budget: the 00 mix 10, 01 three, 02 one.
+    CHECK(loads == video::PlaybackErrorPolicy::kMaxFailureBudget + 3 + 1);
+    CHECK(g.s.tuned_channel == -1);
+}
+
+TEST_CASE("a channel that plays 5 s past its join point clears the give-up list",
+          "[playlist_playback][guide][give_up]") {
+    Guide g;
+    g.s.guide_gave_up = {2};  // 02 was given up earlier
+
+    SECTION("5 s of progress proves it; the load alone does not") {
+        const double join = tune_and_play(g, 1, kW0 + 130);  // 01: b, 30 s in
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        g.t.position = join + 4.9;
+        g.pb.tick_pipeline_error();
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        g.t.position = join + 5.0;
+        g.pb.tick_pipeline_error();
+        CHECK(g.s.guide_gave_up.empty());
+    }
+    SECTION("an error before 5 s proves nothing") {
+        const double join = tune_and_play(g, 1, kW0 + 130);
+        g.t.position = join + 4.0;
+        g.pb.tick_pipeline_error();
+        g.t.error = true;
+        g.pb.tick_pipeline_error();
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        CHECK(g.s.tuned_channel == 1);  // waiting for its next item (budget 3)
+    }
+    SECTION("progress counts from the item's start trim plus the offset") {
+        for (auto& it : g.s.playlists[1].items) it.start = 20.0;
+        g.channels = app::build_channels(g.s.playlists, guide_lengths());
+        g.pb.set_channels(&g.channels);
+        const double join = tune_and_play(g, 1, kW0 + 130);
+        g.t.position = g.t.last_offset() + 5.0;  // 5 s past the offset alone
+        g.pb.tick_pipeline_error();
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        g.t.position = join + 5.0;
+        g.pb.tick_pipeline_error();
+        CHECK(g.s.guide_gave_up.empty());
+    }
+}
+
+TEST_CASE("a channel item that reaches its natural end clears the give-up list",
+          "[playlist_playback][guide][give_up]") {
+    Guide g;
+    g.s.guide_gave_up = {2};
+    // Joined with 3 s of b left: its natural end comes before 5 s of progress.
+    const double join = tune_and_play(g, 1, kW0 + 297);
+    g.t.position = join + 1.0;
+    g.pb.tick_pipeline_error();
+    CHECK(g.s.guide_gave_up == std::vector<int>{2});
+
+    g.s.update_playback_state(199.6, 200.0);
+    g.t.wall = kW0 + 300.4;
+    g.pb.tick_auto_advance();
+    CHECK(g.s.guide_gave_up.empty());
+    CHECK(g.t.last() == "load_at Cartoons 2");
 }
