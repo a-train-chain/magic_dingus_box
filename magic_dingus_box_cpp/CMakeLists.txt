@@ -936,7 +936,11 @@ if(UTILS_TEST_SOURCES)
         # The debug screenshot hook's file side (BMP encode, naming,
         # atomic write, retention).
         src/utils/bmp_writer.cpp
-        src/utils/screenshot_store.cpp)
+        src/utils/screenshot_store.cpp
+        # resolve_video_path against a deleted working directory
+        # (tests/utils/test_path_resolver_cwd.cpp).
+        src/utils/path_resolver.cpp
+        src/utils/config.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     # pthread: latest_wins_worker.h (the background file-writer thread).
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain pthread)
