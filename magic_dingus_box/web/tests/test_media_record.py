@@ -90,7 +90,8 @@ def test_is_four_by_three_matches_the_kiosk(aspect, expected):
 # A published file the probe cannot read. Its length and shape are unknown,
 # but a "Show everything" choice is still the owner's: it is recorded, so the
 # kiosk (which can learn the shape from the stream) and the Content Manager
-# (which shows the checkbox for any crop: false) honour it and can undo it.
+# (which shows the checkbox for a crop: false whose shape is unknown) honour
+# it and can undo it.
 # ---------------------------------------------------------------------------
 
 def test_unprobeable_show_everything_still_records_the_choice(tmp_path,

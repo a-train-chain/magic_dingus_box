@@ -8,16 +8,20 @@
 
 // A video whose shape differs from the 4:3 area gets a Crop checkbox (ticked =
 // fill the area and trim the overflow, the default; unticked = whole frame
-// with black borders). A 4:3 video, or one whose shape is unknown, has
-// nothing to choose — except that a video the box holds as NOT cropped always
-// shows its (unticked) box, so that choice can be undone from here: a kiosk
-// toggle on a video whose shape is not recorded yet, or an upload whose file
-// could not be probed.
+// with black borders). A 4:3 video never does: the kiosk always crops it
+// (there is nothing to trim), so a stored crop:false from a restore or a
+// package import must not show an unticked box the TV contradicts. A video
+// whose shape is unknown has nothing to choose either — except when the box
+// holds it as NOT cropped, which shows its (unticked) box so that choice can
+// be undone from here: a kiosk toggle on a video whose shape is not recorded
+// yet, or an upload whose file could not be probed.
 function cropControl(video) {
     const aspect = video.display_aspect;
-    // Within 2 % of 4:3, relative: the kiosk's video::is_four_by_three.
-    const differs = typeof aspect === 'number' && aspect > 0 && Math.abs(aspect / (4 / 3) - 1) > 0.02;
-    if (!differs && video.crop !== false) return '';
+    const known = typeof aspect === 'number' && aspect > 0;
+    // Within 2 % of 4:3, relative: the kiosk's video::is_four_by_three and
+    // the web's media_record.is_four_by_three.
+    if (known && Math.abs(aspect / (4 / 3) - 1) <= 0.02) return '';
+    if (!known && video.crop !== false) return '';
     return `<label class="video-crop" title="Fill the 4:3 screen, trimming the edges. Untick to show the whole picture with black borders.">
         <input type="checkbox" ${video.crop === false ? '' : 'checked'}
             onchange="setVideoCrop('${escapeJs(video.path)}', this.checked)"> Crop</label>`;

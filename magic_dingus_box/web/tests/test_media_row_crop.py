@@ -131,11 +131,21 @@ def test_toggle_calls_apiRequest_with_path_and_crop():
         "path": "data/media/a.mp4", "crop": False}
 
 
-@pytest.mark.parametrize("aspect", [None, 1.3333])
-def test_a_fitted_video_always_shows_its_checkbox(aspect):
-    # A crop: false the box holds (a kiosk toggle on a video the back-fill
-    # has not reached yet, an unprobeable "Show everything" upload) must
-    # always be undoable from the Content Manager.
+@pytest.mark.parametrize("aspect", [None, 1.7778, 1.3605])
+def test_a_fitted_video_shows_its_unticked_checkbox(aspect):
+    # A crop: false the box holds on a video whose shape is unknown (a kiosk
+    # toggle the back-fill has not reached yet, an unprobeable "Show
+    # everything" upload) or not 4:3 must be undoable from the Content
+    # Manager.
     out = _run([_v("a.mp4", aspect, crop=False)])
     assert "video-crop" in out["html"]
     assert '<input type="checkbox" checked' not in out["html"]
+
+
+@pytest.mark.parametrize("aspect", [1.3333, 1.3599, 1.3068])
+def test_a_known_four_by_three_video_never_shows_a_checkbox(aspect):
+    # The kiosk always crops a 4:3 video (there is nothing to trim), so a
+    # stored crop: false — from a restore or a package import — must not
+    # show an unticked box the TV contradicts.
+    out = _run([_v("a.mp4", aspect, crop=False)])
+    assert "video-crop" not in out["html"]
