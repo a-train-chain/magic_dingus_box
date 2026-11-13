@@ -789,6 +789,8 @@ if(UI_TEST_SOURCES)
         src/utils/subprocess.cpp
         # settings_menu.cpp's Audio Output row calls cycle_output().
         src/app/audio_router.cpp
+        # channel_guide_view.h (header-only) walks app::on_air / lineup.
+        src/app/channel_schedule.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
