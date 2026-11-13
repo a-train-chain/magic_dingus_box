@@ -310,7 +310,7 @@ assert d["videos"] == {
     local f="$GI_DIR/prepare_for_cloning.sh"
     local curated_line prune_line move_line copy_line
     curated_line=$(grep -n 'unset _d _pl _base _keep _want _m _refs_file' "$f" | cut -d: -f1)
-    prune_line=$(grep -n 'mdb_prune_media_info "\$_d"' "$f" | cut -d: -f1)
+    prune_line=$(grep -n 'mdb_prune_media_info "\$DATA_DIR"' "$f" | cut -d: -f1)
     move_line=$(grep -n 'mv "\$_src" "\${CONTENT_STASH}/\${_key}"' "$f" | cut -d: -f1)
     copy_line=$(grep -n 'cp "\$_pruned" "\$_store"' "$f" | cut -d: -f1)
     [ -n "$curated_line" ] && [ -n "$prune_line" ] && [ -n "$move_line" ] && [ -n "$copy_line" ]
@@ -360,6 +360,100 @@ assert d["videos"] == {
     done < "$stash/manifest"
     [ "$(cat "$D/media_info.json")" = "$orig" ]
     [ -f "$D/media/personal.mp4" ]
+}
+
+# ---------------------------------------------------------------------------
+# Content curation, run for real
+# ---------------------------------------------------------------------------
+# prepare's curation section (SHIP_PLAYLISTS through the pruned copies) and
+# restore's content loop, extracted from the real scripts and run against a
+# scratch box — the extraction clone_backup_tripwire.bats uses for the
+# tripwire. mdb_check_stash_drive is stubbed: "ok" is a mounted movie drive,
+# anything else a drive-less box cloned with --allow-ram-stash.
+
+# The clone source: one shipping playlist and its video, the store, and the
+# build tree's configure-time copy of data/ — CMake's file(COPY) leaves
+# media/ out, so build/data holds the playlists and the store but no videos.
+clone_box_fixture() {
+    BOX="$T/box"
+    CSTASH="$T/drive/.mdb-content-stash"
+    mkdir -p "$BOX/data/playlists" "$BOX/data/media" "$BOX/build/data" "$T/drive"
+    printf "items:\n  - path: 'media/ship.mp4'\n" \
+        > "$BOX/data/playlists/The_Nostalgia_Channel.yaml"
+    : > "$BOX/data/media/ship.mp4"
+    printf '{"version":1,"videos":{"media/ship.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    cp -R "$BOX/data/playlists" "$BOX/build/data/"
+    cp "$BOX/data/media_info.json" "$BOX/build/data/"
+}
+
+run_curation() {
+    local verdict="$1"
+    {
+        printf 'set -euo pipefail\n'
+        printf 'source %q\n' "$LIB"
+        printf 'log() { printf "%%s\\n" "$*"; }\n'
+        printf 'mdb_check_stash_drive() { echo %q; }\n' "$verdict"
+        printf 'DATA_DIR=%q\nCPP_DIR=%q\nMDB_CONTENT_STASH_DIR=%q\n' \
+            "$BOX/data" "$BOX" "$CSTASH"
+        awk '/^SHIP_PLAYLISTS=\(/ { emit=1 } emit { print }
+             emit && /^unset _i _store _pruned _stashed$/ { exit }' \
+            "$GI_DIR/prepare_for_cloning.sh"
+    } > "$T/curation.sh"
+    # The extraction found the whole section (a renamed marker must fail
+    # here, not turn every test below into a no-op).
+    grep -q 'mdb_prune_media_info' "$T/curation.sh"
+    grep -q '^unset _i _store _pruned _stashed$' "$T/curation.sh"
+    run bash "$T/curation.sh"
+    echo "$output"
+}
+
+restore_content() {
+    {
+        printf 'set -euo pipefail\n'
+        printf 'log() { printf "%%s\\n" "$*"; }\n'
+        printf 'MDB_CONTENT_STASH_DIR=%q\n' "$CSTASH"
+        awk '/^CONTENT_STASH="\$MDB_CONTENT_STASH_DIR"$/ { emit=1 } emit { print }
+             emit && /^fi$/ { exit }' "$GI_DIR/restore_after_cloning.sh"
+    } > "$T/restore_content.sh"
+    grep -q 'mv "${CONTENT_STASH}/${key}" "$dest"' "$T/restore_content.sh"
+    bash "$T/restore_content.sh"
+}
+
+@test "curation: a drive-less --allow-ram-stash clone is not stopped by the build tree's store copy" {
+    clone_box_fixture
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation not-mounted
+    [ "$status" -eq 0 ]
+    # The store names only the shipping video: left exactly as it is.
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    # The build tree's copy is a regenerated artefact: gone, not stashed.
+    [ ! -e "$BOX/build/data/media_info.json" ]
+    [ ! -e "$CSTASH" ]
+}
+
+@test "curation: the image names no curated video; restore gives the source its store back" {
+    clone_box_fixture
+    : > "$BOX/data/media/personal.mp4"
+    printf '{"version":1,"videos":{"media/ship.mp4":{"crop":false},"media/personal.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    cp "$BOX/data/media_info.json" "$BOX/build/data/"
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation ok
+    [ "$status" -eq 0 ]
+    # What the dd sees: the store pruned to the shipping video, no build-tree
+    # copy, and nothing anywhere in the tree naming the curated video.
+    grep -q 'media/ship.mp4' "$BOX/data/media_info.json"
+    [ ! -e "$BOX/build/data/media_info.json" ]
+    run grep -rl personal "$BOX"
+    [ "$status" -eq 1 ]
+    # Only data/'s store rides the content manifest.
+    grep -qF "$BOX/data/media_info.json" "$CSTASH/manifest"
+    run grep -F "$BOX/build/data/media_info.json" "$CSTASH/manifest"
+    [ "$status" -eq 1 ]
+    restore_content
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    [ -f "$BOX/data/media/personal.mp4" ]
 }
 
 # ---------------------------------------------------------------------------

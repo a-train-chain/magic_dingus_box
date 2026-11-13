@@ -989,15 +989,24 @@ unset _d _pl _base _keep _want _m _refs_file
 # the image gets a copy holding only the videos that ship
 # (mdb_prune_media_info, clone_stash_lib.sh). A store naming only shipping
 # videos stays as it is; an unreadable one ships as no store at all (every
-# video cropped; the web admin's back-fill re-probes the lengths). Not under
-# the playlists check above: build/data can hold a configure-time copy.
+# video cropped; the web admin's back-fill re-probes the lengths).
+#
+# build/data/media_info.json is NOT the store: CMake's configure-time
+# file(COPY) of data/ (media/ left out) puts it there, nothing reads it, and
+# every configure writes it again. So it is deleted, never stashed — pruned
+# against build/data every key looked gone, and stashing it sent a drive-less
+# --allow-ram-stash clone to the content-stash drive check below, which
+# stopped prepare even when the real store names only shipping videos.
+if [[ -f "${CPP_DIR}/build/data/media_info.json" ]]; then
+    rm -f "${CPP_DIR}/build/data/media_info.json"
+    log "[2c/5] ${CPP_DIR}/build/data/media_info.json: build-tree copy deleted (the next configure rewrites it)"
+fi
 MEDIA_INFO_PRUNED=()
-for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
-    _store="${_d}/media_info.json"
-    [[ -f "$_store" ]] || continue
+_store="${DATA_DIR}/media_info.json"
+if [[ -f "$_store" ]]; then
     _pruned="$(mktemp)"
     _rc=0
-    mdb_prune_media_info "$_d" "$_pruned" ${CONTENT_PATHS[@]+"${CONTENT_PATHS[@]}"} || _rc=$?
+    mdb_prune_media_info "$DATA_DIR" "$_pruned" ${CONTENT_PATHS[@]+"${CONTENT_PATHS[@]}"} || _rc=$?
     case "$_rc" in
         10) rm -f "$_pruned" ;;
         0)  CONTENT_PATHS+=("$_store")
@@ -1009,8 +1018,8 @@ for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
             _curated=$(( _curated + 1 ))
             log "[2c/5] ${_store}: unreadable (prune exit ${_rc}) — held back, the image ships none" ;;
     esac
-done
-unset _d _store _pruned _rc
+fi
+unset _store _pruned _rc
 log "[2c/5] Content curation: ${_curated} non-shipping playlist/media file(s) held back from the image"
 
 # Move the curated content to its disk-backed stash NOW, before the secret
@@ -1048,7 +1057,7 @@ if [[ ${#CONTENT_PATHS[@]} -gt 0 ]]; then
     unset _src _key _sz _moved_mb
 fi
 
-# The pruned media_info.json copies (step 3 above), now that each original is
+# The pruned media_info.json copy (step 3 above), now that the original is
 # in the content stash — never over an original that did not get there (a
 # second spelling of the same file), which would be its only copy. Owner and
 # mode follow the original, so the kiosk and the web admin keep writing it.
