@@ -614,9 +614,11 @@ TEST_CASE("the on-air item playing: the panel follows its real position", "[guid
         CHECK(v.panel.end_hm == "8:21");
         CHECK(v.panel.progress > 0.3499);
         CHECK(v.panel.progress < 0.3501);
-        // NEXT is still the schedule's: Show 1-2 at 8:20.
+        // NEXT is the schedule's next airing, Show 1-2, at the end the panel
+        // shows — never "8:11 - 8:21 · NEXT 8:20" (review M2).
         CHECK(v.panel.next_title == "Show 1-2");
-        CHECK(v.panel.next_hm == "8:20");
+        CHECK(v.panel.next_hm == "8:21");
+        CHECK(v.panel.next_hm == v.panel.end_hm);
         CHECK(v.panel.join_note.empty());
         // The grid is still the schedule.
         CHECK(v.grid.rows[1].cells[0].label == "Show 1-1");

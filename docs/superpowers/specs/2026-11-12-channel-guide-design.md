@@ -276,7 +276,8 @@ MDB bezels).
   and start/end times come from the player's position and the item's
   length — also when the playing item IS the on-air airing (a join's seek
   lands on the keyframe before its target, so the picture can run up to a
-  GOP behind the schedule) — while NEXT stays the schedule's next airing.
+  GOP behind the schedule) — while NEXT stays the schedule's next airing,
+  timed at the end the panel shows (never "8:11 – 8:21 · NEXT 8:20").
   [owner decision, 2026-11-13, after the Pi 5 test]
 - **Grid**: header row = date (dim) + time ticks (steel blue, first with
   AM/PM). Each row = channel cell (number in Zen Dots, or the shuffle icon for
@@ -285,7 +286,10 @@ MDB bezels).
   owner decision 2026-11-13 after the Pi 5 test) + program cells positioned on the time axis,
   3 px gaps showing the background as grid lines. A cell narrower than 30 px
   shows no text; narrower than 64 px shows no artist; a program that began
-  before the window starts with "◂". A red (`highlight2`) "now" line with a
+  before the window starts with "◂". A cell whose label would be only "…"
+  (or "◂ …": not one character of the title fits) shows no text either —
+  a lone ellipsis reads as a stray dash — and an artist line likewise.
+  [2026-11-13, after the Pi 5 test] A red (`highlight2`) "now" line with a
   small marker in the header crosses all rows.
 - **Colours** (all existing tokens): background `bg`; cells and panel
   `bg_lift` (the only off-background fill); text `fg` / `dim`; **gold** =

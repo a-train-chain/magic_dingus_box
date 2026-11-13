@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "app/app_state.h"
@@ -218,12 +219,11 @@ inline std::string fit(const std::string& s, int chars) {
 // space after it ("◂…", "◂ …", "◂ "). Just over the 30 px text threshold a
 // title fits to "…" alone, which reads as a stray dash on the TV: such a
 // cell shows no text.
-inline bool has_text_chars(const std::string& s) {
-    const std::string arrow = "\xE2\x97\x82";  // "◂" (kArrow without its space)
-    std::size_t i = s.compare(0, arrow.size(), arrow) == 0 ? arrow.size() : 0;
-    while (i < s.size() && s[i] == ' ') ++i;
-    const std::string rest = s.substr(i);
-    return !rest.empty() && rest != kEllipsis;
+inline bool has_text_chars(std::string_view s) {
+    constexpr std::string_view kArrowGlyph = "\xE2\x97\x82";  // "◂" (kArrow without its space)
+    if (s.substr(0, kArrowGlyph.size()) == kArrowGlyph) s.remove_prefix(kArrowGlyph.size());
+    while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
+    return !s.empty() && s != std::string_view(kEllipsis);
 }
 
 inline int chars_for_width(int w) {
@@ -531,7 +531,9 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                     // exact minutes instead of flipping one at a minute edge.
                     // Not in the last-2-s case above (the next airing loaded
                     // from its start IS that airing; its position has not
-                    // moved yet). NEXT stays the schedule's next airing.
+                    // moved yet). NEXT stays the schedule's next airing, at
+                    // the end shown here (as the different-item path does):
+                    // never "8:11 - 8:21 · NEXT 8:20".
                     const double lag = std::round(a->offset_s - span->played_s);
                     starts = a->starts_at + lag;
                     ends = starts + span->length_s;
@@ -540,7 +542,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 p.start_hm = d::hm(starts + in.utc_offset_s);
                 p.end_hm = d::hm(ends + in.utc_offset_s);
                 const app::ScheduledItem& nx = ch.items[(ai + 1) % ch.items.size()];
-                p.next_hm = d::hm(a->ends_at + in.utc_offset_s);
+                p.next_hm = d::hm(ends + in.utc_offset_s);
                 p.next_title = d::title_of(in, nx);
             }
             if (!on_tuned) {
