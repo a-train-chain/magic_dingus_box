@@ -580,7 +580,12 @@ TEST_CASE("a tuned item ahead of its slot: the panel describes what plays",
     CHECK(v.panel.next_title == "Show 1-3");
 }
 
-TEST_CASE("the on-air item playing: the panel stays the schedule", "[guide_view]") {
+TEST_CASE("the on-air item playing: the panel follows its real position", "[guide_view]") {
+    // Pi 5 test, 2026-11-13: a join's KEY_UNIT seek lands on the keyframe
+    // BEFORE its target, so the picture runs up to a GOP behind the schedule
+    // while the panel's bar and times ran on the schedule's. When the playing
+    // item IS the on-air airing's, they now come from the player's position
+    // and the item's length too; NEXT stays the schedule's next airing.
     Fixture f;
     const auto sched = ui::layout_channel_guide([&] {
         auto in = f.in();
@@ -588,14 +593,70 @@ TEST_CASE("the on-air item playing: the panel stays the schedule", "[guide_view]
         in.cursor.row = 1;
         return in;
     }());
-    // Show 1-1 itself, a little behind its scheduled offset (a short pause).
-    auto v = ui::layout_channel_guide(tuned_one(f, 1, 262.0));
-    CHECK(v.panel.item_title == "Show 1-1");
-    CHECK(v.panel.start_hm == sched.panel.start_hm);
-    CHECK(v.panel.end_hm == sched.panel.end_hm);
-    CHECK(v.panel.progress == sched.panel.progress);
-    CHECK(v.panel.next_title == sched.panel.next_title);
-    CHECK(v.panel.start_hm == "8:10");
+    REQUIRE(sched.panel.start_hm == "8:10");  // Show 1-1 airs 8:10-8:20, 4:30 in
+    REQUIRE(sched.panel.progress == 0.45);
+
+    SECTION("a keyframe behind: the bar is the picture's") {
+        auto v = ui::layout_channel_guide(tuned_one(f, 1, 262.0));  // 8 s behind
+        CHECK(v.panel.eyebrow == "NOW PLAYING");
+        CHECK(v.panel.item_title == "Show 1-1");
+        CHECK(v.panel.progress > 0.4366);  // 262 / 600
+        CHECK(v.panel.progress < 0.4367);
+        CHECK(v.panel.start_hm == "8:10");  // 8:10:08
+        CHECK(v.panel.end_hm == "8:20");    // 8:20:08
+        CHECK(v.panel.next_title == "Show 1-2");
+        CHECK(v.panel.next_hm == "8:20");
+    }
+    SECTION("a minute behind (a pause inside its slot): its own times") {
+        auto v = ui::layout_channel_guide(tuned_one(f, 1, 210.0));
+        CHECK(v.panel.item_title == "Show 1-1");
+        CHECK(v.panel.start_hm == "8:11");  // 8:14:30 - 3:30
+        CHECK(v.panel.end_hm == "8:21");
+        CHECK(v.panel.progress > 0.3499);
+        CHECK(v.panel.progress < 0.3501);
+        // NEXT is still the schedule's: Show 1-2 at 8:20.
+        CHECK(v.panel.next_title == "Show 1-2");
+        CHECK(v.panel.next_hm == "8:20");
+        CHECK(v.panel.join_note.empty());
+        // The grid is still the schedule.
+        CHECK(v.grid.rows[1].cells[0].label == "Show 1-1");
+        CHECK(v.grid.rows[1].cells[0].x == sched.grid.rows[1].cells[0].x);
+    }
+    SECTION("on time, a frame either side: the schedule's minutes exactly") {
+        // 8:10:00 is a minute edge: a position sampled 30 ms ahead of the
+        // clock must not flip the start to 8:09 (nor the end to 8:19).
+        for (double pos : {269.97, 270.0, 270.03}) {
+            INFO("position " << pos);
+            auto v = ui::layout_channel_guide(tuned_one(f, 1, pos));
+            CHECK(v.panel.start_hm == sched.panel.start_hm);
+            CHECK(v.panel.end_hm == sched.panel.end_hm);
+            CHECK(v.panel.next_hm == sched.panel.next_hm);
+            CHECK(v.panel.next_title == sched.panel.next_title);
+            CHECK(std::fabs(v.panel.progress - pos / 600.0) < 1e-9);
+        }
+    }
+    SECTION("its start trim: the position counts from the trim") {
+        f.playlists[1].items[1].start = 30.0;  // the file's 0:30 is the item's 0:00
+        auto v = ui::layout_channel_guide(tuned_one(f, 1, 30.0 + 210.0));
+        CHECK(v.panel.start_hm == "8:11");
+        CHECK(v.panel.progress > 0.3499);
+        CHECK(v.panel.progress < 0.3501);
+    }
+    SECTION("CRT: the same position, the CRT's drops") {
+        auto in = tuned_one(f, 1, 210.0);
+        in.crt = true;
+        auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.start_hm == "8:11");
+        CHECK(v.panel.artist.empty());
+        CHECK_FALSE(v.panel.show_next);
+    }
+    SECTION("another channel's row: the schedule") {
+        auto in = tuned_one(f, 1, 210.0);
+        in.cursor.row = 2;
+        auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.start_hm == "8:10");
+        CHECK(v.panel.progress == 0.45);
+    }
 }
 
 TEST_CASE("another channel's panel, or nothing known playing: the schedule",

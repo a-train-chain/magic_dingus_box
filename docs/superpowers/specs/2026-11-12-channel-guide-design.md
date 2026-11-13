@@ -272,6 +272,12 @@ MDB bezels).
   tuned channel, or "PRESS TO WATCH" + "joins at m:ss" when the cursor is on
   another channel. At 640×480 the artist and NEXT rows and the source label
   are dropped.
+  On the tuned channel the panel describes the picture: the progress bar
+  and start/end times come from the player's position and the item's
+  length — also when the playing item IS the on-air airing (a join's seek
+  lands on the keyframe before its target, so the picture can run up to a
+  GOP behind the schedule) — while NEXT stays the schedule's next airing.
+  [owner decision, 2026-11-13, after the Pi 5 test]
 - **Grid**: header row = date (dim) + time ticks (steel blue, first with
   AM/PM). Each row = channel cell (number in Zen Dots, or the shuffle icon for
   00; short name in mono caps — on CRT Native in 12 px, from x 36 with a

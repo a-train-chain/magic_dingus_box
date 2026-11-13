@@ -92,9 +92,10 @@ struct GuideViewInput {
     double source_aspect = 0;
     double now_utc = 0;
     int utc_offset_s = 0;
-    // On the tuned channel's panel, a playing item that is not the on-air
-    // airing's describes the panel instead of the schedule (the grid stays
-    // the schedule): see layout_channel_guide.
+    // On the tuned channel's panel the playing item describes the panel:
+    // one that is not the on-air airing's is named with its own times; the
+    // airing's own item takes its bar and times from this position (the
+    // grid stays the schedule): see layout_channel_guide.
     GuidePlaying playing;
 };
 
@@ -303,11 +304,10 @@ inline std::string playlist_title(const GuideViewInput& in, int n) {
     return (*in.playlists)[n].title;
 }
 
-// The playing item when it is NOT the on-air airing's item `on`: the item,
-// how far into its playable part it is, and that part's length — the
-// channel's scheduled length for it, else the file's (end trim or duration,
-// minus the start trim). Nothing when nothing known plays, when it is the
-// on-air item (the schedule describes it), or when no length is known.
+// The playing item: the item, how far into its playable part it is, and that
+// part's length — the channel's scheduled length for it, else the file's
+// (end trim or duration, minus the start trim). Nothing when nothing known
+// plays or when no length is known.
 struct PlayingSpan {
     const app::PlaylistItem* item = nullptr;
     app::ScheduledItem at;  // playlist / item indexes
@@ -315,12 +315,10 @@ struct PlayingSpan {
     double length_s = 0;
 };
 
-inline std::optional<PlayingSpan> playing_off_schedule(const GuideViewInput& in,
-                                                       const app::Channel& ch,
-                                                       const app::ScheduledItem& on) {
+inline std::optional<PlayingSpan> playing_span(const GuideViewInput& in,
+                                               const app::Channel& ch) {
     const GuidePlaying& pp = in.playing;
     if (pp.playlist < 0 || pp.item < 0) return std::nullopt;
-    if (pp.playlist == on.playlist && pp.item == on.item) return std::nullopt;
     PlayingSpan s;
     s.at.playlist = pp.playlist;
     s.at.item = pp.item;
@@ -472,24 +470,30 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
             // its start: it IS that airing, and its exact times beat ones
             // derived from a position that has not moved yet).
             app::OnAir shown = *on;
+            bool next_loaded_early = false;
             if (on_tuned && in.playing.playlist >= 0) {
                 const auto jp = app::join_point(ch, in.now_utc);
                 if (jp && jp->starts_at > on->starts_at) {
                     const app::ScheduledItem& js = ch.items[jp->index];
                     if (js.playlist == in.playing.playlist && js.item == in.playing.item) {
                         shown = *jp;
+                        next_loaded_early = true;
                     }
                 }
             }
             const app::OnAir* a = &shown;
             const int ai = std::clamp(a->index, 0, static_cast<int>(ch.items.size()) - 1);
             const app::ScheduledItem& si = ch.items[ai];
-            // The tuned channel's panel describes the PICTURE: a playing item
+            // The tuned channel's panel describes the PICTURE. A playing item
             // that is not that airing's (a pause or a seek back carried it
             // past its slot; NTP moved the clock after the power-on tune;
-            // playback ran ahead) is named with times from its own position.
-            // The grid stays the schedule.
-            const auto playing = on_tuned ? d::playing_off_schedule(in, ch, si) : std::nullopt;
+            // playback ran ahead) is named with times from its own position;
+            // the airing's own item gets its bar and times from the position
+            // too (below). The grid stays the schedule.
+            const auto span = on_tuned ? d::playing_span(in, ch) : std::nullopt;
+            const bool plays_airing =
+                span && span->at.playlist == si.playlist && span->at.item == si.item;
+            const auto playing = plays_airing ? std::nullopt : span;
             if (playing) {
                 const double started = in.now_utc - playing->played_s;
                 const double ends = started + playing->length_s;
@@ -512,10 +516,29 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 const auto* it = d::item_of(in, si);
                 p.item_title = it ? it->title : "";
                 p.artist = (!crt && it) ? it->artist : "";
-                p.start_hm = d::hm(a->starts_at + in.utc_offset_s);
-                p.end_hm = d::hm(a->ends_at + in.utc_offset_s);
+                double starts = a->starts_at;
+                double ends = a->ends_at;
                 const double len = a->ends_at - a->starts_at;
                 p.progress = len > 0 ? std::clamp(a->offset_s / len, 0.0, 1.0) : 0.0;
+                if (plays_airing && !next_loaded_early) {
+                    // The airing's own item plays: the picture can run behind
+                    // the schedule (a join's KEY_UNIT seek lands on the
+                    // keyframe BEFORE its target — up to a GOP; a pause inside
+                    // the slot), so the bar and the times come from the
+                    // player's position and the item's length. The lag is
+                    // taken to the whole second: on time, a position sampled a
+                    // frame either side of the clock keeps the schedule's
+                    // exact minutes instead of flipping one at a minute edge.
+                    // Not in the last-2-s case above (the next airing loaded
+                    // from its start IS that airing; its position has not
+                    // moved yet). NEXT stays the schedule's next airing.
+                    const double lag = std::round(a->offset_s - span->played_s);
+                    starts = a->starts_at + lag;
+                    ends = starts + span->length_s;
+                    p.progress = std::clamp(span->played_s / span->length_s, 0.0, 1.0);
+                }
+                p.start_hm = d::hm(starts + in.utc_offset_s);
+                p.end_hm = d::hm(ends + in.utc_offset_s);
                 const app::ScheduledItem& nx = ch.items[(ai + 1) % ch.items.size()];
                 p.next_hm = d::hm(a->ends_at + in.utc_offset_s);
                 p.next_title = d::title_of(in, nx);
