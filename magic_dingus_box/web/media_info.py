@@ -25,7 +25,12 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from admin_common import _atomic_write_text
+# Same dual import form as admin.py: flat when tests put web/ on sys.path,
+# package-relative in production.
+try:
+    from admin_common import _atomic_write_text
+except ImportError:  # pragma: no cover - exercised by whichever form runs
+    from .admin_common import _atomic_write_text
 
 FILE_NAME = "media_info.json"
 LOCK_NAME = "media_info.json.lock"

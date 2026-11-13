@@ -113,3 +113,15 @@ def test_update_waits_for_the_sidecar_lock_across_read_and_write(tmp_path):
     lock_fd.close()
     assert returned >= released["at"]
     assert media_info.load(tmp_path) == {"media/a.mp4": {"crop": False}}
+
+
+def test_imports_as_a_package_module_without_web_on_sys_path():
+    # Production runs `python3 -m magic_dingus_box.web.wsgi`; web/ is not on
+    # sys.path there (conftest adds it for the tests), so a flat-only
+    # `from admin_common import ...` would fail on first import.
+    import subprocess
+    import sys
+    r = subprocess.run(
+        [sys.executable, "-c", "import magic_dingus_box.web.media_info"],
+        cwd=str(REPO), capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
