@@ -1001,6 +1001,23 @@ if [[ -f "${CPP_DIR}/build/data/media_info.json" ]]; then
     rm -f "${CPP_DIR}/build/data/media_info.json"
     log "[2c/5] ${CPP_DIR}/build/data/media_info.json: build-tree copy deleted (the next configure rewrites it)"
 fi
+# An interrupted store write leaves its staging copy, naming every video: the
+# kiosk's fixed media_info.json.tmp (media_info.cpp; usually renamed away by
+# its next write, not always) and the web admin's mkstemp
+# .media_info.json.<rand>.tmp (admin_common._atomic_write_text, whose cleanup
+# cannot run on SIGKILL/OOM/power cut; nothing sweeps it). CMake's file(COPY)
+# carries dotfiles, so one in data/ also lands in build/data/. The kiosk and
+# the web admin were stopped in [1/5], so any left now is an uncommitted
+# write: deleted (nothing is lost), not stashed, so it never sends a
+# drive-less clone to the drive check below.
+for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
+    for _t in "${_d}/media_info.json.tmp" "${_d}"/.media_info.json.*.tmp; do
+        [[ -f "$_t" ]] || continue
+        rm -f "$_t"
+        log "[2c/5] ${_t}: interrupted store write deleted"
+    done
+done
+unset _d _t
 MEDIA_INFO_PRUNED=()
 _store="${DATA_DIR}/media_info.json"
 if [[ -f "$_store" ]]; then

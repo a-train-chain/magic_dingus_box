@@ -456,6 +456,59 @@ restore_content() {
     [ -f "$BOX/data/media/personal.mp4" ]
 }
 
+# An interrupted store write leaves a staging copy naming every video: the
+# kiosk's fixed media_info.json.tmp and the web's mkstemp
+# .media_info.json.<rand>.tmp. CMake's file(COPY) carries dotfiles, so a
+# straggler in data/ also lands in build/data/.
+store_stragglers() {
+    local d body='{"version":1,"videos":{"media/personal.mp4":{"crop":false}}}'
+    for d in "$BOX/data" "$BOX/build/data"; do
+        printf '%s\n' "$body" > "$d/media_info.json.tmp"
+        printf '%s\n' "$body" > "$d/.media_info.json.k3x9_q.tmp"
+    done
+}
+
+no_store_stragglers() {
+    local d left
+    for d in "$BOX/data" "$BOX/build/data"; do
+        left="$(find "$d" -maxdepth 1 -name '*media_info.json*.tmp')"
+        [ -z "$left" ] || { echo "straggler left: $left"; return 1; }
+    done
+}
+
+@test "curation: interrupted store writes are deleted; a drive-less clone stays open" {
+    clone_box_fixture
+    store_stragglers
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation not-mounted
+    [ "$status" -eq 0 ]
+    no_store_stragglers
+    run grep -rl personal "$BOX"
+    [ "$status" -eq 1 ]
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    [ ! -e "$CSTASH" ]
+}
+
+@test "curation: interrupted store writes never reach the image, and restore brings none back" {
+    clone_box_fixture
+    : > "$BOX/data/media/personal.mp4"
+    printf '{"version":1,"videos":{"media/ship.mp4":{},"media/personal.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    store_stragglers
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation ok
+    [ "$status" -eq 0 ]
+    no_store_stragglers
+    run grep -rl personal "$BOX"
+    [ "$status" -eq 1 ]
+    run grep -F '.tmp' "$CSTASH/manifest"
+    [ "$status" -eq 1 ]
+    restore_content
+    no_store_stragglers
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    [ -f "$BOX/data/media/personal.mp4" ]
+}
+
 @test "curation: two files that stash under one name stop prepare, nothing overwritten" {
     # data/media_info.json and a hand-placed data/media/info.json both
     # flatten to ..._data_media_info.json in the stash.
