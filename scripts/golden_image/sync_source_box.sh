@@ -291,9 +291,12 @@ if [[ $DO_BUILD -eq 1 ]]; then
     #     every unit without the movie kiosk (the v1.7.2 CI trap, on-box
     #     edition). The image build must pin its flags explicitly, matching
     #     update.sh's run_build.
+    # build/ is the running kiosk's WorkingDirectory: move it aside, never
+    # delete it (2026-11-13 abort; see deploy_cpp.sh). The leftover is removed
+    # by prepare_for_cloning.sh once the kiosk is stopped.
     echo "  building on the Pi (clean configure + -j2 per the build contract; ~20-30 min)..."
     if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
-        "cd /opt/magic_dingus_box/magic_dingus_box_cpp && rm -rf build && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF .. && make -j2" 2>&1 | tail -4 | sed 's/^/    /'; then
+        "cd /opt/magic_dingus_box/magic_dingus_box_cpp && mv build build.prev.\$(date +%s) 2>/dev/null ; mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF .. && make -j2" 2>&1 | tail -4 | sed 's/^/    /'; then
         # A zero exit from make is not proof the change is IN the binary --
         # a stale object or a skipped rebuild both exit 0. Assert on content.
         # `|| true` INSIDE the remote command, not `|| echo 0` outside it:

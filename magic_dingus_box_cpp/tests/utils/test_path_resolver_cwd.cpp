@@ -37,13 +37,18 @@ struct DeletedCwd {
 
 TEST_CASE("resolve_video_path survives a deleted working directory") {
     fs::path root = fs::temp_directory_path() / ("mdb_resolve_" + std::to_string(::getpid()));
+    struct RootGuard {
+        fs::path p;
+        ~RootGuard() { std::error_code e; fs::remove_all(p, e); }
+    } root_guard{root};
     fs::create_directories(root / "playlists");
     fs::create_directories(root / "media");
     { std::ofstream(root / "playlists" / "clip.mp4") << "x"; }
 
     DeletedCwd gone;
     std::error_code ec;
-    REQUIRE(fs::current_path(ec).empty());  // cwd really is gone
+    fs::current_path(ec);
+    if (!ec) SKIP("this OS still reports a path for a deleted working directory");
 
     SECTION("relative path found via the playlist dir") {
         std::string out;
@@ -63,5 +68,4 @@ TEST_CASE("resolve_video_path survives a deleted working directory") {
         REQUIRE(out == "nope-xyz.mp4");
     }
 
-    fs::remove_all(root, ec);
 }

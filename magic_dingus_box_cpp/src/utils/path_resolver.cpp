@@ -37,7 +37,13 @@ static std::string find_fuzzy_match(const fs::path& dir, const std::string& file
     
     fs::directory_iterator it(dir, fs::directory_options::none, dir_ec);
     if (dir_ec) return "";
-    for (const auto& entry : it) {
+    // increment(ec), not operator++: a directory removed or unreadable
+    // mid-scan must end the scan, not throw out of the render thread.
+    // The whole body is also wrapped (path/string allocation can throw).
+    try {
+    for (fs::directory_iterator end; it != end; it.increment(dir_ec)) {
+        if (dir_ec) break;
+        const auto& entry = *it;
         std::error_code file_ec;
         if (fs::is_regular_file(entry, file_ec) && !file_ec) {
             std::string entry_name = entry.path().filename().string();
@@ -52,6 +58,9 @@ static std::string find_fuzzy_match(const fs::path& dir, const std::string& file
                 return entry.path().string();
             }
         }
+    }
+    } catch (const std::exception&) {
+        // fall through: no match
     }
     return "";
 }

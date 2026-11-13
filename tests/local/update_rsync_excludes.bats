@@ -324,3 +324,18 @@ PY
     [ "$(cat "$t/dst/magic_dingus_box_cpp/third_party/VERSION")" = "3.2.1" ]
     rm -rf "$t"
 }
+
+# deploy_cpp.sh moves a stale build/ aside as build.prev.<epoch>; when its
+# build fails, the still-running kiosk stands in that directory. An OTA rsync
+# --delete that removed it would repeat the 2026-11-13 getcwd abort.
+@test "all four rsync blocks exclude deploy_cpp.sh's build.prev.* directories" {
+    parse_blocks
+    local n
+    for n in 1 2 3 4; do
+        local var="BLOCK$n"
+        grep -qxF 'magic_dingus_box_cpp/build.prev.*' <<<"${!var}" || {
+            echo "Block $n is missing the build.prev.* exclude."
+            return 1
+        }
+    done
+}

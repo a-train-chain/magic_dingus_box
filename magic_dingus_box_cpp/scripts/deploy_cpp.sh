@@ -717,16 +717,21 @@ OLD_FINGERPRINT="$(cat "$FINGERPRINT_FILE" 2>/dev/null || true)"
 # new kiosk is confirmed active.
 KIOSK_PID="$(systemctl show -p MainPID --value magic-dingus-box-cpp.service 2>/dev/null || true)"
 KIOSK_CWD=""
+SWEEP_OK=1
 if [ "${KIOSK_PID:-0}" -gt 0 ] 2>/dev/null; then
-    KIOSK_CWD="$(sudo readlink "/proc/${KIOSK_PID}/cwd" 2>/dev/null || true)"
+    KIOSK_CWD="$(sudo -n readlink "/proc/${KIOSK_PID}/cwd" 2>/dev/null || true)"
     KIOSK_CWD="${KIOSK_CWD% (deleted)}"
+    # A live kiosk whose cwd we cannot read might be standing in a leftover:
+    # fail CLOSED and sweep nothing.
+    [ -n "$KIOSK_CWD" ] || SWEEP_OK=0
 fi
 # Sweep leftovers from earlier deploys (e.g. one whose build failed), but
 # never the one the running kiosk is still standing in.
 for old_prev in build.prev*; do
+    [ "$SWEEP_OK" = 1 ] || break
     [ -d "$old_prev" ] || continue
     [ "$(cd "$old_prev" && pwd -P)" = "$KIOSK_CWD" ] && continue
-    rm -rf "$old_prev"
+    rm -rf "$old_prev" || true
 done
 move_build_aside() {
     mv build "build.prev.$(date +%s)"
@@ -808,7 +813,19 @@ BUILDEOF
     ssh "${PI_HOST}" "${RESTART_CMD}"
     # The new kiosk is active and running from build/, so any build.prev*
     # directories moved aside by the build step are no longer anyone's cwd.
-    ssh "${PI_HOST}" "rm -rf '${PI_DIR}'/magic_dingus_box_cpp/build.prev*"
+    # Skip any directory the kiosk is somehow still standing in; never fail a
+    # deploy over cleanup after a good restart.
+    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" bash <<'CLEANEOF' || true
+cd "${PI_DIR}/magic_dingus_box_cpp" || exit 0
+pid="$(systemctl show -p MainPID --value magic-dingus-box-cpp.service 2>/dev/null || true)"
+cwd="$(sudo -n readlink "/proc/${pid:-0}/cwd" 2>/dev/null || true)"
+cwd="${cwd% (deleted)}"
+for d in build.prev*; do
+    [ -d "$d" ] || continue
+    [ "$(cd "$d" && pwd -P)" = "$cwd" ] && continue
+    rm -rf "$d" || true
+done
+CLEANEOF
     echo ""
 fi
 
