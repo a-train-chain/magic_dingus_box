@@ -14,6 +14,7 @@
 #include "ui/pairing_screen.h"
 #include "ui/pairing_screen_renderer.h"
 #include "retroarch/controller_profile.h"
+#include "retroarch/sink_suspension.h"
 // NOT under MEDIA_BROWSER_ENABLED: Toast::show() is called from the
 // display-mode change path below (~line 1533), which is core kiosk code and
 // compiles in every configuration. While this include sat inside the #ifdef,
@@ -39,6 +40,7 @@
 #include "media_browser/mb_services.h"
 #endif
 #include "app/app_state.h"
+#include "app/audio_router.h"
 #include "app/auto_tune.h"
 #include "app/bezel_catalog.h"
 #include "app/channel_schedule.h"
@@ -478,6 +480,18 @@ int main(int /* argc */, char* /* argv */[]) {
     std::cout << "Video playlists: " << state.playlists.size() << std::endl;
     std::cout << "Game playlists: " << game_playlists.size() << std::endl;
     
+    // Audio crash recovery, before anything can play. A game session
+    // suspends every PulseAudio sink and resumes them when it ends
+    // (retroarch/sink_suspension.h); a kiosk killed mid-game (watchdog
+    // abort, OOM, SIGKILL past TimeoutStopSec) never ran that resume, and
+    // PulseAudio — its own unit, still running — keeps a suspended sink
+    // suspended until told otherwise. Without this the box stays silent
+    // until PulseAudio itself restarts. A no-op on every other start.
+    std::cout << "[audio] start-up: "
+              << retroarch::describe_sink_report(
+                     "resumed", retroarch::resume_all_sinks(app::audio::default_runner()))
+              << std::endl;
+
     // Load saved settings (CRT effects, loop, shuffle, etc.)
     SettingsPersistence::load_settings(state);
 

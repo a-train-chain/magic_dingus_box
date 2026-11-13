@@ -1,4 +1,5 @@
 #include "controller.h"
+#include "audio_router.h"
 #include "game_launch_recovery.h"
 #include "game_launch_validation.h"
 #include "playback_reset.h"
@@ -363,6 +364,10 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         // this to sd_notify); the teardown above and the restore below stay
         // unwatched, bracketed by the session hooks.
         opts.watchdog = session_watchdog_;
+
+        // The audio hand-over (retroarch/sink_suspension.h) talks to
+        // PulseAudio through the same bounded pactl runner as apply_output.
+        opts.pactl = audio::default_runner();
 
         bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db, static_cast<int>(state.audio_settings.output), opts);
         

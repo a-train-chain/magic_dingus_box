@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "sink_suspension.h"
 
 namespace retroarch {
 
@@ -64,6 +65,13 @@ struct LaunchOptions {
     // DRM/input restore runs — that restore and the pre-launch teardown stay
     // unwatched, as before. Empty = no watchdog (tests, dev machines).
     std::function<void(SessionWatchdog)> watchdog;
+
+    // How the launcher reaches PulseAudio for the audio hand-over: every
+    // sink is suspended just before the display handover and fork, and
+    // resumed once the session is over (sink_suspension.h). The kiosk passes
+    // app::audio::default_runner(). Empty = no hand-over: RetroArch then
+    // gets its device only once PulseAudio's idle timer has let go of it.
+    PactlRunner pactl;
 };
 
 // Display aspect an N64 title ends up with once its measured overscan crop is

@@ -668,6 +668,25 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         return false;
     }
 
+    // Hand the audio devices over NOW. RetroArch opens its ALSA device
+    // directly, and PulseAudio otherwise lets go of it only when its 5 s
+    // idle timer fires after the kiosk's last stream — a fast core opened
+    // audio inside that window and played silent (sink_suspension.h).
+    // Every sink, not just the default: the game may open the other HDMI
+    // port or the analog jack. Here rather than after before_fork so the
+    // pactl calls do not lengthen the frozen-frame window. From here on
+    // every return resumes the sinks: explicitly after the reap below, and
+    // through the guard's destructor on any other way out.
+    SinkSuspension audio_handover(opts.pactl);
+    {
+        const std::string line =
+            opts.pactl ? describe_sink_report("suspended", audio_handover.suspend())
+                       : std::string("no PulseAudio runner; relying on its idle suspend");
+        std::cout << "[audio] " << line << std::endl;
+        std::ofstream log(launcher_log, std::ios::app);
+        log << "Audio hand-over: " << line << "\n";
+    }
+
     // LAST POSSIBLE MOMENT to hand over the display. The configs are
     // written; everything above needed no display at all, so the kiosk has
     // been able to keep its launch screen animating through all of it. The
@@ -717,6 +736,15 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     std::error_code ec;
     fs::remove(kReadyMarkerPath, ec);
 
+    // RetroArch is reaped, so its ALSA device is closed: give the sinks back
+    // to PulseAudio. Every session outcome lands here — quit, the stop
+    // policy (SIGTERM / OTA / restart button) and the startup timeout. A
+    // sink suspended with suspend-sink stays suspended until resumed, so a
+    // missed resume would leave the kiosk's video silent.
+    const std::string resumed_line =
+        opts.pactl ? describe_sink_report("resumed", audio_handover.resume()) : std::string();
+    if (!resumed_line.empty()) std::cout << "[audio] " << resumed_line << std::endl;
+
     std::cout << "RetroArch session: " << outcome_name(report.outcome)
               << " (" << stop_name(report.stop) << ")" << std::endl;
     // Also into the launcher log: scripts/emulator_smoke_test.py greps it
@@ -724,6 +752,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     // 15 seconds" (it reads that file, not the journal).
     {
         std::ofstream log(launcher_log, std::ios::app);
+        if (!resumed_line.empty()) log << "Audio hand-over: " << resumed_line << "\n";
         log << "=== " << timestamp_now() << " RetroArch session: "
             << outcome_name(report.outcome) << " (" << stop_name(report.stop)
             << ") ===\n";
