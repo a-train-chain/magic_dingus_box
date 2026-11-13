@@ -74,6 +74,9 @@ std::string SettingsPersistence::serialize(const AppState& state) {
     // Display settings
     Json::Value display;
     display["mode"] = (state.display_settings.mode == DisplayMode::CRT_NATIVE) ? "crt_native" : "modern_tv";
+    display["menu_style"] =
+        (state.display_settings.menu_style == app::MenuStyle::ChannelGuide) ? "channel_guide"
+                                                                           : "list";
     display["bezel_index"] = state.display_settings.bezel_index;
     display["scanline_intensity"] = state.display_settings.scanline_intensity;
     display["warmth_intensity"] = state.display_settings.warmth_intensity;
@@ -122,6 +125,7 @@ std::string SettingsPersistence::serialize(const AppState& state) {
     Json::Value playback;
     playback["playlist_loop"] = state.playlist_loop;
     playback["shuffle"] = state.shuffle;
+    playback["last_channel"] = state.last_channel_id;
     playback["master_volume"] = state.master_volume;
 #ifdef MEDIA_BROWSER_ENABLED
     playback["media_browser_unlocked"] = state.media_browser_unlocked;
@@ -371,6 +375,10 @@ utils::Result<> SettingsPersistence::load_settings_unguarded(AppState& state) {
         std::string mode = display.get("mode", "crt_native").asString();
         state.display_settings.mode = (mode == "modern_tv") ? DisplayMode::MODERN_TV : DisplayMode::CRT_NATIVE;
 
+        state.display_settings.menu_style =
+            (display.get("menu_style", "list").asString() == "channel_guide")
+                ? MenuStyle::ChannelGuide : MenuStyle::List;
+
         state.display_settings.bezel_index = display.get("bezel_index", 0).asInt();
         state.display_settings.scanline_intensity = display.get("scanline_intensity", 0.0f).asFloat();
         state.display_settings.warmth_intensity = display.get("warmth_intensity", 0.0f).asFloat();
@@ -441,6 +449,7 @@ utils::Result<> SettingsPersistence::load_settings_unguarded(AppState& state) {
 
         state.playlist_loop = playback.get("playlist_loop", true).asBool();
         state.shuffle = playback.get("shuffle", false).asBool();
+        state.last_channel_id = playback.get("last_channel", "").asString();
 #ifdef MEDIA_BROWSER_ENABLED
         state.media_browser_unlocked = playback.get("media_browser_unlocked", false).asBool();
         state.media_browser_vpn_configured = read_vpn_configured_from_services_env();

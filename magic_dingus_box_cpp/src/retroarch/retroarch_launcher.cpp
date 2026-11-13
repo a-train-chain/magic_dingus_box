@@ -182,6 +182,10 @@ std::optional<std::string> RetroArchLauncher::find_retroarch() {
 }
 
 bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output, const LaunchOptions& opts) {
+    // This session's resume report starts empty: no stale report from the
+    // previous game can trigger the controller's retry.
+    last_sink_resume_ = SinkReport{};
+
     if (!retroarch_available_) {
         std::cerr << "RetroArch not available" << std::endl;
         return false;
@@ -668,6 +672,39 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         return false;
     }
 
+    // Hand the audio devices over NOW. RetroArch opens its ALSA device
+    // directly, and PulseAudio otherwise lets go of it only when its 5 s
+    // idle timer fires after the kiosk's last stream — a fast core opened
+    // audio inside that window and played silent (sink_suspension.h).
+    // Every sink, not just the default: the game may open the other HDMI
+    // port or the analog jack. Here rather than after before_fork so the
+    // pactl calls do not lengthen the frozen-frame window.
+    //
+    // From here on EVERY return calls give_back_audio(): a sink suspended
+    // with suspend-sink stays suspended until resumed, and the kiosk's
+    // pulsesink wedges on it — frozen video, no sound. Its report is kept
+    // for the controller, which retries a resume that did not complete
+    // (last_sink_resume()). The guard's destructor only backs up an early
+    // return someone forgets; it does NOT cover a throw, which nothing on
+    // this chain catches (std::terminate — the start-up recovery covers it).
+    SinkSuspension audio_handover(opts.pactl);
+    {
+        const std::string line =
+            opts.pactl ? describe_sink_report("suspended", audio_handover.suspend())
+                       : std::string("no PulseAudio runner; relying on its idle suspend");
+        std::cout << "[audio] " << line << std::endl;
+        std::ofstream log(launcher_log, std::ios::app);
+        log << "Audio hand-over: " << line << "\n";
+    }
+    auto give_back_audio = [&]() {
+        if (!opts.pactl) return;
+        last_sink_resume_ = audio_handover.resume();
+        const std::string line = describe_sink_report("resumed", last_sink_resume_);
+        std::cout << "[audio] " << line << std::endl;
+        std::ofstream log(launcher_log, std::ios::app);
+        log << "Audio hand-over: " << line << "\n";
+    };
+
     // LAST POSSIBLE MOMENT to hand over the display. The configs are
     // written; everything above needed no display at all, so the kiosk has
     // been able to keep its launch screen animating through all of it. The
@@ -680,6 +717,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     // "not launched" and let the controller's normal restore re-acquire it.
     if (session_stop_requested()) {
         std::cout << "Kiosk is shutting down; launch aborted after DRM handoff" << std::endl;
+        give_back_audio();
         return false;
     }
 
@@ -688,6 +726,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     const pid_t pid = spawn_session(spec, &spawn_error);
     if (pid <= 0) {
         std::cerr << "Failed to start RetroArch: " << spawn_error << std::endl;
+        give_back_audio();
         return false;
     }
 
@@ -716,6 +755,11 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     const int status = reap_session(pid);
     std::error_code ec;
     fs::remove(kReadyMarkerPath, ec);
+
+    // RetroArch is reaped, so its ALSA device is closed: give the sinks back
+    // to PulseAudio. Every session outcome lands here — quit, the stop
+    // policy (SIGTERM / OTA / restart button) and the startup timeout.
+    give_back_audio();
 
     std::cout << "RetroArch session: " << outcome_name(report.outcome)
               << " (" << stop_name(report.stop) << ")" << std::endl;

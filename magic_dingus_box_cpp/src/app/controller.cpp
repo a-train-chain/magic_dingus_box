@@ -1,4 +1,5 @@
 #include "controller.h"
+#include "audio_router.h"
 #include "game_launch_recovery.h"
 #include "game_launch_validation.h"
 #include "playback_reset.h"
@@ -110,7 +111,7 @@ void wait_with_callback(int milliseconds, std::function<void()> callback) {
     }
 }
 
-utils::Result<> Controller::load_item_media(AppState& state, const app::PlaylistItem& item, const std::string& playlist_directory, std::function<void()> progress_callback) {
+utils::Result<> Controller::load_item_media(AppState& state, const app::PlaylistItem& item, const std::string& playlist_directory, std::function<void()> progress_callback, double start_offset_s) {
     if (item.source_type == "local") {
         std::cout << "Starting playlist transition..." << std::endl;
 
@@ -132,8 +133,10 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         std::cout << "Loading file: " << item.path << std::endl;
         // Trim points from the playlist. These were hardcoded to 0.0/0.0, so a
         // playlist authored with in/out points played every item in full.
+        // start_offset_s: a Channel Guide tune joins the item mid-way.
         auto load_result = load_file_with_resolution(item.path, playlist_directory,
-                                                     item.start, item.end, false);
+                                                     item.start + start_offset_s,
+                                                     item.end, false);
         if (load_result) {
             std::cout << "File loaded successfully, starting playback..." << std::endl;
 
@@ -179,7 +182,8 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         // Trim points from the playlist. These were hardcoded to 0.0/0.0, so a
         // playlist authored with in/out points played every item in full.
         auto load_result = load_file_with_resolution(item.path, playlist_directory,
-                                                     item.start, item.end, false);
+                                                     item.start + start_offset_s,
+                                                     item.end, false);
         if (load_result) {
             std::cout << "File loaded successfully, starting playback..." << std::endl;
             play();
@@ -245,6 +249,10 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         state.loading_phase = "STOPPING VIDEO";
         state.loading_progress.store(0.15f);
 
+        // A video was playing when the game was picked. Read BEFORE the
+        // cleanup, which now makes is_playing() false (see below).
+        const bool video_was_playing = is_playing();
+
         // Stop GStreamer completely before launching RetroArch
         // This ensures all resources (EGL, DRM, threads) are released
         if (player_) {
@@ -255,20 +263,21 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         } // Wait for stop to complete
         wait_with_callback(300, progress_callback);
         state.loading_progress.store(0.35f);
-        
-        // Verify player stopped with retry loop
-        int retry_count = 0;
-        const int max_retries = 10;
-        while (is_playing() && retry_count < max_retries) {
-            wait_with_callback(100, progress_callback);
-            retry_count++;
+
+        // This used to poll is_playing() up to 10 x 100 ms. Before
+        // GstPlayer::forget_stream, cleanup() left that flag true, so over a playing video
+        // the poll always ran out and logged "did not stop cleanly" — about a
+        // pipeline cleanup() had already set to NULL and released; nothing
+        // could ever update the flag again until a re-initialize. So every
+        // game ever started over a playing video has had this extra second
+        // between the pipeline teardown and RetroArch's start, and nothing
+        // downstream (PulseAudio letting go of the HDMI device RetroArch
+        // opens, for one) has been measured without it. Kept as a fixed wait,
+        // only where it always happened, until it is timed on both boards.
+        if (video_was_playing) {
+            wait_with_callback(1000, progress_callback);
         }
-        
-        if (is_playing()) {
-            std::cerr << "Warning: GStreamer did not stop cleanly before RetroArch launch" << std::endl;
-        } else {
-            std::cout << "GStreamer stopped successfully" << std::endl;
-        }
+
         
         // ---- Everything DRM-INDEPENDENT happens FIRST, while we can still
         // ---- draw. See app_state.h: from release_master() onward the panel
@@ -355,6 +364,10 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         // this to sd_notify); the teardown above and the restore below stay
         // unwatched, bracketed by the session hooks.
         opts.watchdog = session_watchdog_;
+
+        // The audio hand-over (retroarch/sink_suspension.h) talks to
+        // PulseAudio through the same bounded pactl runner as apply_output.
+        opts.pactl = audio::default_runner();
 
         bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db, static_cast<int>(state.audio_settings.output), opts);
         
@@ -509,6 +522,20 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
             }
         }
 
+        // The launcher resumed the PulseAudio sinks it suspended for the game
+        // right after the reap. If one of those calls timed out (a pactl
+        // stall at game exit — page-cache eviction on a 1.5 GB Pi 4B, an SD
+        // card saturated by an upload) or failed (the device not free yet),
+        // a sink may still be suspended, and the kiosk's pulsesink wedges on
+        // it: frozen video, no sound, until a restart. Retry once here, a
+        // couple of seconds later; when the resume completed this sends
+        // nothing at all.
+        if (const auto retry = retroarch::retry_resume_if_needed(
+                retroarch_launcher_.last_sink_resume(), audio::default_runner())) {
+            std::cout << "[audio] post-game retry: " << retroarch::describe_resume_all(*retry)
+                      << std::endl;
+        }
+
         // Restore PulseAudio default sink to match user's audio output preference
         // RetroArch uses ALSA directly, so PulseAudio state may have drifted
         std::cout << "Restoring audio output after RetroArch..." << std::endl;
@@ -519,7 +546,6 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         // before returning so the main loop can always rebuild the kiosk UI.
         if (player_) {
             player_->stop();
-            std::cout << "Stopped video player after RetroArch launch" << std::endl;
         }
         prepare_kiosk_state_after_game(state);
 

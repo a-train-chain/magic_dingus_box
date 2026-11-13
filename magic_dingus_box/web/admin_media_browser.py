@@ -15,9 +15,11 @@ from pathlib import Path
 
 from flask import request
 
+
 # Same dual import form as admin.py: flat when tests put web/ on
 # sys.path, package-relative in production.
 try:
+    import timezone_apply
     import vpn_settings
     from admin_common import error_response, success_response
     from admin_vpn_config import (
@@ -32,6 +34,7 @@ try:
         PROTECTED_MOUNTPOINTS,
     )
 except ImportError:  # pragma: no cover - exercised by whichever form runs
+    from . import timezone_apply
     from . import vpn_settings
     from .admin_common import error_response, success_response
     from .admin_vpn_config import (
@@ -210,17 +213,7 @@ def register(app, ctx) -> None:
 
     def _detect_timezone() -> str:
         """Best-effort host timezone detection; falls back to UTC."""
-        try:
-            result = subprocess.run(
-                ["timedatectl", "show", "-p", "Timezone", "--value"],
-                capture_output=True, text=True, timeout=5,
-            )
-            tz = result.stdout.strip()
-            if tz:
-                return tz
-        except Exception:
-            pass
-        return "UTC"
+        return timezone_apply.read_system_timezone() or "UTC"
 
     def _docker_ps_table() -> list[dict]:
         """Return [{name, status, paused_for_playback}] for the expected

@@ -1873,6 +1873,7 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
+        --exclude 'magic_dingus_box_cpp/build.prev.*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || backup_exit=$?
@@ -2074,6 +2075,7 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
         --exclude 'magic_dingus_box_cpp/build/*' \
+        --exclude 'magic_dingus_box_cpp/build.prev.*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$content_dir/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
@@ -2539,6 +2541,7 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
+        --exclude 'magic_dingus_box_cpp/build.prev.*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$BACKUP_DIR/" "$INSTALL_DIR/" || restore_exit=$?
@@ -2702,6 +2705,7 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
+        --exclude 'magic_dingus_box_cpp/build.prev.*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$BACKUP_DIR/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?

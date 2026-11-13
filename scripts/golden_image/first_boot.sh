@@ -927,6 +927,8 @@ fi
 # true and persisted. Cloned Pis would inherit "unlocked" state and show
 # the Media Browser chip — defeating the "users won't know the feature
 # exists" UX intent. Reset the flag here so cloned Pis start locked.
+# playback.last_channel (Channel Guide) is cleared the same way: it names a
+# playlist of the source box's library.
 step_reset_settings() {
 SETTINGS_PATH="${INSTALL_DIR}/config/settings.json"
 if [[ -f "$SETTINGS_PATH" ]] && command -v python3 &>/dev/null; then
@@ -936,14 +938,23 @@ try:
     with open('$SETTINGS_PATH') as f:
         s = json.load(f)
     pb = s.get('playback', {})
+    changed = False
     if pb.get('media_browser_unlocked', False):
         pb['media_browser_unlocked'] = False
-        s['playback'] = pb
-        with open('$SETTINGS_PATH', 'w') as f:
-            json.dump(s, f, indent=2)
+        changed = True
         print('reset media_browser_unlocked → false')
     else:
         print('media_browser_unlocked already false (or absent)')
+    # Channel Guide: the source box's last-tuned channel is a playlist
+    # identity of ITS library. A new box starts on channel 01 instead.
+    if pb.get('last_channel', ''):
+        pb['last_channel'] = ''
+        changed = True
+        print('reset last_channel → empty')
+    if changed:
+        s['playback'] = pb
+        with open('$SETTINGS_PATH', 'w') as f:
+            json.dump(s, f, indent=2)
 except Exception as e:
     print(f'could not reset: {e}', file=sys.stderr)
 " 2>&1 | sed 's/^/    /' || true

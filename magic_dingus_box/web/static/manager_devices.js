@@ -287,11 +287,27 @@ async function manualConnect() {
     }
 }
 
+function reportBrowserTimeZone() {
+    try {
+        const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (!zone) return;
+        Promise.resolve(fetchWithCsrfRetry(`${currentDevice.url}/admin/system/timezone`, {
+            method: 'POST',
+            headers: getCsrfHeaders(),
+            body: JSON.stringify({ zone }),
+        })).catch(() => {});
+    } catch (e) { /* never break page load */ }
+}
+
 async function loadAllContentFromDevice() {
     if (!currentDevice) return;
 
     // Fetch CSRF token before making any state-changing requests
     await fetchCsrfToken();
+
+    // Report this browser's time zone (the box shows a wall clock). Once per
+    // device load, never blocking, any failure ignored.
+    reportBrowserTimeZone();
 
     await loadVideos();
     await loadROMs();

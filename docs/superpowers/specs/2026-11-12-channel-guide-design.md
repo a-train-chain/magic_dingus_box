@@ -58,7 +58,9 @@ that was already running.
   in memory — no file or network access per frame.
 - Tuning must never feel like "starting a file": no visible jump to 0:00, no
   black gap longer than today's playlist switch.
-- A box that never touches the setting must not change at all.
+- A box that never touches the setting must not change at all. (The
+  system time zone is the one exception, by decision: see "Clock", the
+  2026-11-13 clarification.)
 - No unreadable grid: no cell text below the kiosk's 14 px body size on the
   720-tall canvas, nothing outside the bezel's visible opening.
 
@@ -161,6 +163,11 @@ lowest channel with a schedule.
   call, within decision 7]
 - The guide is not opened by these re-tunes; the video simply comes back,
   as when a TV is switched on.
+- After a game the video always comes back full screen, even when the
+  viewer had the guide open when they launched it (Settings over the
+  guide → Video Games): a game session takes the guide back from the
+  viewer, so the post-game re-tune closes it. [owner decision,
+  2026-11-13, after the Pi 5 test]
 - List style keeps today's behaviour on all of these paths.
 
 ### Clock
@@ -191,6 +198,18 @@ lowest channel with a schedule.
     connection, rather than resetting to UTC; [Claude's call]
   - the zone is per-box state: excluded from backup/restore, which moves
     content between boxes.
+  - **Clarification (2026-11-13), against the anti-goal "a box that never
+    touches the setting must not change at all":** the browser's zone is
+    applied — and `services/.env` `TZ=` rewritten — on EVERY box, List
+    style included, not only on boxes in Channel Guide style. A correct
+    system clock zone is right for the whole box (logs, the media
+    containers, anything that prints local time), so this is kept
+    deliberately; the anti-goal covers what the kiosk shows and does, not
+    the system zone.
+  - A browser that reports UTC to hide its zone (Firefox
+    resistFingerprinting, Tor, Brave's strict mode) never moves a box
+    already on a named zone: a UTC report then changes nothing. [Claude's
+    call, 2026-11-13 final review]
 
 ## Controls (Channel Guide style)
 
@@ -253,12 +272,24 @@ MDB bezels).
   tuned channel, or "PRESS TO WATCH" + "joins at m:ss" when the cursor is on
   another channel. At 640×480 the artist and NEXT rows and the source label
   are dropped.
+  On the tuned channel the panel describes the picture: the progress bar
+  and start/end times come from the player's position and the item's
+  length — also when the playing item IS the on-air airing (a join's seek
+  lands on the keyframe before its target, so the picture can run up to a
+  GOP behind the schedule) — while NEXT stays the schedule's next airing,
+  timed at the end the panel shows (never "8:11 – 8:21 · NEXT 8:20").
+  [owner decision, 2026-11-13, after the Pi 5 test]
 - **Grid**: header row = date (dim) + time ticks (steel blue, first with
   AM/PM). Each row = channel cell (number in Zen Dots, or the shuffle icon for
-  00; short name in mono caps) + program cells positioned on the time axis,
+  00; short name in mono caps — on CRT Native in 12 px, from x 36 with a
+  4 px right margin, so ~12 letters fit the 132 px column instead of 9;
+  owner decision 2026-11-13 after the Pi 5 test) + program cells positioned on the time axis,
   3 px gaps showing the background as grid lines. A cell narrower than 30 px
   shows no text; narrower than 64 px shows no artist; a program that began
-  before the window starts with "◂". A red (`highlight2`) "now" line with a
+  before the window starts with "◂". A cell whose label would be only "…"
+  (or "◂ …": not one character of the title fits) shows no text either —
+  a lone ellipsis reads as a stray dash — and an artist line likewise.
+  [2026-11-13, after the Pi 5 test] A red (`highlight2`) "now" line with a
   small marker in the header crosses all rows.
 - **Colours** (all existing tokens): background `bg`; cells and panel
   `bg_lift` (the only off-background fill); text `fg` / `dim`; **gold** =
@@ -268,7 +299,9 @@ MDB bezels).
   **red** = the now line only.
 - **Type**: Zen Dots for clock, channel numbers, playlist titles; DejaVu Sans
   Mono for everything else; sizes from the existing theme (14 / 18 / 22 …),
-  with 13 px only for the hint row and small labels as in the mockup.
+  with 13 px only for the hint row and small labels as in the mockup, and
+  12 px for the CRT canvas's channel names (the 14 px floor below binds the
+  720-tall canvas).
 - **Hints row**: knob icon + "TURN channels", "PRESS watch", "PRESS on green to
   hide guide" (TV); first two only on CRT. Logo at the right end.
 - CRT effects (scanlines, warmth…) and the bezel apply exactly as to the list

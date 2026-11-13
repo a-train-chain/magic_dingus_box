@@ -353,6 +353,9 @@ unset _u
 log "[1/5] Periodic timers + cascade watcher stopped for the duration of the clone"
 
 systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
+# The kiosk is stopped, so a build.prev.* left by sync_source_box.sh / deploy_cpp.sh
+# (the old kiosk's cwd while it ran) is nobody's cwd any more: don't ship it.
+rm -rf "${CPP_DIR}"/build.prev.* 2>/dev/null || true
 # PulseAudio is its own unit now, so stopping the kiosk no longer stops it.
 # Quiesce it explicitly: a running daemon keeps rewriting its tdb state in
 # ~/.config/pulse, and a copy caught mid-write would ship in every clone.

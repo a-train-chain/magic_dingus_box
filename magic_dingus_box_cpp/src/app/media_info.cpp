@@ -312,8 +312,12 @@ bool MediaInfoStore::poll() {
     std::optional<MediaInfoMap> next;
     Edits older;
     Edits newer;
+    bool read_finished = false;
     {
         std::lock_guard<std::mutex> lk(mu_);
+        // Published with the result it came with (run_job sets both under
+        // one lock): the map adopted below is that read's.
+        read_finished = read_finished_;
         if (result_) {
             next = std::move(result_);
             result_.reset();
@@ -321,6 +325,7 @@ bool MediaInfoStore::poll() {
             newer = pending_;
         }
     }
+    if (read_finished) first_read_finished_ = true;
     retry_stranded_work();
     if (!next) return false;
     // What the worker read predates every edit still in flight or queued:
@@ -411,6 +416,10 @@ bool MediaInfoStore::run_job() {
 
     std::lock_guard<std::mutex> lk(mu_);
     if (on_disk) result_ = std::move(on_disk);
+    // A read was attempted and is over, whatever came of it (read, no file,
+    // corrupt, an I/O error, an exception): MediaInfoStore::
+    // first_read_finished. A job still stuck on the card never gets here.
+    read_finished_ = true;
     if (!ok) {
         // Back in the queue, behind any newer edit for the same video.
         for (const auto& [key, crop] : inflight_) pending_.try_emplace(key, crop);
@@ -422,14 +431,18 @@ bool MediaInfoStore::run_job() {
 
 bool MediaInfoStore::read_merge_write(const Edits& batch,
                                       std::optional<MediaInfoMap>& on_disk) {
-    // Only a write takes the lock: a read sees a whole file either way.
+    // Only a write takes the lock: a read sees a whole file either way. A
+    // lock that cannot be taken keeps the edits for the next write, but the
+    // file is still read — the boot read can share this job with an early
+    // crop toggle, and the Channel Guide's power-on tune waits for that read.
     std::optional<SidecarLock> lock;
-    if (!batch.empty()) {
+    bool may_write = !batch.empty();
+    if (may_write) {
         lock.emplace(lock_path_);
         if (!lock->held()) {
             LOG_WARN("media_info: cannot lock {} (errno {}) — {} change(s) kept "
                      "for the next write", lock_path_, lock->error(), batch.size());
-            return false;
+            may_write = false;
         }
     }
 
@@ -443,11 +456,12 @@ bool MediaInfoStore::read_merge_write(const Edits& batch,
     if (!parse_root(text, root)) {
         LOG_WARN("media_info: {} is not valid JSON of the expected shape — every "
                  "video reads as cropped{}", path_,
-                 batch.empty() ? "" : "; this write replaces it");
+                 may_write ? "; this write replaces it" : "");
         root = fresh_root();
     }
     on_disk = map_from_root(root);
     if (batch.empty()) return true;
+    if (!may_write) return false;  // read, but the edits wait for the lock
 
     // Merge into what is on disk NOW (the web admin may have written since
     // this process last read it), never into the kiosk's own map.

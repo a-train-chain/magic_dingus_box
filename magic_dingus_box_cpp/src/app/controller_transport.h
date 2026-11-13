@@ -35,6 +35,13 @@ public:
         return controller_.load_playlist_item(state, playlist, item_index,
                                               playlist_directory);
     }
+    utils::Result<> load_playlist_item_at(AppState& state, const Playlist& playlist,
+                                          int item_index,
+                                          const std::string& playlist_directory,
+                                          double offset_s) override {
+        return controller_.load_playlist_item(state, playlist, item_index,
+                                              playlist_directory, nullptr, offset_s);
+    }
     void load_next_item(AppState& state, const std::string& dir) override {
         controller_.load_next_item(state, dir);
     }
@@ -57,9 +64,15 @@ public:
     uint64_t stream_generation() const override { return player_.stream_generation(); }
     bool has_error() const override { return player_.has_error(); }
     double player_position() const override { return player_.get_position(); }
+    std::string pipeline_state() const override { return player_.describe_state(); }
 
     std::chrono::steady_clock::time_point now() const override {
         return std::chrono::steady_clock::now();
+    }
+    double wall_now_utc() const override {
+        return std::chrono::duration<double>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
     }
 
 private:
