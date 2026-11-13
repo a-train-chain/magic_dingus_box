@@ -28,12 +28,15 @@ try:
         success_response,
     )
     from admin_security import _is_within
+    import media_info
+    import media_probe
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _sanitize_filename, _staged_save_upload, error_response,
         success_response,
     )
     from .admin_security import _is_within
+    from . import media_info, media_probe
 
 
 def _max_transcodes_for(pi_model: str, env_value: Optional[str]) -> int:
@@ -110,9 +113,42 @@ def register(app, ctx) -> None:
     media_dir = ctx.media_dir
     require_csrf = ctx.require_csrf
     upload_temp_dir = ctx.upload_temp_dir
+    _poke_kiosk_reload = ctx._poke_kiosk_reload
     # Defined/re-exported in admin.py; tests monkeypatch admin.<name>, so
     # these are shims that look the name up in admin at call time.
     _detect_pi_model = ctx._detect_pi_model
+
+    def _record_media_info(published: Path, fit_mode: Optional[str]) -> None:
+        """Record a just-published video in media_info.json, then poke the
+        kiosk once. Never raises: the video is already on disk, and a failed
+        write of this best-effort store must not fail the upload (the kiosk
+        then plays it cropped, the default).
+
+        Writes the PUBLISHED file's length and displayed aspect. `fit_mode`
+        is the upload's Framing choice and sets the video's starting Crop:
+        'fit' writes crop: false; 'crop' clears it (absent = cropped — never
+        written as true), so a stale entry left by a deleted video of the same
+        name cannot hand its setting on. None (the raw upload, which has no
+        Framing choice) leaves an existing setting alone. A file the probe
+        cannot read gets nothing written."""
+        try:
+            key = media_info.media_key(published, data_dir)
+            probe = media_probe.probe_source(published) if key else None
+            if probe is None:
+                print(f"[media] no media info recorded for {published.name}: "
+                      + ("could not probe it" if key else
+                         "outside the data directory"), file=sys.stderr)
+                return
+            fields = {'duration_s': probe['duration_s'],
+                      'display_aspect': probe['display_aspect']}
+            if fit_mode is not None:
+                fields['crop'] = False if fit_mode == 'fit' else None
+            media_info.update(data_dir, key, **fields)
+        except Exception as e:
+            print(f"[media] could not record media info for "
+                  f"{published.name}: {e}", file=sys.stderr)
+            return
+        _poke_kiosk_reload("media_info")
 
     # ===== MEDIA MANAGEMENT =====
 
@@ -191,6 +227,7 @@ def register(app, ctx) -> None:
             return error_response("VALIDATION_ERROR", "Invalid path")
 
         _staged_save_upload(f, out)
+        _record_media_info(out, None)
         return success_response(data={"path": str(out.relative_to(data_dir.parent))}, message="File uploaded")
 
     @app.delete("/admin/media/<path:filepath>")
@@ -218,7 +255,7 @@ def register(app, ctx) -> None:
 
     # ===== VIDEO TRANSCODING =====
 
-    # Resolution presets for transcoding.
+    # Quality presets for transcoding — the 4:3 box a master must cover.
     #
     # These are MASTERS, not display formats: the kiosk scales whatever is
     # stored to whichever display mode is active, so the right strategy is
@@ -226,40 +263,22 @@ def register(app, ctx) -> None:
     # the rest. Storing a display-resolution file is lossy in one direction
     # only — you can always go down, never back up.
     #
-    # Aspect matters as much as resolution. The main kiosk renders playlist
-    # video into a 4:3 viewport (gst_renderer letterbox: vp_w = canvas_h*4/3
-    # -> 960x720 at 720p, 1440x1080 at 1080p), which is the deliberate
-    # CRT look. A 16:9 master gets letterboxed INSIDE that pillarbox and
-    # ends up smaller on screen, so 4:3 masters are correct for playlist
-    # content even on a widescreen TV.
-    #
-    # 'crt_hd' is the default: 4:3 at 720p height. It is 2.25x the detail of
-    # the old 640x480 default, lands 1:1 in the 4:3 area at 720p output,
-    # upscales 1.5x at 1080p, and downscales cleanly for a real CRT through
-    # the HDMI->composite converter (which is a downscale either way — the
-    # Pi 5 has no composite out, so 640x480 was never a pixel-exact path).
-    TRANSCODE_RESOLUTIONS = {
-        # 4:3 masters — playlist content, both display modes
-        'crt':     {'width': 640,  'height': 480},   # legacy/smallest
-        'crt_hd':  {'width': 960,  'height': 720},   # DEFAULT
-        'crt_fhd': {'width': 1440, 'height': 1080},  # max detail, ~2.25x the files
-        # 16:9 master — only for genuinely widescreen source material
-        'modern':  {'width': 1280, 'height': 720},
-    }
+    # A master keeps the SOURCE's aspect: the kiosk crops or fits each video
+    # into its 4:3 area at playback, per video (media_info.json), so the
+    # file itself is never cropped or padded. media_probe.master_size sizes
+    # it to cover the preset's box (Crop-on playback is never upscaled),
+    # never up, never outside 1920x1080. 'crt_hd' (the default) stores a
+    # 4:3 source at 960x720 — 1:1 in the 4:3 area at 720p output — and a
+    # 16:9 one at 1280x720. 'modern' is an alias of 'crt_hd'.
+    TRANSCODE_RESOLUTIONS = media_probe.TRANSCODE_RESOLUTIONS
+    DEFAULT_TRANSCODE = media_probe.DEFAULT_TRANSCODE
 
-    # Default master. Changing this affects NEW uploads only; existing
-    # files are untouched and cannot regain detail they never had.
-    DEFAULT_TRANSCODE = 'crt_hd'
-
-    # Framing policy for transcoded masters.
-    #   'crop' — scale to FILL the 4:3 frame and trim the overflow (the
-    #            original CRT look; a widescreen or vertical source loses
-    #            its edges). Historical behavior, so it stays the default
-    #            for API callers that don't send the field.
-    #   'fit'  — scale the WHOLE frame inside the 4:3 canvas and pad the
-    #            rest with black bars (nothing trimmed — vertical phone
-    #            clips get side borders, widescreen gets top/bottom bars).
-    # Both modes respect the no-upscale guard in run_transcode_job.
+    # The upload's Framing choice. It no longer changes the file: it is the
+    # new video's starting Crop setting (_record_media_info), which the
+    # owner can change later per video.
+    #   'crop' — fill the 4:3 area, trimming the overflow (the default, and
+    #            what a video with no stored setting does).
+    #   'fit'  — show the whole frame with black borders (crop: false).
     TRANSCODE_FIT_MODES = ('crop', 'fit')
     DEFAULT_FIT_MODE = 'crop'
 
@@ -370,70 +389,26 @@ def register(app, ctx) -> None:
         for jid in stale:
             jobs_dict.pop(jid, None)
 
-    def _probe_source_dimensions(file_path: Path):
-        """Return (width, height) of the first video stream, or None.
-
-        Best-effort: any probe failure returns None and the caller falls
-        back to the preset dimensions unchanged (pre-guard behavior)."""
-        try:
-            result = subprocess.run([
-                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                '-show_entries', 'stream=width,height', '-of', 'csv=p=0',
-                str(file_path)
-            ], capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                return None
-            parts = result.stdout.strip().split(',')
-            w, h = int(parts[0]), int(parts[1])
-            return (w, h) if w > 0 and h > 0 else None
-        except Exception:
-            return None
-
     def run_transcode_job(job_id: str, input_path: Path, output_path: Path, resolution: str, normalize_audio: bool = False, fit_mode: str = DEFAULT_FIT_MODE):
         """Background thread function to run FFmpeg transcoding."""
         job = transcode_jobs[job_id]
-        res = TRANSCODE_RESOLUTIONS.get(resolution, TRANSCODE_RESOLUTIONS[DEFAULT_TRANSCODE])
-        width, height = res['width'], res['height']
 
-        # Never upscale. A preset is a MAXIMUM master size, not a canvas to
-        # inflate into: encoding a 640x480 source at 960x720 adds zero detail,
-        # doubles the file, and bakes in a lossy re-encode of an upscale.
-        # Dimensions floor to even for libx264.
-        src_dims = _probe_source_dimensions(input_path)
-
-        if fit_mode == 'fit':
-            # Whole frame INSIDE the 4:3 canvas, black bars fill the rest.
-            # The canvas stays at the chosen preset size (a consistent 4:3
-            # master); the CONTENT is scaled by min(fit, 1.0) — never
-            # enlarged. A source smaller than the canvas sits centered at
-            # its native size.
-            if src_dims:
-                src_w, src_h = src_dims
-                content_scale = min(width / src_w, height / src_h, 1.0)
-                content_w = max(2, int(src_w * content_scale) & ~1)
-                content_h = max(2, int(src_h * content_scale) & ~1)
-                vf = (f'scale={content_w}:{content_h},'
-                      f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2')
-            else:
-                # Probe failed — let ffmpeg compute the fit. May upscale a
-                # tiny source up to the canvas; acceptable fallback for a
-                # file we couldn't inspect.
-                vf = (f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
-                      f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2')
+        # The master keeps the source's displayed shape (media_probe): no
+        # crop, no pad, never upscaled. ffmpeg auto-rotates its input before
+        # the filters, so a sideways phone clip is sized by its UPRIGHT
+        # dimensions, which is what the probe reports. setsar=1: the target
+        # size already carries the display aspect, so the pixels are square.
+        src = media_probe.probe_source(input_path)
+        if src is not None:
+            w, h = media_probe.master_size(
+                src['width'] * src['sar'], src['height'], resolution)
+            vf = f'scale={w}:{h},setsar=1'
         else:
-            # 'crop': scale to FILL the 4:3 frame, center-crop the overflow
-            # (no bars, no distortion). Never upscale: shrink the target box
-            # to fit inside the source while preserving the preset's aspect
-            # policy, so the crop semantics still apply to sources whose
-            # aspect differs.
-            if src_dims:
-                src_w, src_h = src_dims
-                if src_w < width or src_h < height:
-                    shrink = min(src_w / width, src_h / height)
-                    width = max(2, int(width * shrink) & ~1)
-                    height = max(2, int(height * shrink) & ~1)
-            vf = (f'scale={width}:{height}:force_original_aspect_ratio=increase,'
-                  f'crop={width}:{height}')
+            # Probe failed — let ffmpeg bound it: inside 1920x1080, shape
+            # kept (pixel aspect too), never enlarged. No preset cover-sizing
+            # for a file we couldn't inspect.
+            vf = ("scale=w='min(iw,1920)':h='min(ih,1080)':"
+                  "force_original_aspect_ratio=decrease:force_divisible_by=2")
 
         # Bound concurrent encodes. Each transcode is a full libx264 encode;
         # on a Pi 4 sharing RAM/CPU with the kiosk (and possibly the Media
@@ -461,8 +436,7 @@ def register(app, ctx) -> None:
         staging_path = output_path.with_name(
             f"{output_path.name}.{job_id.replace('-', '')[:12]}.part")
 
-        # Build FFmpeg command with the framing filter resolved above
-        # (crop = fill the frame, fit = whole frame + black bars).
+        # Build FFmpeg command with the size filter resolved above.
         ffmpeg_cmd = ['ffmpeg', '-y']
         if _PI_MODEL != 'pi5':
             # A one-job semaphore still lets FFmpeg consume every core.
@@ -521,14 +495,8 @@ def register(app, ctx) -> None:
             job['status'] = 'transcoding'
             job['message'] = 'Starting FFmpeg...'
 
-            # Get video duration for progress calculation
-            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                        '-of', 'default=noprint_wrappers=1:nokey=1', str(input_path)]
-            try:
-                duration_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-                duration = float(duration_result.stdout.strip())
-            except Exception:
-                duration = 0
+            # Video duration for the progress calculation (0 = unknown).
+            duration = (src or {}).get('duration_s') or 0
 
             # Run FFmpeg. Progress goes to stdout (`-progress pipe:1`), which
             # we parse below; the ffmpeg banner + decoder warnings/errors go
@@ -588,6 +556,9 @@ def register(app, ctx) -> None:
                 # Atomic publish: the finished encode appears in the media
                 # library all at once, or not at all.
                 os.replace(staging_path, output_path)
+                # Before 'complete', so a client that sees the job finish
+                # also sees the video's media info.
+                _record_media_info(output_path, fit_mode)
                 job['status'] = 'complete'
                 job['progress'] = 100
                 job['message'] = 'Transcoding complete!'
@@ -745,56 +716,40 @@ def register(app, ctx) -> None:
 
     def probe_video(file_path: Path, target_resolution: str) -> dict:
         """Probe video file to check if it needs transcoding."""
-        target = TRANSCODE_RESOLUTIONS.get(target_resolution, TRANSCODE_RESOLUTIONS[DEFAULT_TRANSCODE])
-        target_w, target_h = target['width'], target['height']
-
         try:
-            # Run ffprobe to get video info
-            probe_cmd = [
-                'ffprobe', '-v', 'error',
-                '-select_streams', 'v:0',
-                '-show_entries', 'stream=width,height,codec_name,pix_fmt,profile,level,avg_frame_rate,r_frame_rate',
-                '-show_entries', 'format=format_name',
-                '-of', 'json',
-                str(file_path)
-            ]
-            result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-
-            if result.returncode != 0:
+            data = media_probe.run_ffprobe(file_path)
+            if data is None:
                 return {'needs_transcode': True, 'reason': 'Could not probe video'}
 
-            import json as json_module
-            data = json_module.loads(result.stdout)
-
-            # Extract video stream info
-            streams = data.get('streams', [])
-            if not streams:
+            geo = media_probe.geometry(data)
+            if geo is None:
                 return {'needs_transcode': True, 'reason': 'No video stream found'}
 
-            stream = streams[0]
-            width = stream.get('width', 0)
-            height = stream.get('height', 0)
+            stream = data['streams'][0]
+            width, height = stream.get('width', 0), stream.get('height', 0)
             codec = stream.get('codec_name', '')
 
             # Extract container format
-            format_name = data.get('format', {}).get('format_name', '')
+            format_name = (data.get('format') or {}).get('format_name', '')
             is_mp4 = 'mp4' in format_name or 'mov' in format_name
 
             # Check if video is already compatible.
             #
-            # "Compatible" is NOT an exact dimension match: presets are
-            # MAXIMUM master sizes (see TRANSCODE_RESOLUTIONS), so a
-            # smaller-or-equal source with the same aspect ratio has nothing
-            # to gain from re-encoding — transcoding would only add
-            # generation loss. This keeps legacy 640x480 masters re-uploaded
-            # under the 960x720 default as byte-identical direct copies.
-            # A source with a DIFFERENT aspect still transcodes so the
-            # preset's center-crop policy applies (capped at source size by
-            # run_transcode_job's no-upscale guard).
-            fits_target = (0 < width <= target_w and 0 < height <= target_h)
-            same_aspect = (height > 0 and
-                           abs(width / height - target_w / target_h) < 0.02)
-            is_correct_resolution = fits_target and same_aspect
+            # "Compatible" is the master this upload would be transcoded to
+            # anyway (media_probe.master_size: the source's own shape,
+            # covering the preset's box, never upscaled, inside 1920x1080),
+            # stored upright with square pixels — re-encoding it would only
+            # add generation loss. This keeps legacy 640x480 masters, and a
+            # 1280x720 widescreen one, byte-identical direct copies under the
+            # 960x720 default. A rotate tag or non-square pixels still
+            # transcode: ffmpeg bakes the rotation and the pixel shape into
+            # the master, so the kiosk never has to honour either.
+            master = media_probe.master_size(
+                geo['width'] * geo['sar'], geo['height'], target_resolution)
+            is_master_size = master == (geo['width'], geo['height'])
+            is_upright = geo['rotation'] == 0
+            is_square = geo['sar'] == 1.0
+            is_correct_resolution = is_master_size and is_upright and is_square
             is_h264 = codec in ('h264', 'libx264')
 
             # FFprobe names full-range 8-bit 4:2:0 yuvj420p; both are
@@ -824,10 +779,13 @@ def register(app, ctx) -> None:
                 }
             else:
                 reasons = []
-                if not fits_target:
-                    reasons.append(f'Resolution {width}x{height} exceeds {target_w}x{target_h}')
-                elif not same_aspect:
-                    reasons.append(f'Aspect of {width}x{height} differs from {target_w}x{target_h}')
+                if not is_upright:
+                    reasons.append(f'Video is rotated {geo["rotation"]}°')
+                if not is_square:
+                    reasons.append('Video has non-square pixels')
+                elif not is_master_size:
+                    reasons.append(f'Resolution {geo["width"]}x{geo["height"]} '
+                                   f'is larger than its {master[0]}x{master[1]} master')
                 if not is_h264:
                     reasons.append(f'Codec {codec} is not H.264')
                 if not is_mp4:
@@ -924,6 +882,7 @@ def register(app, ctx) -> None:
                 shutil.move(str(temp_input), str(output_path))
             finally:
                 _release_media_output(output_path)
+            _record_media_info(output_path, fit_mode)
 
             return success_response(data={
                 'action': 'direct',

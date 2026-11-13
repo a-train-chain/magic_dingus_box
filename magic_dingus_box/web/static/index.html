@@ -240,9 +240,10 @@
                             <div class="upload-content" id="libraryUploadContent" style="display: none;">
                                 <div class="resolution-row">
                                     <label>Quality:</label>
-                                    <!-- Values must match TRANSCODE_RESOLUTIONS in admin_media.py;
-                                         crt_hd is the master default (4:3, 1:1 in the kiosk's
-                                         4:3 viewport at 720p output). -->
+                                    <!-- Values must match TRANSCODE_RESOLUTIONS in media_probe.py;
+                                         crt_hd is the master default. A master keeps the video's
+                                         own shape, covering the preset's 4:3 box (960x720 for a
+                                         4:3 video, 1280x720 for 16:9). -->
                                     <select id="targetResolution" class="resolution-select-compact">
                                         <option value="crt_hd" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> HD 720 (960×720, recommended)</option>
                                         <option value="crt"><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> Classic 480 (640×480, smaller files)</option>
@@ -250,18 +251,23 @@
                                 </div>
                                 <div class="resolution-row">
                                     <label>Framing:</label>
-                                    <!-- Values must match TRANSCODE_FIT_MODES in admin_media.py. -->
+                                    <!-- Values must match TRANSCODE_FIT_MODES in admin_media.py.
+                                         The choice is the new video's starting Crop setting in
+                                         media_info.json; the file itself is never cropped. -->
                                     <select id="framingMode" class="resolution-select-compact">
                                         <option value="crop" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> Fill screen — crop edges (TV look)</option>
                                         <option value="fit"><svg class="ic" aria-hidden="true"><use href="#ic-monitor"/></svg> Show everything — add borders</option>
                                     </select>
                                 </div>
                                 <div style="margin: 0.25rem 0 0.5rem; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.35;">
-                                    <strong>Fill screen</strong> zooms in to fill the whole 4:3 picture — widescreen
-                                    and phone videos get their edges trimmed off.
-                                    <strong>Show everything</strong> keeps the full video and adds black borders
-                                    instead (sides for vertical phone videos, top/bottom for widescreen) — nothing
-                                    is cut off. Neither option ever upscales your video.
+                                    Framing sets how a new video starts out on the TV:
+                                    <strong>Fill screen</strong> zooms in to fill the whole 4:3 picture, cropping
+                                    the edges of widescreen and phone videos;
+                                    <strong>Show everything</strong> shows the whole video with black borders.
+                                    The file itself is never cropped, so you can change this later for each video.
+                                    Widescreen videos are now stored at their full width — a 16:9 video at the
+                                    default quality is 1280×720, about a third bigger than before. Uploads are
+                                    never upscaled.
                                 </div>
                                 <div class="normalize-row" style="margin-bottom: 0.5rem;">
                                     <label
