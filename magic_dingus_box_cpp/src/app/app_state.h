@@ -298,7 +298,8 @@ public:
     //   or an item's natural end — never a load alone); the
     //   nothing-playing rule skips them.
     // guide_wait_until_utc: after a failed item, the UTC second its
-    //   scheduled slot ends — the channel is not re-tuned before then.
+    //   scheduled slot ends (at most its length after the failure) — the
+    //   channel is not re-tuned before then.
     int tuned_channel = -1;
     std::vector<int> guide_gave_up;
     double guide_wait_until_utc = 0;

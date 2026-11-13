@@ -130,6 +130,32 @@ TEST_CASE("build_channels decides which items are scheduled", "[channel_schedule
     CHECK(ch[1].total_s == Approx(135));
 }
 
+TEST_CASE("items shorter than 3 s are left out of the schedule", "[channel_schedule]") {
+    // A sub-second item would inflate the guide's lineup (thousands of
+    // slots per layout) and could never confirm its own playback.
+    auto short_trim = item("media/t.mp4");
+    short_trim.start = 10;
+    short_trim.end = 12.9;  // 2.9 s
+    auto exact = item("media/e.mp4");
+    exact.start = 1;
+    exact.end = 4;  // 3 s: kept
+    auto rows = ui_rows({{short_trim, item("media/blip.mp4"), exact, item("media/ok.mp4"),
+                          item("media/tail.mp4")}});
+    // tail.mp4 is 20 s long but starts 18 s in: 2 s playable.
+    rows[1].items[4].start = 18;
+    auto ch = app::build_channels(rows, durations({{"media/t.mp4", 99},
+                                                   {"media/blip.mp4", 0.4},
+                                                   {"media/ok.mp4", 30},
+                                                   {"media/tail.mp4", 20}}));
+    REQUIRE(ch[1].items.size() == 2);
+    CHECK(ch[1].items[0].item == 2);
+    CHECK(ch[1].items[0].length_s == Approx(3));
+    CHECK(ch[1].items[1].item == 3);
+    CHECK(ch[1].total_s == Approx(33));
+    CHECK(ch[0].items.size() == 2);  // the mix takes only what the rows scheduled
+    CHECK(app::kMinScheduledItemS == 3.0);
+}
+
 TEST_CASE("Master Shuffle holds every item once, in a stable order", "[channel_schedule]") {
     std::vector<app::PlaylistItem> a, b;
     app::MediaInfoMap info;

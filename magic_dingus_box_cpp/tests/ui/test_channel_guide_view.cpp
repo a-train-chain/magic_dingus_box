@@ -605,3 +605,48 @@ TEST_CASE("CRT: the playing item's panel keeps the CRT's drops", "[guide_view]")
     CHECK_FALSE(v.panel.show_artist);
     CHECK_FALSE(v.panel.show_next);
 }
+
+TEST_CASE("joins at m:ss is the tune's own join point", "[guide_view]") {
+    // With under 2 s of the on-air item left a tune starts the next item at
+    // 0:00 (app::join_point); the note must say so, not 9:59.
+    Fixture f;
+    auto in = f.in();
+    in.cursor.row = 2;
+    in.now_utc = E + 8 * 3600 + 20 * 60 - 1.0;  // 8:19:59: Show 2-1 has 1 s left
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.join_note == "joins at 0:00");
+    in.now_utc = E + 8 * 3600 + 20 * 60 - 2.0;  // 2 s left: still joined
+    v = ui::layout_channel_guide(in);
+    CHECK(v.panel.join_note == "joins at 9:58");
+}
+
+TEST_CASE("CRT geometry: ticks, now line and cells in exact px", "[guide_view]") {
+    // 640x480: grid x24 w592, channel column 132, a 15-minute window.
+    // px per second = (592 - 132 - 3) / 900 = 0.50778; cells start at 135.
+    Fixture f;
+    auto v = ui::layout_channel_guide(f.in(true));
+    CHECK(v.grid.rect.x == 24);
+    CHECK(v.grid.rect.y == 206);
+    CHECK(v.grid.rect.w == 592);
+    CHECK(v.grid.header_h == 24);
+    CHECK(v.grid.row_h == 40);
+    CHECK(v.grid.column_w == 132);
+    REQUIRE(v.grid.ticks.size() == 3);
+    CHECK(v.grid.ticks[0].label == "8:10 AM");
+    CHECK(v.grid.ticks[1].label == "8:15");
+    CHECK(v.grid.ticks[2].label == "8:20");
+    CHECK(v.grid.ticks[0].x == 135);  // 135
+    CHECK(v.grid.ticks[1].x == 287);  // 135 + 152.33
+    CHECK(v.grid.ticks[2].x == 440);  // 135 + 304.67
+    CHECK(v.grid.now_x == 271);       // 135 + 270 s * 0.50778 - 1 = 271.1
+    REQUIRE(v.grid.rows.size() == 5);
+    CHECK(v.grid.rows[1].y == 24 + 40);
+    auto& cells = v.grid.rows[1].cells;  // 8:10-8:20, then 8:20 to the window's end
+    REQUIRE(cells.size() == 2);
+    CHECK(cells[0].x == 135);
+    CHECK(cells[0].w == 302);  // 440 - 135 - 3
+    CHECK(cells[1].x == 440);
+    CHECK(cells[1].w == 149);  // 592 - 440 - 3
+    CHECK(cells[0].show_text);
+    CHECK_FALSE(cells[0].show_artist);
+}

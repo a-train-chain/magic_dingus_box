@@ -323,6 +323,7 @@ bool MediaInfoStore::poll() {
     }
     retry_stranded_work();
     if (!next) return false;
+    first_read_done_ = true;  // an answer, adopted below (changed or not)
     // What the worker read predates every edit still in flight or queued:
     // lay them back on top, oldest first, or a reload (or the result of an
     // earlier write) would undo them on screen.

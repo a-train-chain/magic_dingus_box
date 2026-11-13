@@ -21,6 +21,7 @@ AutoTuneInput ready() {
     AutoTuneInput in;
     in.guide_style = true;
     in.intro_complete = true;
+    in.media_info_read = true;
     in.on_main_screen = true;
     in.video_active = false;
     in.switch_pending = false;
@@ -45,6 +46,11 @@ TEST_CASE("auto-tune: each gate alone blocks", "[auto_tune]") {
 
     SECTION("List style") { in.guide_style = false; }
     SECTION("the intro is not over") { in.intro_complete = false; }
+    SECTION("the media info store's first read has not landed") {
+        // No intro (or a failed one): the rule would run before any length
+        // but the trimmed items' is known, and tune the wrong channel.
+        in.media_info_read = false;
+    }
     SECTION("off the main screen") { in.on_main_screen = false; }
     SECTION("a video plays") { in.video_active = true; }
     SECTION("a switch is pending") { in.switch_pending = true; }
@@ -194,4 +200,26 @@ TEST_CASE("auto-tune: nothing with a schedule tunes nothing", "[auto_tune]") {
     in.tunable.clear();  // no playlists at all
     in.last_channel = -1;
     CHECK(decide_auto_tune(in) == none);
+}
+
+TEST_CASE("auto-tune: the last channel's row is resolved only when it can change",
+          "[auto_tune]") {
+    // Every channel given up: the gates stay open every frame. The identity
+    // scan behind the row must not run (and allocate) on each of them.
+    app::LastChannelRowCache cache;
+    int scans = 0;
+    auto resolve = [&scans](const std::string& id) {
+        ++scans;
+        return id == "path:/p/a.yaml" ? 3 : -1;
+    };
+    for (int frame = 0; frame < 100; ++frame) {
+        CHECK(cache.get("path:/p/a.yaml", 7, resolve) == 3);
+    }
+    CHECK(scans == 1);
+    CHECK(cache.get("path:/p/a.yaml", 8, resolve) == 3);  // a rebuild
+    CHECK(scans == 2);
+    CHECK(cache.get("path:/p/b.yaml", 8, resolve) == -1);  // a new id
+    CHECK(scans == 3);
+    CHECK(cache.get("path:/p/b.yaml", 8, resolve) == -1);
+    CHECK(scans == 3);
 }

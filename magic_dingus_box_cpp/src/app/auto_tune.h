@@ -16,7 +16,10 @@
 // Design: docs/superpowers/specs/2026-11-12-channel-guide-design.md,
 // "When nothing would be playing".
 
+#include <cstdint>
 #include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace app {
@@ -24,6 +27,12 @@ namespace app {
 struct AutoTuneInput {
     bool guide_style = false;        // Menu Style is Channel Guide
     bool intro_complete = false;     // the boot intro is over, whichever way
+    // The media info store's first read has landed (MediaInfoStore::
+    // first_read_done) and the channels were rebuilt from it. Before that
+    // only trimmed items have a length: on the no-intro / failed-intro
+    // power-on paths a tune could pick another channel and overwrite the
+    // one last watched.
+    bool media_info_read = false;
     bool on_main_screen = false;     // no Media Browser, Settings or keyboard up
     bool video_active = false;       // a video plays, or the next item loads
     bool switch_pending = false;     // a switch or tune has not got its stream up
@@ -36,9 +45,10 @@ struct AutoTuneInput {
     std::vector<int> gave_up;        // channels given up on, newest last
 };
 
-// The gates alone: guide style, the intro over, on the main screen, no
-// video, no switch pending, no game loading, the post-game restore done,
-// and now_utc >= wait_until_utc. Reads only those fields, so main.cpp fills
+// The gates alone: guide style, the intro over, the media info store read,
+// on the main screen, no video, no switch pending, no game loading, the
+// post-game restore done, and now_utc >= wait_until_utc. Reads only those
+// fields, so main.cpp fills
 // last_channel / tunable / gave_up (an identity scan) only when it is true —
 // never on the frames a video plays.
 bool auto_tune_gates_open(const AutoTuneInput& in);
@@ -54,5 +64,32 @@ bool auto_tune_gates_open(const AutoTuneInput& in);
 //   - the lowest channel;
 //   - else nothing.
 std::optional<int> decide_auto_tune(const AutoTuneInput& in);
+
+// main.cpp's memo of AutoTuneInput::last_channel. Resolving the last channel
+// watched to its row scans the playlists building an identity string per
+// row; in the resting states the gates stay open every frame (no channel has
+// a schedule, every channel was given up), so it is resolved again only when
+// the id or the channel list (its rebuild count: in guide style every
+// playlist reload rebuilds it, and so does entering guide style) changed. The
+// comparison allocates nothing; the id is copied only when it changed.
+class LastChannelRowCache {
+public:
+    template <class Resolve>
+    int get(const std::string& id, uint64_t channels_generation, Resolve&& resolve) {
+        if (!valid_ || channels_generation != generation_ || id != id_) {
+            row_ = std::forward<Resolve>(resolve)(id);
+            id_ = id;
+            generation_ = channels_generation;
+            valid_ = true;
+        }
+        return row_;
+    }
+
+private:
+    bool valid_ = false;
+    std::string id_;
+    uint64_t generation_ = 0;
+    int row_ = -1;
+};
 
 }  // namespace app

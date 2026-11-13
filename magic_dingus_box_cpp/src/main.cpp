@@ -1052,8 +1052,10 @@ int main(int /* argc */, char* /* argv */[]) {
 
     // The Channel Guide's nothing-playing rule's inputs, refilled every
     // frame in guide style (app/auto_tune.h). Kept across frames so the
-    // vectors reuse their storage.
+    // vectors reuse their storage; the last channel's row is resolved again
+    // only when its id or the channel list changes.
     app::AutoTuneInput auto_tune;
+    app::LastChannelRowCache auto_tune_last_row;
 
     // The Channel Guide as painted (ui/channel_guide_view.h), handed to the
     // renderer by pointer (Renderer::set_channel_guide); lives across frames
@@ -1659,6 +1661,12 @@ int main(int /* argc */, char* /* argv */[]) {
         auto_tune.guide_style = playlist_playback.guide_style();
         if (auto_tune.guide_style) {
             auto_tune.intro_complete = state.intro_complete;
+            // Not before the media info store's first read has landed (and
+            // the channels were rebuilt from it, by media_info.poll() below
+            // on an earlier frame): with no intro, or one that failed, the
+            // rule would otherwise run with only trimmed items' lengths and
+            // could tune — and save as the last channel — the wrong one.
+            auto_tune.media_info_read = media_info.first_read_done();
             // Not under Settings (its game browser, Controller Setup wizard
             // and pairing screen included), the Wi-Fi keyboard or the Media
             // Browser: the video comes back once they close.
@@ -1686,17 +1694,18 @@ int main(int /* argc */, char* /* argv */[]) {
             // The target only matters once every gate is open. Resolving it
             // scans the playlists building an identity string per row, so
             // it is skipped on the frames a video plays (nearly all of them)
-            // and whenever anything else holds the rule back.
+            // and whenever anything else holds the rule back — and, in the
+            // resting states where the gates stay open (nothing tunable,
+            // every channel given up), done again only when the id or the
+            // channel list changed (app::LastChannelRowCache).
             if (app::auto_tune_gates_open(auto_tune)) {
-                const std::string& last_id = state.last_channel_id;
-                if (last_id.empty()) {
-                    auto_tune.last_channel = -1;
-                } else if (last_id == app::kShuffleChannelId) {
-                    auto_tune.last_channel = 0;
-                } else {
-                    auto_tune.last_channel =
-                        app::find_playlist_by_identity(state.playlists, last_id);
-                }
+                auto_tune.last_channel = auto_tune_last_row.get(
+                    state.last_channel_id, channels_generation,
+                    [&state](const std::string& last_id) {
+                        if (last_id.empty()) return -1;
+                        if (last_id == app::kShuffleChannelId) return 0;
+                        return app::find_playlist_by_identity(state.playlists, last_id);
+                    });
                 auto_tune.tunable.assign(channels.size(), false);
                 for (size_t c = 0; c < channels.size(); ++c) {
                     auto_tune.tunable[c] = !channels[c].items.empty();

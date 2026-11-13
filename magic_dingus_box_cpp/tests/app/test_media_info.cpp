@@ -454,6 +454,51 @@ TEST_CASE("media_info store: poll reports a change only when there is one",
     CHECK(store.crop_for("media/a.mp4"));
 }
 
+TEST_CASE("media_info store: first_read_done once poll adopted a read",
+          "[media_info]") {
+    // The Channel Guide's power-on tune waits for it: until the first read
+    // lands only trimmed items have a length, and a tune then could pick
+    // another channel and overwrite the one last watched.
+    Sandbox sb;
+    MediaInfoStore store(sb.file.string());
+    CHECK_FALSE(store.first_read_done());
+
+    SECTION("no file: done, though nothing changed") {
+        store.request_reload();
+        REQUIRE(flushed(store));
+        CHECK_FALSE(store.first_read_done());  // read, not adopted yet
+        CHECK_FALSE(store.poll());
+        CHECK(store.first_read_done());
+    }
+    SECTION("a file: done with its map") {
+        write_file(sb.file, R"({"version": 1, "videos": {"media/a.mp4": {"duration_s": 60}}})");
+        store.request_reload();
+        REQUIRE(flushed(store));
+        CHECK(store.poll());
+        CHECK(store.first_read_done());
+        CHECK(store.map().at("media/a.mp4").duration_s == 60.0);
+    }
+    SECTION("a corrupt file: done (every video reads as cropped, no lengths)") {
+        write_file(sb.file, "{oops");
+        store.request_reload();
+        REQUIRE(flushed(store));
+        (void)store.poll();
+        CHECK(store.first_read_done());
+    }
+    SECTION("a read that fails: not done until one succeeds") {
+        fs::create_directories(sb.file);  // a directory where the file should be
+        store.request_reload();
+        store.wait_idle_for_tests();
+        (void)store.poll();
+        CHECK_FALSE(store.first_read_done());
+        fs::remove(sb.file);
+        store.request_reload();
+        REQUIRE(flushed(store));
+        (void)store.poll();
+        CHECK(store.first_read_done());
+    }
+}
+
 TEST_CASE("media_info store: a kiosk write keeps fields it does not know",
           "[media_info]") {
     Sandbox sb;

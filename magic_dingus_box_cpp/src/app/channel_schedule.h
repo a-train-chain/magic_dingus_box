@@ -39,13 +39,20 @@ inline constexpr const char* kShuffleChannelId = "shuffle";
 // media_info.json key form, e.g. "media/x.mp4".
 std::string media_key_of_item(const PlaylistItem& item);
 
+// The shortest item that is scheduled. A sub-second item would fill the
+// guide's lineup with thousands of slots per layout, and could not confirm
+// its own playback (Controller::update_state wants a position a second
+// before the end) before its slot was over.
+inline constexpr double kMinScheduledItemS = 3.0;
+
 // One channel per row of ui_playlists. Row 0 is the Master Shuffle mix: every
 // scheduled item of rows 1..N exactly once, in a deterministic order (a
 // hand-written Fisher-Yates over std::mt19937 — std::shuffle differs between
 // libc++ and libstdc++, and the Mac and the Pi must agree). Row 0's own items
-// are ignored. Only local/video items with a known length are scheduled: a
-// trimmed item (start/end) is end - start long; otherwise the length is the
-// duration in `info`. Anything else is left out.
+// are ignored. Only local/video items with a known length of at least
+// kMinScheduledItemS are scheduled: a trimmed item (start/end) is end - start
+// long; otherwise the length is the duration in `info`, less the start trim.
+// Anything else is left out.
 std::vector<Channel> build_channels(const std::vector<Playlist>& ui_playlists,
                                     const MediaInfoMap& info);
 

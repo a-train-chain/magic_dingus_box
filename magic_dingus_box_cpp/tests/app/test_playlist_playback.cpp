@@ -1666,6 +1666,34 @@ TEST_CASE("an item that fails in guide style waits for the channel's next item",
     CHECK_FALSE(g.pb.switch_pending());
 }
 
+TEST_CASE("a failed item's wait is never longer than the item itself",
+          "[playlist_playback][guide]") {
+    // The wait ends when the item's slot does — in wall-clock time. A clock
+    // that jumps BACK after the load (NTP correcting a fast clock) would
+    // stretch it by the jump: bounded by the item's own length from now.
+    Guide g;
+    g.t.wall = kW0 + 130;  // 01: b, 200 s, scheduled to end at kW0 + 300
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    g.playing();
+    g.t.wall -= 3600.0;  // an hour back
+    g.t.error = true;
+    g.pb.tick_pipeline_error();
+    REQUIRE(g.s.tuned_channel == 1);
+    CHECK(g.s.guide_wait_until_utc == Approx(g.t.wall + 200.0).epsilon(0).margin(1e-6));
+
+    SECTION("a clock that holds still: the slot's end, as before") {
+        Guide h;
+        h.t.wall = kW0 + 130;
+        h.pb.tune(1, false);
+        run_frames(h.pb, h.t, kSettled);
+        h.playing();
+        h.t.error = true;
+        h.pb.tick_pipeline_error();
+        CHECK(h.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
+    }
+}
+
 TEST_CASE("a channel that keeps failing is given up: nothing tuned, the channel noted",
           "[playlist_playback][guide]") {
     Guide g;
@@ -2045,6 +2073,7 @@ void nothing_playing_rule(Guide& g) {
     app::AutoTuneInput in;
     in.guide_style = g.pb.guide_style();
     in.intro_complete = g.s.intro_complete;
+    in.media_info_read = true;  // the store's first read has landed
     in.on_main_screen = true;
     in.video_active = g.s.video_active ||
                       (g.s.current_playlist_index >= 0 && g.s.current_item_index >= 0);

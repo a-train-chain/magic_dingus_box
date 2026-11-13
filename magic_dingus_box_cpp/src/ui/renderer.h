@@ -581,6 +581,14 @@ private:
     const GuideView* channel_guide_ = nullptr;
     void render_channel_guide(const GuideView& view, float alpha, bool window_dark);
     class GuidePainter;
+    // A letter-spaced label (the mockup's eyebrow, NEXT, PICTURE, CROP, ...)
+    // as measured once per layout: each code point, and its x from the
+    // label's left edge. Painting it measures nothing and builds no string.
+    struct GuideSpacedLabel {
+        std::vector<std::string> glyphs;
+        std::vector<float> x;
+        float w = 0;  // the whole label's width
+    };
     struct GuideFitCache {
         bool valid = false;
         uint64_t revision = 0;  // GuideView::revision these were made for
@@ -596,6 +604,10 @@ private:
         float source_w = 0, join_w = 0;
         std::string date;  // fitted to the channel column
         std::vector<float> hint_key_x, hint_label_x;
+        // The letter-spaced labels, ready to paint.
+        GuideSpacedLabel eyebrow, ch_caption, next_spaced, picture, crop, press_to_watch,
+            source, date_spaced;
+        std::vector<GuideSpacedLabel> hint_keys;
     };
     GuideFitCache guide_fit_;
     void render_volume_overlay(const app::AppState& state);

@@ -62,8 +62,12 @@ constexpr Metrics kTv{18, 18, 10, 22, 32, 64, true, 18, 23, 18, 16, 30, 14, 18, 
 // CRT Native 640x480: no CH caption, artist, NEXT row or source label.
 constexpr Metrics kCrt{14, 12, 7, 14, 22, 44, false, 14, 17, 14, 14, 24, 10, 14, 6, 446};
 
-constexpr int kLabel = 13;  // hint row and small labels
-constexpr int kBody = 14;   // cell titles, channel names, ticks, artist
+// 13 px is for the hint row and the panel's small labels only (eyebrow,
+// AM/PM, CH, progress times, NEXT row, PICTURE / what crop does, the source
+// label, PRESS TO WATCH, joins at m:ss). Everything in the GRID is at least
+// kBody — the spec's anti-goal: no cell text under 14 px on the 720 canvas.
+constexpr int kLabel = 13;
+constexpr int kBody = 14;  // grid: cell titles and artists, names, ticks, the date
 constexpr float kHintIcon = 15.0f;
 
 // Fixed labels as strings once, not a temporary per frame.
@@ -137,10 +141,17 @@ private:
         text(s, x, b, size, c);
         text(s, x + 1.0f, b, size, c);
     }
-    // `spacing` px between code points (the mockup's letter-spaced labels).
+    // `spacing` px between code points (the mockup's letter-spaced labels):
+    // the width, and the label measured once (fitted() only) ...
     float spaced_w(const std::string& s, int size, float spacing);
-    float spaced(const std::string& s, float x, float b, int size, const Color& c,
-                 float spacing);  // returns the right edge
+    GuideSpacedLabel measure_spaced(const std::string& s, int size, float spacing);
+    // ... then painted every frame from what was measured: no measuring,
+    // no string built. `size` is the size it was measured at.
+    void spaced(const GuideSpacedLabel& l, float x, float b, int size, const Color& c) {
+        for (std::size_t i = 0; i < l.glyphs.size() && i < l.x.size(); ++i) {
+            text(l.glyphs[i], x + l.x[i], b, size, c);
+        }
+    }
     void fill(float x, float y, float w, float h, const Color& c) {
         if (w > 0.0f && h > 0.0f) r_.draw_quad(x, y, w, h, c, alpha_);
     }
@@ -189,20 +200,23 @@ float Renderer::GuidePainter::spaced_w(const std::string& s, int size, float spa
     return w;
 }
 
-float Renderer::GuidePainter::spaced(const std::string& s, float x, float b, int size,
-                                     const Color& c, float spacing) {
+Renderer::GuideSpacedLabel Renderer::GuidePainter::measure_spaced(const std::string& s,
+                                                                  int size, float spacing) {
+    GuideSpacedLabel l;
+    float x = 0.0f;
     bool first = true;
     std::size_t pos = 0;
     while (pos < s.size()) {
         const std::size_t start = pos;
         if (decode_utf8(s, pos) == 0) break;
-        const std::string cp = s.substr(start, pos - start);  // one code point: no heap
         if (!first) x += spacing;
         first = false;
-        text(cp, x, b, size, c);
-        x += body_w(cp, size);
+        l.glyphs.push_back(s.substr(start, pos - start));
+        l.x.push_back(x);
+        x += body_w(l.glyphs.back(), size);
     }
-    return x;
+    l.w = x;
+    return l;
 }
 
 // Everything the sections measure with the fonts, once per layout.
@@ -217,6 +231,8 @@ const Renderer::GuideFitCache& Renderer::GuidePainter::fitted() {
         return [this, size](const std::string& s) { return static_cast<int>(body_w(s, size)); };
     };
 
+    f.eyebrow = measure_spaced(p.eyebrow, gp::kLabel, 2.0f);
+    f.ch_caption = measure_spaced(gp::kCh, gp::kLabel, 3.0f);
     f.ap_w = body_w(p.clock_ap, gp::kLabel);
     f.hm_w = zen_w(p.clock_hm, m_.clock);
     f.num_w = zen_w(p.ch_text, m_.num);
@@ -231,30 +247,40 @@ const Renderer::GuideFitCache& Renderer::GuidePainter::fitted() {
     f.start_w = body_w(p.start_hm, gp::kLabel);
     f.end_w = body_w(p.end_hm, gp::kLabel);
     f.next_label = "NEXT " + p.next_hm;
-    f.next_title_x = ix_ + spaced_w(f.next_label, gp::kLabel, 2.0f) + 10.0f;
+    f.next_spaced = measure_spaced(f.next_label, gp::kLabel, 2.0f);
+    f.next_title_x = ix_ + f.next_spaced.w + 10.0f;
     f.next_title = fit_to_width(p.next_title, static_cast<int>(ir_ - f.next_title_x),
                                 body_measure(gp::kLabel));
     // The Picture control: PICTURE · box · CROP · what crop does.
-    f.pic_box_x = ix_ + spaced_w(gp::kPicture, gp::kLabel, 2.0f) + 10.0f;
+    f.picture = measure_spaced(gp::kPicture, gp::kLabel, 2.0f);
+    f.crop = measure_spaced(gp::kCrop, gp::kBody, 1.0f);
+    f.pic_box_x = ix_ + f.picture.w + 10.0f;
     f.pic_crop_x = f.pic_box_x + 16.0f + 10.0f;
-    f.pic_desc_x = f.pic_crop_x + spaced_w(gp::kCrop, gp::kBody, 1.0f) + 10.0f;
+    f.pic_desc_x = f.pic_crop_x + f.crop.w + 10.0f;
     f.pic_end = f.pic_desc_x +
                 body_w(p.picture_crop ? gp::kFillsScreen : gp::kWholeFrame, gp::kLabel);
-    f.source_w = spaced_w(p.source_label, gp::kLabel, 1.0f);
+    f.source = measure_spaced(p.source_label, gp::kLabel, 1.0f);
+    f.source_w = f.source.w;
+    f.press_to_watch = measure_spaced(gp::kPressToWatch, gp::kLabel, 2.0f);
     f.join_w = body_w(p.join_note, gp::kLabel);
 
+    // The date: grid text, so the body size (no grid text under 14 px on
+    // the 720 canvas — the spec's anti-goal).
     const GuideGrid& g = v_.grid;
     f.date = fit_to_width(
         g.date_label, static_cast<int>(g.column_w - m_.chan_pad - 4),
-        [this](const std::string& s) { return static_cast<int>(spaced_w(s, gp::kLabel, 2.0f)); });
+        [this](const std::string& s) { return static_cast<int>(spaced_w(s, gp::kBody, 2.0f)); });
+    f.date_spaced = measure_spaced(f.date, gp::kBody, 2.0f);
 
     f.hint_key_x.clear();
     f.hint_label_x.clear();
+    f.hint_keys.clear();
     float x = static_cast<float>(g.rect.x);
     for (const GuideHint& h : v_.hints) {
         x += gp::kHintIcon + 7.0f;
         f.hint_key_x.push_back(x);
-        x += spaced_w(h.key, gp::kLabel, 1.0f) + 7.0f;
+        f.hint_keys.push_back(measure_spaced(h.key, gp::kLabel, 1.0f));
+        x += f.hint_keys.back().w + 7.0f;
         f.hint_label_x.push_back(x);
         x += body_w(h.label, gp::kLabel) + 24.0f;
     }
@@ -306,7 +332,7 @@ void Renderer::GuidePainter::panel() {
     {
         const float lh = std::round(m_.clock * 1.2f);
         const float b = baseline_in(y, lh, m_.clock, true);
-        spaced(p.eyebrow, ix_, b, gp::kLabel, tone(p.eyebrow_tone), 2.0f);
+        spaced(f.eyebrow, ix_, b, gp::kLabel, tone(p.eyebrow_tone));
         text(p.clock_ap, ir_ - f.ap_w, b, gp::kLabel, t_.dim);
         zen_text(p.clock_hm, ir_ - f.ap_w - 5.0f - f.hm_w, b, m_.clock, t_.fg);
         y += lh + m_.gap;
@@ -325,9 +351,8 @@ void Renderer::GuidePainter::panel() {
         fill(ix_, box_y, f.box_w, box_h, t_.bg);
         frame(ix_, box_y, f.box_w, box_h, 1.0f, with_alpha(t_.accent, 115));
         if (m_.ch_label) {
-            const float cw = spaced_w(gp::kCh, gp::kLabel, 3.0f);
-            spaced(gp::kCh, ix_ + (f.box_w - cw) / 2.0f,
-                   baseline_in(box_y + 3.0f, cap_lh, gp::kLabel, false), gp::kLabel, t_.dim, 3.0f);
+            spaced(f.ch_caption, ix_ + (f.box_w - f.ch_caption.w) / 2.0f,
+                   baseline_in(box_y + 3.0f, cap_lh, gp::kLabel, false), gp::kLabel, t_.dim);
         }
         zen_text(p.ch_text, ix_ + (f.box_w - f.num_w) / 2.0f,
                  baseline_in(box_y + 3.0f + cap_lh, num_lh, m_.num, true), m_.num, t_.accent);
@@ -381,7 +406,7 @@ void Renderer::GuidePainter::panel() {
         // NEXT (steel) + time, then the next title (TV).
         if (p.show_next) {
             const float nb = baseline_in(y, static_cast<float>(m_.row_lh), gp::kLabel, false);
-            spaced(f.next_label, ix_, nb, gp::kLabel, t_.accent2, 2.0f);
+            spaced(f.next_spaced, ix_, nb, gp::kLabel, t_.accent2);
             text(f.next_title, f.next_title_x, nb, gp::kLabel, t_.fg);
             y += m_.row_lh + m_.gap;
         }
@@ -397,7 +422,7 @@ void Renderer::GuidePainter::panel() {
     };
     if (p.bottom == GuideBottom::Picture) {
         const Color& ink = p.picture_focus ? t_.accent : t_.fg;
-        spaced(gp::kPicture, ix_, b_at(gp::kLabel), gp::kLabel, t_.dim, 2.0f);
+        spaced(f.picture, ix_, b_at(gp::kLabel), gp::kLabel, t_.dim);
         const float box = 16.0f;
         const float bx = f.pic_box_x;
         const float by = cy - box / 2.0f;
@@ -409,7 +434,7 @@ void Renderer::GuidePainter::panel() {
         } else {
             frame(bx, by, box, box, 2.0f, ink);
         }
-        spaced(gp::kCrop, f.pic_crop_x, b_at(gp::kBody), gp::kBody, ink, 1.0f);
+        spaced(f.crop, f.pic_crop_x, b_at(gp::kBody), gp::kBody, ink);
         text(p.picture_crop ? gp::kFillsScreen : gp::kWholeFrame, f.pic_desc_x, b_at(gp::kLabel),
              gp::kLabel, t_.dim);
         if (p.picture_focus) {
@@ -417,10 +442,10 @@ void Renderer::GuidePainter::panel() {
                   t_.accent);
         }
         if (p.show_source) {
-            spaced(p.source_label, ir_ - f.source_w, b_at(gp::kLabel), gp::kLabel, t_.dim, 1.0f);
+            spaced(f.source, ir_ - f.source_w, b_at(gp::kLabel), gp::kLabel, t_.dim);
         }
     } else if (p.bottom == GuideBottom::PressToWatch) {
-        spaced(gp::kPressToWatch, ix_, b_at(gp::kLabel), gp::kLabel, t_.accent, 2.0f);
+        spaced(f.press_to_watch, ix_, b_at(gp::kLabel), gp::kLabel, t_.accent);
         if (!p.join_note.empty()) {
             text(p.join_note, ir_ - f.join_w, b_at(gp::kLabel), gp::kLabel, t_.dim);
         }
@@ -441,9 +466,8 @@ void Renderer::GuidePainter::grid() {
 
     // Header: the date (dim, in the channel column), the time ticks (steel,
     // a 1 x 12 px mark then the label; the first carries AM/PM).
-    spaced(f.date, gx + m_.chan_pad,
-           baseline_in(gy, static_cast<float>(g.header_h), gp::kLabel, false), gp::kLabel,
-           t_.dim, 2.0f);
+    spaced(f.date_spaced, gx + m_.chan_pad,
+           baseline_in(gy, static_cast<float>(g.header_h), gp::kBody, false), gp::kBody, t_.dim);
     const float tb = baseline_in(gy, static_cast<float>(g.header_h), gp::kBody, false);
     for (const GuideTick& tick : g.ticks) {
         const float tx = gx + tick.x;
@@ -493,13 +517,14 @@ void Renderer::GuidePainter::grid() {
             const float tx = cx + m_.cell_pad;
             float b1 = baseline_in(ry, rh, gp::kBody, false);
             if (c.show_artist && !c.artist.empty()) {
-                // Title over artist, the pair centred in the cell.
-                const float lh1 = std::round(gp::kBody * 1.2f);
-                const float lh2 = std::round(gp::kLabel * 1.2f);
-                const float top = ry + (rh - (lh1 + 3.0f + lh2)) / 2.0f;
-                b1 = baseline_in(top, lh1, gp::kBody, false);
-                text(c.artist, tx, baseline_in(top + lh1 + 3.0f, lh2, gp::kLabel, false),
-                     gp::kLabel, t_.dim);
+                // Title over artist, the pair centred in the cell. Both at the
+                // body size: no cell text under 14 px on the 720 canvas (the
+                // spec's anti-goal) — 17 + 3 + 17 fits the 49 px row.
+                const float lh = std::round(gp::kBody * 1.2f);
+                const float top = ry + (rh - (lh + 3.0f + lh)) / 2.0f;
+                b1 = baseline_in(top, lh, gp::kBody, false);
+                text(c.artist, tx, baseline_in(top + lh + 3.0f, lh, gp::kBody, false),
+                     gp::kBody, t_.dim);
             }
             if (c.bold) bold(c.label, tx, b1, gp::kBody, ink);
             else text(c.label, tx, b1, gp::kBody, ink);
@@ -530,7 +555,8 @@ void Renderer::GuidePainter::hints_and_logo() {
     const float cy = m_.hint_top + gp::kHintIcon / 2.0f;
     const float b =
         cy - gp::kLabel / 2.0f + static_cast<float>(body_.get_baseline_at_size(gp::kLabel));
-    for (std::size_t i = 0; i < v_.hints.size() && i < f.hint_key_x.size(); ++i) {
+    for (std::size_t i = 0;
+         i < v_.hints.size() && i < f.hint_key_x.size() && i < f.hint_keys.size(); ++i) {
         const GuideHint& h = v_.hints[i];
         // The knob: a 6 px ring (1.4 px stroke) with its pointer at 12.
         const float kx = f.hint_key_x[i] - 7.0f - gp::kHintIcon / 2.0f;
@@ -543,7 +569,7 @@ void Renderer::GuidePainter::hints_and_logo() {
                          cy + kR * std::sin(a1), 1.4f, t_.dim, alpha_);
         }
         fill(kx - 0.7f, cy - kR + 1.0f, 1.4f, 3.75f, t_.dim);
-        spaced(h.key, f.hint_key_x[i], b, gp::kLabel, t_.fg, 1.0f);
+        spaced(f.hint_keys[i], f.hint_key_x[i], b, gp::kLabel, t_.fg);
         text(h.label, f.hint_label_x[i], b, gp::kLabel, t_.dim);
     }
     if (r_.logo_texture_id_ != 0 && r_.logo_width_ > 0 && r_.logo_height_ > 0) {

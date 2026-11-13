@@ -317,8 +317,11 @@ private:
     // the load returned OK.
     bool load_on_air(int channel, const OnAir& oa, bool keep_overlay);
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
-    // the channel picks up again from there.
+    // the channel picks up again from there — but no later than its length
+    // from the failure (a wall clock that jumped back must not stretch the
+    // wait).
     double guide_item_ends_at_ = 0.0;
+    double guide_item_length_ = 0.0;
     // The airing the last channel load loaded, and on which channel: the
     // next boundary on that channel never rejoins it (boundary_join). A
     // reload that renumbers the channel drops the guard for that one

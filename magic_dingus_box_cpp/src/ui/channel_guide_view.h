@@ -479,7 +479,12 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 p.next_title = d::title_of(in, nx);
             }
             if (!on_tuned) {
-                const int off = static_cast<int>(std::floor(std::max(0.0, a->offset_s)));
+                // Where a tune would join: the same rule the tune uses
+                // (app::join_point — the next item at 0:00 when the on-air
+                // one is nearly over).
+                const auto jp = app::join_point(ch, in.now_utc);
+                const double join_s = jp ? jp->offset_s : a->offset_s;
+                const int off = static_cast<int>(std::floor(std::max(0.0, join_s)));
                 char b[32];
                 std::snprintf(b, sizeof b, "joins at %d:%02d", off / 60, off % 60);
                 p.join_note = b;

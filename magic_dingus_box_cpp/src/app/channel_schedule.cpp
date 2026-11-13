@@ -55,7 +55,7 @@ std::vector<Channel> build_channels(const std::vector<Playlist>& ui_playlists,
         for (size_t i = 0; i < items.size(); ++i) {
             if (!is_local_video(items[i])) continue;
             const double len = item_length(items[i], info);
-            if (len <= 0.0) continue;
+            if (!(len >= kMinScheduledItemS)) continue;
             c.items.push_back({static_cast<int>(row), static_cast<int>(i), len});
         }
         finish(c);
@@ -144,7 +144,7 @@ std::optional<OnAir> boundary_join(const Channel& channel, double now_utc,
     // Airings are contiguous: one that starts before the loaded airing ends
     // IS the loaded airing or an earlier one. Half a second of slack absorbs
     // the rounding between two on_air() calls; the loaded airing itself
-    // starts a whole item length before its end.
+    // starts a whole item (>= kMinScheduledItemS) before its end.
     constexpr double kSlackS = 0.5;
     if (jp->starts_at >= last->ends_at - kSlackS) return jp;
     OnAir loaded;

@@ -178,10 +178,13 @@ struct GuideCommand {
 //                schedule); TogglePicture (when owns_pipeline) and None:
 //                the viewer's.
 //   ChannelStep  shown: the viewer's, the cursor onto the pending tune.
-// Rotate and ChannelStep during a viewer's Tune wait (guide_viewer_tune is
-// the pending tune) do nothing to ownership or the cursor. Taking
-// ownership also raises ui_visible_when_playing: with nothing playing the
-// guide is drawn without it, and would vanish when the video came back.
+// During a viewer's Tune wait (guide_viewer_tune is the pending tune) the
+// guide is not taken back: Rotate does nothing at all, and ChannelStep —
+// its step dropped behind the pending tune — leaves ownership alone but
+// still follows the pending tune, i.e. keeps the cursor on the held row
+// (off the Picture control, the window repaired). Taking ownership also
+// raises ui_visible_when_playing: with nothing playing the guide is drawn
+// without it, and would vanish when the video came back.
 GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts& f);
 
 // After main.cpp's tune(row, false) for a GuideCommand: taken (it is now

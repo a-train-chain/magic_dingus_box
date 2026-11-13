@@ -148,6 +148,13 @@ public:
     const MediaInfoMap& map() const { return map_; }
     bool crop_for(const std::string& key) const { return app::crop_for(map_, key); }
 
+    // True once poll() has adopted the first read of the file — whatever it
+    // held (no file and a corrupt one count: they are an answer), changed
+    // or not. A read that FAILED (an I/O error) is not an answer: false
+    // until a retry succeeds. The Channel Guide's power-on tune waits for
+    // it (app/auto_tune.h): until then only trimmed items have a length.
+    bool first_read_done() const { return first_read_done_; }
+
     // The operator's choice for one video. The map changes now; the write
     // is queued. crop == true removes the entry's crop field (and the entry
     // when nothing else is left in it). An empty key is ignored.
@@ -187,6 +194,7 @@ private:
     // Render thread only: its map, and the stranded-work retry schedule
     // (armed when poll() first sees work waiting with the worker idle).
     MediaInfoMap map_;
+    bool first_read_done_ = false;
     bool retry_armed_ = false;
     std::chrono::steady_clock::time_point next_retry_{};
 

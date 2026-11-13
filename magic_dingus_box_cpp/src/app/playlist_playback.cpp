@@ -74,13 +74,19 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
         // stays dark until this item's slot ends, then main.cpp's
         // nothing-playing rule re-tunes it — joining the item after it
         // rather than reloading this one. The failure has been counted.
+        // Never longer than the item itself from now: a wall clock that
+        // jumped BACK since the load would otherwise stretch the wait by
+        // the jump.
         const bool on_channel = channel_at(state_.tuned_channel) != nullptr;
         std::cerr << "Channel " << state_.tuned_channel << " item failed (" << why
                   << ") — the channel resumes with its next scheduled item"
                   << std::endl;
         transport_.stop();
         app::stop_to_menu(state_);
-        state_.guide_wait_until_utc = on_channel ? guide_item_ends_at_ : 0.0;
+        state_.guide_wait_until_utc =
+            on_channel ? std::min(guide_item_ends_at_,
+                                  transport_.wall_now_utc() + guide_item_length_)
+                       : 0.0;
         return;
     }
     if (d == Decision::Advance) {
@@ -525,6 +531,7 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     state_.current_playlist_index = si.playlist;
     state_.current_item_index = si.item;
     guide_item_ends_at_ = oa.ends_at;
+    guide_item_length_ = si.length_s;
     LoadedAiring airing;
     airing.index = oa.index;
     airing.item = si;
