@@ -225,6 +225,31 @@ TEST_CASE("the menu cursor clamps when its playlist is gone, and the scroll foll
     CHECK(s.playlist_scroll_offset == 2);  // 10 rows - 8 visible
 }
 
+TEST_CASE("an import while the cursor is on the Picture control keeps it there",
+          "[playlist_reload][overlay_nav]") {
+    stops = 0;
+    std::vector<app::Playlist> many;
+    for (int i = 0; i < 10; ++i) {
+        many.push_back(playlist("p" + std::to_string(i), {item("v" + std::to_string(i))}));
+    }
+    app::AppState s;
+    boot(s, many);  // 11 rows
+    s.playlist_max_visible = 8;
+    s.selected_index = 10;  // the last row, under the control
+    s.playlist_scroll_offset = 3;
+    s.picture_control_available = true;
+    s.picture_focus = true;
+
+    // Two playlists imported: the control now sits below the NEW last row.
+    many.push_back(playlist("p10", {item("v10")}));
+    many.push_back(playlist("p11", {item("v11")}));
+    reload(s, many);
+
+    CHECK(s.picture_focus);
+    CHECK(s.selected_index == 12);
+    CHECK(s.playlist_scroll_offset == 5);  // 13 rows - 8 visible
+}
+
 TEST_CASE("the open Settings game list is re-found by identity", "[playlist_reload]") {
     app::AppState s;
     boot(s, disk_v1());

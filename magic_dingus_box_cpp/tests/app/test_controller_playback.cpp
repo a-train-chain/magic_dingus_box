@@ -545,6 +545,7 @@ struct ControllerAdapter final : app::PlaylistTransport {
     void master_shuffle_back(app::AppState& s, const std::string& d) override {
         c.master_shuffle_back(s, d);
     }
+    void toggle_picture_crop() override {}  // the media info store: not in this rig
     uint64_t stream_generation() const override { return p.generation; }
     bool has_error() const override { return p.has_error(); }
     double player_position() const override { return p.get_position(); }

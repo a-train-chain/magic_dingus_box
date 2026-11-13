@@ -278,13 +278,21 @@ void MediaInfoStore::submit() {
     worker_.submit([this] { return run_job(); });
 }
 
-void MediaInfoStore::request_reload(const std::string& consume_marker) {
+bool MediaInfoStore::request_reload(const std::string& consume_marker) {
+    bool queued_new = false;
     {
         std::lock_guard<std::mutex> lk(mu_);
+        if (!reload_requested_) queued_new = true;
         reload_requested_ = true;
-        if (!consume_marker.empty()) reload_marker_ = consume_marker;
+        if (!consume_marker.empty() && reload_marker_ != consume_marker) {
+            reload_marker_ = consume_marker;
+            queued_new = true;
+        }
     }
+    // Submitted either way, as before: when a failed read left the request
+    // waiting with no job queued, this is what retries it at once.
     submit();
+    return queued_new;
 }
 
 void MediaInfoStore::set_crop(const std::string& key, bool crop) {

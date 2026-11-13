@@ -144,6 +144,17 @@ struct AppState {
     int selected_index;
     int playlist_scroll_offset = 0;  // Index of first visible playlist in scroll window
 
+    // The Picture (crop) control in the list overlay, one stop below the
+    // last playlist row (app/overlay_nav.h). main.cpp sets
+    // picture_control_available and picture_crop each frame — offered while
+    // a playlist video whose display aspect is not 4:3 owns the pipeline;
+    // picture_crop mirrors the playing video's media-info setting so the
+    // renderer never reads the store. picture_focus: the cursor is on the
+    // control (selected_index then stays the last row). Render thread only.
+    bool picture_focus = false;
+    bool picture_control_available = false;
+    bool picture_crop = true;
+
     // Display state
     bool ui_visible_when_playing = true; // Tracks whether UI should be visible when video is active
 

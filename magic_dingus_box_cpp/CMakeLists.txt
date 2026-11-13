@@ -190,6 +190,7 @@ set(APP_SOURCES
     src/app/playlist_cursor.cpp
     src/app/playlist_playback.cpp
     src/app/playlist_reload.cpp
+    src/app/overlay_nav.cpp
     src/app/game_handoff.cpp
     # GL/DRM half of the game hand-off: kiosk-only, in no test target.
     src/app/game_handoff_kiosk.cpp
@@ -837,6 +838,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # transport, and the web-admin playlist reload's re-anchoring.
         src/app/playlist_playback.cpp
         src/app/playlist_reload.cpp
+        # The list overlay's cursor (rows, scroll window, the Picture
+        # control below the last row) — main.cpp's ROTATE handler and the
+        # reload's clamp both go through it.
+        src/app/overlay_nav.cpp
         # main.cpp's boot intro decisions (end detection, fade volume, the
         # hand-off to the menu, the render-video decision).
         src/app/intro_sequence.cpp

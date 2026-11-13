@@ -129,7 +129,13 @@ public:
     // a poke that lands during the read is kept for the next one; seeing
     // the marker again before the worker got to it costs only a second,
     // harmless reload.
-    void request_reload(const std::string& consume_marker = "");
+    //
+    // True when this call queued something new: no reload was waiting, or
+    // this one brings a marker the waiting one would not delete. False when
+    // the same request is already waiting for the worker — main.cpp logs
+    // the poke only on true, so a worker stuck on the card (marker still in
+    // place, seen again every second) does not log every second.
+    bool request_reload(const std::string& consume_marker = "");
 
     // Once per frame: adopts the newest map the worker produced, with every
     // edit not yet known to be on disk applied on top. True when the map

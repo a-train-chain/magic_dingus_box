@@ -46,6 +46,7 @@
 #include "app/intro_sequence.h"
 #include "app/intro_sequence_kiosk.h"
 #include "app/media_info.h"
+#include "app/overlay_nav.h"
 #include "app/settings_input.h"
 #include "app/movie_quiet_mode.h"
 #include "app/playlist_loader.h"
@@ -621,7 +622,21 @@ int main(int /* argc */, char* /* argv */[]) {
     // auto-advance, the stuck-switch timeout, failed-item skip/give-up and
     // the playback stall watchdog. Every Controller/GstPlayer call goes
     // through the transport. See app/playlist_playback.h.
-    app::ControllerTransport playlist_transport(controller, player);
+    //
+    // SELECT on the overlay's Picture control (app/overlay_nav.h) flips the
+    // playing video's crop in the media info store: the answer changes in
+    // memory at once, the store's worker writes the file. No key (nothing
+    // from the library is loaded) = nothing to flip. Logged to stdout (the
+    // journal), not the log file: no file write on this loop.
+    app::ControllerTransport playlist_transport(
+        controller, player, [&media_info, &controller] {
+            const std::string& key = controller.current_media_key();
+            if (key.empty()) return;
+            const bool crop = !media_info.crop_for(key);
+            media_info.set_crop(key, crop);
+            std::cout << "Picture control: " << key << " -> "
+                      << (crop ? "crop" : "whole frame") << std::endl;
+        });
     app::PlaylistPlayback playlist_playback(state, playlist_transport,
                                             playlist_directory);
     
@@ -1342,47 +1357,21 @@ int main(int /* argc */, char* /* argv */[]) {
                 case InputAction::ROTATE_VERTICAL:
                     // Only allow navigation when UI is available
                     if (ui_available && !state.playlists.empty()) {
-                        // Fixed max visible items (must match renderer's max_visible = 8)
-                        // Use the on-screen row count the renderer published last
-                        // frame, not a hardcoded 8. Hardcoding 8 (sized for CRT)
-                        // forced scroll_offset to advance once the selection hit
-                        // index 8 even in Modern TV mode where 14 rows are
-                        // visible — the playlist would scroll prematurely and
-                        // pop the top row off-screen.
-                        int max_visible = std::max(1, state.playlist_max_visible);
+                        // One row per turn, clamped at both ends; from the
+                        // last row, down reaches the Picture control when it
+                        // is offered. The scroll window uses the on-screen
+                        // row count the renderer published last frame, not a
+                        // hardcoded 8 — 8 (sized for CRT) scrolled the list
+                        // early in Modern TV mode, where 14 rows are visible,
+                        // popping the top row off-screen. See
+                        // app/overlay_nav.h.
+                        app::set_overlay_cursor(
+                            state, app::rotate_overlay(
+                                       app::overlay_cursor(state), ev.delta,
+                                       static_cast<int>(state.playlists.size()),
+                                       state.playlist_max_visible,
+                                       state.picture_control_available));
 
-                        // Move selection without wrapping (clamp at boundaries)
-                        if (ev.delta > 0) {
-                            // Moving down - don't go past last item
-                            if (state.selected_index < static_cast<int>(state.playlists.size()) - 1) {
-                                state.selected_index++;
-                            }
-                        } else if (ev.delta < 0) {
-                            // Moving up - don't go below first item
-                            if (state.selected_index > 0) {
-                                state.selected_index--;
-                            }
-                        }
-                        
-                        // Adjust scroll offset to keep selected item visible
-                        // If selection is below visible window, scroll down
-                        if (state.selected_index >= state.playlist_scroll_offset + max_visible) {
-                            state.playlist_scroll_offset = state.selected_index - max_visible + 1;
-                        }
-                        // If selection is above visible window, scroll up
-                        if (state.selected_index < state.playlist_scroll_offset) {
-                            state.playlist_scroll_offset = state.selected_index;
-                        }
-                        // Clamp scroll offset to valid range
-                        int max_scroll = static_cast<int>(state.playlists.size()) - max_visible;
-                        if (max_scroll < 0) max_scroll = 0;
-                        if (state.playlist_scroll_offset > max_scroll) {
-                            state.playlist_scroll_offset = max_scroll;
-                        }
-                        if (state.playlist_scroll_offset < 0) {
-                            state.playlist_scroll_offset = 0;
-                        }
-                        
                         // If video is active, show UI briefly
                         if (state.video_active) {
                             state.ui_visible_when_playing = true;
@@ -1499,7 +1488,43 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             // Note: Volume stays constant during menu overlay (no dimming)
         }
-        
+
+        // The overlay's Picture (crop) control (app/overlay_nav.h), decided
+        // after this frame's loads (auto-advance, NEXT/PREV) so it follows
+        // the video now playing. Offered while a playlist video owns the
+        // pipeline and its display aspect is not 4:3 — for a 4:3 video crop
+        // and whole frame draw the same picture. The aspect the web admin
+        // recorded wins; until it has one, the last decoded frame's (which
+        // may still be the previous video's for the frames before the new
+        // one's first). picture_crop mirrors the store for the renderer. A
+        // cursor left on a control that went away returns to the last
+        // playlist row. All in memory: no file I/O here.
+        {
+            const std::string& media_key = controller.current_media_key();
+            std::optional<double> aspect;
+            if (!media_key.empty()) {
+                const auto& videos = media_info.map();
+                const auto it = videos.find(media_key);
+                if (it != videos.end() && it->second.display_aspect) {
+                    aspect = it->second.display_aspect;
+                } else {
+                    aspect = gst_renderer.source_display_aspect();
+                }
+            }
+            state.picture_control_available =
+                playlist_playback.owns_pipeline() && state.video_active &&
+                !media_key.empty() && aspect.has_value() &&
+                !video::is_four_by_three(*aspect);
+            state.picture_crop = media_info.crop_for(media_key);
+            if (state.picture_focus) {
+                app::set_overlay_cursor(
+                    state, app::clamp_overlay(app::overlay_cursor(state),
+                                              static_cast<int>(state.playlists.size()),
+                                              state.playlist_max_visible,
+                                              state.picture_control_available));
+            }
+        }
+
         // Render video (if playing or loading)
         // gst_renderer.render() will only render when UPDATE_FRAME is set, improving performance
         // IMPORTANT: Render video first, then UI overlay on top
@@ -1613,6 +1638,9 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             sig.add(static_cast<uint64_t>(state.selected_index));
             sig.add(static_cast<uint64_t>(state.playlist_scroll_offset));
+            // The Picture control: cursor on it, and its checkbox state.
+            sig.add(static_cast<uint64_t>(state.picture_focus));
+            sig.add(static_cast<uint64_t>(state.picture_crop));
             sig.add(static_cast<uint64_t>(state.playlists.size()));
             sig.add(static_cast<uint64_t>(state.current_playlist_index));
             sig.add(static_cast<uint64_t>(state.current_item_index));
@@ -2153,16 +2181,16 @@ int main(int /* argc */, char* /* argv */[]) {
         // has not reached the disk yet. The unlink stays off this loop
         // because the poke follows uploads — exactly when the card is
         // saturated and a journaled write can stall for seconds. Seeing the
-        // marker again before the worker got to it queues one more,
-        // harmless reload.
+        // marker again before the worker got to it is the same request: it
+        // is logged once, not once a second while the worker is stuck.
         {
             static int media_info_reload_check = 0;
             if (++media_info_reload_check >= 60) {
                 media_info_reload_check = 0;
                 const std::string media_info_marker =
                     config::get_data_path() + "/media_info_reload_request";
-                if (fs::exists(media_info_marker)) {
-                    media_info.request_reload(media_info_marker);
+                if (fs::exists(media_info_marker) &&
+                    media_info.request_reload(media_info_marker)) {
                     LOG_INFO("Media info reload queued (web-admin poke)");
                 }
             }

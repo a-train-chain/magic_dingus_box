@@ -557,6 +557,37 @@ TEST_CASE("media_info store: a reload poke's marker is deleted by the worker",
     REQUIRE(flushed(store));
 }
 
+TEST_CASE("media_info store: request_reload says whether it queued anything new",
+          "[media_info]") {
+    // main.cpp logs a poke only when this is true: a worker stuck on the
+    // card leaves the marker in place, and the loop sees it again every
+    // second — that must not log every second.
+    Sandbox sb;
+    const std::string marker = (sb.dir / "media_info_reload_request").string();
+    write_file(marker, "");
+    HeldSink held;
+    held.hold();
+    MediaInfoStore store(sb.file.string(), held.sink());
+    store.set_crop("media/a.mp4", false);
+    held.wait_calls(1);  // the worker is stuck in that write
+
+    CHECK(store.request_reload());               // queued
+    CHECK_FALSE(store.request_reload());         // already queued
+    CHECK(store.request_reload(marker));         // now with a marker to delete
+    CHECK_FALSE(store.request_reload(marker));   // the same poke, seen again
+    CHECK_FALSE(store.request_reload());         // still queued, marker kept
+    CHECK(fs::exists(marker));
+
+    held.release();
+    REQUIRE(flushed(store));
+    CHECK_FALSE(fs::exists(marker));
+    // The job took the request: the next poke is new again.
+    write_file(marker, "");
+    CHECK(store.request_reload(marker));
+    REQUIRE(flushed(store));
+    CHECK_FALSE(fs::exists(marker));
+}
+
 TEST_CASE("media_info store: poll retries stranded work, at most every 30 s",
           "[media_info]") {
     Sandbox sb;
