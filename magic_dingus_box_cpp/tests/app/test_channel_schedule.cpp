@@ -4,6 +4,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -178,4 +179,55 @@ TEST_CASE("Master Shuffle holds every item once, in a stable order", "[channel_s
             same = false;
     }
     CHECK_FALSE(same);
+}
+
+TEST_CASE("non-finite times never schedule or loop", "[channel_schedule]") {
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    auto c = channel_of({100, 200, 300});
+    CHECK_FALSE(app::on_air(c, nan).has_value());
+    CHECK_FALSE(app::on_air(c, inf).has_value());
+    CHECK(app::lineup(c, E, inf).empty());
+    CHECK(app::lineup(c, nan, E + 60).empty());
+    CHECK(app::lineup(c, E, nan).empty());
+    CHECK(app::lineup(c, -inf, E).empty());
+}
+
+TEST_CASE("a channel with no usable lengths is empty", "[channel_schedule]") {
+    auto rows = ui_rows({{item("media/x.mp4"), item("media/y.mp4", "youtube")}});
+    auto ch = app::build_channels(rows, {});
+    REQUIRE(ch.size() == 2);
+    CHECK(ch[1].items.empty());
+    CHECK_FALSE(app::on_air(ch[1], E + 10).has_value());
+    CHECK(app::lineup(ch[1], E, E + 60).empty());
+}
+
+TEST_CASE("a mix with nothing to schedule is empty", "[channel_schedule]") {
+    auto only_master = app::build_channels(ui_rows({}), {});
+    REQUIRE(only_master.size() == 1);
+    CHECK(only_master[0].items.empty());
+    CHECK(only_master[0].total_s == Approx(0));
+
+    auto none = app::build_channels(ui_rows({{item("media/x.mp4")}, {item("media/z.mp4")}}), {});
+    REQUIRE(none.size() == 3);
+    CHECK(none[0].items.empty());
+    CHECK(none[0].total_s == Approx(0));
+}
+
+TEST_CASE("Master Shuffle order is a golden permutation", "[channel_schedule]") {
+    // std::mt19937 is fully specified by the standard and the Fisher-Yates is
+    // hand-written, so this exact order must hold on the Pi's libstdc++ too.
+    app::MediaInfoMap info;
+    std::vector<app::PlaylistItem> a, b;
+    for (int i = 0; i < 3; ++i) {
+        a.push_back(item("media/a" + std::to_string(i) + ".mp4"));
+        b.push_back(item("media/b" + std::to_string(i) + ".mp4"));
+        info["media/a" + std::to_string(i) + ".mp4"].duration_s = 10;
+        info["media/b" + std::to_string(i) + ".mp4"].duration_s = 10;
+    }
+    auto ch = app::build_channels(ui_rows({a, b}), info);
+    std::vector<std::pair<int, int>> got;
+    for (auto& s : ch[0].items) got.push_back({s.playlist, s.item});
+    const std::vector<std::pair<int, int>> golden = {{2, 1}, {2, 0}, {1, 2}, {1, 1}, {1, 0}, {2, 2}};
+    CHECK(got == golden);
 }

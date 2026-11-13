@@ -79,6 +79,7 @@ std::vector<Channel> build_channels(const std::vector<Playlist>& ui_playlists,
 }
 
 std::optional<OnAir> on_air(const Channel& channel, double now_utc) {
+    if (!std::isfinite(now_utc)) return std::nullopt;
     if (channel.items.empty() || channel.total_s <= 0.0) return std::nullopt;
     double pos = std::fmod(now_utc - kScheduleEpochUtc, channel.total_s);
     if (pos < 0.0) pos += channel.total_s;
@@ -103,6 +104,7 @@ std::optional<OnAir> on_air(const Channel& channel, double now_utc) {
 
 std::vector<OnAir> lineup(const Channel& channel, double from_utc, double to_utc) {
     std::vector<OnAir> out;
+    if (!std::isfinite(from_utc) || !std::isfinite(to_utc)) return out;
     auto cur = on_air(channel, from_utc);
     if (!cur || to_utc <= from_utc) return out;
     OnAir a = *cur;
