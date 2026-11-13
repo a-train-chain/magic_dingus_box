@@ -979,6 +979,38 @@ for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
     shopt -u nullglob
 done
 unset _d _pl _base _keep _want _m _refs_file
+
+# 3. The per-video store, <data>/media_info.json. It names every video the
+# box ever had a Crop setting or a length for — the operator's own file
+# names, on every unit sold — and an orphaned crop:false would be inherited
+# by a later upload of the same name. Pruned against the COMPLETE curated
+# list above, before anything moves: the original joins the content stash
+# (restore's manifest loop mv's it back over the copy) and, once it is there,
+# the image gets a copy holding only the videos that ship
+# (mdb_prune_media_info, clone_stash_lib.sh). A store naming only shipping
+# videos stays as it is; an unreadable one ships as no store at all (every
+# video cropped; the web admin's back-fill re-probes the lengths). Not under
+# the playlists check above: build/data can hold a configure-time copy.
+MEDIA_INFO_PRUNED=()
+for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
+    _store="${_d}/media_info.json"
+    [[ -f "$_store" ]] || continue
+    _pruned="$(mktemp)"
+    _rc=0
+    mdb_prune_media_info "$_d" "$_pruned" ${CONTENT_PATHS[@]+"${CONTENT_PATHS[@]}"} || _rc=$?
+    case "$_rc" in
+        10) rm -f "$_pruned" ;;
+        0)  CONTENT_PATHS+=("$_store")
+            MEDIA_INFO_PRUNED+=("$_store" "$_pruned")
+            _curated=$(( _curated + 1 ))
+            log "[2c/5] ${_store}: shipping a copy pruned to the shipping videos" ;;
+        *)  CONTENT_PATHS+=("$_store")
+            rm -f "$_pruned"
+            _curated=$(( _curated + 1 ))
+            log "[2c/5] ${_store}: unreadable (prune exit ${_rc}) — held back, the image ships none" ;;
+    esac
+done
+unset _d _store _pruned _rc
 log "[2c/5] Content curation: ${_curated} non-shipping playlist/media file(s) held back from the image"
 
 # Move the curated content to its disk-backed stash NOW, before the secret
@@ -1015,6 +1047,26 @@ if [[ ${#CONTENT_PATHS[@]} -gt 0 ]]; then
     log "[2c/5] Curated content moved to ${CONTENT_STASH} (~${_moved_mb} MB, restored after the dd)"
     unset _src _key _sz _moved_mb
 fi
+
+# The pruned media_info.json copies (step 3 above), now that each original is
+# in the content stash — never over an original that did not get there (a
+# second spelling of the same file), which would be its only copy. Owner and
+# mode follow the original, so the kiosk and the web admin keep writing it.
+_i=0
+while [[ "$_i" -lt "${#MEDIA_INFO_PRUNED[@]}" ]]; do
+    _store="${MEDIA_INFO_PRUNED[$_i]}"
+    _pruned="${MEDIA_INFO_PRUNED[$(( _i + 1 ))]}"
+    _stashed="${CONTENT_STASH}/$(printf '%s' "$_store" | tr '/' '_')"
+    if [[ -f "$_stashed" && ! -e "$_store" ]]; then
+        cp "$_pruned" "$_store"
+        chown --reference="$_stashed" "$_store" 2>/dev/null || true
+        chmod --reference="$_stashed" "$_store" 2>/dev/null || true
+    fi
+    rm -f "$_pruned"
+    _i=$(( _i + 2 ))
+done
+sync
+unset _i _store _pruned _stashed
 
 # Expand the glob entries. This list has to match the SHAPE of what
 # first_boot.sh wipes on the clone: it globs tmdb_api_key*, so a stray

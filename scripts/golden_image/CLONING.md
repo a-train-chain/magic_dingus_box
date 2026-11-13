@@ -106,7 +106,10 @@ ControlMaster + ControlPersist). Seven steps:
      (`/mnt/ssd/.mdb-secret-stash`, root-owned 0700: copy all, flush,
      verify byte-for-byte, and only then zero + unlink the originals) and
      the operator's non-shipping playlists/videos alongside it
-     (`/mnt/ssd/.mdb-content-stash`), zeroes free space on both SD
+     (`/mnt/ssd/.mdb-content-stash`) — with the original per-video store
+     `data/media_info.json`, which would otherwise name every video the
+     box ever had (the image gets a copy pruned to the videos that ship;
+     restore puts the original back) — zeroes free space on both SD
      partitions, and ABORTS if its post-scrub leak check finds any
      credential class still present
    - Deletes first boot's step record

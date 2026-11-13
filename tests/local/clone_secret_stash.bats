@@ -235,6 +235,134 @@ assert_all_restored() {
 }
 
 # ---------------------------------------------------------------------------
+# Content curation: the per-video store (media_info.json)
+# ---------------------------------------------------------------------------
+# The store names every video the box ever had a Crop setting or a length
+# for — the operator's own file names, on every unit sold — and an orphaned
+# crop:false would be inherited by a later upload of the same name. prepare
+# moves the original into the content stash with the curated media (restore
+# mv's it back) and ships a copy pruned to the videos that ship.
+
+# A data dir with three videos: one shipping, one curated away, plus a store
+# naming those, a video that is long gone, and fields/keys to carry over.
+media_store_fixture() {
+    D="$T/data"
+    mkdir -p "$D/media/sub"
+    : > "$D/media/ship.mp4"
+    : > "$D/media/personal.mp4"
+    : > "$D/media/sub/deep.mp4"
+    cat > "$D/media_info.json" <<'JSON'
+{
+  "version": 1,
+  "future_top_level": {"x": 1},
+  "videos": {
+    "media/ship.mp4": {"duration_s": 10.0, "display_aspect": 1.7778, "crop": false, "future": "kept"},
+    "media/personal.mp4": {"duration_s": 3.0, "crop": false},
+    "media/long_gone.mp4": {"crop": false},
+    "media/sub/deep.mp4": {"display_aspect": 1.3333},
+    "media/../../etc/passwd": {"crop": false},
+    "/abs/x.mp4": {"crop": false}
+  }
+}
+JSON
+}
+
+@test "media_info prune: keeps only the shipping videos, everything else unchanged" {
+    media_store_fixture
+    run mdb_prune_media_info "$D" "$T/pruned.json" "$D/media/personal.mp4"
+    [ "$status" -eq 0 ]
+    run python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["version"] == 1 and d["future_top_level"] == {"x": 1}, d
+assert d["videos"] == {
+    "media/ship.mp4": {"duration_s": 10.0, "display_aspect": 1.7778,
+                       "crop": False, "future": "kept"},
+    "media/sub/deep.mp4": {"display_aspect": 1.3333}}, d["videos"]
+' "$T/pruned.json"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    # The original is never touched by the prune itself.
+    grep -q personal.mp4 "$D/media_info.json"
+    ! grep -q -e personal -e long_gone -e passwd "$T/pruned.json"
+}
+
+@test "media_info prune: nothing to remove leaves the store alone (10)" {
+    D="$T/data"
+    mkdir -p "$D/media"
+    : > "$D/media/ship.mp4"
+    printf '{"version":1,"videos":{"media/ship.mp4":{"crop":false}}}\n' > "$D/media_info.json"
+    run mdb_prune_media_info "$D" "$T/pruned.json"
+    [ "$status" -eq 10 ]
+}
+
+@test "media_info prune: an unreadable or wrong-shaped store ships as none" {
+    D="$T/data"
+    mkdir -p "$D/media"
+    for body in '' '{oops' '[]' '{"version":1,"videos":[]}'; do
+        printf '%s' "$body" > "$D/media_info.json"
+        run mdb_prune_media_info "$D" "$T/pruned.json"
+        [ "$status" -ne 0 ] && [ "$status" -ne 10 ] || { echo "body: $body -> $status"; false; }
+    done
+}
+
+@test "prepare: the store is decided after curation and stashed with the content" {
+    local f="$GI_DIR/prepare_for_cloning.sh"
+    local curated_line prune_line move_line copy_line
+    curated_line=$(grep -n 'unset _d _pl _base _keep _want _m _refs_file' "$f" | cut -d: -f1)
+    prune_line=$(grep -n 'mdb_prune_media_info "\$_d"' "$f" | cut -d: -f1)
+    move_line=$(grep -n 'mv "\$_src" "\${CONTENT_STASH}/\${_key}"' "$f" | cut -d: -f1)
+    copy_line=$(grep -n 'cp "\$_pruned" "\$_store"' "$f" | cut -d: -f1)
+    [ -n "$curated_line" ] && [ -n "$prune_line" ] && [ -n "$move_line" ] && [ -n "$copy_line" ]
+    # Pruned against the full curated list, before anything moves; the
+    # pruned copy is written only once the original is in the stash.
+    [ "$curated_line" -lt "$prune_line" ]
+    [ "$prune_line" -lt "$move_line" ]
+    [ "$move_line" -lt "$copy_line" ]
+    # The original rides the content manifest (that is what restore reads).
+    run grep -n 'CONTENT_PATHS+=("\$_store")' "$f"
+    [ "$status" -eq 0 ]
+}
+
+@test "restore: the manifest loop puts the original back over the pruned copy" {
+    # Plain mv (no -n / --no-clobber): the stashed original replaces the
+    # pruned copy prepare left at the same path.
+    run grep -n 'mv "\${CONTENT_STASH}/\${key}" "\$dest"' "$GI_DIR/restore_after_cloning.sh"
+    [ "$status" -eq 0 ]
+    run grep -nE '^[^#]*mv (-[a-zA-Z]*n|--no-clobber)' "$GI_DIR/restore_after_cloning.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "content stash round trip: shipping copy in the image, original back after" {
+    # prepare's move + manifest and restore's manifest loop, as the scripts
+    # do them, around the prune.
+    media_store_fixture
+    local stash="$T/content-stash" orig pruned key dest
+    orig="$(cat "$D/media_info.json")"
+    mkdir -p "$stash"; : > "$stash/manifest"
+    pruned="$T/pruned.json"
+    mdb_prune_media_info "$D" "$pruned" "$D/media/personal.mp4"
+    for src in "$D/media/personal.mp4" "$D/media_info.json"; do
+        key="$(printf '%s' "$src" | tr '/' '_')"
+        mv "$src" "$stash/$key"
+        printf '%s\t%s\n' "$key" "$src" >> "$stash/manifest"
+    done
+    cp "$pruned" "$D/media_info.json"
+    # What the dd sees:
+    ! grep -q -e personal -e long_gone "$D/media_info.json"
+    grep -q ship.mp4 "$D/media_info.json"
+    # restore_after_cloning.sh's loop:
+    while IFS=$'\t' read -r key dest; do
+        [[ -n "$key" && -n "$dest" ]] || continue
+        [[ -f "$stash/${key}" ]] || continue
+        mkdir -p "$(dirname "$dest")"
+        mv "$stash/${key}" "$dest"
+    done < "$stash/manifest"
+    [ "$(cat "$D/media_info.json")" = "$orig" ]
+    [ -f "$D/media/personal.mp4" ]
+}
+
+# ---------------------------------------------------------------------------
 # Script wiring
 # ---------------------------------------------------------------------------
 

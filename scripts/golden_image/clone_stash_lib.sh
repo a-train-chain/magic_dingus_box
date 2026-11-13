@@ -370,3 +370,63 @@ mdb_restore_secrets() {
     mdb_log "[1/4] Secret stash at ${dir} securely removed"
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Content curation: the per-video store
+# ---------------------------------------------------------------------------
+# <data>/media_info.json names every video the box ever had a Crop setting or
+# a length for — the operator's own file names, which must not ship on every
+# unit sold — and an orphaned crop:false would be inherited by a later upload
+# of the same name. prepare_for_cloning.sh moves the original into the
+# content stash with the curated media (restore_after_cloning.sh's manifest
+# loop mv's it back over the copy) and ships what this writes.
+#
+# mdb_prune_media_info DATA_DIR OUT [CURATED_PATH...]
+#   Writes to OUT the store at DATA_DIR/media_info.json keeping only the
+#   entries whose video ships: DATA_DIR/<key> is a regular file and not one
+#   of the CURATED_PATHs (held back from the image). Kept entries and every
+#   other top-level key are copied unchanged.
+#   0  = OUT written; it differs from the original (stash the original, ship
+#        OUT).
+#   10 = every entry ships; nothing to prune (leave the file alone).
+#   anything else = the store is unreadable or not the expected shape (or the
+#        helper failed): stash it and ship no store — absent means every
+#        video is cropped, and the web admin's back-fill re-probes lengths.
+mdb_prune_media_info() {
+    local data_dir="$1" out="$2"
+    shift 2
+    python3 - "$data_dir" "$out" "$@" <<'PY'
+import json
+import os
+import sys
+
+data_dir, out = sys.argv[1], sys.argv[2]
+curated = {os.path.normpath(p) for p in sys.argv[3:]}
+try:
+    with open(os.path.join(data_dir, "media_info.json"), encoding="utf-8") as f:
+        root = json.load(f)
+except (OSError, ValueError):
+    sys.exit(2)
+videos = root.get("videos") if isinstance(root, dict) else None
+if not isinstance(videos, dict):
+    sys.exit(2)
+
+
+def ships(key):
+    if not isinstance(key, str) or not key or key.startswith("/"):
+        return False
+    if ".." in key.split("/"):
+        return False
+    path = os.path.normpath(os.path.join(data_dir, key))
+    return os.path.isfile(path) and path not in curated
+
+
+kept = {k: v for k, v in videos.items() if ships(k)}
+if len(kept) == len(videos):
+    sys.exit(10)
+root["videos"] = kept
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(root, f, indent=2)
+    f.write("\n")
+PY
+}
