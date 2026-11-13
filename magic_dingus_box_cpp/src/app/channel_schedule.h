@@ -64,4 +64,44 @@ std::optional<OnAir> on_air(const Channel& channel, double now_utc);
 // possibly already under way.
 std::vector<OnAir> lineup(const Channel& channel, double from_utc, double to_utc);
 
+// A tune or an item boundary joins the on-air item only with at least this
+// much of it left; otherwise the item after it, from its start. The boundary
+// fires up to 0.5 s before an item's end (decide_auto_advance), so rejoining
+// the ending item would put the load inside its own end window with the
+// once-per-item guard set: held at EOS for good.
+inline constexpr double kMinJoinLeftS = 2.0;
+
+// The airing right after `a` on `channel`, from its start. `a` must be one
+// of the channel's airings (its index in range).
+OnAir airing_after(const Channel& channel, const OnAir& a);
+
+// What a tune joins on `channel` at `now_utc`: the on-air item at its
+// scheduled offset, or — with under kMinJoinLeftS of it left — the item after
+// it, from its start. nullopt: nothing is scheduled. The ONE join rule: the
+// tune (PlaylistPlayback) and the guide's "joins at m:ss" both read it.
+std::optional<OnAir> join_point(const Channel& channel, double now_utc);
+
+// The airing a channel load last loaded (PlaylistPlayback keeps it).
+struct LoadedAiring {
+    int index = -1;       // into Channel::items
+    ScheduledItem item;   // what that index held when it was loaded
+    double starts_at = 0;
+    double ends_at = 0;
+};
+
+// What an item boundary (the loaded item's natural end) joins: join_point,
+// except that it never goes back to the airing last loaded, or to one
+// before it. Playback can be AHEAD of the schedule at a natural end — the
+// start seek snaps to a keyframe up to half a GOP later than asked
+// (KEY_UNIT | SNAP_NEAREST, ~8-10 s GOPs in web transcodes), a knob seek
+// forward skipped part of the item, a file ends before its stored length —
+// and then the on-air item is still the one that just ended: rejoining it
+// would play its tail again. Instead the airing right after the loaded one,
+// from its start (it has not started yet: the on-air airing is the loaded
+// one or an earlier one). Once the schedule is past the loaded airing this
+// is plain join_point. `last` is not trusted when the channel no longer
+// holds that item at that index (a rebuild changed it): plain join_point.
+std::optional<OnAir> boundary_join(const Channel& channel, double now_utc,
+                                   const std::optional<LoadedAiring>& last);
+
 }  // namespace app

@@ -1509,6 +1509,70 @@ TEST_CASE("at an item's end the channel rejoins its schedule",
     CHECK(g.s.ui_visible_when_playing == false);  // a boundary never opens the guide
 }
 
+TEST_CASE("ahead of schedule at the natural end: the next item, never the ended one's tail",
+          "[playlist_playback][guide]") {
+    // The start seek snaps to a keyframe up to half a GOP past the offset
+    // asked for, a knob seek forward skips part of the item, a file can end
+    // before its stored length: the item ends while its own slot is still on
+    // air. Rejoining "what is on now" would load the same item again at its
+    // scheduled offset and replay its last seconds.
+    Guide g;
+    StreamCapture out(std::cout);
+    g.t.wall = kW0 + 130;  // 01: b (100-300 s), 30 s in
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.last() == "load_at Cartoons 1");
+    g.playing();
+    g.s.update_playback_state(199.6, 200.0);  // b's end, as decide_auto_advance sees it
+
+    SECTION("a keyframe snap: 10 s ahead -> c from its start") {
+        g.t.wall = kW0 + 290;  // b still has 10 s of its slot
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 2");
+        CHECK(g.t.last_offset() == 0.0);
+        CHECK(g.s.current_item_index == 2);
+    }
+    SECTION("a knob seek forward: 150 s ahead -> c from its start, then a, never b") {
+        g.t.wall = kW0 + 150;
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 2");
+        CHECK(g.t.last_offset() == 0.0);
+        // c played to its end in a further 10 s of wall time (seeked again):
+        // still inside b's slot, still not b — the airing after c, a.
+        g.playing();
+        g.s.last_advanced_item_index = -1;
+        g.s.update_playback_state(299.6, 300.0);
+        g.t.wall = kW0 + 160;
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 0");
+        CHECK(g.t.last_offset() == 0.0);
+    }
+    SECTION("an item whose file ends early (shorter than its stored length)") {
+        g.s.update_playback_state(179.6, 180.0);  // the file is 180 s, stored 200
+        g.t.wall = kW0 + 280;
+        g.pb.tick_auto_advance();
+        CHECK(g.t.last() == "load_at Cartoons 2");
+        CHECK(g.t.last_offset() == 0.0);
+    }
+    CHECK(g.s.tuned_channel == 1);
+}
+
+TEST_CASE("once the schedule has passed the loaded item, a boundary joins it live again",
+          "[playlist_playback][guide]") {
+    // The I1 guard only refuses the loaded airing (and earlier ones): behind
+    // schedule the boundary still joins whatever is on now, at its offset.
+    Guide g;
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    g.playing();
+    g.s.update_playback_state(199.6, 200.0);
+    g.t.wall = kW0 + 600 + 130;  // the next cycle's b, 30 s in: a new airing
+    g.pb.tick_auto_advance();
+    CHECK(g.t.last() == "load_at Cartoons 1");
+    CHECK(g.t.last_offset() == Approx(30.0));
+}
+
 TEST_CASE("a rebuilt channel list is used at the next boundary",
           "[playlist_playback][guide]") {
     Guide g;

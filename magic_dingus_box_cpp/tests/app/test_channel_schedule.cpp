@@ -214,6 +214,91 @@ TEST_CASE("a mix with nothing to schedule is empty", "[channel_schedule]") {
     CHECK(none[0].total_s == Approx(0));
 }
 
+TEST_CASE("join_point: the on-air item, or the next from its start near the end",
+          "[channel_schedule]") {
+    auto c = channel_of({100, 200, 300});
+    auto j = app::join_point(c, E + 130);
+    REQUIRE(j);
+    CHECK(j->index == 1);
+    CHECK(j->offset_s == Approx(30));
+    // 2 s left is enough; under it, the next item from its start.
+    j = app::join_point(c, E + 298);
+    CHECK(j->index == 1);
+    CHECK(j->offset_s == Approx(198));
+    j = app::join_point(c, E + 298.5);
+    CHECK(j->index == 2);
+    CHECK(j->offset_s == 0.0);
+    CHECK(j->starts_at == Approx(E + 300));
+    CHECK(j->ends_at == Approx(E + 600));
+    // The last item's tail wraps to the first.
+    j = app::join_point(c, E + 599);
+    CHECK(j->index == 0);
+    CHECK(j->starts_at == Approx(E + 600));
+    CHECK_FALSE(app::join_point(app::Channel{}, E).has_value());
+}
+
+TEST_CASE("airing_after: the next item from its start, wrapping", "[channel_schedule]") {
+    auto c = channel_of({100, 200, 300});
+    auto a = *app::on_air(c, E + 450);
+    auto b = app::airing_after(c, a);
+    CHECK(b.index == 0);
+    CHECK(b.offset_s == 0.0);
+    CHECK(b.starts_at == Approx(E + 600));
+    CHECK(b.ends_at == Approx(E + 700));
+}
+
+TEST_CASE("boundary_join never goes back to the airing last loaded", "[channel_schedule]") {
+    auto c = channel_of({100, 200, 300});
+    // b's airing, 100-300 s.
+    app::LoadedAiring b;
+    b.index = 1;
+    b.item = c.items[1];
+    b.starts_at = E + 100;
+    b.ends_at = E + 300;
+
+    SECTION("no airing loaded: join_point") {
+        auto j = app::boundary_join(c, E + 290, std::nullopt);
+        CHECK(j->index == 1);
+        CHECK(j->offset_s == Approx(190));
+    }
+    SECTION("ahead, inside the loaded airing: the one after it, from its start") {
+        auto j = app::boundary_join(c, E + 290, b);
+        CHECK(j->index == 2);
+        CHECK(j->offset_s == 0.0);
+        CHECK(j->starts_at == Approx(E + 300));
+    }
+    SECTION("further ahead, inside an EARLIER airing: still the one after the loaded") {
+        auto j = app::boundary_join(c, E + 50, b);  // a is on
+        CHECK(j->index == 2);
+        CHECK(j->offset_s == 0.0);
+        CHECK(j->starts_at == Approx(E + 300));
+    }
+    SECTION("on time (the boundary fires just before the end): the next, from its start") {
+        auto j = app::boundary_join(c, E + 299.6, b);
+        CHECK(j->index == 2);
+        CHECK(j->offset_s == 0.0);
+    }
+    SECTION("behind: whatever is on now, at its offset") {
+        auto j = app::boundary_join(c, E + 300.4, b);
+        CHECK(j->index == 2);
+        CHECK(j->offset_s == Approx(0.4));
+        j = app::boundary_join(c, E + 750, b);  // the next cycle's b, a new airing
+        CHECK(j->index == 1);
+        CHECK(j->offset_s == Approx(50));
+    }
+    SECTION("a rebuilt channel that moved the loaded item: plain join_point") {
+        auto rebuilt = channel_of({100, 200, 300});
+        rebuilt.items[1].item = 7;  // index 1 is another item now
+        auto j = app::boundary_join(rebuilt, E + 290, b);
+        CHECK(j->index == 1);
+        CHECK(j->offset_s == Approx(190));
+        app::LoadedAiring out_of_range = b;
+        out_of_range.index = 9;
+        j = app::boundary_join(c, E + 290, out_of_range);
+        CHECK(j->index == 1);
+    }
+}
+
 TEST_CASE("Master Shuffle order is a golden permutation", "[channel_schedule]") {
     // std::mt19937 is fully specified by the standard and the Fisher-Yates is
     // hand-written, so this exact order must hold on the Pi's libstdc++ too.

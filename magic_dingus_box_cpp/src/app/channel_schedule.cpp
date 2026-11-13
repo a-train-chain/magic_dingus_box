@@ -102,24 +102,56 @@ std::optional<OnAir> on_air(const Channel& channel, double now_utc) {
     return std::nullopt;
 }
 
+OnAir airing_after(const Channel& channel, const OnAir& a) {
+    const size_t next = (static_cast<size_t>(a.index) + 1) % channel.items.size();
+    OnAir b;
+    b.index = static_cast<int>(next);
+    b.offset_s = 0;
+    b.starts_at = a.ends_at;
+    b.ends_at = b.starts_at + channel.items[next].length_s;
+    return b;
+}
+
 std::vector<OnAir> lineup(const Channel& channel, double from_utc, double to_utc) {
     std::vector<OnAir> out;
     if (!std::isfinite(from_utc) || !std::isfinite(to_utc)) return out;
     auto cur = on_air(channel, from_utc);
     if (!cur || to_utc <= from_utc) return out;
     OnAir a = *cur;
-    const size_t n = channel.items.size();
     while (a.starts_at < to_utc) {
         out.push_back(a);
-        const size_t next = (static_cast<size_t>(a.index) + 1) % n;
-        OnAir b;
-        b.index = static_cast<int>(next);
-        b.offset_s = 0;
-        b.starts_at = a.ends_at;
-        b.ends_at = b.starts_at + channel.items[next].length_s;
-        a = b;
+        a = airing_after(channel, a);
     }
     return out;
+}
+
+std::optional<OnAir> join_point(const Channel& channel, double now_utc) {
+    auto oa = on_air(channel, now_utc);
+    if (!oa) return std::nullopt;
+    const double left = channel.items[oa->index].length_s - oa->offset_s;
+    if (left >= kMinJoinLeftS) return oa;
+    return airing_after(channel, *oa);
+}
+
+std::optional<OnAir> boundary_join(const Channel& channel, double now_utc,
+                                   const std::optional<LoadedAiring>& last) {
+    auto jp = join_point(channel, now_utc);
+    if (!jp || !last) return jp;
+    const int n = static_cast<int>(channel.items.size());
+    if (last->index < 0 || last->index >= n) return jp;
+    const ScheduledItem& held = channel.items[last->index];
+    if (held.playlist != last->item.playlist || held.item != last->item.item) return jp;
+    // Airings are contiguous: one that starts before the loaded airing ends
+    // IS the loaded airing or an earlier one. Half a second of slack absorbs
+    // the rounding between two on_air() calls; the loaded airing itself
+    // starts a whole item length before its end.
+    constexpr double kSlackS = 0.5;
+    if (jp->starts_at >= last->ends_at - kSlackS) return jp;
+    OnAir loaded;
+    loaded.index = last->index;
+    loaded.starts_at = last->starts_at;
+    loaded.ends_at = last->ends_at;
+    return airing_after(channel, loaded);
 }
 
 }  // namespace app

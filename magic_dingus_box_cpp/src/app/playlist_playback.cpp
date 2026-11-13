@@ -317,27 +317,8 @@ void PlaylistPlayback::on_prev() {
 }
 
 // ── Channel Guide style ──────────────────────────────────────────────────
-
-namespace {
-
-// What a tune or an item boundary joins on `ch` at `now_utc`: the on-air
-// item at its scheduled offset, or — with under kMinJoinLeftS of it left —
-// the item after it, from its start (see kMinJoinLeftS). nullopt: nothing
-// is scheduled.
-std::optional<OnAir> join_point(const Channel& ch, double now_utc) {
-    auto oa = on_air(ch, now_utc);
-    if (!oa) return std::nullopt;
-    const double left = ch.items[oa->index].length_s - oa->offset_s;
-    if (left >= PlaylistPlayback::kMinJoinLeftS) return oa;
-    OnAir next;
-    next.index = (oa->index + 1) % static_cast<int>(ch.items.size());
-    next.offset_s = 0.0;
-    next.starts_at = oa->ends_at;
-    next.ends_at = next.starts_at + ch.items[next.index].length_s;
-    return next;
-}
-
-}  // namespace
+// The join rules (join_point for a tune, boundary_join at an item's end)
+// are app/channel_schedule.h's: one copy, shared with the guide's view.
 
 const Channel* PlaylistPlayback::channel_at(int c) const {
     if (!channels_ || c < 0 || c >= static_cast<int>(channels_->size())) return nullptr;
@@ -354,6 +335,7 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         channel_progress_ = {};
         tune_awaiting_stream_ = false;
         boundary_load_at_.reset();
+        loaded_airing_.reset();
         return;
     }
     // Given-up rows stay until a channel proves it plays; only rows the new
@@ -487,7 +469,12 @@ void PlaylistPlayback::rejoin_schedule() {
     prove_channel();  // the item played to its natural end
     const int channel = state_.tuned_channel;
     const Channel* ch = channel_at(channel);
-    const auto oa = ch ? join_point(*ch, transport_.wall_now_utc()) : std::nullopt;
+    // Never back to the airing that just ended (playback can be ahead of
+    // the schedule here — boundary_join): only an airing loaded on THIS
+    // channel counts.
+    std::optional<LoadedAiring> last;
+    if (loaded_airing_ && loaded_airing_->channel == channel) last = loaded_airing_->airing;
+    const auto oa = ch ? boundary_join(*ch, transport_.wall_now_utc(), last) : std::nullopt;
     if (!oa) {
         // Not on a channel (a List-style item still playing when the style
         // changed) or the channel lost its schedule: end here, and the
@@ -526,6 +513,12 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     state_.current_playlist_index = si.playlist;
     state_.current_item_index = si.item;
     guide_item_ends_at_ = oa.ends_at;
+    LoadedAiring airing;
+    airing.index = oa.index;
+    airing.item = si;
+    airing.starts_at = oa.starts_at;
+    airing.ends_at = oa.ends_at;
+    loaded_airing_ = ChannelAiring{channel, airing};
 
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
               << " at " << oa.offset_s << "s" << std::endl;

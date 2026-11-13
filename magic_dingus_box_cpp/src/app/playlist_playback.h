@@ -59,7 +59,9 @@
 // rides the switch above (same stop, waits, re-entrancy rules and timeout;
 // pending_.target is the channel) and joins the on-air item when the load
 // runs. NEXT/PREV change channel. An item's natural end loads what is on the
-// tuned channel NOW instead of the next index. A failed item is not skipped
+// tuned channel NOW instead of the next index — never the airing that just
+// ended, when playback ran ahead of it (app::boundary_join: the next one,
+// from its start). A failed item is not skipped
 // ahead: playback stops until its scheduled slot ends
 // (AppState::guide_wait_until_utc), and a give-up marks the channel in
 // guide_gave_up — cleared only once a channel PLAYS (kChannelPlaysS), so a
@@ -195,12 +197,12 @@ public:
         if (!switch_pending() || !pending_.tune) return std::nullopt;
         return pending_.target;
     }
-    // A tune or item boundary joins the on-air item only with at least this
-    // much of it left; otherwise the item after it, from its start. The
-    // boundary fires up to 0.5 s before an item's end (decide_auto_advance),
-    // so re-joining the ending item would put the load inside its own end
-    // window with the once-per-item guard set: held at EOS for good.
-    static constexpr double kMinJoinLeftS = 2.0;
+    // A tune joins app::join_point (the on-air item, or the next one from its
+    // start with under this much left); an item's natural end joins
+    // app::boundary_join, which never goes back to the airing that just
+    // ended (playback can be ahead of the schedule there). Both rules live
+    // in app/channel_schedule.h, shared with the guide's view.
+    static constexpr double kMinJoinLeftS = app::kMinJoinLeftS;
     // A channel list older than the playlists it points into (a rebuild
     // that was missed) stops playback and holds the nothing-playing rule
     // off for this long, so it can never become a stop-and-tune cycle every
@@ -298,7 +300,8 @@ private:
     const Channel* channel_at(int c) const;
     // A tune's load, once its switch wait is over.
     void finish_tune(int channel, bool keep_overlay);
-    // An item's natural end: load what is on the tuned channel now.
+    // An item's natural end: load what is on the tuned channel now — but
+    // never the airing just loaded again (app::boundary_join).
     void rejoin_schedule();
     // tuned_channel + last_channel_id, set when a tune's load runs.
     void land_on_channel(int channel);
@@ -308,6 +311,15 @@ private:
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
     // the channel picks up again from there.
     double guide_item_ends_at_ = 0.0;
+    // The airing the last channel load loaded, and on which channel: the
+    // next boundary on that channel never rejoins it (boundary_join). A
+    // reload that renumbers the channel drops the guard for that one
+    // boundary (the channel number or the scheduled item no longer match).
+    struct ChannelAiring {
+        int channel = -1;
+        LoadedAiring airing;
+    };
+    std::optional<ChannelAiring> loaded_airing_;
     // How far the playing channel load has got. A mid-item join starts far
     // past the failure policy's "healthy" mark (3 s) and kChannelPlaysS, so
     // on a channel both count from `anchor`: the FIRST position the stream
