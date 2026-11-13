@@ -1808,22 +1808,37 @@ int main(int /* argc */, char* /* argv */[]) {
         // guide_inputs: the signature of everything the view is laid out
         // from — the canvas, the channel list (its rebuild count), the tuned
         // channel, the cursor, the Picture control and its crop, the source
-        // aspect, the zone offset, the local minute (the clock) and the UTC
-        // second (the progress bar, the now line, "joins at m:ss"). The view
-        // is laid out again only when it changes (at most once a second
-        // while nothing else moves), and the redraw gate reads it too. No
-        // allocation, no file I/O.
+        // aspect, the zone offset, the playing item, the local minute (the
+        // clock) and the UTC second (the progress bar, the now line, "joins
+        // at m:ss", the playing item's times). The view is laid out again
+        // only when it changes (at most once a second while nothing else
+        // moves), and the redraw gate reads it too. No allocation, no file
+        // I/O.
+        //
+        // guide_playing: what the window shows (ui::GuidePlaying), for the
+        // tuned channel's panel — the playing indexes and the player's
+        // position once a stream is on screen; not during a tune's settle,
+        // when the indexes point at the channel's row and the picture is the
+        // channel being left.
         const bool guide_style_now = playlist_playback.guide_style();
         const bool guide_painted_now = guide_style_now && app::guide_painted(state);
         const int guide_tuned = playlist_playback.pending_tune().value_or(state.tuned_channel);
         double guide_now_utc = 0.0;
         int guide_offset_s = 0;
         double guide_source_aspect = 0.0;
+        ui::GuidePlaying guide_playing;
         app::ContentSignature guide_inputs;
         if (guide_painted_now) {
             guide_now_utc = playlist_transport.wall_now_utc();
             guide_offset_s = guide_clock.offset(guide_now_utc, zone_offset);
             guide_source_aspect = playing_display_aspect();
+            if (state.video_active && !playlist_playback.switch_pending() &&
+                state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+                guide_playing.playlist = state.current_playlist_index;
+                guide_playing.item = state.current_item_index;
+                guide_playing.position_s = state.get_position();
+                guide_playing.duration_s = state.get_duration();
+            }
             guide_inputs.add(static_cast<uint64_t>(state.display_settings.mode));
             guide_inputs.add(channels_generation);
             guide_inputs.add(static_cast<uint64_t>(state.playlists.size()));
@@ -1835,6 +1850,8 @@ int main(int /* argc */, char* /* argv */[]) {
             guide_inputs.add(static_cast<uint64_t>(state.picture_crop));
             guide_inputs.add(static_cast<uint64_t>(std::llround(guide_source_aspect * 10000.0)));
             guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(guide_offset_s)));
+            guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(guide_playing.playlist)));
+            guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(guide_playing.item)));
             guide_inputs.add(static_cast<uint64_t>(
                 app::GuideClock::local_minute(guide_now_utc, guide_offset_s)));
             guide_inputs.add(
@@ -2088,6 +2105,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 guide_in.source_aspect = guide_source_aspect;
                 guide_in.now_utc = guide_now_utc;
                 guide_in.utc_offset_s = guide_offset_s;
+                guide_in.playing = guide_playing;
                 const uint64_t revision = guide_view.revision + 1;
                 guide_view = ui::layout_channel_guide(guide_in);
                 guide_view.revision = revision;

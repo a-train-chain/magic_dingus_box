@@ -451,3 +451,157 @@ TEST_CASE("channel names truncate to the column's real width", "[guide_view]") {
     CHECK(v.grid.name_w == 84);
     CHECK(v.grid.rows[1].name == std::string(8, 'A') + "\xE2\x80\xA6");  // 9 chars
 }
+
+// ── The tuned channel's panel describes the picture (final review I3) ────
+// Channel 01's on-air airing at 8:14:30 is Show 1-1 (8:10-8:20, 4:30 in).
+// After a pause or a seek back that carried the playing item past its slot,
+// or under a clock that NTP moved after the power-on tune joined, the window
+// shows another item: on the tuned row the panel names THAT one, with times
+// from its position; the grid stays the schedule.
+
+namespace {
+
+ui::GuideViewInput tuned_one(const Fixture& f, int item, double position_s,
+                             double duration_s = 600.0) {
+    auto in = f.in();
+    in.tuned = 1;
+    in.cursor.row = 1;
+    in.playing.playlist = 1;
+    in.playing.item = item;
+    in.playing.position_s = position_s;
+    in.playing.duration_s = duration_s;
+    return in;
+}
+
+}  // namespace
+
+TEST_CASE("a tuned item paused past its slot: the panel describes what plays",
+          "[guide_view]") {
+    Fixture f;
+    // Show 1-0 (scheduled 8:00-8:10) is still playing, 9:50 in.
+    auto v = ui::layout_channel_guide(tuned_one(f, 0, 590.0));
+    CHECK(v.panel.eyebrow == "NOW PLAYING");
+    CHECK(v.panel.item_title == "Show 1-0");
+    CHECK(v.panel.artist == "Artist 0");
+    CHECK(v.panel.start_hm == "8:04");  // 8:14:30 - 9:50 = 8:04:40
+    CHECK(v.panel.end_hm == "8:14");    // + 10:00 = 8:14:40
+    CHECK(v.panel.progress > 0.983);
+    CHECK(v.panel.progress < 0.984);
+    // Next: what the channel joins when it ends (8:14:40): Show 1-1, live.
+    CHECK(v.panel.next_hm == "8:14");
+    CHECK(v.panel.next_title == "Show 1-1");
+    CHECK(v.panel.join_note.empty());
+    // The grid is still the schedule.
+    REQUIRE_FALSE(v.grid.rows[1].cells.empty());
+    CHECK(v.grid.rows[1].cells[0].label == "Show 1-1");
+    CHECK(v.grid.rows[1].cells[0].tone == ui::GuideTone::Green);
+}
+
+TEST_CASE("a tuned item ahead of its slot: the panel describes what plays",
+          "[guide_view]") {
+    Fixture f;
+    // Show 1-2 (scheduled 8:20-8:30) started 5 s ago, ahead of schedule.
+    auto v = ui::layout_channel_guide(tuned_one(f, 2, 5.0));
+    CHECK(v.panel.item_title == "Show 1-2");
+    CHECK(v.panel.start_hm == "8:14");  // 8:14:25
+    CHECK(v.panel.end_hm == "8:24");    // 8:24:25
+    CHECK(v.panel.progress > 0.0083);
+    CHECK(v.panel.progress < 0.0084);
+    // At 8:24:25 Show 1-2's own slot is on air: the boundary never rejoins
+    // the item that just ended, so the next is Show 1-3.
+    CHECK(v.panel.next_hm == "8:24");
+    CHECK(v.panel.next_title == "Show 1-3");
+}
+
+TEST_CASE("the on-air item playing: the panel stays the schedule", "[guide_view]") {
+    Fixture f;
+    const auto sched = ui::layout_channel_guide([&] {
+        auto in = f.in();
+        in.tuned = 1;
+        in.cursor.row = 1;
+        return in;
+    }());
+    // Show 1-1 itself, a little behind its scheduled offset (a short pause).
+    auto v = ui::layout_channel_guide(tuned_one(f, 1, 262.0));
+    CHECK(v.panel.item_title == "Show 1-1");
+    CHECK(v.panel.start_hm == sched.panel.start_hm);
+    CHECK(v.panel.end_hm == sched.panel.end_hm);
+    CHECK(v.panel.progress == sched.panel.progress);
+    CHECK(v.panel.next_title == sched.panel.next_title);
+    CHECK(v.panel.start_hm == "8:10");
+}
+
+TEST_CASE("another channel's panel, or nothing known playing: the schedule",
+          "[guide_view]") {
+    Fixture f;
+    SECTION("the cursor on another channel") {
+        auto in = tuned_one(f, 0, 590.0);
+        in.cursor.row = 2;
+        auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.eyebrow == "ON CH 02 NOW");
+        CHECK(v.panel.item_title == "Show 2-1");
+        CHECK(v.panel.start_hm == "8:10");
+    }
+    SECTION("nothing known playing (a switch pending, no video)") {
+        auto in = tuned_one(f, 0, 590.0);
+        in.playing = ui::GuidePlaying{};
+        auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.item_title == "Show 1-1");
+        CHECK(v.panel.start_hm == "8:10");
+    }
+    SECTION("indexes past the playlists") {
+        auto in = tuned_one(f, 0, 590.0);
+        in.playing.item = 99;
+        auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.item_title == "Show 1-1");
+    }
+}
+
+TEST_CASE("on the Picture control the tuned panel describes what plays too",
+          "[guide_view]") {
+    Fixture f;
+    auto in = tuned_one(f, 0, 590.0);
+    in.cursor = app::GuideCursor{0, 0, true};
+    in.picture_available = true;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Show 1-0");
+    CHECK(v.panel.bottom == ui::GuideBottom::Picture);
+}
+
+TEST_CASE("a playing item the channel does not schedule: its own trimmed length",
+          "[guide_view]") {
+    Fixture f;
+    // Chan 2's first item, trimmed 1:40-6:40 (300 s), 2:30 into the trim.
+    f.playlists[2].items[0].start = 100.0;
+    f.playlists[2].items[0].end = 400.0;
+    auto in = tuned_one(f, 0, 250.0, 900.0);
+    in.playing.playlist = 2;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Show 2-0");
+    CHECK(v.panel.start_hm == "8:12");  // 8:14:30 - 2:30
+    CHECK(v.panel.end_hm == "8:17");    // + 5:00
+    CHECK(v.panel.progress > 0.499);
+    CHECK(v.panel.progress < 0.501);
+    // Untrimmed: the file's duration from the start.
+    f.playlists[2].items[0].start = 0.0;
+    f.playlists[2].items[0].end = 0.0;
+    in.playing.position_s = 450.0;
+    v = ui::layout_channel_guide(in);
+    CHECK(v.panel.progress > 0.499);
+    CHECK(v.panel.progress < 0.501);
+    // No length known at all: the schedule.
+    in.playing.duration_s = 0.0;
+    v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Show 1-1");
+}
+
+TEST_CASE("CRT: the playing item's panel keeps the CRT's drops", "[guide_view]") {
+    Fixture f;
+    auto in = tuned_one(f, 0, 590.0);
+    in.crt = true;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Show 1-0");
+    CHECK(v.panel.artist.empty());
+    CHECK_FALSE(v.panel.show_artist);
+    CHECK_FALSE(v.panel.show_next);
+}

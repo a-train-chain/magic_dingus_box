@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,16 @@ struct GuideRect {
     int x = 0, y = 0, w = 0, h = 0;
 };
 
+// What the window actually shows: the playing item and where it is. main.cpp
+// fills it from the playing indexes and the player; playlist -1 when nothing
+// plays or it is not known yet (no video, a tune's switch still pending).
+struct GuidePlaying {
+    int playlist = -1;        // index into the playlists
+    int item = -1;            // index into that playlist's items
+    double position_s = 0;    // the player's position in the FILE
+    double duration_s = 0;    // the file's duration (0 = unknown)
+};
+
 struct GuideViewInput {
     bool crt = false;
     const std::vector<app::Channel>* channels = nullptr;
@@ -81,6 +92,10 @@ struct GuideViewInput {
     double source_aspect = 0;
     double now_utc = 0;
     int utc_offset_s = 0;
+    // On the tuned channel's panel, a playing item that is not the on-air
+    // airing's describes the panel instead of the schedule (the grid stays
+    // the schedule): see layout_channel_guide.
+    GuidePlaying playing;
 };
 
 struct GuidePanel {
@@ -272,6 +287,46 @@ inline std::string playlist_title(const GuideViewInput& in, int n) {
     return (*in.playlists)[n].title;
 }
 
+// The playing item when it is NOT the on-air airing's item `on`: the item,
+// how far into its playable part it is, and that part's length — the
+// channel's scheduled length for it, else the file's (end trim or duration,
+// minus the start trim). Nothing when nothing known plays, when it is the
+// on-air item (the schedule describes it), or when no length is known.
+struct PlayingSpan {
+    const app::PlaylistItem* item = nullptr;
+    app::ScheduledItem at;  // playlist / item indexes
+    double played_s = 0;
+    double length_s = 0;
+};
+
+inline std::optional<PlayingSpan> playing_off_schedule(const GuideViewInput& in,
+                                                       const app::Channel& ch,
+                                                       const app::ScheduledItem& on) {
+    const GuidePlaying& pp = in.playing;
+    if (pp.playlist < 0 || pp.item < 0) return std::nullopt;
+    if (pp.playlist == on.playlist && pp.item == on.item) return std::nullopt;
+    PlayingSpan s;
+    s.at.playlist = pp.playlist;
+    s.at.item = pp.item;
+    s.item = item_of(in, s.at);
+    if (!s.item) return std::nullopt;
+    for (const app::ScheduledItem& si : ch.items) {
+        if (si.playlist == pp.playlist && si.item == pp.item) {
+            s.length_s = si.length_s;
+            break;
+        }
+    }
+    if (!(s.length_s > 0.0)) {
+        const double end = s.item->end > 0.0 ? s.item->end : pp.duration_s;
+        s.length_s = end - s.item->start;
+    }
+    if (!std::isfinite(s.length_s) || s.length_s <= 0.0 || !std::isfinite(pp.position_s)) {
+        return std::nullopt;
+    }
+    s.played_s = std::clamp(pp.position_s - s.item->start, 0.0, s.length_s);
+    return s;
+}
+
 }  // namespace guide_detail
 
 inline GuideView layout_channel_guide(const GuideViewInput& in) {
@@ -387,16 +442,42 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
         if (auto a = app::on_air(ch, in.now_utc)) {
             const int ai = std::clamp(a->index, 0, static_cast<int>(ch.items.size()) - 1);
             const app::ScheduledItem& si = ch.items[ai];
-            const auto* it = d::item_of(in, si);
-            p.item_title = it ? it->title : "";
-            p.artist = (!crt && it) ? it->artist : "";
-            p.start_hm = d::hm(a->starts_at + in.utc_offset_s);
-            p.end_hm = d::hm(a->ends_at + in.utc_offset_s);
-            const double len = a->ends_at - a->starts_at;
-            p.progress = len > 0 ? std::clamp(a->offset_s / len, 0.0, 1.0) : 0.0;
-            const app::ScheduledItem& nx = ch.items[(ai + 1) % ch.items.size()];
-            p.next_hm = d::hm(a->ends_at + in.utc_offset_s);
-            p.next_title = d::title_of(in, nx);
+            // The tuned channel's panel describes the PICTURE: a playing item
+            // that is not the on-air one (a pause or a seek back carried it
+            // past its slot; NTP moved the clock after the power-on tune;
+            // playback ran ahead) is named with times from its own position.
+            // The grid stays the schedule.
+            const auto playing = on_tuned ? d::playing_off_schedule(in, ch, si) : std::nullopt;
+            if (playing) {
+                const double started = in.now_utc - playing->played_s;
+                const double ends = started + playing->length_s;
+                p.item_title = playing->item->title;
+                p.artist = crt ? "" : playing->item->artist;
+                p.start_hm = d::hm(started + in.utc_offset_s);
+                p.end_hm = d::hm(ends + in.utc_offset_s);
+                p.progress = std::clamp(playing->played_s / playing->length_s, 0.0, 1.0);
+                // Next: what the channel joins when it ends — never the same
+                // item again (the boundary's rule, app::boundary_join).
+                if (auto nx = app::join_point(ch, ends)) {
+                    const app::ScheduledItem* ns = &ch.items[nx->index];
+                    if (ns->playlist == playing->at.playlist && ns->item == playing->at.item) {
+                        ns = &ch.items[app::airing_after(ch, *nx).index];
+                    }
+                    p.next_hm = d::hm(ends + in.utc_offset_s);
+                    p.next_title = d::title_of(in, *ns);
+                }
+            } else {
+                const auto* it = d::item_of(in, si);
+                p.item_title = it ? it->title : "";
+                p.artist = (!crt && it) ? it->artist : "";
+                p.start_hm = d::hm(a->starts_at + in.utc_offset_s);
+                p.end_hm = d::hm(a->ends_at + in.utc_offset_s);
+                const double len = a->ends_at - a->starts_at;
+                p.progress = len > 0 ? std::clamp(a->offset_s / len, 0.0, 1.0) : 0.0;
+                const app::ScheduledItem& nx = ch.items[(ai + 1) % ch.items.size()];
+                p.next_hm = d::hm(a->ends_at + in.utc_offset_s);
+                p.next_title = d::title_of(in, nx);
+            }
             if (!on_tuned) {
                 const int off = static_cast<int>(std::floor(std::max(0.0, a->offset_s)));
                 char b[32];
