@@ -163,6 +163,7 @@ set(UI_SOURCES
 list(APPEND UI_SOURCES src/ui/toast.cpp)
 
 set(APP_SOURCES
+    src/app/bezel_catalog.cpp
     src/app/game_launch_recovery.cpp
     src/app/game_launch_validation.cpp
     src/app/game_quiet_mode.cpp
@@ -174,6 +175,7 @@ set(APP_SOURCES
     # test_app_unit can link it (also listed there).
     src/app/controller_playback.cpp
     src/app/controller_text_input.cpp
+    src/app/media_info.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
     src/app/mb_filter_persistence.cpp
@@ -188,6 +190,7 @@ set(APP_SOURCES
     src/app/playlist_cursor.cpp
     src/app/playlist_playback.cpp
     src/app/playlist_reload.cpp
+    src/app/overlay_nav.cpp
     src/app/game_handoff.cpp
     # GL/DRM half of the game hand-off: kiosk-only, in no test target.
     src/app/game_handoff_kiosk.cpp
@@ -826,11 +829,19 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # constructor (tests/app/controller_test_doubles.cpp, globbed above).
         src/app/controller_playback.cpp
         src/utils/path_resolver.cpp
+        # media_info.json (per-video crop / length / aspect): the store
+        # against real temp files and a stallable write hook; also the
+        # Controller's current_media_key.
+        src/app/media_info.cpp
         # main.cpp's playlist playback control (SELECT/NEXT/PREV, auto-
         # advance, failed-item skip, stall watchdog) against a fake
         # transport, and the web-admin playlist reload's re-anchoring.
         src/app/playlist_playback.cpp
         src/app/playlist_reload.cpp
+        # The list overlay's cursor (rows, scroll window, the Picture
+        # control below the last row) — main.cpp's ROTATE handler and the
+        # reload's clamp both go through it.
+        src/app/overlay_nav.cpp
         # main.cpp's boot intro decisions (end detection, fade volume, the
         # hand-off to the menu, the render-video decision).
         src/app/intro_sequence.cpp
@@ -851,6 +862,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # platform_profile backs filter_for_platform (the Pi 4 game-system
         # gate) — pure logic, no Linux-only deps.
         src/platform/platform_profile.cpp
+        # bezels.json parsing; stb_image lets the test measure each shipped
+        # bezel PNG's transparent window against its declared opening.
+        src/app/bezel_catalog.cpp
+        src/utils/stb_image_impl.cpp
     )
     target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})

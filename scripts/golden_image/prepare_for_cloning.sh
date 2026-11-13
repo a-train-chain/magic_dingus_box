@@ -979,6 +979,68 @@ for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
     shopt -u nullglob
 done
 unset _d _pl _base _keep _want _m _refs_file
+
+# 3. The per-video store, <data>/media_info.json. It names every video the
+# box ever had a Crop setting or a length for — the operator's own file
+# names, on every unit sold — and an orphaned crop:false would be inherited
+# by a later upload of the same name. Pruned against the COMPLETE curated
+# list above, before anything moves: the original joins the content stash
+# (restore's manifest loop mv's it back over the copy) and, once it is there,
+# the image gets a copy holding only the videos that ship
+# (mdb_prune_media_info, clone_stash_lib.sh). A store naming only shipping
+# videos stays as it is; an unreadable one ships as no store at all (every
+# video cropped; the web admin's back-fill re-probes the lengths).
+#
+# build/data/media_info.json is NOT the store: CMake's configure-time
+# file(COPY) of data/ (media/ left out) puts it there, nothing reads it, and
+# every configure writes it again. So it is deleted, never stashed — pruned
+# against build/data every key looked gone, and stashing it sent a drive-less
+# --allow-ram-stash clone to the content-stash drive check below, which
+# stopped prepare even when the real store names only shipping videos.
+if [[ -f "${CPP_DIR}/build/data/media_info.json" ]]; then
+    rm -f "${CPP_DIR}/build/data/media_info.json"
+    log "[2c/5] ${CPP_DIR}/build/data/media_info.json: build-tree copy deleted (the next configure rewrites it)"
+fi
+# An interrupted store write leaves its staging copy, naming every video: the
+# kiosk's fixed media_info.json.tmp (media_info.cpp; usually renamed away by
+# its next write, not always) and the web admin's mkstemp
+# .media_info.json.<rand>.tmp (admin_common._atomic_write_text, whose cleanup
+# cannot run on SIGKILL/OOM/power cut; nothing sweeps it). CMake's file(COPY)
+# carries dotfiles, so one in data/ also lands in build/data/. The kiosk and
+# the web admin were stopped in [1/5], so any left now is an uncommitted
+# write: deleted (nothing is lost), not stashed, so it never sends a
+# drive-less clone to the drive check below.
+for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
+    for _t in "${_d}/media_info.json.tmp" "${_d}"/.media_info.json.*.tmp; do
+        [[ -f "$_t" ]] || continue
+        rm -f "$_t"
+        log "[2c/5] ${_t}: interrupted store write deleted"
+    done
+done
+unset _d _t
+# MEDIA_INFO_HELD records why the store is held back ("pruned" /
+# "unreadable", empty = it ships as it is): the drive check below names it as
+# the cause, and the outcome is logged only once the move has happened.
+MEDIA_INFO_PRUNED=()
+MEDIA_INFO_HELD=""
+MEDIA_INFO_RC=0
+_store="${DATA_DIR}/media_info.json"
+if [[ -f "$_store" ]]; then
+    _pruned="$(mktemp)"
+    mdb_prune_media_info "$DATA_DIR" "$_pruned" ${CONTENT_PATHS[@]+"${CONTENT_PATHS[@]}"} || MEDIA_INFO_RC=$?
+    case "$MEDIA_INFO_RC" in
+        10) rm -f "$_pruned" ;;
+        0)  CONTENT_PATHS+=("$_store")
+            MEDIA_INFO_PRUNED+=("$_store" "$_pruned")
+            MEDIA_INFO_HELD="pruned"
+            _curated=$(( _curated + 1 )) ;;
+        *)  CONTENT_PATHS+=("$_store")
+            rm -f "$_pruned"
+            MEDIA_INFO_HELD="unreadable"
+            _curated=$(( _curated + 1 )) ;;
+    esac
+fi
+unset _store _pruned
 log "[2c/5] Content curation: ${_curated} non-shipping playlist/media file(s) held back from the image"
 
 # Move the curated content to its disk-backed stash NOW, before the secret
@@ -996,6 +1058,22 @@ if [[ ${#CONTENT_PATHS[@]} -gt 0 ]]; then
         log "       is not a usable mounted drive — stashing there would write to the SD"
         log "       card, which the dd captures. Attach/mount the movie drive and re-run"
         log "       (restore_after_cloning.sh first, to clear the marker)."
+        # A drive-less box whose only held-back file is the per-video store
+        # (it names videos no longer on the box — e.g. after a backup
+        # restore) needs no drive at all once those entries are gone.
+        if [[ -n "$MEDIA_INFO_HELD" && ${#CONTENT_PATHS[@]} -eq 1 ]]; then
+            log "       The only one is ${DATA_DIR}/media_info.json, the per-video store:"
+            if [[ "$MEDIA_INFO_HELD" == "pruned" ]]; then
+                log "       it names videos that are not on this box (stale entries, e.g. from a"
+                log "       backup restore). Removing those entries from it, or attaching the drive,"
+                log "       is enough."
+            else
+                log "       it is unreadable (prune exit ${MEDIA_INFO_RC}). Repairing or removing it,"
+                log "       or attaching the drive, is enough."
+            fi
+        elif [[ -n "$MEDIA_INFO_HELD" ]]; then
+            log "       One of them is ${DATA_DIR}/media_info.json, the per-video store."
+        fi
         exit 1
     fi
     mkdir -p "$CONTENT_STASH"
@@ -1006,6 +1084,31 @@ if [[ ${#CONTENT_PATHS[@]} -gt 0 ]]; then
     for _src in "${CONTENT_PATHS[@]}"; do
         [[ -f "$_src" ]] || continue
         _key="$(printf '%s' "$_src" | tr '/' '_')"
+        # The key flattens '/' to '_', so two paths can share one name
+        # (data/media_info.json and a hand-placed data/media/info.json). mv
+        # would silently replace the first file's only copy: refuse instead.
+        # Everything moved so far is in the manifest, and restore puts it back.
+        # The store is the last entry and its name is fixed, so the message
+        # names the file already moved — looked up in the manifest — to rename.
+        if [[ -e "${CONTENT_STASH}/${_key}" ]]; then
+            _other=""
+            while IFS=$'\t' read -r _mkey _mdest; do
+                if [[ "$_mkey" == "$_key" ]]; then _other="$_mdest"; break; fi
+            done < "${CONTENT_STASH}/manifest"
+            if [[ -n "$_other" ]]; then
+                log "ERROR: ${_src} and ${_other}"
+                log "       have the same content-stash name (${CONTENT_STASH}/${_key})."
+                log "       Nothing was overwritten. Run restore_after_cloning.sh (it puts back"
+                log "       what was moved and clears the marker), then"
+                log "       rename ${_other} and re-run."
+            else
+                log "ERROR: ${_src} has the same content-stash name as a file already"
+                log "       in ${CONTENT_STASH}/${_key}. Nothing was overwritten."
+                log "       Run restore_after_cloning.sh (it puts back what was moved and"
+                log "       clears the marker), rename one of the two files, and re-run."
+            fi
+            exit 1
+        fi
         _sz=$(stat -c %s "$_src" 2>/dev/null || echo 0)
         mv "$_src" "${CONTENT_STASH}/${_key}"
         printf '%s\t%s\n' "$_key" "$_src" >> "${CONTENT_STASH}/manifest"
@@ -1013,8 +1116,32 @@ if [[ ${#CONTENT_PATHS[@]} -gt 0 ]]; then
     done
     sync
     log "[2c/5] Curated content moved to ${CONTENT_STASH} (~${_moved_mb} MB, restored after the dd)"
-    unset _src _key _sz _moved_mb
+    if [[ "$MEDIA_INFO_HELD" == "unreadable" ]]; then
+        log "[2c/5] ${DATA_DIR}/media_info.json: unreadable (prune exit ${MEDIA_INFO_RC}) — held back, the image ships none"
+    fi
+    unset _src _key _sz _moved_mb _other _mkey _mdest
 fi
+
+# The pruned media_info.json copy (step 3 above), now that the original is
+# in the content stash — never over an original that did not get there (a
+# second spelling of the same file), which would be its only copy. Owner and
+# mode follow the original, so the kiosk and the web admin keep writing it.
+_i=0
+while [[ "$_i" -lt "${#MEDIA_INFO_PRUNED[@]}" ]]; do
+    _store="${MEDIA_INFO_PRUNED[$_i]}"
+    _pruned="${MEDIA_INFO_PRUNED[$(( _i + 1 ))]}"
+    _stashed="${CONTENT_STASH}/$(printf '%s' "$_store" | tr '/' '_')"
+    if [[ -f "$_stashed" && ! -e "$_store" ]]; then
+        cp "$_pruned" "$_store"
+        chown --reference="$_stashed" "$_store" 2>/dev/null || true
+        chmod --reference="$_stashed" "$_store" 2>/dev/null || true
+        log "[2c/5] ${_store}: shipping a copy pruned to the shipping videos"
+    fi
+    rm -f "$_pruned"
+    _i=$(( _i + 2 ))
+done
+sync
+unset _i _store _pruned _stashed
 
 # Expand the glob entries. This list has to match the SHAPE of what
 # first_boot.sh wipes on the clone: it globs tmdb_api_key*, so a stray

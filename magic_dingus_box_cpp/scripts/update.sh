@@ -1867,6 +1867,8 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
@@ -1957,6 +1959,12 @@ install_update() {
     #                       - Transient kiosk<->web runtime files;
     #                          excluded so an OTA can't yank them out
     #                          from under the running web admin.
+    #   - data/media_info.json, data/media_info.json.lock
+    #                       - Per-video info (each video's Crop setting and
+    #                          probed length/shape; the lock is its writers'
+    #                          sidecar). Per-box, never in the tarball:
+    #                          without excludes --delete would reset every
+    #                          video's Crop on every OTA.
     #   - data/screenshots/ - Debug screenshots (debug/screenshot_capture,
     #                          `touch data/screenshot_request`). Per-box,
     #                          never in the tarball, and kept out of the
@@ -2058,6 +2066,8 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
@@ -2522,6 +2532,8 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
@@ -2683,6 +2695,8 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \

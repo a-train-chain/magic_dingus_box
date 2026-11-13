@@ -37,8 +37,32 @@ print("out_time_ms=1000000")
 sys.exit(0)
 """
 
+# Reports ONE video for every path it is asked about (the upload and, after
+# publish, the published master), shaped by FFPROBE_STUB_* so a test can be a
+# 16:9 clip, a sideways phone clip or an already-compatible master. Rotation
+# is given clockwise, like the legacy rotate tag, and printed as the display
+# matrix ffprobe >= 5 reports (counter-clockwise). FFPROBE_STUB_MODE=fail
+# makes it an unreadable file.
 FFPROBE_STUB = """#!/usr/bin/env python3
-print("10.0")
+import json, os, sys
+env = os.environ.get
+if env("FFPROBE_STUB_MODE") == "fail":
+    sys.exit(1)
+stream = {
+    "codec_type": "video", "codec_name": env("FFPROBE_STUB_CODEC", "h264"),
+    "width": int(env("FFPROBE_STUB_WIDTH", "1920")),
+    "height": int(env("FFPROBE_STUB_HEIGHT", "1080")),
+    "sample_aspect_ratio": env("FFPROBE_STUB_SAR", "1:1"),
+    "pix_fmt": "yuv420p", "profile": "High", "level": 40,
+    "avg_frame_rate": "30/1", "r_frame_rate": "30/1",
+}
+rotate = int(env("FFPROBE_STUB_ROTATE", "0"))
+if rotate:
+    stream["side_data_list"] = [{"side_data_type": "Display Matrix",
+                                 "rotation": -rotate}]
+print(json.dumps({"streams": [stream], "format": {
+    "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+    "duration": env("FFPROBE_STUB_DURATION", "10.0")}}))
 """
 
 
@@ -229,3 +253,212 @@ def test_name_is_released_after_the_job_finishes(
     (media / "clip.mp4").unlink()
     b = _start(client, b"two")
     assert _wait_all(client, [b])[b]["output_filename"] == "clip.mp4"
+
+
+# ---------------------------------------------------------------------------
+# Uploads keep their aspect ratio.
+#
+# The transcode used to crop or pad every upload into a fixed 4:3 frame and
+# delete the original, so a "Fill screen" choice was permanent. The master now
+# keeps the source's shape (sized by media_probe.master_size), and the upload's
+# Framing choice becomes the new video's starting Crop setting in
+# media_info.json, which the kiosk reads.
+# ---------------------------------------------------------------------------
+
+import io
+
+import media_info
+import media_probe
+
+
+def _vf(argv_log: Path) -> str:
+    argv = argv_log.read_text().splitlines()
+    return argv[argv.index("-vf") + 1]
+
+
+def test_widescreen_upload_keeps_its_aspect(client, stub_bin: Path):
+    assert _run_job(client)["status"] == "complete"
+    assert _vf(stub_bin) == "scale=1280:720,setsar=1"
+    argv = stub_bin.read_text()
+    assert "crop=" not in argv and "pad=" not in argv
+
+
+def test_rotated_source_is_sized_upright(client, stub_bin: Path, monkeypatch):
+    # A phone's portrait clip: stored 1920x1080, rotate tag 90. ffmpeg
+    # auto-rotates its input, so the scale target is the UPRIGHT size.
+    monkeypatch.setenv("FFPROBE_STUB_ROTATE", "90")
+    assert _run_job(client)["status"] == "complete"
+    assert _vf(stub_bin) == "scale=608:1080,setsar=1"
+
+
+def _marker(data_dir: Path) -> Path:
+    return data_dir / "media_info_reload_request"
+
+
+@pytest.mark.parametrize("fit_mode,crop", [("fit", {"crop": False}),
+                                           ("crop", {})])
+def test_transcode_publish_records_media_info(
+        client, temp_data_dir: Path, stub_bin: Path, fit_mode, crop):
+    resp = client.post(
+        "/admin/upload-and-transcode",
+        data={"file": (io.BytesIO(b"raw-upload"), "clip.mov"),
+              "fit_mode": fit_mode},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    status = _wait_all(client, [resp.get_json()["data"]["job_id"]])
+    assert list(status.values())[0]["status"] == "complete"
+
+    assert media_info.load(temp_data_dir) == {"media/clip.mp4": {
+        "duration_s": 10.0, "display_aspect": 1.7778, **crop}}
+    assert _marker(temp_data_dir).exists(), "the kiosk must be poked"
+
+
+def test_a_show_everything_upload_of_a_4_3_video_stores_no_crop(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch):
+    # Nothing offers a Crop control for a 4:3 video, so crop: false on one
+    # could never be undone.
+    monkeypatch.setenv("FFPROBE_STUB_WIDTH", "640")
+    monkeypatch.setenv("FFPROBE_STUB_HEIGHT", "480")
+    resp = client.post(
+        "/admin/upload-and-transcode",
+        data={"file": (io.BytesIO(b"raw-upload"), "clip.mov"),
+              "fit_mode": "fit"},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    status = _wait_all(client, [resp.get_json()["data"]["job_id"]])
+    assert list(status.values())[0]["status"] == "complete"
+    assert media_info.load(temp_data_dir) == {"media/clip.mp4": {
+        "duration_s": 10.0, "display_aspect": 1.3333}}
+
+
+def test_a_crop_upload_clears_a_stale_entrys_crop(
+        client, temp_data_dir: Path, stub_bin: Path):
+    # A key left behind by a deleted video must not hand its setting to the
+    # new video published under the same name.
+    media_info.update(temp_data_dir, "media/clip.mp4", crop=False)
+    assert _run_job(client)["status"] == "complete"
+    assert "crop" not in media_info.load(temp_data_dir)["media/clip.mp4"]
+
+
+def _smart_upload(client, fit_mode="crop", resolution="crt_hd"):
+    resp = client.post(
+        "/admin/smart-upload",
+        data={"file": (io.BytesIO(b"already-a-master"), "clip.mp4"),
+              "fit_mode": fit_mode, "resolution": resolution,
+              "normalize_audio": "false"},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200, resp.get_json()
+    return resp.get_json()["data"]
+
+
+@pytest.mark.parametrize("env,direct", [
+    ({"FFPROBE_STUB_WIDTH": "1280", "FFPROBE_STUB_HEIGHT": "720"}, True),
+    ({"FFPROBE_STUB_WIDTH": "960", "FFPROBE_STUB_HEIGHT": "720"}, True),
+    ({"FFPROBE_STUB_WIDTH": "608", "FFPROBE_STUB_HEIGHT": "1080"}, True),
+    ({}, False),                                       # 1920x1080 > 1280x720
+    ({"FFPROBE_STUB_WIDTH": "1280", "FFPROBE_STUB_HEIGHT": "720",
+      "FFPROBE_STUB_ROTATE": "90"}, False),            # must be turned upright
+    ({"FFPROBE_STUB_WIDTH": "960", "FFPROBE_STUB_HEIGHT": "720",
+      "FFPROBE_STUB_SAR": "4:3"}, False),              # non-square pixels
+    ({"FFPROBE_STUB_WIDTH": "1280", "FFPROBE_STUB_HEIGHT": "720",
+      "FFPROBE_STUB_CODEC": "hevc"}, False),
+])
+def test_smart_upload_saves_a_master_sized_h264_source_directly(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch, env, direct):
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    data = _smart_upload(client)
+    assert data["needs_transcode"] is not direct, data["probe"]
+    if direct:
+        assert data["action"] == "direct"
+        assert not stub_bin.exists(), "a direct save must not run ffmpeg"
+        assert (temp_data_dir / "media" / "clip.mp4").read_bytes() == b"already-a-master"
+    else:
+        _wait_all(client, [data["job_id"]])
+
+
+@pytest.mark.parametrize("fit_mode,crop", [("fit", {"crop": False}),
+                                           ("crop", {})])
+def test_direct_save_records_media_info(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch, fit_mode, crop):
+    monkeypatch.setenv("FFPROBE_STUB_WIDTH", "1280")
+    monkeypatch.setenv("FFPROBE_STUB_HEIGHT", "720")
+    monkeypatch.setenv("FFPROBE_STUB_DURATION", "95.5")
+    assert _smart_upload(client, fit_mode)["action"] == "direct"
+    assert media_info.load(temp_data_dir) == {"media/clip.mp4": {
+        "duration_s": 95.5, "display_aspect": 1.7778, **crop}}
+    assert _marker(temp_data_dir).exists()
+
+
+def _raw_upload(client):
+    resp = client.post("/admin/upload",
+                       data={"file": (io.BytesIO(b"raw"), "clip.mp4")},
+                       content_type="multipart/form-data")
+    assert resp.status_code == 200, resp.get_json()
+
+
+def test_raw_upload_records_media_info(client, temp_data_dir: Path,
+                                       stub_bin: Path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_STUB_WIDTH", "640")
+    monkeypatch.setenv("FFPROBE_STUB_HEIGHT", "480")
+    _raw_upload(client)
+    assert media_info.load(temp_data_dir) == {"media/clip.mp4": {
+        "duration_s": 10.0, "display_aspect": 1.3333}}
+    assert _marker(temp_data_dir).exists()
+
+
+def test_unreadable_published_file_writes_nothing(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch):
+    monkeypatch.setenv("FFPROBE_STUB_MODE", "fail")
+    _raw_upload(client)
+    assert (temp_data_dir / "media" / "clip.mp4").exists()
+    assert not (temp_data_dir / media_info.FILE_NAME).exists()
+    assert not _marker(temp_data_dir).exists()
+
+
+def test_unreadable_source_is_bounded_by_ffmpeg_and_writes_nothing(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch):
+    # No probe, no master_size: ffmpeg keeps the shape inside 1920x1080 on
+    # its own. The stub ffprobe fails for every path, including the
+    # published output, so nothing is recorded here; in production the
+    # published master usually probes fine and IS recorded.
+    monkeypatch.setenv("FFPROBE_STUB_MODE", "fail")
+    assert _run_job(client)["status"] == "complete"
+    assert _vf(stub_bin) == media_probe.PROBE_FAILED_VF
+    assert not (temp_data_dir / media_info.FILE_NAME).exists()
+    assert not _marker(temp_data_dir).exists()
+
+
+@pytest.mark.parametrize("publish", ["raw", "direct", "transcode"])
+def test_a_store_write_failure_never_fails_the_upload(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch, publish):
+    def refuse(*_a, **_k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(media_info, "update", refuse)
+    if publish == "raw":
+        _raw_upload(client)
+    elif publish == "direct":
+        monkeypatch.setenv("FFPROBE_STUB_WIDTH", "1280")
+        monkeypatch.setenv("FFPROBE_STUB_HEIGHT", "720")
+        assert _smart_upload(client)["action"] == "direct"
+    else:
+        assert _run_job(client)["status"] == "complete"
+    assert (temp_data_dir / "media" / "clip.mp4").exists()
+    assert not _marker(temp_data_dir).exists(), "no poke without a write"
+
+
+def test_unreadable_show_everything_upload_still_records_crop_false(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch):
+    # The owner's explicit choice survives a probe failure (the stub fails
+    # for the published master too); the shape is not known to be 4:3.
+    monkeypatch.setenv("FFPROBE_STUB_MODE", "fail")
+    resp = client.post(
+        "/admin/upload-and-transcode",
+        data={"file": (io.BytesIO(b"raw-upload"), "clip.mov"),
+              "fit_mode": "fit"},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    status = _wait_all(client, [resp.get_json()["data"]["job_id"]])
+    assert list(status.values())[0]["status"] == "complete"
+    assert media_info.load(temp_data_dir) == {"media/clip.mp4": {"crop": False}}
+    assert _marker(temp_data_dir).exists()

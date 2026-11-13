@@ -5,6 +5,8 @@
 // a recording fake instead. See app/playlist_playback.h.
 
 #include <chrono>
+#include <functional>
+#include <utility>
 
 #include "controller.h"
 #include "playlist_playback.h"
@@ -14,8 +16,12 @@ namespace app {
 
 class ControllerTransport final : public PlaylistTransport {
 public:
-    ControllerTransport(Controller& controller, video::GstPlayer& player)
-        : controller_(controller), player_(player) {}
+    // toggle_picture: flips the playing video's crop in the media info store
+    // (main.cpp owns the store; the Controller only knows the video's key).
+    ControllerTransport(Controller& controller, video::GstPlayer& player,
+                        std::function<void()> toggle_picture)
+        : controller_(controller), player_(player),
+          toggle_picture_(std::move(toggle_picture)) {}
 
     void stop() override { controller_.stop(); }
     void play() override { controller_.play(); }
@@ -44,6 +50,9 @@ public:
     void master_shuffle_back(AppState& state, const std::string& dir) override {
         controller_.master_shuffle_back(state, dir);
     }
+    void toggle_picture_crop() override {
+        if (toggle_picture_) toggle_picture_();
+    }
 
     uint64_t stream_generation() const override { return player_.stream_generation(); }
     bool has_error() const override { return player_.has_error(); }
@@ -56,6 +65,7 @@ public:
 private:
     Controller& controller_;
     video::GstPlayer& player_;
+    std::function<void()> toggle_picture_;
 };
 
 }  // namespace app

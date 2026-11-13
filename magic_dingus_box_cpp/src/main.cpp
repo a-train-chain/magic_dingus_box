@@ -7,6 +7,7 @@
 #include "platform/frame_presenter.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
+#include "video/picture_placement.h"
 #include "ui/renderer.h"
 #include "ui/settings_menu.h"
 #include "ui/controller_wizard.h"
@@ -38,11 +39,14 @@
 #include "media_browser/mb_services.h"
 #endif
 #include "app/app_state.h"
+#include "app/bezel_catalog.h"
 #include "app/game_quiet_mode.h"
 #include "app/game_handoff.h"
 #include "app/game_handoff_kiosk.h"
 #include "app/intro_sequence.h"
 #include "app/intro_sequence_kiosk.h"
+#include "app/media_info.h"
+#include "app/overlay_nav.h"
 #include "app/settings_input.h"
 #include "app/movie_quiet_mode.h"
 #include "app/playlist_loader.h"
@@ -66,7 +70,6 @@
 #include "utils/logger.h"
 #include "ui/virtual_keyboard.h"
 
-#include <json/json.h>
 #include <iostream>
 #include <memory>
 #include <chrono>
@@ -81,6 +84,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <sstream>
 #include <filesystem>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -517,6 +521,15 @@ int main(int /* argc */, char* /* argv */[]) {
     auto last_status_write = std::chrono::steady_clock::now();
     constexpr auto STATUS_PERIOD = std::chrono::milliseconds(200); // 5 Hz
 
+    // Per-video media info (app/media_info.h): each playlist video's crop
+    // setting, length and display aspect, shared with the web admin. The
+    // file is read and written on the store's own worker thread (under the
+    // web admin's file lock); the loop only polls it, once per frame, and
+    // its answers are in memory. Until the first read lands every video is
+    // cropped — the same as a box without the file.
+    app::MediaInfoStore media_info(config::get_data_path() + "/media_info.json");
+    media_info.request_reload();
+
     // Phone Remote: clear any stale pairing session left from a crashed
     // previous run. Flask only trusts a session that's been freshly issued
     // from the open pairing screen, so wiping it on boot prevents a leaked
@@ -545,49 +558,26 @@ int main(int /* argc */, char* /* argv */[]) {
         media_browser::start_vpn_health_monitor(state);
 #endif
 
-    // Load available bezels from bezels.json using JsonCpp
-    std::vector<std::string> bezel_json_paths = config::get_bezel_search_paths();
-
-    for (const auto& bezel_path : bezel_json_paths) {
+    // Load available bezels from the first readable bezels.json that
+    // parses (app/bezel_catalog.h).
+    for (const auto& bezel_path : config::get_bezel_search_paths()) {
         std::ifstream bezel_file(bezel_path);
-        if (bezel_file.good()) {
-            Json::Value root;
-            Json::CharReaderBuilder builder;
-            std::string errors;
-
-            if (!Json::parseFromStream(builder, bezel_file, &root, &errors)) {
-                std::cerr << "Failed to parse bezels.json: " << errors << std::endl;
-                bezel_file.close();
-                continue;
-            }
-            bezel_file.close();
-
-            // Parse bezels array
-            if (root.isMember("bezels") && root["bezels"].isArray()) {
-                const Json::Value& bezels = root["bezels"];
-                for (const auto& bezel_json : bezels) {
-                    app::BezelInfo bezel;
-                    bezel.id = bezel_json.get("id", "").asString();
-                    bezel.name = bezel_json.get("name", "").asString();
-
-                    // Handle null file (procedural bezel)
-                    if (bezel_json.isMember("file") && !bezel_json["file"].isNull()) {
-                        bezel.file = bezel_json["file"].asString();
-                    } else {
-                        bezel.file = "";  // Procedural bezel
-                    }
-
-                    bezel.description = bezel_json.get("description", "").asString();
-
-                    if (!bezel.name.empty()) {
-                        state.available_bezels.push_back(bezel);
-                    }
-                }
-            }
-
-            std::cout << "Loaded " << state.available_bezels.size() << " bezels from " << bezel_path << std::endl;
-            break;
+        if (!bezel_file.good()) continue;
+        std::ostringstream bezel_text;
+        bezel_text << bezel_file.rdbuf();
+        std::vector<std::string> bezel_problems;
+        std::vector<app::BezelInfo> bezels =
+            app::parse_bezel_catalog(bezel_text.str(), &bezel_problems);
+        for (const auto& problem : bezel_problems) {
+            LOG_WARN("{}: {}", bezel_path, problem);
         }
+        if (bezels.empty()) {
+            std::cerr << "No bezels parsed from " << bezel_path << std::endl;
+            continue;
+        }
+        state.available_bezels = std::move(bezels);
+        std::cout << "Loaded " << state.available_bezels.size() << " bezels from " << bezel_path << std::endl;
+        break;
     }
     
     // Ensure bezel_index is valid
@@ -632,7 +622,21 @@ int main(int /* argc */, char* /* argv */[]) {
     // auto-advance, the stuck-switch timeout, failed-item skip/give-up and
     // the playback stall watchdog. Every Controller/GstPlayer call goes
     // through the transport. See app/playlist_playback.h.
-    app::ControllerTransport playlist_transport(controller, player);
+    //
+    // SELECT on the overlay's Picture control (app/overlay_nav.h) flips the
+    // playing video's crop in the media info store: the answer changes in
+    // memory at once, the store's worker writes the file. No key (nothing
+    // from the library is loaded) = nothing to flip. Logged to stdout (the
+    // journal), not the log file: no file write on this loop.
+    app::ControllerTransport playlist_transport(
+        controller, player, [&media_info, &controller] {
+            const std::string& key = controller.current_media_key();
+            if (key.empty()) return;
+            const bool crop = !media_info.crop_for(key);
+            media_info.set_crop(key, crop);
+            std::cout << "Picture control: " << key << " -> "
+                      << (crop ? "crop" : "whole frame") << std::endl;
+        });
     app::PlaylistPlayback playlist_playback(state, playlist_transport,
                                             playlist_directory);
     
@@ -1353,47 +1357,22 @@ int main(int /* argc */, char* /* argv */[]) {
                 case InputAction::ROTATE_VERTICAL:
                     // Only allow navigation when UI is available
                     if (ui_available && !state.playlists.empty()) {
-                        // Fixed max visible items (must match renderer's max_visible = 8)
-                        // Use the on-screen row count the renderer published last
-                        // frame, not a hardcoded 8. Hardcoding 8 (sized for CRT)
-                        // forced scroll_offset to advance once the selection hit
-                        // index 8 even in Modern TV mode where 14 rows are
-                        // visible — the playlist would scroll prematurely and
-                        // pop the top row off-screen.
-                        int max_visible = std::max(1, state.playlist_max_visible);
+                        // One row per turn, clamped at both ends; from the
+                        // last row, down reaches the Picture control when it
+                        // is shown (a cursor already on it keeps it through
+                        // a load gap). The scroll window uses the on-screen
+                        // row count the renderer published last frame, not a
+                        // hardcoded 8 — 8 (sized for CRT) scrolled the list
+                        // early in Modern TV mode, where 14 rows are visible,
+                        // popping the top row off-screen. See
+                        // app/overlay_nav.h.
+                        app::set_overlay_cursor(
+                            state, app::rotate_overlay(
+                                       app::overlay_cursor(state), ev.delta,
+                                       static_cast<int>(state.playlists.size()),
+                                       state.playlist_max_visible,
+                                       app::cursor_may_use_picture(state)));
 
-                        // Move selection without wrapping (clamp at boundaries)
-                        if (ev.delta > 0) {
-                            // Moving down - don't go past last item
-                            if (state.selected_index < static_cast<int>(state.playlists.size()) - 1) {
-                                state.selected_index++;
-                            }
-                        } else if (ev.delta < 0) {
-                            // Moving up - don't go below first item
-                            if (state.selected_index > 0) {
-                                state.selected_index--;
-                            }
-                        }
-                        
-                        // Adjust scroll offset to keep selected item visible
-                        // If selection is below visible window, scroll down
-                        if (state.selected_index >= state.playlist_scroll_offset + max_visible) {
-                            state.playlist_scroll_offset = state.selected_index - max_visible + 1;
-                        }
-                        // If selection is above visible window, scroll up
-                        if (state.selected_index < state.playlist_scroll_offset) {
-                            state.playlist_scroll_offset = state.selected_index;
-                        }
-                        // Clamp scroll offset to valid range
-                        int max_scroll = static_cast<int>(state.playlists.size()) - max_visible;
-                        if (max_scroll < 0) max_scroll = 0;
-                        if (state.playlist_scroll_offset > max_scroll) {
-                            state.playlist_scroll_offset = max_scroll;
-                        }
-                        if (state.playlist_scroll_offset < 0) {
-                            state.playlist_scroll_offset = 0;
-                        }
-                        
                         // If video is active, show UI briefly
                         if (state.video_active) {
                             state.ui_visible_when_playing = true;
@@ -1510,7 +1489,46 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             // Note: Volume stays constant during menu overlay (no dimming)
         }
-        
+
+        // The overlay's Picture (crop) control (app/overlay_nav.h), decided
+        // after this frame's loads (auto-advance, NEXT/PREV) so it follows
+        // the video now playing. Shown while a playlist video whose display
+        // aspect is not 4:3 plays under the overlay — for a 4:3 video crop
+        // and whole frame draw the same picture. The aspect the web admin
+        // recorded wins; until it has one, the last decoded frame's (which
+        // may still be the previous video's for the frames before the new
+        // one's first). A cursor on the control stays through the load gap
+        // between items (video_active drops while the next stream
+        // prerolls) and returns to the last playlist row only when the new
+        // video has no control. picture_crop mirrors the store for the
+        // renderer. All in memory: no file I/O here.
+        {
+            const std::string& media_key = controller.current_media_key();
+            app::PictureFacts picture;
+            picture.owns_pipeline = playlist_playback.owns_pipeline();
+            picture.has_key = !media_key.empty();
+            if (picture.has_key) {
+                const auto& videos = media_info.map();
+                const auto it = videos.find(media_key);
+                if (it != videos.end() && it->second.display_aspect) {
+                    picture.aspect = it->second.display_aspect;
+                } else {
+                    picture.aspect = gst_renderer.source_display_aspect();
+                }
+            }
+            picture.video_active = state.video_active;
+            picture.overlay_visible = state.ui_visible_when_playing;
+            state.picture_control_available = app::picture_control_visible(picture);
+            state.picture_crop = media_info.crop_for(media_key);
+            if (state.picture_focus) {
+                app::set_overlay_cursor(
+                    state, app::clamp_overlay(app::overlay_cursor(state),
+                                              static_cast<int>(state.playlists.size()),
+                                              state.playlist_max_visible,
+                                              app::picture_focus_may_stay(picture)));
+            }
+        }
+
         // Render video (if playing or loading)
         // gst_renderer.render() will only render when UPDATE_FRAME is set, improving performance
         // IMPORTANT: Render video first, then UI overlay on top
@@ -1624,6 +1642,9 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             sig.add(static_cast<uint64_t>(state.selected_index));
             sig.add(static_cast<uint64_t>(state.playlist_scroll_offset));
+            // The Picture control: cursor on it, and its checkbox state.
+            sig.add(static_cast<uint64_t>(state.picture_focus));
+            sig.add(static_cast<uint64_t>(state.picture_crop));
             sig.add(static_cast<uint64_t>(state.playlists.size()));
             sig.add(static_cast<uint64_t>(state.current_playlist_index));
             sig.add(static_cast<uint64_t>(state.current_item_index));
@@ -1754,10 +1775,11 @@ int main(int /* argc */, char* /* argv */[]) {
         // The 4:3 content rect exists in TWO coordinate spaces and they
         // are no longer the same thing:
         //
-        //   PHYSICAL (content_*)      -> glViewport, real framebuffer px
-        //   LOGICAL  (logical_content_*) -> set_content_viewport, which
-        //                                overwrites the renderer's
-        //                                projection size
+        //   PHYSICAL (content)         -> glViewport and the video's 4:3
+        //                                 area, real framebuffer px
+        //   LOGICAL  (logical_content) -> set_content_viewport, which
+        //                                 overwrites the renderer's
+        //                                 projection size
         //
         // They coincided while the framebuffer was always 1280x720. In
         // Modern TV at 1920x1080 they diverge by 1.5x, and feeding the
@@ -1766,37 +1788,46 @@ int main(int /* argc */, char* /* argv */[]) {
         // render at 2/3 of its intended screen fraction with dead margin
         // right and bottom. The logical rect is derived from the UI's own
         // logical canvas so it stays 960x720 at any output resolution.
-        int content_x = 0, content_y = 0, content_w = mode.width, content_h = mode.height;
+        //
+        // Both rects use a TOP-LEFT origin; glViewport's bottom-left y is
+        // derived where it is called.
+        const int fb_w = static_cast<int>(mode.width);
+        const int fb_h = static_cast<int>(mode.height);
         const config::display::Size ui_canvas = config::display::logical_canvas(
             state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
-        int logical_content_w = ui_canvas.w, logical_content_h = ui_canvas.h;
+        video::IRect content{0, 0, fb_w, fb_h};
+        video::IRect logical_content{0, 0, ui_canvas.w, ui_canvas.h};
 
         if (letterbox_active) {
-            // Calculate 4:3 content area centered in screen
-            // Height stays the same, width is adjusted for 4:3 aspect ratio
-            content_h = mode.height;
-            content_w = mode.height * 4 / 3;  // 4:3 aspect ratio
-            content_x = (mode.width - content_w) / 2;  // Center horizontally
-            content_y = 0;
-
-            // If calculated width is larger than screen, pillarbox based on width
-            if (content_w > static_cast<int>(mode.width)) {
-                content_w = mode.width;
-                content_h = mode.width * 3 / 4;
-                content_x = 0;
-                content_y = (mode.height - content_h) / 2;
-            }
-
-            // Same 4:3 math, logical space. Integer-exact at both
-            // resolutions: 720 -> 960x720, 1080 -> 1440x1080.
-            logical_content_h = ui_canvas.h;
-            logical_content_w = ui_canvas.h * 4 / 3;
-            if (logical_content_w > ui_canvas.w) {
-                logical_content_w = ui_canvas.w;
-                logical_content_h = ui_canvas.w * 3 / 4;
-            }
+            // Integer-exact at both resolutions: 720 -> 960x720,
+            // 1080 -> 1440x1080 (physical and logical alike).
+            content = video::four_by_three_rect(fb_w, fb_h);
+            logical_content = video::four_by_three_rect(ui_canvas.w, ui_canvas.h);
         }
-        
+
+        // The bezel drawn over this frame, or null. Decided once here so
+        // the video's visible opening (below) and the bezel draw (near the
+        // end of the frame) cannot disagree. Modern TV only, and a valid
+        // bezel_index whose entry has an image (procedural draws nothing).
+        //
+        // Skip the bezel entirely while the Media Browser owns the screen.
+        // The Media Browser's content is modern 16:9 (movie posters, movie
+        // playback) — the CRT-frame bezel was designed for the main UI's
+        // 4:3 playlist videos and would just clip widescreen content.
+#ifdef MEDIA_BROWSER_ENABLED
+        const bool bezel_allowed = state.current_screen != app::AppScreen::MediaBrowser;
+#else
+        const bool bezel_allowed = true;
+#endif
+        const app::BezelInfo* drawn_bezel = nullptr;
+        if (bezel_allowed && letterbox_active &&
+            state.display_settings.bezel_index >= 0 &&
+            state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
+            const app::BezelInfo& bezel =
+                state.available_bezels[state.display_settings.bezel_index];
+            if (!bezel.file.empty()) drawn_bezel = &bezel;
+        }
+
         // Enhanced CRT pipeline (Phase 1+): redirect video+UI rendering
         // into an offscreen scene FBO, then composite back to the
         // default framebuffer through a shader that can sample the
@@ -1812,14 +1843,65 @@ int main(int /* argc */, char* /* argv */[]) {
         // their existing draw order and are unaffected by CRT effects.
         bool scene_fbo_used = ui_renderer.begin_scene_fbo(state);
 
-        // Render video - gst will fill the entire framebuffer, so no need to clear if video is ready
+        // Render video. It draws only its own rect (in Modern TV the 4:3
+        // area, never the whole framebuffer), so the bars are whatever the
+        // clear above left there — and that clear runs on every frame once
+        // the intro is complete.
         // This handles both intro video and regular video playback
         if (should_render_video) {
-            // Set letterbox mode based on display settings
-            gst_renderer.set_letterbox_mode(letterbox_active);
+            // Playlist and intro video draw through the picture placement
+            // into the 4:3 area: `content` is exactly that outside the
+            // Media Browser — the centred 4:3 rect in Modern TV, the whole
+            // framebuffer (shown as 4:3) in CRT Native. The Media Browser
+            // keeps its own aspect-preserve + inset paths below.
+#ifdef MEDIA_BROWSER_ENABLED
+            const bool picture_mode =
+                state.current_screen != app::AppScreen::MediaBrowser;
+#else
+            const bool picture_mode = true;
+#endif
+            if (picture_mode) {
+                // The visible opening: the drawn bezel's transparent
+                // window — its 1920x1080 art is stretched over the whole
+                // framebuffer (Renderer::render_bezel) — else the 4:3 area.
+                // Clamped to the 4:3 area: a declared window reaching past
+                // it must never put fit's picture over the pillarbox bars
+                // (an empty overlap fits inside the 4:3 area instead).
+                video::IRect opening = content;
+                if (drawn_bezel && drawn_bezel->has_opening) {
+                    opening = video::intersect(
+                        video::scale_image_rect(
+                            video::IRect{drawn_bezel->opening_x, drawn_bezel->opening_y,
+                                         drawn_bezel->opening_w, drawn_bezel->opening_h},
+                            app::kBezelImageWidth, app::kBezelImageHeight, fb_w, fb_h),
+                        content);
+                }
+                // The playing video's own setting (app/media_info.h):
+                // cropped unless the operator chose to see it whole. The
+                // intro, and anything without a key, is cropped. A source
+                // known to be 4:3 is always cropped (video::picture_crop):
+                // no control is offered for one, so a stored "not cropped"
+                // could never be undone. Its aspect is the one placement
+                // uses — the frame being drawn — else the store's.
+                const std::string& picture_key = controller.current_media_key();
+                double picture_aspect =
+                    gst_renderer.source_display_aspect().value_or(0.0);
+                if (!(picture_aspect > 0.0)) {
+                    const auto& videos = media_info.map();
+                    const auto it = videos.find(picture_key);
+                    if (it != videos.end() && it->second.display_aspect) {
+                        picture_aspect = *it->second.display_aspect;
+                    }
+                }
+                const bool crop = video::picture_crop(
+                    media_info.crop_for(picture_key), picture_aspect);
+                gst_renderer.set_picture(content, crop, opening);
+            } else {
+                gst_renderer.clear_picture();
+            }
 
-            // Aspect-preserve mode: enabled for Modern TV (so Media
-            // Browser's wide movies don't stretch vertically), disabled
+            // Aspect-preserve mode (Media Browser only): enabled for Modern
+            // TV (so wide movies don't stretch vertically), disabled
             // for CRT_NATIVE (the CRT TV's HDMI input does its own
             // 16:9→4:3 conversion, so the Pi should send a fully-filled
             // 1280×720 framebuffer; pre-pillarboxing on the Pi side
@@ -1828,11 +1910,6 @@ int main(int /* argc */, char* /* argv */[]) {
             const bool crt_mode =
                 (state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
             gst_renderer.set_aspect_preserve(!crt_mode);
-
-            // In Modern TV mode, set viewport to 4:3 content area for video
-            if (letterbox_active) {
-                glViewport(content_x, content_y, content_w, content_h);
-            }
 
 #ifdef MEDIA_BROWSER_ENABLED
             // Marquee playback: tell gst_renderer to render INTO an
@@ -1860,9 +1937,9 @@ int main(int /* argc */, char* /* argv */[]) {
             // frame clear is gated on `!state.video_active`, which is
             // false during active playback.
             //
-            // Non-Marquee paths (intro video, playlist playback in the
-            // main kiosk) reset the inset to (0,0,0,0) which means
-            // "use the full screen" — legacy behavior preserved.
+            // Everything else resets the inset to (0,0,0,0), "use the
+            // full screen" (intro and playlist video ignore the inset:
+            // they draw in picture mode, above).
             //
             // CRT shader is already gated off for MediaBrowser (see
             // begin_scene_fbo's AppScreen check) so playback shows a
@@ -1907,12 +1984,13 @@ int main(int /* argc */, char* /* argv */[]) {
         if (!state.showing_intro_video || state.intro_fading_out) {
             // Set viewport to 4:3 content area for UI in Modern TV mode
             // Also update UI renderer's internal dimensions for proper projection matrix
-            glViewport(content_x, content_y, content_w, content_h);
+            glViewport(content.x, fb_h - content.y - content.h,
+                       content.w, content.h);
             if (letterbox_active) {
                 // LOGICAL size — see the two-coordinate-space note where
-                // these are computed. Passing content_w/content_h (the
+                // these are computed. Passing content.w/content.h (the
                 // physical rect) here would shrink the whole main menu.
-                ui_renderer.set_content_viewport(logical_content_w, logical_content_h);
+                ui_renderer.set_content_viewport(logical_content.w, logical_content.h);
             }
 #ifdef MEDIA_BROWSER_ENABLED
             // Skip main kiosk UI when the Media Browser screen is active;
@@ -1947,29 +2025,15 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
         // The bezel PNG is stretched fullscreen - content is visible through the transparent center.
-        //
-        // Skip the bezel entirely while the Media Browser owns the screen.
-        // The Media Browser's content is modern 16:9 (movie posters, movie
-        // playback) — the CRT-frame bezel was designed for the main UI's
-        // 4:3 playlist videos and would just clip widescreen content.
-#ifdef MEDIA_BROWSER_ENABLED
-        bool bezel_allowed = state.current_screen != app::AppScreen::MediaBrowser;
-#else
-        bool bezel_allowed = true;
-#endif
-        if (bezel_allowed && letterbox_active && !state.available_bezels.empty() &&
-            state.display_settings.bezel_index >= 0 &&
-            state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
-            const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
-            if (!bezel.file.empty()) {
-                // load_bezel() dedupes internally (skips if path matches AND texture is still valid).
-                // We must call it every frame so the bezel is re-uploaded after reset_gl()
-                // (e.g. after returning from RetroArch) — a stale path tracker here would block that.
-                ui_renderer.load_bezel(bezel.file);
-                // Reset viewport to fullscreen for bezel overlay
-                glViewport(0, 0, mode.width, mode.height);
-                ui_renderer.render_bezel();
-            }
+        // drawn_bezel (decided with the 4:3 area above) says whether and which.
+        if (drawn_bezel) {
+            // load_bezel() dedupes internally (skips if path matches AND texture is still valid).
+            // We must call it every frame so the bezel is re-uploaded after reset_gl()
+            // (e.g. after returning from RetroArch) — a stale path tracker here would block that.
+            ui_renderer.load_bezel(drawn_bezel->file);
+            // Reset viewport to fullscreen for bezel overlay
+            glViewport(0, 0, mode.width, mode.height);
+            ui_renderer.render_bezel();
         }
         
 #ifdef MEDIA_BROWSER_ENABLED
@@ -2078,6 +2142,11 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
         controller.poll_text_input_queue(state);
 
+        // Per-video media info: adopt whatever the store's worker read or
+        // wrote since the last frame. No file I/O and no file lock here —
+        // it only swaps in a finished result (app/media_info.h).
+        (void)media_info.poll();
+
         // Web-admin settings restore poke. The restore endpoint replaces
         // settings.json on disk and then writes this marker — without the
         // reload, the running kiosk's next operator-action save would
@@ -2089,6 +2158,8 @@ int main(int /* argc */, char* /* argv */[]) {
         // writes on this loop, left in place deliberately (reviewed
         // 2026-11): one per web-admin action, never per tick, and the
         // marker must be gone before the next poll or the reload repeats.
+        // (The media-info poke between them leaves its unlink to the store's
+        // worker.)
         {
             static int settings_reload_check = 0;
             if (++settings_reload_check >= 60) {
@@ -2120,6 +2191,30 @@ int main(int /* argc */, char* /* argv */[]) {
                         ui::Toast::show("Settings restored");
                     }
                     LOG_INFO("Settings reloaded from disk (web-admin restore poke)");
+                }
+            }
+        }
+
+        // Web-admin media info poke. The Content Manager writes this marker
+        // after it changes media_info.json (a video's crop setting, a new
+        // upload's length and aspect, a restore). Polled ~1 Hz like the
+        // pokes around it, but this loop only LOOKS: the store's worker
+        // deletes the marker and reads the file, and the per-frame poll()
+        // above adopts the result, keeping any crop change made here that
+        // has not reached the disk yet. The unlink stays off this loop
+        // because the poke follows uploads — exactly when the card is
+        // saturated and a journaled write can stall for seconds. Seeing the
+        // marker again before the worker got to it is the same request: it
+        // is logged once, not once a second while the worker is stuck.
+        {
+            static int media_info_reload_check = 0;
+            if (++media_info_reload_check >= 60) {
+                media_info_reload_check = 0;
+                const std::string media_info_marker =
+                    config::get_data_path() + "/media_info_reload_request";
+                if (fs::exists(media_info_marker) &&
+                    media_info.request_reload(media_info_marker)) {
+                    LOG_INFO("Media info reload queued (web-admin poke)");
                 }
             }
         }
@@ -2447,16 +2542,16 @@ int main(int /* argc */, char* /* argv */[]) {
     gbm.cleanup();
     display.cleanup();
 
-    // Settings and watch history are written by background threads (the
-    // render loop must never wait on the SD card — WatchdogSec=10), and
-    // the _exit() below skips the destructors that would otherwise drain
-    // them. Wait here for whatever is still queued: normally nothing, or a
-    // write that finishes in milliseconds. Bounded, with ONE 3 s deadline
-    // for both, so a wedged card costs at most 3 s of TimeoutStopSec
-    // (20 s) next to the waits below (10 s + 3 s) and a mid-game stop's
-    // 5 s. If it runs out, the previous settings.json (the save is tmp +
-    // rename) and the last 30 s watch checkpoint are what remain — say so,
-    // while the log is still open.
+    // Settings, per-video crop settings and watch history are written by
+    // background threads (the render loop must never wait on the SD card —
+    // WatchdogSec=10), and the _exit() below skips the destructors that
+    // would otherwise drain them. Wait here for whatever is still queued:
+    // normally nothing, or a write that finishes in milliseconds. Bounded,
+    // with ONE 3 s deadline for all of them, so a wedged card costs at most
+    // 3 s of TimeoutStopSec (20 s) next to the waits below (10 s + 3 s) and
+    // a mid-game stop's 5 s. If it runs out, the previous settings.json and
+    // media_info.json (both saves are tmp + rename) and the last 30 s watch
+    // checkpoint are what remain — say so, while the log is still open.
     {
         const auto persist_deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(3);
@@ -2465,13 +2560,15 @@ int main(int /* argc */, char* /* argv */[]) {
             LOG_WARN("Shutdown: settings.json save did not finish in time — "
                      "the last settings change may be lost");
         }
+        if (!media_info.flush_until(persist_deadline)) {
+            LOG_WARN("Shutdown: media_info.json write did not finish in time — "
+                     "the last crop change may be lost");
+        }
 #ifdef MEDIA_BROWSER_ENABLED
         if (!watch_store.flush_until(persist_deadline)) {
             LOG_WARN("Shutdown: watch history write did not finish in time — "
                      "resume falls back to the last checkpoint on disk");
         }
-#else
-        (void)persist_deadline;
 #endif
     }
 
@@ -2495,10 +2592,11 @@ int main(int /* argc */, char* /* argv */[]) {
     // failure the day there is one.
     //
     // Safe because nothing is left to persist: watch position is queued
-    // above and settings at each change site, both background writers were
-    // drained just before "Shutdown complete", and logging::shutdown() has
-    // already flushed and closed the log. The kernel reclaims the rest,
-    // exactly as it would after the SIGKILL this replaces.
+    // above and settings and crop changes at each change site, the
+    // background writers were drained just before "Shutdown complete", and
+    // logging::shutdown() has already flushed and closed the log. The
+    // kernel reclaims the rest, exactly as it would after the SIGKILL this
+    // replaces.
 #ifdef MEDIA_BROWSER_ENABLED
     // The game-end hook restores the services it quieted (docker start of
     // the arr containers, then qBit resume) asynchronously. A stop mid-game

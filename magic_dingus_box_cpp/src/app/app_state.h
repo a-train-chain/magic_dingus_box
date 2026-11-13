@@ -65,12 +65,17 @@ enum class AppScreen {
 };
 #endif
 
-// Bezel info structure
+// Bezel info structure (bezels.json; parsed by app/bezel_catalog)
 struct BezelInfo {
     std::string id;
     std::string name;
     std::string file;  // filename (empty for procedural)
     std::string description;
+    // The frame's transparent window, in the bezel image's 1920x1080
+    // pixels (top-left origin). Fit-mode video is drawn inside it. False
+    // for procedural and for any entry without a usable opening.
+    bool has_opening = false;
+    int opening_x = 0, opening_y = 0, opening_w = 0, opening_h = 0;
 };
 
 } // namespace app
@@ -138,6 +143,21 @@ struct AppState {
     std::vector<Playlist> game_playlists;  // Game playlists (for menu)
     int selected_index;
     int playlist_scroll_offset = 0;  // Index of first visible playlist in scroll window
+
+    // The Picture (crop) control in the list overlay, one stop below the
+    // last playlist row (app/overlay_nav.h). main.cpp sets
+    // picture_control_available and picture_crop each frame:
+    // picture_control_available = the control is drawn
+    // (app::picture_control_visible — a playlist video whose display aspect
+    // is not 4:3 plays under the visible overlay); picture_crop mirrors the
+    // playing video's media-info setting so the renderer never reads the
+    // store. picture_focus: the cursor is on the control (selected_index
+    // then stays the last row); it may stay through the load gap between
+    // items, while the control is briefly not drawn
+    // (app::picture_focus_may_stay). Render thread only.
+    bool picture_focus = false;
+    bool picture_control_available = false;
+    bool picture_crop = true;
 
     // Display state
     bool ui_visible_when_playing = true; // Tracks whether UI should be visible when video is active

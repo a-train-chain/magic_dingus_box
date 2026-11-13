@@ -1,8 +1,8 @@
 #include "playlist_reload.h"
 
+#include "overlay_nav.h"
 #include "playback_reset.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace app {
@@ -162,26 +162,12 @@ void apply_reloaded_playlists(AppState& state,
     }
     if (new_sel < 0) new_sel = 0;
     state.selected_index = new_sel;
-    {
-        const int max_visible = std::max(1, state.playlist_max_visible);
-        int max_scroll =
-            static_cast<int>(state.playlists.size()) - max_visible;
-        if (max_scroll < 0) max_scroll = 0;
-        if (state.selected_index < state.playlist_scroll_offset) {
-            state.playlist_scroll_offset = state.selected_index;
-        }
-        if (state.selected_index >=
-            state.playlist_scroll_offset + max_visible) {
-            state.playlist_scroll_offset =
-                state.selected_index - max_visible + 1;
-        }
-        if (state.playlist_scroll_offset > max_scroll) {
-            state.playlist_scroll_offset = max_scroll;
-        }
-        if (state.playlist_scroll_offset < 0) {
-            state.playlist_scroll_offset = 0;
-        }
-    }
+    // The scroll window follows; a cursor on the Picture control stays on
+    // it, below the new last row (app/overlay_nav.h).
+    set_overlay_cursor(state, clamp_overlay(overlay_cursor(state),
+                                            static_cast<int>(state.playlists.size()),
+                                            state.playlist_max_visible,
+                                            cursor_may_use_picture(state)));
 }
 
 OpenGameListRemap remap_open_game_list(const std::vector<Playlist>& game_playlists,
