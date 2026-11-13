@@ -415,7 +415,11 @@ void PlaylistPlayback::on_channel_step(int delta) {
         c = ((c + step) % n + n) % n;
         if (c == from) return;  // no other channel has a schedule
         if (!(*channels_)[c].items.empty()) {
-            tune(c, state_.ui_visible_when_playing);
+            // keep_overlay: the load leaves the overlay alone, so it is as
+            // it stands THEN — `tune(c, ui_visible_when_playing)` froze it as
+            // it stood at the press, and a guide opened during the ~200 ms
+            // wait closed again at the load.
+            tune(c, /*keep_overlay=*/true);
             return;
         }
     }

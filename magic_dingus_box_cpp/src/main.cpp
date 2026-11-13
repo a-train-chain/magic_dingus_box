@@ -45,6 +45,7 @@
 #include "app/game_quiet_mode.h"
 #include "app/game_handoff.h"
 #include "app/game_handoff_kiosk.h"
+#include "app/guide_nav.h"
 #include "app/intro_sequence.h"
 #include "app/intro_sequence_kiosk.h"
 #include "app/media_info.h"
@@ -1359,6 +1360,19 @@ int main(int /* argc */, char* /* argv */[]) {
         mb_host.handle_input(input_events, mode.width, mode.height);
 #endif
 
+        // Channel Guide: while the guide is shown, channel up/down moves its
+        // cursor onto the channel being tuned as soon as the step is
+        // accepted — tuned_channel only changes when the load runs, ~200 ms
+        // later (PlaylistPlayback::pending_tune). See app/guide_nav.h.
+        auto guide_follow_channel_step = [&state, &playlist_playback,
+                                          &channels](bool guide_shown) {
+            if (!guide_shown) return;
+            if (const auto target = playlist_playback.pending_tune()) {
+                state.guide_cursor = app::guide_follow(
+                    state.guide_cursor, *target, static_cast<int>(channels.size()));
+            }
+        };
+
         for (const auto& ev : input_events) {
             // A game session ended inside an earlier event of THIS batch:
             // the remaining events were pressed before the game ran, and
@@ -1375,7 +1389,25 @@ int main(int /* argc */, char* /* argv */[]) {
             // Normal input handling (when menu is not active)
             // Disable UI navigation when video is playing and UI is completely hidden
             bool ui_available = !state.video_active || state.ui_visible_when_playing;
-            
+
+            // Channel Guide style: the overlay is the guide, with its own
+            // cursor (app/guide_nav.h); the List's cursor, its Picture focus
+            // and on_select() are not used. The guide is shown while the
+            // overlay is up, or with nothing playing or loading (the menu is
+            // drawn then) — not in the load gap of a tune or item boundary
+            // with the overlay hidden, where nothing is drawn: SELECT there
+            // opens it. guide_tuned is the channel on screen, or the one a
+            // pending tune is loading.
+            const bool guide_style = playlist_playback.guide_style();
+            const bool guide_shown =
+                guide_style &&
+                (state.ui_visible_when_playing ||
+                 (!state.video_active && (state.current_playlist_index < 0 ||
+                                          state.current_item_index < 0)));
+            const int guide_rows = static_cast<int>(channels.size());
+            const int guide_tuned =
+                playlist_playback.pending_tune().value_or(state.tuned_channel);
+
             switch (ev.action) {
                 case InputAction::QUIT:
                     running = false;
@@ -1383,8 +1415,18 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                 case InputAction::ROTATE:
                 case InputAction::ROTATE_VERTICAL:
-                    // Only allow navigation when UI is available
-                    if (ui_available && !state.playlists.empty()) {
+                    if (guide_shown) {
+                        // Channel Guide open: one channel row per turn,
+                        // clamped at both ends; up from 00 reaches the
+                        // Picture control when it is shown (a cursor already
+                        // on it keeps it through a load gap). Hidden: the
+                        // seek below, as in the List style.
+                        state.guide_cursor = app::guide_rotate(
+                            state.guide_cursor, ev.delta, guide_rows,
+                            state.picture_control_available ||
+                                state.guide_cursor.on_picture);
+                    } else if (!guide_style && ui_available && !state.playlists.empty()) {
+                        // Only allow navigation when UI is available
                         // One row per turn, clamped at both ends; from the
                         // last row, down reaches the Picture control when it
                         // is shown (a cursor already on it keeps it through
@@ -1421,6 +1463,62 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                 case InputAction::SELECT:
                     if (!ev.pressed) break; // Only trigger on press
+                    if (guide_style) {
+                        // Channel Guide: hidden, SELECT opens it on the tuned
+                        // channel; open, it acts on the cursor
+                        // (app::guide_press). on_select() is the List's.
+                        if (state.showing_intro_video) break;  // as on_select
+                        if (!guide_shown) {
+                            state.ui_visible_when_playing = true;
+                            // Reopened mid-way through a Close's fade-out:
+                            // shown at once, not faded to nothing first.
+                            state.is_fading = false;
+                            state.guide_cursor = app::guide_open(guide_tuned, guide_rows);
+                            state.guide_opened_by_viewer = true;
+                            break;
+                        }
+                        const int row = state.guide_cursor.row;
+                        const bool row_tunable = row >= 0 && row < guide_rows &&
+                                                 !channels[row].items.empty();
+                        switch (app::guide_press(state.guide_cursor, guide_tuned,
+                                                 row_tunable)) {
+                            case app::GuidePress::Tune:
+                                // A viewer's tune closes the guide (at its
+                                // load). Dropped (a switch in flight): the
+                                // guide stays as the viewer left it.
+                                playlist_playback.tune(row, /*keep_overlay=*/false);
+                                if (playlist_playback.pending_tune() == row) {
+                                    state.guide_opened_by_viewer = false;
+                                }
+                                break;
+                            case app::GuidePress::Close:
+                                state.guide_opened_by_viewer = false;
+                                state.ui_visible_when_playing = false;
+                                // Today's fade out (the List's same-playlist
+                                // toggle). Not over no video: the menu is
+                                // drawn whenever nothing plays, so a fade
+                                // there would dim it to nothing and pop it
+                                // back; the overlay then stays hidden when
+                                // the video comes back.
+                                if (state.video_active) {
+                                    state.fade_start_time = std::chrono::steady_clock::now();
+                                    state.fade_target_ui_visible = false;
+                                    state.is_fading = true;
+                                }
+                                break;
+                            case app::GuidePress::TogglePicture:
+                                // As on_select: a press that lands after the
+                                // pipeline changed hands (the per-frame clamp
+                                // has not run yet) was aimed at a control.
+                                if (playlist_playback.owns_pipeline()) {
+                                    playlist_transport.toggle_picture_crop();
+                                }
+                                break;
+                            case app::GuidePress::None:
+                                break;
+                        }
+                        break;
+                    }
                     // Intro guard, reveal hidden UI, same-playlist UI toggle,
                     // or switch to / start the highlighted playlist (row 0 =
                     // Master Shuffle). See PlaylistPlayback::on_select.
@@ -1435,15 +1533,19 @@ int main(int /* argc */, char* /* argv */[]) {
                 case InputAction::NEXT:
                     if (!ev.pressed) break; // Only trigger on press, not release
                     // Next item / Master Shuffle pick; seek +10 s when no
-                    // playlist is playing.
+                    // playlist is playing. Channel Guide: channel up, the
+                    // shown guide's cursor following.
                     playlist_playback.on_next();
+                    guide_follow_channel_step(guide_shown);
                     break;
                     
                 case InputAction::PREV:
                     if (!ev.pressed) break; // Only trigger on press, not release
                     // Previous item / Master Shuffle history; seek -10 s
-                    // when no playlist is playing.
+                    // when no playlist is playing. Channel Guide: channel
+                    // down, the shown guide's cursor following.
                     playlist_playback.on_prev();
+                    guide_follow_channel_step(guide_shown);
                     break;
                     
                 case InputAction::SEEK_LEFT:
@@ -1511,6 +1613,15 @@ int main(int /* argc */, char* /* argv */[]) {
         // intro exits set intro_complete), the post-game ready edge, leaving
         // the Media Browser or Settings, a failed item's slot ending and a
         // give-up. List style gathers nothing. See app/auto_tune.h.
+        //
+        // A guide the viewer opened (SELECT) stays open through its
+        // re-tune — the guide never closes by itself — so the flag is
+        // dropped whenever the overlay is hidden, whatever hid it (Close,
+        // a viewer's tune landing, Media Browser entry, the intro), and
+        // outside guide style.
+        if (!playlist_playback.guide_style() || !state.ui_visible_when_playing) {
+            state.guide_opened_by_viewer = false;
+        }
         auto_tune.guide_style = playlist_playback.guide_style();
         if (auto_tune.guide_style) {
             auto_tune.intro_complete = state.intro_complete;
@@ -1558,7 +1669,12 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
                 auto_tune.gave_up = state.guide_gave_up;
                 if (const auto channel = app::decide_auto_tune(auto_tune)) {
-                    playlist_playback.tune(*channel, /*keep_overlay=*/false);
+                    // Power-on and post-failure re-tunes hide an overlay the
+                    // viewer did not open (the video simply comes back);
+                    // one that fires while the viewer browses the guide
+                    // leaves it open.
+                    playlist_playback.tune(
+                        *channel, /*keep_overlay=*/state.guide_opened_by_viewer);
                     // tune() drops a call it cannot take yet (the stuck-switch
                     // timeout's 200 ms settle); log only one it took.
                     if (playlist_playback.switch_pending()) {
@@ -1611,7 +1727,20 @@ int main(int /* argc */, char* /* argv */[]) {
             picture.overlay_visible = state.ui_visible_when_playing;
             state.picture_control_available = app::picture_control_visible(picture);
             state.picture_crop = media_info.crop_for(media_key);
-            if (state.picture_focus) {
+            if (playlist_playback.guide_style()) {
+                // Channel Guide: its own cursor (app/guide_nav.h), repaired
+                // every frame — the channel list may have changed under it,
+                // and on the Picture control it rides through the load gap
+                // between items as the List's focus does, falling back to
+                // channel 00 only when the new video has no control. The
+                // List's focus is never set in guide style (one left over
+                // from the List style is dropped). No allocation.
+                state.picture_focus = false;
+                state.guide_cursor = app::guide_clamp(
+                    state.guide_cursor, static_cast<int>(channels.size()),
+                    state.guide_cursor.on_picture ? app::picture_focus_may_stay(picture)
+                                                  : state.picture_control_available);
+            } else if (state.picture_focus) {
                 app::set_overlay_cursor(
                     state, app::clamp_overlay(app::overlay_cursor(state),
                                               static_cast<int>(state.playlists.size()),
@@ -1736,6 +1865,11 @@ int main(int /* argc */, char* /* argv */[]) {
             // The Picture control: cursor on it, and its checkbox state.
             sig.add(static_cast<uint64_t>(state.picture_focus));
             sig.add(static_cast<uint64_t>(state.picture_crop));
+            // The Channel Guide's cursor (the per-frame clamp can move it
+            // with no input: the Picture control going away, a reload).
+            sig.add(static_cast<uint64_t>(state.guide_cursor.row));
+            sig.add(static_cast<uint64_t>(state.guide_cursor.scroll));
+            sig.add(static_cast<uint64_t>(state.guide_cursor.on_picture));
             sig.add(static_cast<uint64_t>(state.playlists.size()));
             sig.add(static_cast<uint64_t>(state.current_playlist_index));
             sig.add(static_cast<uint64_t>(state.current_item_index));

@@ -193,6 +193,7 @@ set(APP_SOURCES
     src/app/channel_schedule.cpp
     src/app/auto_tune.cpp
     src/app/overlay_nav.cpp
+    src/app/guide_nav.cpp
     src/app/game_handoff.cpp
     # GL/DRM half of the game hand-off: kiosk-only, in no test target.
     src/app/game_handoff_kiosk.cpp
@@ -847,6 +848,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # control below the last row) — main.cpp's ROTATE handler and the
         # reload's clamp both go through it.
         src/app/overlay_nav.cpp
+        # The Channel Guide's cursor (channel rows, the 5-row window, the
+        # Picture control above channel 00) — main.cpp's guide-style
+        # ROTATE / SELECT / NEXT / PREV branches go through it.
+        src/app/guide_nav.cpp
         # main.cpp's boot intro decisions (end detection, fade volume, the
         # hand-off to the menu, the render-video decision).
         src/app/intro_sequence.cpp

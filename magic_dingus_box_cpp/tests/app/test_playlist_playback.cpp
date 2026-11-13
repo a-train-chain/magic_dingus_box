@@ -1296,6 +1296,99 @@ TEST_CASE("channel up/down wraps and skips channels with no schedule",
     }
 }
 
+TEST_CASE("a guide opened while a channel change waits stays open after the load",
+          "[playlist_playback][guide]") {
+    // Channel up with the guide hidden, then SELECT opens it during the
+    // settle (main.cpp): the load must not close what the viewer opened.
+    Guide g;
+    put_playing(g.s, 1, 0);
+    g.s.tuned_channel = 1;
+    g.t.wall = kW0 + 10;
+    g.pb.on_next();
+    g.s.ui_visible_when_playing = true;  // the viewer opens the guide
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.t.last() == "load_at Movies 0");
+    CHECK(g.s.tuned_channel == 2);
+    CHECK(g.s.ui_visible_when_playing);
+}
+
+TEST_CASE("pending_tune names the channel a tune is loading until its load runs",
+          "[playlist_playback][guide]") {
+    // main.cpp moves the guide cursor onto it as channel up/down is
+    // accepted: tuned_channel only changes at the load, ~200 ms later.
+    Guide g;
+    put_playing(g.s, 1, 0);
+    g.s.tuned_channel = 1;
+    g.t.wall = kW0 + 10;
+    CHECK_FALSE(g.pb.pending_tune().has_value());
+
+    SECTION("channel up") {
+        g.pb.on_next();
+        REQUIRE(g.pb.pending_tune().has_value());
+        CHECK(*g.pb.pending_tune() == 2);
+        CHECK(g.s.tuned_channel == 1);  // not yet
+        // A dropped change leaves the pending one in place.
+        g.pb.on_next();
+        CHECK(*g.pb.pending_tune() == 2);
+        run_frames(g.pb, g.t, kSettled);
+        CHECK_FALSE(g.pb.pending_tune().has_value());
+        CHECK(g.s.tuned_channel == 2);
+    }
+    SECTION("a tune") {
+        g.pb.tune(0, /*keep_overlay=*/false);
+        REQUIRE(g.pb.pending_tune().has_value());
+        CHECK(*g.pb.pending_tune() == 0);
+    }
+    SECTION("a tune that is dropped is not pending") {
+        g.pb.tune(3, /*keep_overlay=*/false);  // no schedule
+        CHECK_FALSE(g.pb.pending_tune().has_value());
+    }
+    SECTION("an abandoned tune is not pending") {
+        g.pb.tune(2, /*keep_overlay=*/false);
+        app::reset_main_ui_for_media_browser(g.s);  // Media Browser entry
+        g.pb.tick_switch_timeout();
+        CHECK_FALSE(g.pb.switch_pending());
+        CHECK_FALSE(g.pb.pending_tune().has_value());
+    }
+}
+
+TEST_CASE("a re-tune from nothing playing hides the guide unless it is kept",
+          "[playlist_playback][guide]") {
+    // main.cpp's nothing-playing rule passes keep_overlay =
+    // AppState::guide_opened_by_viewer: a failed item's dark-window guide
+    // (stop_to_menu shows it) goes away when the video comes back, while a
+    // guide the viewer opened stays.
+    Guide g;
+    app::stop_to_menu(g.s);
+    REQUIRE(g.s.ui_visible_when_playing);
+    g.t.wall = kW0 + 10;
+    SECTION("not opened by the viewer") {
+        g.pb.tune(1, /*keep_overlay=*/false);
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 1);
+        CHECK_FALSE(g.s.ui_visible_when_playing);
+    }
+    SECTION("opened by the viewer") {
+        g.pb.tune(1, /*keep_overlay=*/true);
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 1);
+        CHECK(g.s.ui_visible_when_playing);
+    }
+}
+
+TEST_CASE("pending_tune is empty for a List-style switch", "[playlist_playback][guide]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    pb.on_select();
+    REQUIRE(pb.switch_pending());
+    CHECK_FALSE(pb.pending_tune().has_value());
+}
+
 TEST_CASE("channel changes while a tune is pending are dropped",
           "[playlist_playback][guide]") {
     Guide g;

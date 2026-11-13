@@ -10,6 +10,8 @@
 #include <mutex>
 #include <shared_mutex>
 
+#include "guide_nav.h"
+
 namespace app {
 
 // Display mode enumeration
@@ -300,6 +302,19 @@ public:
     int tuned_channel = -1;
     std::vector<int> guide_gave_up;
     double guide_wait_until_utc = 0;
+    // Channel Guide, written by main.cpp (render thread only):
+    // guide_cursor: the guide's cursor (app/guide_nav.h) — channel row,
+    //   the grid's 5-row window, on the Picture control. Moved by the
+    //   guide-style ROTATE / SELECT / NEXT / PREV branches and clamped every
+    //   frame; the List style's selected_index / picture_focus are not used
+    //   in guide style.
+    // guide_opened_by_viewer: SELECT opened the guide over the video. Cleared
+    //   whenever the overlay hides (Close, Tune, anything else that hides
+    //   it). The nothing-playing rule's re-tune keeps the guide open only
+    //   then — "the guide never closes by itself" — and otherwise hides it,
+    //   so the video simply comes back.
+    GuideCursor guide_cursor;
+    bool guide_opened_by_viewer = false;
     bool master_shuffle_active; // True if Master Shuffle is playing (picks random video from ANY playlist)
     
     // Shuffle queue - ensures all videos play once before reshuffling

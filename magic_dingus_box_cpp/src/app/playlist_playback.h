@@ -181,8 +181,18 @@ public:
     void tune(int channel, bool keep_overlay);
     // Channel up (+1) / down (-1): the next channel with a schedule,
     // wrapping (from nothing tuned, up starts at 00 and down at the last
-    // channel). The overlay stays as it is.
+    // channel). The overlay stays as it is — as it is when the load runs,
+    // so a guide the viewer opens during the wait stays open.
     void on_channel_step(int delta);
+    // The channel a tune() (or channel up/down) will load, from its stop
+    // until the load runs; nullopt otherwise (no switch pending, or a List
+    // SELECT's). tuned_channel only changes at the load, ~200 ms after the
+    // press: main.cpp moves the guide's cursor onto this as the step is
+    // accepted, and a press on its row closes the guide.
+    std::optional<int> pending_tune() const {
+        if (!switch_pending() || !pending_.tune) return std::nullopt;
+        return pending_.target;
+    }
     // A tune or item boundary joins the on-air item only with at least this
     // much of it left; otherwise the item after it, from its start. The
     // boundary fires up to 0.5 s before an item's end (decide_auto_advance),
