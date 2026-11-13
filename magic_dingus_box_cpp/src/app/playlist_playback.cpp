@@ -29,6 +29,22 @@ bool PlaylistPlayback::owns_pipeline() const {
     return owns;
 }
 
+bool PlaylistPlayback::channel_load_live() const {
+    bool live = state_.current_playlist_index >= 0 && state_.current_item_index >= 0 &&
+                state_.intro_complete && !state_.showing_intro_video &&
+                !state_.is_loading_game;
+#ifdef MEDIA_BROWSER_ENABLED
+    live = live && state_.current_screen != app::AppScreen::MediaBrowser;
+#endif
+    return live;
+}
+
+void PlaylistPlayback::drop_settled_channel_load() {
+    if (channel_load_at_ && (state_.playback_started_ || !channel_load_live())) {
+        channel_load_at_.reset();
+    }
+}
+
 int PlaylistPlayback::failure_budget() const {
     if (const Channel* ch = channel_at(state_.tuned_channel)) {
         // On a channel: one attempt per scheduled item, the 00 mix capped
@@ -51,8 +67,8 @@ int PlaylistPlayback::failure_budget() const {
 void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d,
                                           const char* why) {
     using Decision = video::PlaybackErrorPolicy::Decision;
-    // Counted (or handed on): a boundary load's bound must not count it again.
-    boundary_load_at_.reset();
+    // Counted (or handed on): a channel load's bound must not count it again.
+    channel_load_at_.reset();
     if (d == Decision::Advance && guide_style()) {
         // Live TV does not jump ahead to the next programme: the channel
         // stays dark until this item's slot ends, then main.cpp's
@@ -333,8 +349,7 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         state_.guide_gave_up.clear();
         state_.guide_wait_until_utc = 0.0;
         channel_progress_ = {};
-        tune_awaiting_stream_ = false;
-        boundary_load_at_.reset();
+        channel_load_at_.reset();
         loaded_airing_.reset();
         return;
     }
@@ -367,8 +382,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     state_.is_switching_playlist = true;
     switch_start_generation_ = transport_.stream_generation();
     state_.playlist_switch_start_time = transport_.now();
-    tune_awaiting_stream_ = false;
-    boundary_load_at_.reset();  // the tune takes the pipeline over
+    channel_load_at_.reset();  // the tune takes the pipeline over
     // Point at the channel's row before the stop, as SELECT does: it keeps
     // the indexes through the stop, and the pending switch's "re-pointed"
     // check covers a tune too. The on-air item replaces it at the load.
@@ -438,9 +452,9 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     if (channel != state_.tuned_channel) {
         error_policy_ = video::PlaybackErrorPolicy{};
     }
-    // The stream has not come up yet; the stuck-switch timeout counts it as
-    // a failed item if it never does (tick_switch_timeout).
-    tune_awaiting_stream_ = load_on_air(channel, *oa, keep_overlay);
+    // A load that returns OK starts the channel's start bound
+    // (kChannelStartTimeout, tick_pipeline_error).
+    load_on_air(channel, *oa, keep_overlay);
 }
 
 double PlaylistPlayback::played_position(double player_pos) {
@@ -484,11 +498,9 @@ void PlaylistPlayback::rejoin_schedule() {
         app::stop_to_menu(state_);
         return;
     }
-    if (load_on_air(channel, *oa, /*keep_overlay=*/true)) {
-        // No switch flag here, so the stuck-switch timeout never sees this
-        // load: tick_pipeline_error bounds it (kBoundaryStartTimeout).
-        boundary_load_at_ = transport_.now();
-    }
+    // No switch flag here: the load's own start bound is all that watches
+    // it (kChannelStartTimeout, tick_pipeline_error).
+    load_on_air(channel, *oa, /*keep_overlay=*/true);
 }
 
 bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay) {
@@ -529,13 +541,15 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
         return false;
     }
+    // The start bound counts from HERE, the load's return (kChannelStartTimeout).
+    channel_load_at_ = transport_.now();
     // Loaded is not playing: guide_gave_up waits for prove_channel().
     channel_progress_.loaded = true;
     // As load_next_item does: Controller::update_state confirms the NEW
     // stream (position < its end). Until then auto-advance holds — the
     // state can still read the previous item's end for a frame (update_state
-    // runs every other frame), which would load this boundary twice — and a
-    // boundary load's bound (tick_pipeline_error) waits for it.
+    // runs every other frame), which would load this boundary twice — and
+    // the start bound (tick_pipeline_error) waits for it.
     state_.playback_started_ = false;
     state_.guide_wait_until_utc = 0.0;
     if (!keep_overlay && !state_.guide_opened_by_viewer) {
@@ -682,8 +696,7 @@ void PlaylistPlayback::tick_switch_timeout() {
     // must not cut a switch short that the old code would have completed.
     advance_pending_switch();
     if (switch_pending()) return;
-    // A switch the flag no longer marks has no stream left to wait for.
-    if (!state_.is_switching_playlist) tune_awaiting_stream_ = false;
+    drop_settled_channel_load();
 
     // Completion. Controller::update_state clears the flag only when
     // video_active goes false -> true, and during a switch it holds
@@ -697,7 +710,6 @@ void PlaylistPlayback::tick_switch_timeout() {
         state_.get_duration() > 0.0 && transport_.is_playing()) {
         std::cout << "Playlist switch completed - new stream playing, clearing flag" << std::endl;
         state_.is_switching_playlist = false;
-        tune_awaiting_stream_ = false;
         return;
     }
 
@@ -706,6 +718,22 @@ void PlaylistPlayback::tick_switch_timeout() {
     if (state_.is_switching_playlist) {
         auto now = transport_.now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state_.playlist_switch_start_time);
+        if (elapsed > kSwitchTimeout && channel_load_at_) {
+            // Channel Guide: a tune whose load returned OK and whose stream
+            // is not up yet (still within its start bound — a stalled card
+            // can take seconds). The switch lets go, as a List switch does,
+            // so NEXT/PREV and tunes work again; but nothing is stopped and
+            // nothing is counted: kChannelStartTimeout from the load's
+            // return decides that (tick_pipeline_error). Until then the
+            // playing indexes stay set, which holds the nothing-playing
+            // rule off.
+            std::cerr << "Channel " << state_.tuned_channel << ": stream not up "
+                      << elapsed.count() << "ms after the tune — waiting up to "
+                      << kChannelStartTimeout.count() / 1000 << " s from its load"
+                      << std::endl;
+            state_.is_switching_playlist = false;
+            return;
+        }
         if (elapsed > kSwitchTimeout) {  // 2 second timeout
             std::cerr << "CRITICAL: Playlist switch timeout after " << elapsed.count() << "ms - clearing flag and resetting state" << std::endl;
             std::cerr << "  Debug info: video_active=" << state_.video_active
@@ -713,21 +741,6 @@ void PlaylistPlayback::tick_switch_timeout() {
                       << ", current_playlist=" << state_.current_playlist_index
                       << ", current_item=" << state_.current_item_index << std::endl;
             state_.is_switching_playlist = false;
-
-            if (std::exchange(tune_awaiting_stream_, false) && !state_.video_active &&
-                state_.current_playlist_index >= 0) {
-                // Channel Guide: the tune's load returned OK but its stream
-                // never came up. A failed item for the tuned channel — its
-                // budget, its wait, its give-up; the failure path stops the
-                // pipeline — so the nothing-playing rule cannot re-tune a
-                // dead channel forever. Not when something else re-pointed
-                // playback meanwhile (a game session's return resets the
-                // indexes): that stream was taken away, not broken.
-                act_on_failed_item(error_policy_.on_load_failure(failure_budget()),
-                                   "never started");
-                timeout_settle_until_ = now + kTimeoutSettle;
-                return;
-            }
 
             // Also reset video state to ensure clean recovery
             if (!transport_.is_playing() && !state_.video_active) {
@@ -752,12 +765,10 @@ void PlaylistPlayback::tick_pipeline_error() {
     // a hand-off that something else overtook (Media Browser entry, a
     // playlist switch) is dropped rather than acted on later.
     const bool load_failed = std::exchange(state_.playlist_item_load_failed, false);
-    // A boundary load's bound ends when its stream comes up, or when
+    // A channel load's start bound ends when its stream comes up, or when
     // anything else takes the pipeline (a tune, Media Browser entry, a game,
     // a stop) — whoever took it owns what happens to it.
-    if (boundary_load_at_ && (state_.playback_started_ || !owns_pipeline())) {
-        boundary_load_at_.reset();
-    }
+    drop_settled_channel_load();
     if (owns_pipeline() && load_failed) {
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()),
                            "load failed");
@@ -772,14 +783,17 @@ void PlaylistPlayback::tick_pipeline_error() {
             played, failure_budget());
         if (decision != video::PlaybackErrorPolicy::Decision::None) {
             act_on_failed_item(decision, "pipeline error");
-        } else if (boundary_load_at_ &&
-                   transport_.now() - *boundary_load_at_ > kBoundaryStartTimeout) {
-            // Channel Guide: the boundary's load returned OK but its stream
-            // never came up and never errored. The stall watchdog needs
-            // video_active, so nothing else would ever notice: the indexes
-            // stay set and the screen stays dark. A failed item for the
-            // channel, like a tune that never starts — its budget, its wait,
-            // its give-up. (act_on_failed_item drops the bound.)
+        } else if (channel_load_at_ &&
+                   transport_.now() - *channel_load_at_ > kChannelStartTimeout) {
+            // Channel Guide: a tune's or a boundary's load returned OK but
+            // its stream never came up and never errored. The stall watchdog
+            // needs video_active, so nothing else would ever notice: the
+            // indexes stay set and the screen stays dark. A failed item for
+            // the channel — its budget, its wait, its give-up; the failure
+            // path stops the pipeline — so the nothing-playing rule cannot
+            // re-tune a dead channel forever. (act_on_failed_item drops the
+            // bound.) A tune's switch flag was released at 2 s, so
+            // owns_pipeline() holds here.
             act_on_failed_item(error_policy_.on_load_failure(failure_budget()),
                                "never started");
         } else if (channel_progress_.loaded && !channel_progress_.proven &&

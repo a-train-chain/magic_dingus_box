@@ -57,6 +57,9 @@ struct FakeTransport : app::PlaylistTransport {
     // load_playlist_item_at's offset_s, and the wall clock at that call.
     std::vector<double> offsets;
     std::vector<double> load_wall;
+    // How long load_playlist_item_at blocks (both clocks move on before it
+    // returns): Controller::load_item_media's own settle, a card stall.
+    std::chrono::milliseconds load_blocks{0};
 
     void advance(std::chrono::milliseconds d) {
         clock += d;
@@ -96,6 +99,7 @@ struct FakeTransport : app::PlaylistTransport {
         load_at_ms.push_back(elapsed_ms());
         offsets.push_back(offset_s);
         load_wall.push_back(wall);
+        advance(load_blocks);
         return load_ok ? utils::Result<>::ok() : utils::Result<>::fail("boom");
     }
     void load_next_item(app::AppState&, const std::string&) override { calls.push_back("next_item"); }
@@ -1872,38 +1876,6 @@ TEST_CASE("a channel item that reaches its natural end clears the give-up list",
 
 // ── Review follow-ups ────────────────────────────────────────────────────
 
-TEST_CASE("a tuned item that never starts is a failed item for its channel",
-          "[playlist_playback][guide][give_up]") {
-    // The load returned OK but no stream ever came up: the 2 s stuck-switch
-    // timeout is the only thing that notices. Counted like a failed load,
-    // so the nothing-playing rule cannot re-tune a dead channel forever.
-    using std::chrono::milliseconds;
-    Guide g;
-    StreamCapture err(std::cerr);
-
-    SECTION("01: the channel waits for its next item") {
-        g.t.wall = kW0 + 130;  // b, scheduled to end at kW0 + 300
-        g.pb.tune(1, false);
-        run_frames(g.pb, g.t, milliseconds(2100));
-        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1", "stop"});
-        CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
-        CHECK(g.s.tuned_channel == 1);
-        CHECK(g.s.guide_gave_up.empty());
-    }
-    SECTION("02, one item: its only failure gives it up") {
-        g.t.wall = kW0 + 10;
-        g.pb.tune(2, false);
-        run_frames(g.pb, g.t, milliseconds(2100));
-        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0", "stop"});
-        CHECK(g.s.guide_gave_up == std::vector<int>{2});
-        CHECK(g.s.tuned_channel == -1);
-        CHECK(g.s.error_message == "Couldn't play these videos");
-    }
-    CHECK(err.count("CRITICAL: Playlist switch timeout") == 1);
-    CHECK_FALSE(g.s.is_switching_playlist);
-    CHECK(g.s.current_playlist_index == -1);  // a drawable menu
-}
-
 TEST_CASE("a tuned stream taken away by a game session is not the channel's failure",
           "[playlist_playback][guide][give_up]") {
     Guide g;
@@ -2164,11 +2136,13 @@ TEST_CASE("a boundary load whose stream never comes up is a failed item for its 
     // load the boundary a second time meanwhile.
     CHECK_FALSE(g.s.playback_started_);
 
-    guide_frames(g, milliseconds(1950));
+    // kChannelStartTimeout from the load's return (reach_boundary's last
+    // tick): a card stalled by an upload can take seconds to preroll.
+    guide_frames(g, milliseconds(7950));
     CHECK(g.t.calls.size() == 3);
     CHECK(err.count("never started") == 0);
 
-    guide_frames(g, milliseconds(100));  // past 2 s
+    guide_frames(g, milliseconds(100));  // past 8 s
     CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1",
                                                 "load_at Cartoons 2", "stop"});
     CHECK(err.count("never started") == 1);
@@ -2207,7 +2181,7 @@ TEST_CASE("a boundary load is bounded once, whatever ends the wait",
     SECTION("the pipeline is taken away (Media Browser entry): not the channel's failure") {
         app::reset_main_ui_for_media_browser(g.s);
     }
-    guide_frames(g, milliseconds(3000));
+    guide_frames(g, milliseconds(9000));  // well past the 8 s bound
     CHECK(g.t.calls == want);
     CHECK(err.count("never started") == 0);
     CHECK(err.count("(pipeline error)") == pipeline_errors);
@@ -2215,18 +2189,141 @@ TEST_CASE("a boundary load is bounded once, whatever ends the wait",
 
 TEST_CASE("a tune that never starts is counted once with every tick running",
           "[playlist_playback][guide][give_up]") {
-    // Tunes have their own bound (the stuck-switch timeout); the boundary
-    // bound must not count them a second time.
+    // One bound per channel load: the stuck-switch timeout must not count
+    // it as well.
     using std::chrono::milliseconds;
     Guide g;
     StreamCapture out(std::cout);
     StreamCapture err(std::cerr);
     g.t.wall = kW0 + 130;
     g.pb.tune(1, false);
-    guide_frames(g, milliseconds(5000));
+    guide_frames(g, milliseconds(12000));
     CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1", "stop"});
     CHECK(err.count("never started") == 1);
     CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
+}
+
+TEST_CASE("a tuned item that never starts is a failed item 8 s after its load returns",
+          "[playlist_playback][guide][give_up]") {
+    // The load returned OK but no stream ever came up. Media lives on the
+    // SD card, which a Content Manager upload can stall for seconds: the
+    // stream gets kChannelStartTimeout from the load's RETURN — not 2 s
+    // from the press — before it counts as a failed item (so the
+    // nothing-playing rule cannot re-tune a dead channel forever). The
+    // List-style 2 s stuck-switch timeout still releases the switch flag
+    // (NEXT/PREV work again) but neither fails the item nor stops it.
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+
+    SECTION("01: the channel waits for its next item") {
+        g.t.wall = kW0 + 130;  // b, scheduled to end at kW0 + 300
+        g.pb.tune(1, false);
+        guide_frames(g, milliseconds(2100));
+        // Released at 2 s, nothing failed or stopped: still loading.
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1"});
+        CHECK_FALSE(g.s.is_switching_playlist);
+        CHECK(g.s.current_playlist_index == 1);
+        CHECK(err.count("never started") == 0);
+        CHECK(err.count("MPV appears stuck") == 0);
+        REQUIRE(g.t.load_at_ms.size() == 1);
+        // To 7.9 s after the load: still waiting.
+        guide_frames(g, milliseconds(g.t.load_at_ms[0] + 7900 - g.t.elapsed_ms()));
+        CHECK(g.t.calls.size() == 2);
+        guide_frames(g, milliseconds(200));  // past 8 s
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1", "stop"});
+        CHECK(g.s.guide_wait_until_utc == Approx(kW0 + 300).epsilon(0).margin(1e-6));
+        CHECK(g.s.tuned_channel == 1);
+        CHECK(g.s.guide_gave_up.empty());
+    }
+    SECTION("02, one item: its only failure gives it up") {
+        g.t.wall = kW0 + 10;
+        g.pb.tune(2, false);
+        guide_frames(g, milliseconds(8100));
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0"});
+        guide_frames(g, milliseconds(400));
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0", "stop"});
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        CHECK(g.s.tuned_channel == -1);
+        CHECK(g.s.error_message == "Couldn't play these videos");
+    }
+    CHECK(err.count("never started") == 1);
+    CHECK(err.count("CRITICAL: Playlist switch timeout") == 0);
+    CHECK_FALSE(g.s.is_switching_playlist);
+    CHECK(g.s.current_playlist_index == -1);  // a drawable menu
+}
+
+TEST_CASE("the channel start bound counts from the load's return, not the press",
+          "[playlist_playback][guide][give_up]") {
+    // Controller::load_item_media blocks (its own settle; a stalled card
+    // longer): the seconds inside the load call are not the stream's.
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    g.t.load_blocks = milliseconds(3000);
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    guide_frames(g, milliseconds(300));  // the settle, then the 3 s load
+    REQUIRE(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1"});
+    const long long returned_ms = g.t.load_at_ms[0] + 3000;
+    guide_frames(g, milliseconds(returned_ms + 7900 - g.t.elapsed_ms()));
+    CHECK(g.t.calls.size() == 2);  // 11 s after the press, 7.9 s after the return
+    CHECK(err.count("never started") == 0);
+    guide_frames(g, milliseconds(200));
+    CHECK(g.t.calls.size() == 3);
+    CHECK(err.count("never started") == 1);
+}
+
+TEST_CASE("a slow channel start that comes up inside its bound plays on",
+          "[playlist_playback][guide][give_up]") {
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+
+    SECTION("a tune: up 5 s after its load") {
+        g.t.wall = kW0 + 130;
+        g.pb.tune(1, false);
+        guide_frames(g, milliseconds(5200));
+    }
+    SECTION("a boundary: up 6 s after its load") {
+        reach_boundary(g);
+        guide_frames(g, milliseconds(6000));
+    }
+    const auto loads = g.t.calls;
+    g.t.generation += 1;
+    g.playing();  // update_state confirmed the new stream
+    g.s.update_playback_state(40.0, 300.0);  // well inside the item
+    guide_frames(g, milliseconds(10000));
+    CHECK(g.t.calls == loads);  // nothing stopped, nothing reloaded
+    CHECK(err.count("never started") == 0);
+    CHECK(g.s.guide_wait_until_utc == 0.0);
+    CHECK(g.s.tuned_channel == 1);
+}
+
+TEST_CASE("List style: a playlist switch still times out at 2 s, as before",
+          "[playlist_playback]") {
+    // The channel bound is the guide's only; the List switch timeout is
+    // untouched (its CRITICAL line and its recovery stop).
+    using std::chrono::milliseconds;
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    pb.on_select();
+    s.video_active = false;  // the old stream is gone; the new one never comes
+    run_frames(pb, t, milliseconds(2100));
+    CHECK(t.calls == std::vector<std::string>{"stop", "load Movies 0 /data/playlists", "stop"});
+    CHECK(err.count("CRITICAL: Playlist switch timeout") == 1);
+    CHECK(err.count("MPV appears stuck") == 1);
+    CHECK_FALSE(s.is_switching_playlist);
 }
 
 TEST_CASE("List style: a playlist boundary is never bounded",

@@ -67,8 +67,8 @@
 // guide_gave_up — cleared only once a channel PLAYS (kChannelPlaysS), so a
 // library that loads but never decodes runs out of channels; main.cpp's
 // nothing-playing rule re-tunes in both cases. A stream that never comes up
-// is a failed item too: a tune's through the stuck-switch timeout, a
-// boundary's through kBoundaryStartTimeout.
+// is a failed item too: kChannelStartTimeout after its load returned, for a
+// tune and a boundary alike.
 // The List style (nullptr) never reaches any of this.
 
 #include <chrono>
@@ -213,8 +213,8 @@ public:
     // past the first position it reported while playing, or an item reached
     // its natural end. A load alone proves nothing: a library whose files
     // all load but fail to decode must still run every channel out instead
-    // of cycling. A tune whose stream never comes up before the stuck-switch
-    // timeout is a failed item, like a failed load.
+    // of cycling. A load whose stream never comes up within
+    // kChannelStartTimeout is a failed item, like a failed load.
     static constexpr double kChannelPlaysS = 5.0;
 
     // ── Per-frame ticks, in main-loop order ──────────────────────────────
@@ -245,10 +245,18 @@ public:
     static constexpr int kSwitchMaxRepolls = 10;
     static constexpr std::chrono::milliseconds kSwitchTimeout{2000};
     static constexpr std::chrono::milliseconds kTimeoutSettle{200};
-    // Channel Guide: a schedule boundary's load (no switch, so the stuck-
-    // switch timeout never sees it) gets as long as a switch to bring its
-    // stream up; past that the item failed (tick_pipeline_error).
-    static constexpr std::chrono::milliseconds kBoundaryStartTimeout = kSwitchTimeout;
+    // Channel Guide: how long a channel load — a tune's or an item
+    // boundary's — has to bring its stream up, counted from when the load
+    // call RETURNS (not from the press: the settle, the re-polls and
+    // load_item_media's own blocking settle are not the stream's time).
+    // Only past it does the load count as a failed item
+    // (tick_pipeline_error), and a failed item darkens the channel for the
+    // rest of its slot — so the bound is generous: media lives on the SD
+    // card, and a Content Manager upload stalls it for seconds at a time.
+    // The List switch timeout (kSwitchTimeout) is not this: it releases a
+    // tune's switch flag at 2 s as before, but neither fails the item nor
+    // stops a stream still within this bound.
+    static constexpr std::chrono::milliseconds kChannelStartTimeout{8000};
 
     // ── Who owns the pipeline ────────────────────────────────────────────
     // True while a main-menu playlist item owns the shared pipeline (not
@@ -333,13 +341,21 @@ private:
         bool proven = false;           // prove_channel() has run for it
     };
     ChannelProgress channel_progress_;
-    // A tune's load returned OK and its stream has not come up yet.
-    bool tune_awaiting_stream_ = false;
-    // A schedule boundary's load returned OK at this time (steady clock)
-    // and its stream has not come up yet (playback_started_). Dropped when
-    // it comes up, when anything else takes the pipeline, and when a
-    // failure is counted — so it is never counted twice.
-    std::optional<std::chrono::steady_clock::time_point> boundary_load_at_;
+    // A channel load (a tune's or a boundary's) returned OK at this time
+    // (steady clock) and its stream has not come up yet (playback_started_).
+    // Dropped when it comes up, when anything else takes the pipeline
+    // (channel_load_live), at the next tune, and when a failure is counted —
+    // so it is never counted twice. Past kChannelStartTimeout it is a failed
+    // item.
+    std::optional<std::chrono::steady_clock::time_point> channel_load_at_;
+    // The channel load's stream can still come up: its indexes are set and
+    // nothing else (the intro, a game, the Media Browser) has the pipeline.
+    // owns_pipeline() without the switch flag — a tune's load is waited for
+    // while its switch flag is still up.
+    bool channel_load_live() const;
+    // Drops channel_load_at_ once the stream is up or the load was taken
+    // away. Called at the top of both ticks that read it.
+    void drop_settled_channel_load();
     // Seconds played since the anchor (taking it on the first playing
     // frame); the player's own position when the stream is not a channel
     // load (List style).
