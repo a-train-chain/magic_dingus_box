@@ -454,28 +454,29 @@ TEST_CASE("media_info store: poll reports a change only when there is one",
     CHECK(store.crop_for("media/a.mp4"));
 }
 
-TEST_CASE("media_info store: first_read_done once poll adopted a read",
+TEST_CASE("media_info store: first_read_finished once the first read attempt is over",
           "[media_info]") {
     // The Channel Guide's power-on tune waits for it: until the first read
     // lands only trimmed items have a length, and a tune then could pick
-    // another channel and overwrite the one last watched.
+    // another channel and overwrite the one last watched. Any outcome lifts
+    // it — a box that can never read the file must not stop tuning for good.
     Sandbox sb;
     MediaInfoStore store(sb.file.string());
-    CHECK_FALSE(store.first_read_done());
+    CHECK_FALSE(store.first_read_finished());
 
     SECTION("no file: done, though nothing changed") {
         store.request_reload();
         REQUIRE(flushed(store));
-        CHECK_FALSE(store.first_read_done());  // read, not adopted yet
+        CHECK_FALSE(store.first_read_finished());  // read, not adopted yet
         CHECK_FALSE(store.poll());
-        CHECK(store.first_read_done());
+        CHECK(store.first_read_finished());
     }
     SECTION("a file: done with its map") {
         write_file(sb.file, R"({"version": 1, "videos": {"media/a.mp4": {"duration_s": 60}}})");
         store.request_reload();
         REQUIRE(flushed(store));
         CHECK(store.poll());
-        CHECK(store.first_read_done());
+        CHECK(store.first_read_finished());
         CHECK(store.map().at("media/a.mp4").duration_s == 60.0);
     }
     SECTION("a corrupt file: done (every video reads as cropped, no lengths)") {
@@ -483,20 +484,62 @@ TEST_CASE("media_info store: first_read_done once poll adopted a read",
         store.request_reload();
         REQUIRE(flushed(store));
         (void)store.poll();
-        CHECK(store.first_read_done());
+        CHECK(store.first_read_finished());
     }
-    SECTION("a read that fails: not done until one succeeds") {
+    SECTION("a read that fails (EIO, EACCES, ...): done — the gate must not hold all session") {
         fs::create_directories(sb.file);  // a directory where the file should be
         store.request_reload();
         store.wait_idle_for_tests();
+        CHECK_FALSE(store.first_read_finished());  // finished, not published yet
         (void)store.poll();
-        CHECK_FALSE(store.first_read_done());
-        fs::remove(sb.file);
-        store.request_reload();
-        REQUIRE(flushed(store));
-        (void)store.poll();
-        CHECK(store.first_read_done());
+        CHECK(store.first_read_finished());
+        CHECK(store.map().empty());
     }
+}
+
+TEST_CASE("media_info store: a read still in progress keeps first_read_finished false",
+          "[media_info]") {
+    // A slow or stalled card: the job that reads has not finished, so the
+    // gate stays closed (the race the power-on gate exists for).
+    Sandbox sb;
+    write_file(sb.file, R"({"version": 1, "videos": {"media/a.mp4": {"duration_s": 60}}})");
+    HeldSink sink;
+    sink.hold();
+    MediaInfoStore store(sb.file.string(), sink.sink());
+    store.set_crop("media/b.mp4", false);  // its job reads, then stalls in the write
+    sink.wait_calls(1);
+    store.request_reload();
+    (void)store.poll();
+    CHECK_FALSE(store.first_read_finished());
+    sink.release();
+    REQUIRE(flushed(store));
+    (void)store.poll();
+    CHECK(store.first_read_finished());
+    CHECK(store.map().at("media/a.mp4").duration_s == 60.0);
+}
+
+TEST_CASE("media_info store: a first job with edits and no sidecar lock still reads",
+          "[media_info]") {
+    // The boot read and an early crop toggle can share the first job; when
+    // that job cannot take the sidecar lock its edits wait — but the file
+    // is still read (a read takes no lock), so the power-on gate lifts with
+    // the real lengths instead of staying closed for the whole session.
+    Sandbox sb;
+    write_file(sb.file, R"({"version": 1, "videos": {"media/a.mp4": {"duration_s": 60}}})");
+    // A lock path that can never be created (a dangling link into nothing).
+    fs::create_symlink(sb.dir / "no_such_dir" / "lock", sb.file.string() + ".lock");
+    MediaInfoStore store(sb.file.string());
+    store.set_crop("media/b.mp4", false);
+    store.request_reload();
+    store.wait_idle_for_tests();
+    (void)store.poll();
+    CHECK(store.first_read_finished());
+    CHECK(store.map().at("media/a.mp4").duration_s == 60.0);
+    CHECK_FALSE(store.crop_for("media/b.mp4"));  // the edit, still on screen
+    // Nothing reached the disk: the edit waits for a lock.
+    const auto disk = app::parse_media_info(read_file(sb.file));
+    REQUIRE(disk.has_value());
+    CHECK(app::crop_for(*disk, "media/b.mp4"));
 }
 
 TEST_CASE("media_info store: a kiosk write keeps fields it does not know",

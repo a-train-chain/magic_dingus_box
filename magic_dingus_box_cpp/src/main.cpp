@@ -1661,12 +1661,13 @@ int main(int /* argc */, char* /* argv */[]) {
         auto_tune.guide_style = playlist_playback.guide_style();
         if (auto_tune.guide_style) {
             auto_tune.intro_complete = state.intro_complete;
-            // Not before the media info store's first read has landed (and
-            // the channels were rebuilt from it, by media_info.poll() below
-            // on an earlier frame): with no intro, or one that failed, the
-            // rule would otherwise run with only trimmed items' lengths and
-            // could tune — and save as the last channel — the wrong one.
-            auto_tune.media_info_read = media_info.first_read_done();
+            // Not before the media info store's first read attempt is over
+            // (and the channels were rebuilt from what it read, by
+            // media_info.poll() below on an earlier frame): with no intro,
+            // or one that failed, the rule would otherwise run with only
+            // trimmed items' lengths and could tune — and save as the last
+            // channel — the wrong one. A failed read lifts it too.
+            auto_tune.media_info_read = media_info.first_read_finished();
             // Not under Settings (its game browser, Controller Setup wizard
             // and pairing screen included), the Wi-Fi keyboard or the Media
             // Browser: the video comes back once they close.

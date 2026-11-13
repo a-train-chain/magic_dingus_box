@@ -27,11 +27,13 @@ namespace app {
 struct AutoTuneInput {
     bool guide_style = false;        // Menu Style is Channel Guide
     bool intro_complete = false;     // the boot intro is over, whichever way
-    // The media info store's first read has landed (MediaInfoStore::
-    // first_read_done) and the channels were rebuilt from it. Before that
-    // only trimmed items have a length: on the no-intro / failed-intro
-    // power-on paths a tune could pick another channel and overwrite the
-    // one last watched.
+    // The media info store's first read attempt is over, in any outcome
+    // (MediaInfoStore::first_read_finished), and the channels were rebuilt
+    // from what it read. Before that only trimmed items have a length: on
+    // the no-intro / failed-intro power-on paths a tune could pick another
+    // channel and overwrite the one last watched. A read that failed lifts
+    // it too (the pre-gate behaviour), so an unreadable file never stops
+    // the box tuning on its own.
     bool media_info_read = false;
     bool on_main_screen = false;     // no Media Browser, Settings or keyboard up
     bool video_active = false;       // a video plays, or the next item loads
