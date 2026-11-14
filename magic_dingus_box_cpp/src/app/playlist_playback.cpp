@@ -82,6 +82,43 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
     using Decision = video::PlaybackErrorPolicy::Decision;
     // Counted (or handed on): a channel load's bound must not count it again.
     channel_load_at_.reset();
+    const auto* failed = state_.current_playlist_item();
+    const bool movie = failed && failed->movie_tmdb_id > 0;
+    if (movie && d != Decision::None && movie_failure_hook_) movie_failure_hook_();
+    if (movie && d == Decision::Advance && guide_style()) {
+        const int channel = state_.tuned_channel;
+        const Channel* ch = channel_at(channel);
+        const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+        std::optional<OnAir> next;
+        if (ch && loaded_airing_ && loaded_airing_->channel == channel) {
+            const auto& held = loaded_airing_->airing;
+            const auto still = on_air(*ch, held.starts_at, offset(held.starts_at), offset);
+            // Rebuilds may re-phase or replace media. Only the original
+            // stable airing may advance; stale numeric coordinates cannot.
+            if (still && held.index >= 0 && still->index == held.index &&
+                same_airing(held, LoadedAiring{still->index, ch->items[still->index],
+                                              still->starts_at, still->ends_at, held.utc_offset_s}) &&
+                std::fabs(still->ends_at - held.ends_at) <= 0.5 &&
+                (!held.utc_offset_s || *held.utc_offset_s == offset(transport_.wall_now_utc()))) {
+                next = airing_after(*ch, *still, offset(still->ends_at), offset);
+            } else {
+                next = join_point(*ch, transport_.wall_now_utc(), offset(transport_.wall_now_utc()), offset);
+            }
+        }
+        transport_.stop();
+        if (next) {
+            next->offset_s = 0;
+            load_on_air(channel, *next, true);
+        } else {
+            stop_to_menu(state_);
+            // A failure before the final slot closes must not immediately
+            // retune that same failed film while waiting for off air.
+            state_.guide_wait_until_utc = ch
+                ? std::min(guide_item_ends_at_, transport_.wall_now_utc() + guide_item_length_)
+                : 0.0;
+        }
+        return;
+    }
     if (d == Decision::Advance && guide_style()) {
         // Live TV does not jump ahead to the next programme: the channel
         // stays dark until this item's slot ends, then main.cpp's
@@ -130,6 +167,9 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
                     gave_up.end()) {
                 gave_up.push_back(state_.tuned_channel);
             }
+            const auto id = channel_identity(state_.tuned_channel);
+            if (!id.empty() && std::find(gave_up_identities_.begin(), gave_up_identities_.end(), id) == gave_up_identities_.end())
+                gave_up_identities_.push_back(id);
             state_.tuned_channel = -1;
             state_.guide_wait_until_utc = 0.0;
         }
@@ -426,6 +466,7 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         // List style: nothing is tuned, and nothing is owed a retry.
         state_.tuned_channel = -1;
         state_.guide_gave_up.clear();
+        gave_up_identities_.clear();
         state_.guide_wait_until_utc = 0.0;
         channel_progress_ = {};
         channel_load_at_.reset();
@@ -440,6 +481,13 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     // Given-up rows stay until a channel proves it plays; only rows the new
     // list no longer has are dropped.
     auto& gave_up = state_.guide_gave_up;
+    if (!gave_up_identities_.empty()) {
+        gave_up.clear();
+        for (int row = 0; row < static_cast<int>(channels_->size()); ++row) {
+            if (std::find(gave_up_identities_.begin(), gave_up_identities_.end(), channel_identity(row)) != gave_up_identities_.end())
+                gave_up.push_back(row);
+        }
+    }
     gave_up.erase(std::remove_if(gave_up.begin(), gave_up.end(),
                                  [this](int c) { return channel_at(c) == nullptr; }),
                   gave_up.end());
@@ -564,6 +612,7 @@ void PlaylistPlayback::prove_channel() {
                   << " plays — the channels given up on may be tried again" << std::endl;
         state_.guide_gave_up.clear();
     }
+    gave_up_identities_.clear();
 }
 
 void PlaylistPlayback::rejoin_schedule() {
@@ -630,15 +679,19 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
               << " at " << oa.offset_s << "s" << std::endl;
     state_.loaded_movie.reset();
+    if (is_movie_playlist(pl))
+        state_.loaded_movie = AppState::LoadedMovie{channel_identity(channel), pl.items[si.item]};
+    const auto movie = state_.loaded_movie;
     auto result = transport_.load_playlist_item_at(state_, pl, si.item,
                                                    playlist_directory_, oa.offset_s);
+    // Controller clears the retained item when starting any new load. Both
+    // success and synchronous failure still belong to this attempted film.
+    state_.loaded_movie = movie;
     if (!result) {
         std::cerr << "Failed to load channel item: " << result.error() << std::endl;
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
         return false;
     }
-    if (is_movie_playlist(pl))
-        state_.loaded_movie = AppState::LoadedMovie{channel_identity(channel), pl.items[si.item]};
     // The start bound counts from HERE, the load's return (kChannelStartTimeout).
     channel_load_at_ = transport_.now();
     // Loaded is not playing: guide_gave_up waits for prove_channel().

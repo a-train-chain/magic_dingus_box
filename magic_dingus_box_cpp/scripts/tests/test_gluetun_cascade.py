@@ -67,7 +67,11 @@ case "$1" in
             [ "$val" = absent ] && exit 1
             echo "$val"
         else
-            echo "${INSPECT_RUNNING:-true}"
+            if [[ "$*" == *State.Paused* ]]; then
+                echo "${INSPECT_RUNNING:-true} false"
+            else
+                echo "${INSPECT_RUNNING:-true}"
+            fi
         fi
         ;;
     exec)
@@ -100,6 +104,7 @@ class StubDockerTestCase(unittest.TestCase):
             os.environ,
             PATH=f"{stub_bin}:{os.environ['PATH']}",
             DOCKER_LOG=str(self.log),
+            PLAYBACK_OWNED_FILE=str(tmp / "owned_services"),
             COMPOSE_DIR=str(self.compose_dir),
             STABILIZE_SLEEP="0",
             # The periodic convergence loop would outlive the script and
@@ -171,10 +176,20 @@ class CascadeStartEventTests(StubDockerTestCase):
 
 
 class UnpauseFallbackTests(StubDockerTestCase):
+    def setUp(self):
+        super().setUp()
+        # Only pause-script tests need fd-style flock on Mac; the cascade
+        # also invokes flock's command form for cooldown clearing.
+        flock = Path(self._tmp.name) / "bin" / "flock"
+        flock.write_text("#!/usr/bin/env python3\nimport fcntl, sys\nfcntl.flock(int(sys.argv[-1]), fcntl.LOCK_EX)\n")
+        flock.chmod(0o755)
+        Path(self.env["PLAYBACK_OWNED_FILE"]).write_text("mdb_radarr\nmdb_sonarr\nmdb_prowlarr\nmdb_byparr\n")
+
     def test_failed_start_falls_back_to_compose_up(self):
         result = self.run_script(
             PAUSE, "unpause", extra_env={"INSPECT_RUNNING": "false"})
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(Path(self.env["PLAYBACK_OWNED_FILE"]).exists())
         compose = self.compose_lines()
         self.assertTrue(
             any("up -d radarr sonarr prowlarr byparr" in l for l in compose),

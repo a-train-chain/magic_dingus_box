@@ -98,15 +98,15 @@ bool movie_drive_ready(const std::string& host_library_prefix,
                       const std::string& mountinfo_path = "/proc/self/mountinfo");
 
 // Trickle-limit bootstrap (movie playback contention guard): converge the
-// alt-limit RATES and clear a crash-stranded alt-limit cap. Best-effort
+// alt-limit RATES. Owned cap recovery belongs to MovieQuietMode. Best-effort
 // and gated on `services_env_path` existing (unprovisioned Pis and dev
 // machines do nothing). Does network I/O against qBit when provisioned.
 void bootstrap_qbit_alt_limits(QbittorrentClient& qbit,
                                const std::string& services_env_path);
 
 // Layer 3 monitor, started only when Layers 1+2 already pass (unlocked AND
-// VPN configured); otherwise nullptr. When started it also kicks the
-// backgrounded `playback_services_pause.sh unpause` startup safety net.
+// VPN configured); otherwise nullptr. Quiet recovery is serialized by
+// MovieQuietMode rather than an independent startup unpause.
 // The returned monitor's destructor stops its worker thread.
 std::unique_ptr<VpnHealthMonitor> start_vpn_health_monitor(app::AppState& state);
 

@@ -73,12 +73,12 @@ public:
     void set_quiet_mode(app::MovieQuietMode* quiet) { quiet_ = quiet; }
 
     // Builds the executor's actions: Trickle = qBit alternative speed
-    // limits; FullPause = qBit pause_all() + playback_services_pause.sh
+    // limits; FullPause = owned active qBit hashes + playback_services_pause.sh
     // pause. Resume undoes exactly what the pause reported. `barrier` (may
     // be empty) runs first on the worker before each action — main.cpp
     // uses it to let a pending game quiet-mode transition finish first.
     static app::MovieQuietMode::Actions make_quiet_actions(
-        QbittorrentClient* qbit, std::function<void()> barrier);
+        QbittorrentClient* qbit, std::function<void()> barrier = {});
 
     // The quick-add workers publish into members — join before they die
     // (a joinable std::thread member at destruction is terminate()). The
@@ -204,6 +204,7 @@ private:
     // True when this session's enter() requested a pause, so leave()
     // requests the resume exactly once and only then.
     bool quiet_requested_ = false;
+    void refresh_quiet_policy();
 
     std::string movie_title_;
     std::string movie_path_;       // host-side path

@@ -56,6 +56,7 @@
 #include "app/overlay_nav.h"
 #include "app/settings_input.h"
 #include "app/movie_quiet_mode.h"
+#include "app/movie_channel_quiet.h"
 #include "app/playlist_loader.h"
 #include "app/controller.h"
 #include "app/controller_transport.h"
@@ -766,77 +767,17 @@ int main(int /* argc */, char* /* argv */[]) {
     state.settings_menu = &settings_menu;
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // Trickle-limit bootstrap: converge qBit's alt-limit rates and clear a
-    // crash-stranded cap. Best-effort, gated on the provisioning marker.
+    // Converge qBit's alt-limit rates. Owned crash recovery runs on the
+    // quiet worker; an operator's existing cap is never blindly cleared.
     media_browser::bootstrap_qbit_alt_limits(*mb_clients.qbit,
                                              utils::kServicesEnvPath);
 
-    // Torrents the kiosk paused (movie FullPause / game quiet mode) and
-    // never resumed — kiosk crashed, was stopped mid-movie, or an OTA
-    // restarted it. Resumed in the background with retries, never on the
-    // render thread; an operator's manual pause is never undone. See
-    // app::TorrentResumeRecovery.
-    const std::string kTorrentPauseMarker =
-        config::get_data_path() + "/qbit_paused_by_kiosk";
-    std::function<bool()> qbit_pause_all;
-    std::function<bool()> qbit_resume_all;
-    if (auto* qbit = mb_clients.qbit.get(); qbit != nullptr) {
-        qbit_pause_all = [qbit]() { return qbit->pause_all(); };
-        qbit_resume_all = [qbit]() { return qbit->resume_all(); };
-    }
-    app::TorrentResumeRecovery torrent_resume_recovery;
-    torrent_resume_recovery.start_if_needed(kTorrentPauseMarker, qbit_resume_all);
-
-    // Track-1 quiet mode: silence the torrent/media stack for the whole
-    // game session, mirroring PlaybackScreen's movie behavior. Gated on
-    // the provisioning marker so unprovisioned Pis do exactly nothing
-    // (no docker errors, no qBit timeouts in the log).
-    //
-    // Cross-ordering with the MOVIE executor (MovieQuietMode, below): the
-    // two run on separate workers, so each action first waits (bounded)
-    // for the other to be idle — a game launched seconds after leaving a
-    // movie must not have its docker-stop race that movie's docker-start,
-    // and vice versa. Bounded on both sides so two workers each waiting on
-    // the other can only ever stall 20 s, never deadlock.
-    std::atomic<app::MovieQuietMode*> movie_quiet_ptr{nullptr};
-    auto wait_movie_quiet = [&movie_quiet_ptr]() {
-        if (auto* mq = movie_quiet_ptr.load()) {
-            (void)mq->wait_until_idle_for(std::chrono::seconds(20));
-        }
-    };
-    app::GameQuietMode game_quiet_mode(app::make_game_quiet_actions({
-        /*services_env_path=*/"/opt/magic_dingus_box/services/.env",
-        /*torrent_pause_marker=*/kTorrentPauseMarker,
-        /*wait_for_movie_quiet=*/wait_movie_quiet,
-        /*pause_torrents=*/qbit_pause_all,
-        /*resume_torrents=*/qbit_resume_all,
-        /*run_command=*/[](const char* cmd) { return std::system(cmd); },
-    }));
-
-    // Movie playback contention guard executor. PlaybackScreen::enter()/
-    // leave() only QUEUE pause/resume here; the qBit round-trips and the
-    // docker stop/start script run on this worker, never on the render
-    // thread (WatchdogSec=10). See app/movie_quiet_mode.h.
+    // One ownership queue covers MB playback, movie-channel grace and games.
+    // Startup recovery runs on that same worker before any pause can start.
     app::MovieQuietMode movie_quiet_mode(
-        media_browser::ui::PlaybackScreen::make_quiet_actions(
-            mb_clients.qbit.get(),
-            /*barrier=*/[&game_quiet_mode]() {
-                (void)game_quiet_mode.wait_until_idle_for(
-                    std::chrono::seconds(20));
-            }));
-    movie_quiet_ptr.store(&movie_quiet_mode);
-    // Unpublish before movie_quiet_mode is destroyed (only reachable on an
-    // early-return path; the normal exit is _exit): after this, no game
-    // action can start waiting on it, and waiting for the game worker to
-    // go idle guarantees none is mid-wait on it.
-    struct MovieQuietUnpublish {
-        std::atomic<app::MovieQuietMode*>& ptr;
-        app::GameQuietMode& game;
-        ~MovieQuietUnpublish() {
-            ptr.store(nullptr);
-            game.wait_until_idle();
-        }
-    } movie_quiet_unpublish{movie_quiet_ptr, game_quiet_mode};
+        media_browser::ui::PlaybackScreen::make_quiet_actions(mb_clients.qbit.get()));
+    app::MovieChannelQuiet movie_channel_quiet;
+    playlist_playback.set_movie_failure_hook([&movie_library] { movie_library.request_drive_check(); });
 
     // Watch-state store (Phase 3): resume positions + watched flags for
     // movies and TV, in the media_browser.db SQLite file. Its API is
@@ -900,18 +841,19 @@ int main(int /* argc */, char* /* argv */[]) {
     // Quiet the media stack for the whole session (async — never delays
     // launch) and drop poster textures while the GL context is still
     // current; the reverse on the way out.
-    game_session_ops.quiet_media_stack = [&game_quiet_mode, &ui_renderer]() {
-        game_quiet_mode.request_pause();
+    game_session_ops.quiet_media_stack = [&movie_quiet_mode, &ui_renderer]() {
+        movie_quiet_mode.request_pause(app::MovieQuietMode::Mode::FullPause,
+                                       app::MovieQuietMode::Claimant::Game);
         if (ui_renderer.artwork_cache_initialized()) {
             ui_renderer.artwork_cache().pause();
             ui_renderer.artwork_cache().clear_textures();
         }
     };
-    game_session_ops.restore_media_stack = [&game_quiet_mode, &ui_renderer]() {
+    game_session_ops.restore_media_stack = [&movie_quiet_mode, &ui_renderer]() {
         if (ui_renderer.artwork_cache_initialized()) {
             ui_renderer.artwork_cache().resume();
         }
-        game_quiet_mode.request_resume();
+        movie_quiet_mode.request_resume(app::MovieQuietMode::Claimant::Game);
     };
 #endif
     game_session_ops.poll_gpio = [&gpio]() { (void)gpio.poll(); };
@@ -1703,6 +1645,26 @@ int main(int /* argc */, char* /* argv */[]) {
         // (honoring the item's `end:` trim). See
         // PlaylistPlayback::tick_auto_advance.
         playlist_playback.tick_auto_advance();
+#ifdef MEDIA_BROWSER_ENABLED
+        const auto* channel_item = state.current_playlist_item();
+        const bool channel_movie_playing = playlist_playback.guide_style() && state.video_active &&
+            !state.is_loading_game && state.current_screen != app::AppScreen::MediaBrowser &&
+            channel_item && channel_item->movie_tmdb_id > 0;
+        const double quiet_now_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const auto quiet_cmd = movie_channel_quiet.tick(channel_movie_playing, quiet_now_s);
+        if (quiet_cmd == app::MovieChannelQuiet::Cmd::Claim) {
+            const auto profile = state.platform_profile;
+            movie_quiet_mode.request_pause([profile] {
+                return platform::service_quiet_mode(profile, platform::read_mem_available_kib()) ==
+                           platform::ServiceQuietMode::Trickle
+                    ? app::MovieQuietMode::Mode::Trickle : app::MovieQuietMode::Mode::FullPause;
+            }, app::MovieQuietMode::Claimant::MovieChannel);
+        } else if (quiet_cmd == app::MovieChannelQuiet::Cmd::Release) {
+            movie_quiet_mode.request_resume(app::MovieQuietMode::Claimant::MovieChannel);
+        }
+#endif
+
         
         // Channel Guide: nothing playing is never a resting state. One rule,
         // every frame, after the ticks above — it covers power-on (all four
@@ -3142,20 +3104,12 @@ int main(int /* argc */, char* /* argv */[]) {
     // kernel reclaims the rest, exactly as it would after the SIGKILL this
     // replaces.
 #ifdef MEDIA_BROWSER_ENABLED
-    // The game-end hook restores the services it quieted (docker start of
-    // the arr containers, then qBit resume) asynchronously. A stop mid-game
-    // — or the display-lost exit — reaches here right after the game, and
-    // KillMode=mixed SIGKILLs whatever is still running once main exits:
-    // measured on a Pi 5, the stop killed the in-flight `docker start`.
-    // Bounded so the whole shutdown stays inside TimeoutStopSec (20 s);
-    // anything slower is still recovered at the next start.
-    (void)game_quiet_mode.wait_until_idle_for(std::chrono::seconds(10));
-    // A movie resume queued by leave() (above, or a user exit moments
-    // before the stop) runs asynchronously; give it a bounded window so
-    // the qBit resume / cap clear land. Bounded well inside
-    // TimeoutStopSec (20 s) — anything left is covered at the next start:
-    // the startup unpause (containers), the alt-limit clear (cap) and the
-    // qbit_paused_by_kiosk marker recovery (paused torrents).
+    // Release every surviving owner, including a channel's grace, before
+    // the bounded drain. Slow restorations retain their durable journals
+    // for the next startup on this same ownership executor.
+    movie_quiet_mode.request_resume(app::MovieQuietMode::Claimant::Game);
+    movie_quiet_mode.request_resume(app::MovieQuietMode::Claimant::MovieChannel);
+    movie_quiet_mode.request_resume();
     (void)movie_quiet_mode.wait_until_idle_for(std::chrono::seconds(3));
 #endif
     std::fflush(nullptr);

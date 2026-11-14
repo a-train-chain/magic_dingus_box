@@ -300,17 +300,9 @@ void bootstrap_qbit_alt_limits(QbittorrentClient& qbit,
     //     cheap sequential writes; those stay at 2 MiB/s.
     //     Written every boot so shipped boxes converge on retuned rates
     //     via OTA without anyone touching the qBit WebUI.
-    // (b) CRASH RECOVERY: unconditionally clear the alt-limits cap. Only
-    //     PlaybackScreen sets it (Pi 5 movie playback), and its leave()
-    //     clears it — but a kiosk crash/power-cut mid-movie would leave
-    //     every future download silently capped at trickle speed with
-    //     nothing in any UI to explain why. The wrapper is idempotent
-    //     (read-then-toggle), so the ordinary clean boot is a no-op read.
-    // Gated on the provisioning marker like GameQuietMode, so
-    // unprovisioned Pis and dev machines do exactly nothing (no qBit
-    // failure lines on every boot). Provisioned boxes still clear
-    // unconditionally — board-agnostic, since a leftover cap is
-    // qBit-side state that can travel with a cloned image or SSD.
+    // Existing operator caps are preserved. Crash recovery of a cap owned
+    // by the kiosk runs on MovieQuietMode's serialized worker, using its
+    // durable exact-ownership journal; bootstrap never clears one blindly.
     if (std::filesystem::exists(services_env_path)) {
         // 2 MiB/s down / 8 KiB/s up, IN BYTES (see the client header:
         // qBit 5's preference field is bytes/s despite docs claiming
@@ -324,11 +316,7 @@ void bootstrap_qbit_alt_limits(QbittorrentClient& qbit,
             std::cout << "[media_browser] qbit alt-limit rate config failed "
                          "(best-effort; qBit may not be up yet)" << std::endl;
         }
-        if (!qbit.set_alt_speed_limits_enabled(false)) {
-            std::cout << "[media_browser] qbit alt-limit crash-recovery "
-                         "clear failed (best-effort; qBit may not be up yet)"
-                      << std::endl;
-        }
+
     }
 }
 
@@ -341,20 +329,9 @@ std::unique_ptr<VpnHealthMonitor> start_vpn_health_monitor(app::AppState& state)
         vpn_health_monitor = std::make_unique<VpnHealthMonitor>(state);
         vpn_health_monitor->start();
 
-        // Startup safety: call playback_services_pause.sh unpause to bring
-        // any stopped MB containers back up. This is the recovery path for
-        // "PlaybackScreen::leave() didn't run cleanly" cases — e.g. kiosk
-        // crashed mid-playback or was SIGABRT'd by systemd watchdog. With
-        // the docker-stop pause behavior, missed leave() = stranded
-        // containers (Docker's restart=unless-stopped doesn't auto-start
-        // manually-stopped containers). Without this safety: Movies entry
-        // silently vanishes on next boot. unpause is idempotent — no-op
-        // for already-running containers, starts stopped ones. Backgrounded
-        // (& at end) so the ~1-2 s docker start doesn't block the kiosk
-        // entering its main loop.
-        std::system(
-            "/usr/local/bin/playback_services_pause.sh unpause "
-            ">/dev/null 2>&1 &");
+        // Playback-owned crash recovery is serialized by MovieQuietMode;
+        // starting an independent unpause here could race a new game/film.
+
     }
     return vpn_health_monitor;
 }

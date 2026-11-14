@@ -95,8 +95,9 @@ struct FakeTransport : app::PlaylistTransport {
         load_at_ms.push_back(elapsed_ms());
         return load_ok ? utils::Result<>::ok() : utils::Result<>::fail("boom");
     }
-    utils::Result<> load_playlist_item_at(app::AppState&, const app::Playlist& pl, int idx,
+    utils::Result<> load_playlist_item_at(app::AppState& state, const app::Playlist& pl, int idx,
                                           const std::string&, double offset_s) override {
+        state.loaded_movie.reset();  // Controller::load_playlist_item clears retained ownership
         calls.push_back("load_at " + pl.title + " " + std::to_string(idx));
         load_at_ms.push_back(elapsed_ms());
         offsets.push_back(offset_s);
@@ -2924,8 +2925,68 @@ TEST_CASE("reanchoring never treats a replacement movie at the same coordinates 
     g.channels = app::build_channels(g.s.playlists, guide_lengths());
     g.pb.set_channels(&g.channels);
     g.t.wall = start + 100;
-    g.s.update_playback_state(120, 120); g.pb.tick_auto_advance();
-    REQUIRE(g.s.current_playlist_item());
-    CHECK(g.s.current_playlist_item()->movie_tmdb_id == 999);
-    CHECK(g.t.last_offset() == Approx(100));
+    SECTION("natural end rejoins the replacement live") {
+        g.s.update_playback_state(120, 120); g.pb.tick_auto_advance();
+        REQUIRE(g.s.current_playlist_item());
+        CHECK(g.s.current_playlist_item()->movie_tmdb_id == 999);
+        CHECK(g.t.last_offset() == Approx(100));
+    }
+    SECTION("failure never skips a replacement at stale coordinates") {
+        g.t.error = true; g.pb.tick_pipeline_error();
+        REQUIRE(g.s.current_playlist_item());
+        CHECK(g.s.current_playlist_item()->movie_tmdb_id == 999);
+        CHECK(g.t.last_offset() == 0);
+    }
+}
+
+TEST_CASE("a failed film starts the next programme immediately from its beginning", "[playlist_playback][movie_failure]") {
+    Guide g;
+    g.s.playlists[1].path = "movies:mix";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 2 * 3600 + 10;
+    int failures = 0;
+    g.pb.set_movie_failure_hook([&] { ++failures; });
+    g.pb.tune(1, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    const int first = g.s.current_item_index;
+    const auto loads = g.t.offsets.size();
+    g.t.error = true; g.pb.tick_pipeline_error();
+    REQUIRE(g.t.offsets.size() == loads + 1);
+    CHECK(g.s.current_item_index != first); CHECK(g.t.last_offset() == 0);
+    CHECK(g.s.guide_wait_until_utc == 0); CHECK(failures == 1);
+    SECTION("duplicate error is not counted again") {
+        g.pb.tick_pipeline_error(); CHECK(failures == 1);
+    }
+    SECTION("three failed films exhaust the channel budget") {
+        for (int i = 0; i < 2; ++i) { ++g.t.generation; g.playing(); g.pb.tick_pipeline_error(); }
+        CHECK(failures == 3); CHECK(g.s.tuned_channel == -1); CHECK_FALSE(g.s.loaded_movie);
+        CHECK_FALSE(g.s.video_active);
+    }
+    SECTION("a synchronous load failure also advances within the same budget") {
+        ++g.t.generation; g.t.load_ok = false; g.playing(); g.pb.tick_pipeline_error();
+        CHECK(failures == 3); CHECK(g.s.tuned_channel == -1);
+    }
+}
+
+TEST_CASE("a failed movie channel remains given up by identity when refresh renumbers rows", "[playlist_playback][movie_failure]") {
+    Guide g; g.s.playlists[2].path = "movies:mix"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 3 * 3600; g.pb.tune(2, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.error = true; g.pb.tick_pipeline_error();
+    REQUIRE(g.s.guide_gave_up == std::vector<int>{2});
+    std::swap(g.s.playlists[1], g.s.playlists[2]);
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    CHECK(g.s.guide_gave_up == std::vector<int>{1});
+}
+
+TEST_CASE("a failed last movie waits for off air instead of retuning the failed slot", "[playlist_playback][movie_failure]") {
+    Guide g; g.s.playlists[1].path = "movies:mix";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 10; g.pb.tune(1, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto loads = g.t.offsets.size();
+    g.t.error = true; g.pb.tick_pipeline_error();
+    CHECK(g.t.offsets.size() == loads); CHECK_FALSE(g.s.loaded_movie); CHECK_FALSE(g.s.video_active);
+    CHECK(g.s.guide_wait_until_utc == Approx(close));
 }

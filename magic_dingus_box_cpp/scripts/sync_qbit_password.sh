@@ -21,62 +21,21 @@
 
 set -uo pipefail
 
-ENV_FILE="/opt/magic_dingus_box/services/.env"
+ENV_FILE="${ENV_FILE:-/opt/magic_dingus_box/services/.env}"
 QBIT_URL="http://localhost:8080"
 LOG_PREFIX="[sync_qbit_password]"
 
 log() { echo "${LOG_PREFIX} $*"; }
 
 # ---------------------------------------------------------------------------
-# Alternative-speed-limit crash recovery — $1 is an authenticated cookie jar
+# Alternative-speed-limit rates — $1 is an authenticated cookie jar
 # ---------------------------------------------------------------------------
-# During movie playback the kiosk engages qBittorrent's alternative speed
-# limits so downloads trickle instead of fighting the video for disk, and
-# clears them when playback ends — if it gets the chance. A kiosk that
-# dies mid-movie (crash, power cut, or now the standby switch) leaves the
-# cap ON, and from then on every download on that box crawls at ~2 MB/s
-# with nothing on screen to explain why.
-#
-# The kiosk does attempt this clear at its own startup, and that attempt
-# has never once succeeded: it runs seconds after boot while qBittorrent
-# is still inside a container that has not finished starting. Measured on
-# the production box 2026-08-03, on a completely healthy boot —
-# "configure_alt_speed_limits failed: curl: Could not connect to server".
-# The standby-wake path makes it strictly worse, because the kiosk now
-# deliberately starts BEFORE the Docker stack.
-#
-# So recovery belongs here: this unit is ordered After=
-# magic-dingus-services, i.e. once the containers are actually up. The
-# kiosk's own call stays as a best-effort fast path for whenever qBit
-# does happen to be ready.
-#
-# Defined as a function and called from BOTH exit paths. The first
-# version of this lived only at the end of the script and never ran at
-# all, because the overwhelmingly common case — the password already
-# being correct — returns early several stages before that.
-reset_alt_speed_limits() {
-    local jar="$1" mode after
-
-    mode=$(curl -fsS --max-time 15 -b "${jar}" \
-        "${QBIT_URL}/api/v2/transfer/speedLimitsMode" 2>/dev/null || echo "")
-
-    if [ "${mode}" = "1" ]; then
-        # qBittorrent 5.x exposes no explicit setter for the mode, only a
-        # toggle, so read-then-toggle-then-verify is the entire contract.
-        curl -fsS --max-time 15 -b "${jar}" -X POST \
-            "${QBIT_URL}/api/v2/transfer/toggleSpeedLimitsMode" >/dev/null 2>&1 || true
-        after=$(curl -fsS --max-time 15 -b "${jar}" \
-            "${QBIT_URL}/api/v2/transfer/speedLimitsMode" 2>/dev/null || echo "")
-        if [ "${after}" = "0" ]; then
-            log "alt-speed limits were STUCK ON (crash recovery) — cleared, full speed restored"
-        else
-            log "WARN: tried to clear stuck alt-speed limits, mode still '${after}'"
-        fi
-    elif [ "${mode}" = "0" ]; then
-        log "alt-speed limits already off (normal)"
-    else
-        log "WARN: could not read alt-speed mode (got '${mode}')"
-    fi
+# Mode ownership belongs to the kiosk's journalled quiet executor. This
+# boot unit may run during a new movie/game or while an operator cap is on;
+# neither is permission to toggle it off. Both login paths still converge
+# the tuned rates once qBit is available.
+configure_alt_speed_rates() {
+    local jar="$1"
 
     # Re-assert the trickle RATES regardless, so boxes provisioned before
     # the rates were retuned converge with nobody touching them. These are
@@ -142,10 +101,7 @@ if curl -fsS --max-time 15 -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login
     -d "username=admin" --data-urlencode "password=${QBIT_PW}" 2>/dev/null \
     | grep -q "Ok\."; then
     log "qBit already accepts .env password (no resync needed)"
-    # Still the right place to do the alt-speed recovery: this is the
-    # ordinary boot, and a stuck cap is exactly as likely here as on the
-    # rare boot where the password also drifted.
-    reset_alt_speed_limits "${COOKIE}"
+    configure_alt_speed_rates "${COOKIE}"
     exit 0
 fi
 
@@ -204,6 +160,6 @@ else
     log "WARN: resync claimed success but qBit still rejects .env password"
 fi
 
-reset_alt_speed_limits "${NEW_COOKIE}"
+configure_alt_speed_rates "${NEW_COOKIE}"
 
 rm -f "${NEW_COOKIE}"

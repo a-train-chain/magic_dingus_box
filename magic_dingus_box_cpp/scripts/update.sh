@@ -472,16 +472,16 @@ pause_services_for_build() {
     [ -n "$script" ] || return 1
     log "Pausing Media Browser services to free memory for the build"
     OTA_SERVICES_PAUSED_BY_US="true"
-    bash "$script" pause 9>&- >&2 || log_warn "playback_services_pause.sh pause reported a failure"
+    bash "$script" pause "ota:$$" 9>&- >&2 || log_warn "playback_services_pause.sh pause reported a failure"
 }
 
 # Undo pause_services_for_build — and ONLY that (consent record, like the
 # kiosk's own pause): idempotent, so it is safe on every exit path. Called
 # after the compile, from fail_install, and from the EXIT trap the install
 # dispatcher sets (killed job, set -e abort). A SIGKILL skips even the
-# trap; then the next kiosk start's crash-recovery unpause, or the next
-# boot (magic-dingus-services runs compose up -d; /tmp is tmpfs, so the
-# marker is gone too), brings them back.
+# trap; the script's PID/birth-time lease then expires. The next kiosk
+# startup recovers that dead lease, preserving a live updater or kiosk's
+# separate claim and restoring only the services actually stopped.
 resume_build_paused_services() {
     [ "$OTA_SERVICES_PAUSED_BY_US" = "true" ] || return 0
     OTA_SERVICES_PAUSED_BY_US="false"
@@ -489,7 +489,7 @@ resume_build_paused_services() {
     script="$(playback_pause_script)"
     [ -n "$script" ] || return 0
     log "Resuming the Media Browser services paused for the build"
-    bash "$script" unpause 9>&- >&2 || log_warn "playback_services_pause.sh unpause reported a failure"
+    bash "$script" unpause "ota:$$" 9>&- >&2 || log_warn "playback_services_pause.sh unpause reported a failure"
 }
 
 # Stop the kiosk for the swap + restart. Exactly once per install: the

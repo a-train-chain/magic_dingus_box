@@ -61,8 +61,8 @@
 // runs. NEXT/PREV change channel. An item's natural end loads what is on the
 // tuned channel NOW instead of the next index — never the airing that just
 // ended, when playback ran ahead of it (app::boundary_join: the next one,
-// from its start). A failed item is not skipped
-// ahead: playback stops until its scheduled slot ends
+// from its start). A failed movie starts its next scheduled programme now,
+// from zero; a failed playlist item waits until its scheduled slot ends
 // (AppState::guide_wait_until_utc), and a give-up marks the channel in
 // guide_gave_up — cleared only once a channel PLAYS (kChannelPlaysS), so a
 // library that loads but never decodes runs out of channels; main.cpp's
@@ -73,6 +73,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -175,6 +176,7 @@ public:
     // given-up channels. A loaded movie survives ordinary rebuild/removal via
     // AppState::loaded_movie; nullptr explicitly leaves it immediately.
     void set_channels(const std::vector<Channel>* channels);
+    void set_movie_failure_hook(std::function<void()> hook) { movie_failure_hook_ = std::move(hook); }
     bool guide_style() const { return channels_ != nullptr; }
     // Tune `channel` live. The playlist switch above, unchanged — stop now,
     // then the settle / re-poll wait per frame, then the load — except that
@@ -419,6 +421,8 @@ private:
     // playlist where EVERY item is broken shows the UI instead of
     // spinning); act_on_failed_item executes the decision.
     video::PlaybackErrorPolicy error_policy_;
+    std::function<void()> movie_failure_hook_;
+    std::vector<std::string> gave_up_identities_;
 
     // Watches for the pipeline stalling while the kiosk thinks it is playing.
     PlaybackStallWatchdog stall_watchdog_;
