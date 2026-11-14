@@ -1408,14 +1408,15 @@ int main(int /* argc */, char* /* argv */[]) {
             auto gpio_events = gpio.poll();
             input_events.insert(input_events.end(), gpio_events.begin(), gpio_events.end());
         }
-        // Device removal supplies cancellation, never an artificial release.
-        // Drop any earlier Select events from a source lost in this poll too.
-        const auto lost_sources = input.take_disconnected_sources();
-        for (const auto source : lost_sources) guide_select_hold.source_lost(source);
+        // Device loss or an ambiguous kernel key-up packet cancels Select.
+        // Drop this poll's Select events from that source before dispatch so
+        // an earlier down in the same poll cannot revive the canceled hold.
+        const auto canceled_sources = input.take_select_cancellations();
+        for (const auto source : canceled_sources) guide_select_hold.source_lost(source);
         input_events.erase(std::remove_if(input_events.begin(), input_events.end(),
             [&](const platform::InputEvent& ev) {
                 return ev.action == InputAction::SELECT &&
-                    std::find(lost_sources.begin(), lost_sources.end(), ev.source_id) != lost_sources.end();
+                    std::find(canceled_sources.begin(), canceled_sources.end(), ev.source_id) != canceled_sources.end();
             }), input_events.end());
         // For the redraw gate: ANY input draws this iteration. Captured
         // before the unlock-sequence detector and the MB dispatcher

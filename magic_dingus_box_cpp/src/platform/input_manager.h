@@ -112,11 +112,12 @@ public:
     // Poll for input events (non-blocking)
     std::vector<InputEvent> poll();
 
-    // Memory-only loss facts from poll, phone reprobe, and cleanup. Drain
-    // after polling, before dispatch/timer ticks; never synthesize releases.
-    std::vector<uint64_t> take_disconnected_sources() {
+    // Source-specific Select interruptions: removal, cleanup, or a kernel-
+    // generated/ambiguous release packet. Drain before dispatch/timer ticks;
+    // cancellation never manufactures a release or closes a healthy device.
+    std::vector<uint64_t> take_select_cancellations() {
         std::vector<uint64_t> sources;
-        sources.swap(disconnected_sources_);
+        sources.swap(select_cancellations_);
         return sources;
     }
     
@@ -158,7 +159,7 @@ private:
     struct Device;
     std::vector<std::unique_ptr<Device>> devices_;
     uint64_t next_source_id_ = 1;  // never reset by cleanup/reinitialize
-    std::vector<uint64_t> disconnected_sources_;
+    std::vector<uint64_t> select_cancellations_;
     
     bool open_joystick_devices();
     bool open_keyboard_devices();

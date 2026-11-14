@@ -1,6 +1,7 @@
 #include "input_manager.h"
 #include "udev_wake.h"
 #include "input_mapping.h"
+#include "select_release_packet.h"
 
 #include <libevdev/libevdev.h>
 #include <linux/input-event-codes.h>
@@ -43,6 +44,7 @@ static_assert(mc::kAbsHat0X == ABS_HAT0X && mc::kAbsHat0Y == ABS_HAT0Y,
 namespace platform {
 
 struct InputManager::Device {
+    SelectReleasePacket select_packet;
     uint64_t source_id = 0;
     int fd;
     struct libevdev* dev;
@@ -364,7 +366,7 @@ void InputManager::reprobe_phone_remote() {
                 // know if the dying device was the one holding a direction.
                 dpad_held_x_ = 0;
                 dpad_held_y_ = 0;
-                disconnected_sources_.push_back(d->source_id);
+                select_cancellations_.push_back(d->source_id);
                 it = devices_.erase(it);  // ~Device closes fd + frees libevdev
                 continue;
             }
@@ -605,10 +607,17 @@ std::vector<InputEvent> InputManager::poll() {
                                            LIBEVDEV_READ_FLAG_SYNC, &ev)
                        == LIBEVDEV_READ_STATUS_SYNC) {
                 }
+                device->select_packet.discard();
+                select_cancellations_.push_back(device->source_id);
                 dpad_held_x_ = 0;
                 dpad_held_y_ = 0;
                 rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                 continue;
+            }
+
+            if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                if (device->select_packet.finish(ev.value, events))
+                    select_cancellations_.push_back(device->source_id);
             }
 
             // RAW CAPTURE (Controller Setup wizard). While enabled, a REAL
@@ -767,7 +776,8 @@ std::vector<InputEvent> InputManager::poll() {
                         }
                         rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                         if (input_ev.action != InputAction::NONE) {
-                            events.push_back(input_ev);
+                            if (device->select_packet.append(input_ev, events))
+                                select_cancellations_.push_back(device->source_id);
                         }
                         continue;
                     }
@@ -788,7 +798,8 @@ std::vector<InputEvent> InputManager::poll() {
                         }
                         rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                         if (input_ev.action != InputAction::NONE) {
-                            events.push_back(input_ev);
+                            if (device->select_packet.append(input_ev, events))
+                                select_cancellations_.push_back(device->source_id);
                         }
                         continue;
                     }
@@ -978,7 +989,8 @@ std::vector<InputEvent> InputManager::poll() {
             if (ev.type == EV_KEY && ev.value == 2 && input_ev.action == InputAction::SELECT)
                 input_ev.action = InputAction::NONE;
             if (input_ev.action != InputAction::NONE) {
-                events.push_back(input_ev);
+                if (device->select_packet.append(input_ev, events))
+                    select_cancellations_.push_back(device->source_id);
             }
             
             rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
@@ -1000,7 +1012,7 @@ std::vector<InputEvent> InputManager::poll() {
 
     if (!dead_devices.empty()) {
         for (Device* d : dead_devices) {
-            disconnected_sources_.push_back(d->source_id);
+            select_cancellations_.push_back(d->source_id);
             std::cout << "  Input device disconnected, dropping: " << d->name << std::endl;
         }
         // A device that vanishes mid-hold never delivers its release event,
@@ -1234,7 +1246,7 @@ std::optional<retroarch::CaptureDeviceCaps> InputManager::device_caps(uint16_t v
 
 void InputManager::cleanup() {
     for (auto& device : devices_) {
-        disconnected_sources_.push_back(device->source_id);
+        select_cancellations_.push_back(device->source_id);
         if (device->dev) {
             libevdev_grab(device->dev, LIBEVDEV_UNGRAB);
         }
