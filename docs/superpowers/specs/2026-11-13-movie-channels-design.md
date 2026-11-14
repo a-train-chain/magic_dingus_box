@@ -1,6 +1,6 @@
 # Movie Channels, Daily Lineups and Pick-Ahead — Design
 
-Status: draft for owner approval (2026-11-13; builder check done, owner
+Status: APPROVED by the owner 2026-11-13 (builder check done; owner
 answered framing and downloads). Builds on the Channel Guide
 (`2026-11-12-channel-guide-design.md`, branch `channel-guide`, PR #16) and
 the Media Browser. Owner decisions are marked **(owner)**; calls made on
