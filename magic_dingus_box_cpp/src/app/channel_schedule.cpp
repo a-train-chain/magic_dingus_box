@@ -1,8 +1,13 @@
 #include "channel_schedule.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <numeric>
 #include <random>
+
+#include "playlist_reload.h"
 
 namespace app {
 
@@ -50,12 +55,23 @@ std::vector<Channel> build_channels(const std::vector<Playlist>& ui_playlists,
     for (size_t row = 0; row < ui_playlists.size(); ++row) {
         Channel& c = channels[row];
         c.number = static_cast<int>(row);
-        if (row == 0) continue;  // filled below from the others
+        if (row == 0) {
+            c.identity = kShuffleChannelId;
+            c.order = LineupOrder::Shuffle;
+            continue;  // filled below from the non-movie rows
+        }
+        const bool movie = is_movie_playlist(ui_playlists[row]);
+        c.identity = movie ? ui_playlists[row].path : playlist_identity(ui_playlists[row]);
+        if (movie) {
+            c.order = LineupOrder::Shuffle;
+            c.day_start_h = kMovieDayStartH;
+            c.on_air_h = kMovieOnAirH;
+        }
         const auto& items = ui_playlists[row].items;
         for (size_t i = 0; i < items.size(); ++i) {
             if (!is_local_video(items[i])) continue;
             const double len = item_length(items[i], info);
-            if (!(len >= kMinScheduledItemS)) continue;
+            if (!std::isfinite(len) || !(len >= kMinScheduledItemS)) continue;
             c.items.push_back({static_cast<int>(row), static_cast<int>(i), len});
         }
         finish(c);
@@ -64,108 +80,199 @@ std::vector<Channel> build_channels(const std::vector<Playlist>& ui_playlists,
     if (!channels.empty()) {
         Channel& mix = channels[0];
         for (size_t row = 1; row < channels.size(); ++row) {
+            if (is_movie_playlist(ui_playlists[row])) continue;
             mix.items.insert(mix.items.end(), channels[row].items.begin(),
                              channels[row].items.end());
-        }
-        std::mt19937 rng(0x4D4442);
-        for (size_t i = mix.items.size(); i > 1; --i) {
-            const size_t k = i - 1;
-            const size_t j = static_cast<size_t>(rng() % (k + 1));
-            std::swap(mix.items[k], mix.items[j]);
         }
         finish(mix);
     }
     return channels;
 }
 
-std::optional<OnAir> on_air(const Channel& channel, double now_utc) {
-    if (!std::isfinite(now_utc)) return std::nullopt;
-    if (channel.items.empty() || channel.total_s <= 0.0) return std::nullopt;
-    double pos = std::fmod(now_utc - kScheduleEpochUtc, channel.total_s);
-    if (pos < 0.0) pos += channel.total_s;
-    if (pos >= channel.total_s) pos = 0.0;  // fmod rounding at the seam
-    const double cycle_start = now_utc - pos;
+namespace {
 
-    double acc = 0.0;
-    for (size_t i = 0; i < channel.items.size(); ++i) {
-        const double len = channel.items[i].length_s;
-        if (pos < acc + len || i + 1 == channel.items.size()) {
-            OnAir a;
-            a.index = static_cast<int>(i);
-            a.offset_s = pos - acc;
-            a.starts_at = cycle_start + acc;
-            a.ends_at = a.starts_at + len;
-            return a;
+constexpr double kDayS = 86400.0;
+
+uint32_t seed_for(const std::string& identity, int64_t day, int pass) {
+    const std::string key = identity + "|" + std::to_string(day) + "|" + std::to_string(pass);
+    uint32_t seed = 2166136261u;
+    for (unsigned char byte : key) seed = (seed ^ byte) * 16777619u;
+    return seed;
+}
+
+int offset_at(double utc, int fallback, const UtcOffsetAt& lookup) {
+    return lookup ? lookup(utc) : fallback;
+}
+
+// Resolve a civil boundary using offsets on both sides, not just now's
+// offset. At a fold use its FIRST occurrence; in a gap use the first valid
+// instant after it. Adjacent-day probes cover DST and date-line changes.
+// All lookups are injected, in-memory facts; never call tzset/mktime here.
+double civil_to_utc(double local, int fallback, const UtcOffsetAt& lookup) {
+    if (!lookup) return local - fallback;
+    const std::array<int, 4> offsets = {
+        fallback, lookup(local - 2 * kDayS), lookup(local), lookup(local + 2 * kDayS)};
+    std::optional<double> first;
+    double low = local - offsets[0];
+    double high = low;
+    for (int offset : offsets) {
+        const double candidate = local - offset;
+        low = std::min(low, candidate);
+        high = std::max(high, candidate);
+        if (candidate + lookup(candidate) == local && (!first || candidate < *first)) {
+            first = candidate;
         }
-        acc += len;
+    }
+    if (first) return *first;
+    // A skipped wall-clock boundary lies inside a forward transition. The
+    // two candidate UTC instants bracket the gap; find its first whole
+    // second, where the civil clock first reaches/passes the desired time.
+    while (high - low > 1.0) {
+        const double middle = std::floor(low + (high - low) / 2.0);
+        if (middle + lookup(middle) >= local) high = middle;
+        else low = middle;
+    }
+    return high;
+}
+
+struct DayWindow {
+    int64_t day;
+    double starts_at;
+    double ends_at;
+    double next_start;
+};
+
+std::optional<DayWindow> day_window(const Channel& channel, double utc,
+                                   int offset, const UtcOffsetAt& lookup) {
+    if (!std::isfinite(utc) || channel.items.empty() ||
+        !std::isfinite(channel.total_s) || channel.total_s <= 0 ||
+        channel.on_air_h <= 0) return std::nullopt;
+    const double local = utc + offset_at(utc, offset, lookup);
+    const double day_number = std::floor((local - channel.day_start_h * 3600.0) / kDayS);
+    // Avoid an undefined float-to-integer conversion for nonsensical clocks.
+    if (!std::isfinite(day_number) || std::fabs(day_number) > 1e9) return std::nullopt;
+    int64_t day = static_cast<int64_t>(day_number);
+    auto start = [&](int64_t d) {
+        return civil_to_utc(d * kDayS + channel.day_start_h * 3600.0, offset, lookup);
+    };
+    double begins = start(day);
+    double next = start(day + 1);
+    // A repeated hour containing the boundary belongs to the new day after
+    // its first occurrence; its civil clock can temporarily look like yesterday.
+    if (utc < begins) { --day; next = begins; begins = start(day); }
+    if (utc >= next) { ++day; begins = next; next = start(day + 1); }
+    const double ends = channel.on_air_h >= 24 ? next :
+        civil_to_utc(day * kDayS + (channel.day_start_h + channel.on_air_h) * 3600.0,
+                     offset, lookup);
+    return DayWindow{day, begins, ends, next};
+}
+
+}  // namespace
+
+std::vector<int> day_order(const Channel& channel, int64_t day, int pass) {
+    std::vector<int> indexes(channel.items.size());
+    std::iota(indexes.begin(), indexes.end(), 0);
+    if (indexes.empty()) return indexes;
+    if (channel.order == LineupOrder::Rotate) {
+        const size_t start = seed_for(channel.identity, day, 0) % indexes.size();
+        std::rotate(indexes.begin(), indexes.begin() + start, indexes.end());
+    } else {
+        std::mt19937 rng(seed_for(channel.identity, day, pass));
+        for (size_t k = indexes.size() - 1; k > 0; --k) {
+            const size_t j = rng() % (k + 1);
+            std::swap(indexes[k], indexes[j]);
+        }
+    }
+    return indexes;
+}
+
+std::optional<OnAir> on_air(const Channel& channel, double now_utc,
+                            int utc_offset_s, const UtcOffsetAt& lookup) {
+    const auto day = day_window(channel, now_utc, utc_offset_s, lookup);
+    if (!day || now_utc >= day->ends_at) return std::nullopt;
+    const double elapsed = now_utc - day->starts_at;
+    int pass = static_cast<int>(std::floor(elapsed / channel.total_s));
+    // Fractional media lengths meet a much larger Unix timestamp here.
+    // Compare the same rounded absolute seams that OnAir returns, otherwise
+    // its own ends_at can resolve back into the ending item by ~0.1 us.
+    if (now_utc >= day->starts_at + (pass + 1) * channel.total_s) ++pass;
+    if (pass > 0 && now_utc < day->starts_at + pass * channel.total_s) --pass;
+    const auto order = day_order(channel, day->day, pass);
+    double accumulated = 0;
+    for (int index : order) {
+        const double length = channel.items[index].length_s;
+        const double start = day->starts_at + (pass * channel.total_s + accumulated);
+        const double end = day->starts_at + (pass * channel.total_s + accumulated + length);
+        if (now_utc < end) {
+            return OnAir{index, std::max(0.0, now_utc - start), start,
+                         std::min(end, day->ends_at), day->ends_at};
+        }
+        accumulated += length;
     }
     return std::nullopt;
 }
 
-OnAir airing_after(const Channel& channel, const OnAir& a) {
-    const size_t next = (static_cast<size_t>(a.index) + 1) % channel.items.size();
-    OnAir b;
-    b.index = static_cast<int>(next);
-    b.offset_s = 0;
-    b.starts_at = a.ends_at;
-    b.ends_at = b.starts_at + channel.items[next].length_s;
-    return b;
+std::optional<OnAir> airing_after(const Channel& channel, const OnAir& airing,
+                                  int utc_offset_s, const UtcOffsetAt& lookup) {
+    return on_air(channel, airing.ends_at, utc_offset_s, lookup);
 }
 
-std::vector<OnAir> lineup(const Channel& channel, double from_utc, double to_utc) {
+std::optional<double> back_on_air_at(const Channel& channel, double now_utc,
+                                     int utc_offset_s, const UtcOffsetAt& lookup) {
+    const auto day = day_window(channel, now_utc, utc_offset_s, lookup);
+    if (!day || now_utc < day->ends_at) return std::nullopt;
+    return day->next_start;
+}
+
+std::vector<OnAir> lineup(const Channel& channel, double from_utc, double to_utc,
+                          int utc_offset_s, const UtcOffsetAt& lookup) {
     std::vector<OnAir> out;
-    if (!std::isfinite(from_utc) || !std::isfinite(to_utc)) return out;
-    auto cur = on_air(channel, from_utc);
-    if (!cur || to_utc <= from_utc) return out;
-    OnAir a = *cur;
-    while (a.starts_at < to_utc) {
-        out.push_back(a);
-        a = airing_after(channel, a);
+    if (!std::isfinite(from_utc) || !std::isfinite(to_utc) || to_utc <= from_utc) return out;
+    double cursor = from_utc;
+    while (cursor < to_utc) {
+        const auto airing = on_air(channel, cursor, utc_offset_s, lookup);
+        if (!airing) {
+            const auto back = back_on_air_at(channel, cursor, utc_offset_s, lookup);
+            if (!back || *back <= cursor) break;
+            cursor = *back;
+            continue;
+        }
+        if (airing->ends_at <= cursor) break;  // malformed lengths must never loop
+        out.push_back(*airing);
+        cursor = airing->ends_at;
     }
     return out;
 }
 
-std::optional<OnAir> join_point(const Channel& channel, double now_utc) {
-    auto oa = on_air(channel, now_utc);
-    if (!oa) return std::nullopt;
-    const double left = channel.items[oa->index].length_s - oa->offset_s;
-    if (left >= kMinJoinLeftS) return oa;
-    return airing_after(channel, *oa);
+std::optional<OnAir> join_point(const Channel& channel, double now_utc,
+                                int utc_offset_s, const UtcOffsetAt& lookup) {
+    const auto airing = on_air(channel, now_utc, utc_offset_s, lookup);
+    if (!airing || airing->ends_at - now_utc >= kMinJoinLeftS) return airing;
+    return airing_after(channel, *airing, utc_offset_s, lookup);
 }
 
 std::optional<OnAir> boundary_join(const Channel& channel, double now_utc,
-                                   const std::optional<LoadedAiring>& last) {
-    auto jp = join_point(channel, now_utc);
-    if (!jp || !last) return jp;
-    const int n = static_cast<int>(channel.items.size());
-    if (last->index < 0 || last->index >= n) return jp;
-    const ScheduledItem& held = channel.items[last->index];
-    if (held.playlist != last->item.playlist || held.item != last->item.item) return jp;
-    // Half a second of slack absorbs the rounding between two on_air()
-    // calls; an airing is a whole item (>= kMinScheduledItemS) long.
-    constexpr double kSlackS = 0.5;
-    // The loaded airing must still be an airing of THIS schedule. A rebuild
-    // that changed the channel's cycle (an upload to its playlist, a trim
-    // edit, the duration back-fill) moves every airing — the schedule is
-    // anchored to a fixed epoch — while the item keeps its index. Then a
-    // live airing that began before the loaded one's old end is a re-phase,
-    // not playback running ahead, and the guard would keep the channel out
-    // of phase for good: join it live instead. A rebuild that changes
-    // nothing the schedule reads (a crop toggle) keeps every airing.
-    constexpr double kProbeS = 0.25;  // inside the item
-    const auto still = on_air(channel, last->starts_at + kProbeS);
-    if (!still || still->index != last->index ||
-        std::fabs(still->starts_at - last->starts_at) > kSlackS) {
-        return jp;
+                                   const std::optional<LoadedAiring>& last,
+                                   int utc_offset_s, const UtcOffsetAt& lookup) {
+    const auto live = join_point(channel, now_utc, utc_offset_s, lookup);
+    if (!live || !last) return live;
+    if (last->utc_offset_s && *last->utc_offset_s != offset_at(now_utc, utc_offset_s, lookup)) {
+        return live;
     }
-    // Airings are contiguous: one that starts before the loaded airing ends
-    // IS the loaded airing or an earlier one — playback is ahead.
-    if (jp->starts_at >= last->ends_at - kSlackS) return jp;
-    OnAir loaded;
-    loaded.index = last->index;
-    loaded.starts_at = last->starts_at;
-    loaded.ends_at = last->ends_at;
-    return airing_after(channel, loaded);
+    const int n = static_cast<int>(channel.items.size());
+    if (last->index < 0 || last->index >= n) return live;
+    const ScheduledItem& held = channel.items[last->index];
+    if (held.playlist != last->item.playlist || held.item != last->item.item) return live;
+    constexpr double kSlackS = 0.5;
+    // Probe AT the start: a day-boundary cut can leave a final airing shorter
+    // than the old 0.25-second probe. A changed daily lineup/length drops the
+    // guard, while an unchanged crop-only rebuild retains it.
+    const auto still = on_air(channel, last->starts_at, utc_offset_s, lookup);
+    if (!still || still->index != last->index ||
+        std::fabs(still->starts_at - last->starts_at) > kSlackS ||
+        std::fabs(still->ends_at - last->ends_at) > kSlackS) return live;
+    if (live->starts_at >= last->ends_at - kSlackS) return live;
+    return airing_after(channel, *still, utc_offset_s, lookup);
 }
 
 }  // namespace app

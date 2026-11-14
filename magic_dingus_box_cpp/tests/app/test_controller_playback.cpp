@@ -579,6 +579,7 @@ struct ControllerAdapter final : app::PlaylistTransport {
     std::chrono::steady_clock::time_point now() const override {
         return std::chrono::steady_clock::time_point{std::chrono::hours(1000)};
     }
+    int utc_offset_s(double) const override { return 0; }
     double wall_now_utc() const override { return 0.0; }  // no schedule in this rig
 };
 

@@ -3,7 +3,7 @@
 // The Channel Guide's view model: every rectangle, label, tone and flag the
 // painter draws, computed from plain inputs at either logical canvas (TV
 // 960x720, CRT 640x480). Pure and header-only: no GL, no fonts, no I/O, no
-// AppState, and no C time-zone calls (local time is now_utc + utc_offset_s,
+// AppState, and no C time-zone calls (offsets come from injected time facts,
 // formatted here), so it is unit-tested on the Mac
 // (tests/ui/test_channel_guide_view.cpp). Design:
 // docs/superpowers/specs/2026-11-12-channel-guide-design.md.
@@ -93,6 +93,7 @@ struct GuideViewInput {
     double source_aspect = 0;
     double now_utc = 0;
     int utc_offset_s = 0;
+    app::UtcOffsetAt utc_offset_at;  // optional in-memory zone rules for future instants
     // On the tuned channel's panel the playing item describes the panel:
     // one that is not the on-air airing's is named with its own times; the
     // airing's own item takes its bar and times from this position (the
@@ -367,9 +368,13 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     const double pps = (grid_w - col3) / window_s;
 
     // Time: local = utc + offset; the window starts on a 5-minute floor.
-    const double local = in.now_utc + in.utc_offset_s;
+    auto offset_at = [&](double utc) {
+        return in.utc_offset_at ? in.utc_offset_at(utc) : in.utc_offset_s;
+    };
+    auto local_at = [&](double utc) { return utc + offset_at(utc); };
+    const double local = local_at(in.now_utc);
     const double win_local = std::floor(local / 300.0) * 300.0;
-    const double win_start = win_local - in.utc_offset_s;  // UTC
+    const double win_start = win_local - offset_at(in.now_utc);  // UTC
     const double win_end = win_start + window_s;
     auto xpos = [&](double utc) { return col3 + (utc - win_start) * pps; };
 
@@ -377,7 +382,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     for (int k = 0; k * 300.0 < window_s; ++k) {
         GuideTick t;
         t.x = static_cast<int>(std::lround(xpos(win_start + k * 300.0)));
-        t.label = d::hm(win_local + k * 300.0);
+        t.label = d::hm(local_at(win_start + k * 300.0));
         if (k == 0) t.label += std::string(" ") + d::clock_of(win_local).ap;
         v.grid.ticks.push_back(t);
     }
@@ -416,7 +421,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
         if (row.no_schedule) {
             row.name_tone = GuideTone::Dim;
         } else {
-            for (const app::OnAir& a : app::lineup(ch, win_start, win_end)) {
+            for (const app::OnAir& a : app::lineup(ch, win_start, win_end, in.utc_offset_s, in.utc_offset_at)) {
                 if (a.index < 0 || a.index >= static_cast<int>(ch.items.size())) continue;
                 const app::ScheduledItem& si = ch.items[a.index];
                 const double s = std::max(a.starts_at, win_start);
@@ -463,7 +468,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     p.playlist_title = d::playlist_title(in, pc);
     if (pc >= 0 && pc < n_channels && !channels[pc].items.empty()) {
         const app::Channel& ch = channels[pc];
-        if (auto on = app::on_air(ch, in.now_utc)) {
+        if (auto on = app::on_air(ch, in.now_utc, in.utc_offset_s, in.utc_offset_at)) {
             // The airing described from the schedule: the on-air one — or,
             // in its last kMinJoinLeftS, the next one when that is what the
             // tuned channel plays (a boundary or a tune loads it then, from
@@ -472,7 +477,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
             app::OnAir shown = *on;
             bool next_loaded_early = false;
             if (on_tuned && in.playing.playlist >= 0) {
-                const auto jp = app::join_point(ch, in.now_utc);
+                const auto jp = app::join_point(ch, in.now_utc, in.utc_offset_s, in.utc_offset_at);
                 if (jp && jp->starts_at > on->starts_at) {
                     const app::ScheduledItem& js = ch.items[jp->index];
                     if (js.playlist == in.playing.playlist && js.item == in.playing.item) {
@@ -499,18 +504,21 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 const double ends = started + playing->length_s;
                 p.item_title = playing->item->title;
                 p.artist = crt ? "" : playing->item->artist;
-                p.start_hm = d::hm(started + in.utc_offset_s);
-                p.end_hm = d::hm(ends + in.utc_offset_s);
+                p.start_hm = d::hm(local_at(started));
+                p.end_hm = d::hm(local_at(ends));
                 p.progress = std::clamp(playing->played_s / playing->length_s, 0.0, 1.0);
                 // Next: what the channel joins when it ends — never the same
                 // item again (the boundary's rule, app::boundary_join).
-                if (auto nx = app::join_point(ch, ends)) {
+                if (auto nx = app::join_point(ch, ends, in.utc_offset_s, in.utc_offset_at)) {
                     const app::ScheduledItem* ns = &ch.items[nx->index];
                     if (ns->playlist == playing->at.playlist && ns->item == playing->at.item) {
-                        ns = &ch.items[app::airing_after(ch, *nx).index];
+                        const auto after = app::airing_after(ch, *nx, in.utc_offset_s, in.utc_offset_at);
+                        ns = after ? &ch.items[after->index] : nullptr;
                     }
-                    p.next_hm = d::hm(ends + in.utc_offset_s);
-                    p.next_title = d::title_of(in, *ns);
+                    if (ns) {
+                        p.next_hm = d::hm(local_at(ends));
+                        p.next_title = d::title_of(in, *ns);
+                    }
                 }
             } else {
                 const auto* it = d::item_of(in, si);
@@ -536,20 +544,22 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                     // never "8:11 - 8:21 · NEXT 8:20".
                     const double lag = std::round(a->offset_s - span->played_s);
                     starts = a->starts_at + lag;
-                    ends = starts + span->length_s;
-                    p.progress = std::clamp(span->played_s / span->length_s, 0.0, 1.0);
+                    ends = std::min(starts + span->length_s, a->day_ends_at);
+                    const double shown_length = std::min(span->length_s, len);
+                    p.progress = std::clamp(span->played_s / shown_length, 0.0, 1.0);
                 }
-                p.start_hm = d::hm(starts + in.utc_offset_s);
-                p.end_hm = d::hm(ends + in.utc_offset_s);
-                const app::ScheduledItem& nx = ch.items[(ai + 1) % ch.items.size()];
-                p.next_hm = d::hm(ends + in.utc_offset_s);
-                p.next_title = d::title_of(in, nx);
+                p.start_hm = d::hm(local_at(starts));
+                p.end_hm = d::hm(local_at(ends));
+                if (const auto nx = app::airing_after(ch, *a, in.utc_offset_s, in.utc_offset_at)) {
+                    p.next_hm = d::hm(local_at(ends));
+                    p.next_title = d::title_of(in, ch.items[nx->index]);
+                }
             }
             if (!on_tuned) {
                 // Where a tune would join: the same rule the tune uses
                 // (app::join_point — the next item at 0:00 when the on-air
                 // one is nearly over).
-                const auto jp = app::join_point(ch, in.now_utc);
+                const auto jp = app::join_point(ch, in.now_utc, in.utc_offset_s, in.utc_offset_at);
                 const double join_s = jp ? jp->offset_s : a->offset_s;
                 const int off = static_cast<int>(std::floor(std::max(0.0, join_s)));
                 char b[32];

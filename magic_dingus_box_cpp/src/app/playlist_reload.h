@@ -32,7 +32,9 @@ PlaylistLoader::UiPlaylistSplit split_for_ui_with_master_shuffle(
 
 // A playlist's identity across a reload. path is the playlist's file on disk
 // and is unique; only the virtual Master Shuffle row has none.
-std::string playlist_identity(const Playlist& p);
+inline std::string playlist_identity(const Playlist& p) {
+    return p.path.empty() ? ("title:" + p.title) : ("path:" + p.path);
+}
 // Index of the playlist with that identity, or -1.
 int find_playlist_by_identity(const std::vector<Playlist>& v, const std::string& id);
 

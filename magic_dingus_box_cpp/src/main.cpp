@@ -2170,6 +2170,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 guide_in.source_aspect = guide_source_aspect;
                 guide_in.now_utc = guide_now_utc;
                 guide_in.utc_offset_s = guide_offset_s;
+                guide_in.utc_offset_at = zone_offset;
                 guide_in.playing = guide_playing;
                 const uint64_t revision = guide_view.revision + 1;
                 guide_view = ui::layout_channel_guide(guide_in);

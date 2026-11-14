@@ -1,12 +1,14 @@
 #pragma once
 
 // The Channel Guide's schedule: every video playlist is a TV channel that has
-// been "on air" since a fixed wall-clock epoch, so what is playing right now
-// (and what comes next) is a pure function of the time. Pure logic, no I/O,
+// a deterministic daily lineup. Local civil boundaries and elapsed programme
+// durations are calculated from injected time facts. Pure logic, no I/O,
 // unit-tested on the Mac (tests/app/test_channel_schedule.cpp).
 //
-// Design: docs/superpowers/specs/2026-11-12-channel-guide-design.md.
+// Daily lineups reset at local 4 AM; movie channels air local 6 AM–1 AM.
 
+#include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -16,8 +18,15 @@
 
 namespace app {
 
-// 2026-01-01T00:00:00Z as Unix seconds. Every channel's first item starts here.
-constexpr double kScheduleEpochUtc = 1767225600.0;
+enum class LineupOrder { Rotate, Shuffle };
+inline constexpr int kLineupDayStartH = 4;
+inline constexpr int kMovieDayStartH = 6;
+inline constexpr int kMovieOnAirH = 19;
+
+// Optional time-zone rules, including offsets at past/future boundaries. An
+// empty lookup uses the supplied fixed offset. The kiosk supplies warmed
+// localtime_r; tests supply pure transition tables. No time-zone I/O here.
+using UtcOffsetAt = std::function<int(double)>;
 
 struct ScheduledItem {
     int playlist = 0;  // index into state.playlists
@@ -29,6 +38,10 @@ struct Channel {
     int number = 0;  // equals the row index in the UI playlist list
     std::vector<ScheduledItem> items;
     double total_s = 0;
+    std::string identity;
+    LineupOrder order = LineupOrder::Rotate;
+    int day_start_h = kLineupDayStartH;
+    int on_air_h = 24;
 };
 
 // AppState::last_channel_id of channel 00, the Master Shuffle mix (its row
@@ -52,10 +65,9 @@ std::string media_key_of_item(const PlaylistItem& item);
 inline constexpr double kMinScheduledItemS = 3.0;
 
 // One channel per row of ui_playlists. Row 0 is the Master Shuffle mix: every
-// scheduled item of rows 1..N exactly once, in a deterministic order (a
-// hand-written Fisher-Yates over std::mt19937 — std::shuffle differs between
-// libc++ and libstdc++, and the Mac and the Pi must agree). Row 0's own items
-// are ignored. Only local/video items with a known length of at least
+// scheduled non-movie item of rows 1..N exactly once, in written row order.
+// day_order applies the daily rotation/shuffle without changing these indexes.
+// Row 0's own items are ignored. Only local/video items with a known length of at least
 // kMinScheduledItemS are scheduled: a trimmed item (start/end) is end - start
 // long; otherwise the length is the duration in `info`, less the start trim.
 // Anything else is left out.
@@ -66,16 +78,22 @@ struct OnAir {
     int index = 0;         // index into Channel::items
     double offset_s = 0;   // seconds into that item
     double starts_at = 0;  // UTC seconds the item started
-    double ends_at = 0;    // UTC seconds the item ends
+    double ends_at = 0;    // UTC seconds the item ends (possibly cut)
+    double day_ends_at = 0;  // civil broadcast close: live playback cuts even if it lags
 };
 
-// What is airing at now_utc (the schedule loops, and extends before the epoch).
-// nullopt for an empty channel.
-std::optional<OnAir> on_air(const Channel& channel, double now_utc);
+// A permutation of Channel::items indexes. Portable FNV-1a seed + mt19937
+// Fisher-Yates; Rotate holds the written succession for every pass that day.
+std::vector<int> day_order(const Channel&, int64_t day, int pass);
+
+// What is airing at now_utc. nullopt for an empty or off-air channel.
+std::optional<OnAir> on_air(const Channel& channel, double now_utc, int utc_offset_s,
+                            const UtcOffsetAt& utc_offset_at = {});
 
 // Every item airing at any point in [from_utc, to_utc), the first one
 // possibly already under way.
-std::vector<OnAir> lineup(const Channel& channel, double from_utc, double to_utc);
+std::vector<OnAir> lineup(const Channel& channel, double from_utc, double to_utc,
+                          int utc_offset_s, const UtcOffsetAt& utc_offset_at = {});
 
 // A tune or an item boundary joins the on-air item only with at least this
 // much of it left; otherwise the item after it, from its start. The boundary
@@ -85,14 +103,16 @@ std::vector<OnAir> lineup(const Channel& channel, double from_utc, double to_utc
 inline constexpr double kMinJoinLeftS = 2.0;
 
 // The airing right after `a` on `channel`, from its start. `a` must be one
-// of the channel's airings (its index in range).
-OnAir airing_after(const Channel& channel, const OnAir& a);
+// of the channel's airings. nullopt when an off-air interval follows.
+std::optional<OnAir> airing_after(const Channel& channel, const OnAir& a,
+                                    int utc_offset_s, const UtcOffsetAt& utc_offset_at = {});
 
 // What a tune joins on `channel` at `now_utc`: the on-air item at its
 // scheduled offset, or — with under kMinJoinLeftS of it left — the item after
 // it, from its start. nullopt: nothing is scheduled. The ONE join rule: the
 // tune (PlaylistPlayback) and the guide's "joins at m:ss" both read it.
-std::optional<OnAir> join_point(const Channel& channel, double now_utc);
+std::optional<OnAir> join_point(const Channel& channel, double now_utc, int utc_offset_s,
+                                 const UtcOffsetAt& utc_offset_at = {});
 
 // The airing a channel load last loaded (PlaylistPlayback keeps it).
 struct LoadedAiring {
@@ -100,6 +120,9 @@ struct LoadedAiring {
     ScheduledItem item;   // what that index held when it was loaded
     double starts_at = 0;
     double ends_at = 0;
+    // Offset at the load: a zone change rejoins live once even when a
+    // whole number of short passes leaves the old airing apparently valid.
+    std::optional<int> utc_offset_s;
 };
 
 // What an item boundary (the loaded item's natural end) joins: join_point,
@@ -117,9 +140,14 @@ struct LoadedAiring {
 // is plain join_point. `last` is not trusted — plain join_point — when the
 // channel no longer holds that item at that index, or no longer airs it at
 // that time: a rebuild that changed the channel's cycle (an upload, a trim
-// edit, the back-fill) re-phases every airing, and the live airing then
+// edit, the back-fill) re-phases that day's airings, and the live airing then
 // starting before the loaded one's old end is not playback running ahead.
 std::optional<OnAir> boundary_join(const Channel& channel, double now_utc,
-                                   const std::optional<LoadedAiring>& last);
+                                   const std::optional<LoadedAiring>& last, int utc_offset_s,
+                                   const UtcOffsetAt& utc_offset_at = {});
+
+// Next civil day start while off air; nullopt when on air or empty.
+std::optional<double> back_on_air_at(const Channel&, double now_utc, int utc_offset_s,
+                                     const UtcOffsetAt& utc_offset_at = {});
 
 }  // namespace app

@@ -20,7 +20,7 @@ using app::Playlist;
 using app::PlaylistItem;
 using app::ScheduledItem;
 
-constexpr double E = app::kScheduleEpochUtc;
+constexpr double E = 1767225600.0;  // 2026-01-01 00:00 UTC
 constexpr double kNow = E + 8 * 3600 + 14 * 60 + 30;  // local 8:14:30 AM
 
 struct Fixture {
@@ -32,6 +32,8 @@ struct Fixture {
             p.title = n == 0 ? "Master Shuffle" : "Chan " + std::to_string(n);
             channels.push_back(Channel{});
             channels.back().number = n;
+            channels.back().identity = "view5";  // day 20454 starts at item 0
+            channels.back().day_start_h = 0;  // geometry fixtures start at midnight
             if (n == 7) {  // empty channel
                 playlists.push_back(p);
                 continue;
@@ -64,7 +66,7 @@ struct Fixture {
 
 }  // namespace
 
-TEST_CASE("TV geometry, ticks, now line and cells", "[guide_view]") {
+TEST_CASE("TV geometry, ticks, now line and cells", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto v = ui::layout_channel_guide(f.in());
     REQUIRE(v.grid.ticks.size() == 4);
@@ -90,7 +92,7 @@ TEST_CASE("TV geometry, ticks, now line and cells", "[guide_view]") {
     CHECK(v.grid.date_label == "THU JAN 1");
 }
 
-TEST_CASE("a programme that began before the window starts with an arrow", "[guide_view]") {
+TEST_CASE("a programme that began before the window starts with an arrow", "[guide_view][channel_guide_view]") {
     Fixture f;
     f.channels[1].items.clear();
     f.channels[1].items.push_back(ScheduledItem{1, 0, 8 * 3600.0 + 5 * 60});  // ends 8:05
@@ -103,7 +105,7 @@ TEST_CASE("a programme that began before the window starts with an arrow", "[gui
     CHECK(c[0].x == 199);
 }
 
-TEST_CASE("narrow cells drop text then artist", "[guide_view]") {
+TEST_CASE("narrow cells drop text then artist", "[guide_view][channel_guide_view]") {
     Fixture f;
     f.channels[1].items.clear();
     const double base = 8 * 3600.0 + 10 * 60;  // the window starts here
@@ -124,7 +126,7 @@ TEST_CASE("narrow cells drop text then artist", "[guide_view]") {
     CHECK(c[2].show_artist);
 }
 
-TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_view]") {
+TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_view][channel_guide_view]") {
     // Just over the 30 px text threshold a label truncates to "…" alone,
     // which reads as a stray dash on the TV (Pi 5 test, 2026-11-13); with the
     // began-before arrow, "◂…" / "◂ …". A label keeps its text only when at
@@ -167,7 +169,7 @@ TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_
 }
 
 TEST_CASE("a label or artist line with no character of its text is not shown",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     namespace d = ui::guide_detail;
     CHECK_FALSE(d::has_text_chars(""));
     CHECK_FALSE(d::has_text_chars("\xE2\x80\xA6"));                 // …
@@ -182,7 +184,7 @@ TEST_CASE("a label or artist line with no character of its text is not shown",
     CHECK(d::has_text_chars(d::fit("Artist 1", 5)));
 }
 
-TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view]") {
+TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view][channel_guide_view]") {
     Fixture f;
     // A 338 px cell -> floor((338 - 20) / 8.428) = 37 characters.
     f.channels[1].items.clear();
@@ -207,7 +209,7 @@ TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view]") 
     }());
 }
 
-TEST_CASE("cursor row: bar, ring on the on-now cell", "[guide_view]") {
+TEST_CASE("cursor row: bar, ring on the on-now cell", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.cursor.row = 2;
@@ -225,7 +227,7 @@ TEST_CASE("cursor row: bar, ring on the on-now cell", "[guide_view]") {
     CHECK(v.panel.join_note == "joins at 4:30");
 }
 
-TEST_CASE("shuffle tuned row is green", "[guide_view]") {
+TEST_CASE("shuffle tuned row is green", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 0;
@@ -239,7 +241,7 @@ TEST_CASE("shuffle tuned row is green", "[guide_view]") {
     CHECK(v.grid.rows[1].num_tone != ui::GuideTone::Green);
 }
 
-TEST_CASE("the picture control shows on the tuned row when available", "[guide_view]") {
+TEST_CASE("the picture control shows on the tuned row when available", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 1;
@@ -258,7 +260,7 @@ TEST_CASE("the picture control shows on the tuned row when available", "[guide_v
     CHECK_FALSE(v.grid.rows[0].cursor_bar);
 }
 
-TEST_CASE("an empty channel has no schedule and no cells", "[guide_view]") {
+TEST_CASE("an empty channel has no schedule and no cells", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.cursor.scroll = 3;
@@ -273,7 +275,7 @@ TEST_CASE("an empty channel has no schedule and no cells", "[guide_view]") {
     CHECK_FALSE(v.grid.down_arrow);
 }
 
-TEST_CASE("nothing tuned: no green, no bug, press to watch", "[guide_view]") {
+TEST_CASE("nothing tuned: no green, no bug, press to watch", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = -1;
@@ -289,7 +291,7 @@ TEST_CASE("nothing tuned: no green, no bug, press to watch", "[guide_view]") {
     CHECK(v.panel.eyebrow == "ON CH 00 NOW");
 }
 
-TEST_CASE("panel: clock, item, progress, next", "[guide_view]") {
+TEST_CASE("panel: clock, item, progress, next", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto v = ui::layout_channel_guide(f.in());
     CHECK(v.panel.clock_hm == "8:14");
@@ -304,7 +306,7 @@ TEST_CASE("panel: clock, item, progress, next", "[guide_view]") {
     CHECK(v.panel.show_artist);
 }
 
-TEST_CASE("local time follows the utc offset", "[guide_view]") {
+TEST_CASE("local time follows the utc offset", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.utc_offset_s = -5 * 3600;  // 8:14 UTC is 3:14 local
@@ -313,7 +315,7 @@ TEST_CASE("local time follows the utc offset", "[guide_view]") {
     CHECK(v.grid.ticks[0].label == "3:10 AM");
 }
 
-TEST_CASE("CRT drops ticks, artists, next and the source label", "[guide_view]") {
+TEST_CASE("CRT drops ticks, artists, next and the source label", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in(true);
     in.picture_available = true;
@@ -338,7 +340,7 @@ TEST_CASE("CRT drops ticks, artists, next and the source label", "[guide_view]")
     CHECK(v.hints.size() == 2);
 }
 
-TEST_CASE("TV hints", "[guide_view]") {
+TEST_CASE("TV hints", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto v = ui::layout_channel_guide(f.in());
     REQUIRE(v.hints.size() == 3);
@@ -347,7 +349,7 @@ TEST_CASE("TV hints", "[guide_view]") {
     CHECK(v.hints[2].label == "on green to hide guide");
 }
 
-TEST_CASE("the bottom row: None on a tuned 4:3 row and on a no-schedule row", "[guide_view]") {
+TEST_CASE("the bottom row: None on a tuned 4:3 row and on a no-schedule row", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 1;
@@ -365,7 +367,7 @@ TEST_CASE("the bottom row: None on a tuned 4:3 row and on a no-schedule row", "[
     CHECK(v.panel.bottom == ui::GuideBottom::None);
 }
 
-TEST_CASE("the view carries the canvas and the Picture control's state", "[guide_view]") {
+TEST_CASE("the view carries the canvas and the Picture control's state", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 1;
@@ -387,7 +389,7 @@ TEST_CASE("the view carries the canvas and the Picture control's state", "[guide
 }
 
 TEST_CASE("the source label names the playing aspect only when the name is true",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     using ui::guide_source_label;
     SECTION("common aspects, within 2 %") {
         CHECK(guide_source_label(16.0 / 9.0) == "16:9 SOURCE");
@@ -428,7 +430,7 @@ TEST_CASE("the source label names the playing aspect only when the name is true"
 }
 
 TEST_CASE("the panel carries the source label beside the Picture control only",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 1;
@@ -461,7 +463,7 @@ TEST_CASE("the panel carries the source label beside the Picture control only",
     }
 }
 
-TEST_CASE("the video window in framebuffer px", "[guide_view]") {
+TEST_CASE("the video window in framebuffer px", "[guide_view][channel_guide_view]") {
     const ui::GuideRect tv{40, 40, 384, 288};
     const ui::GuideRect crt{24, 24, 224, 168};
     // Modern TV at 1920x1080: the 960x720 canvas is the 1440x1080 4:3 area
@@ -497,7 +499,7 @@ TEST_CASE("the video window in framebuffer px", "[guide_view]") {
     CHECK(w.h == 0);
 }
 
-TEST_CASE("channel names truncate to the column's real width", "[guide_view]") {
+TEST_CASE("channel names truncate to the column's real width", "[guide_view][channel_guide_view]") {
     Fixture f;
     f.playlists[1].title = std::string(40, 'a');
     auto v = ui::layout_channel_guide(f.in());
@@ -543,7 +545,7 @@ ui::GuideViewInput tuned_one(const Fixture& f, int item, double position_s,
 }  // namespace
 
 TEST_CASE("a tuned item paused past its slot: the panel describes what plays",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     // Show 1-0 (scheduled 8:00-8:10) is still playing, 9:50 in.
     auto v = ui::layout_channel_guide(tuned_one(f, 0, 590.0));
@@ -565,7 +567,7 @@ TEST_CASE("a tuned item paused past its slot: the panel describes what plays",
 }
 
 TEST_CASE("a tuned item ahead of its slot: the panel describes what plays",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     // Show 1-2 (scheduled 8:20-8:30) started 5 s ago, ahead of schedule.
     auto v = ui::layout_channel_guide(tuned_one(f, 2, 5.0));
@@ -580,7 +582,7 @@ TEST_CASE("a tuned item ahead of its slot: the panel describes what plays",
     CHECK(v.panel.next_title == "Show 1-3");
 }
 
-TEST_CASE("the on-air item playing: the panel follows its real position", "[guide_view]") {
+TEST_CASE("the on-air item playing: the panel follows its real position", "[guide_view][channel_guide_view]") {
     // Pi 5 test, 2026-11-13: a join's KEY_UNIT seek lands on the keyframe
     // BEFORE its target, so the picture runs up to a GOP behind the schedule
     // while the panel's bar and times ran on the schedule's. When the playing
@@ -662,7 +664,7 @@ TEST_CASE("the on-air item playing: the panel follows its real position", "[guid
 }
 
 TEST_CASE("another channel's panel, or nothing known playing: the schedule",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     SECTION("the cursor on another channel") {
         auto in = tuned_one(f, 0, 590.0);
@@ -688,7 +690,7 @@ TEST_CASE("another channel's panel, or nothing known playing: the schedule",
 }
 
 TEST_CASE("on the Picture control the tuned panel describes what plays too",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = tuned_one(f, 0, 590.0);
     in.cursor = app::GuideCursor{0, 0, true};
@@ -699,7 +701,7 @@ TEST_CASE("on the Picture control the tuned panel describes what plays too",
 }
 
 TEST_CASE("a playing item the channel does not schedule: its own trimmed length",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     // Chan 2's first item, trimmed 1:40-6:40 (300 s), 2:30 into the trim.
     f.playlists[2].items[0].start = 100.0;
@@ -725,7 +727,7 @@ TEST_CASE("a playing item the channel does not schedule: its own trimmed length"
     CHECK(v.panel.item_title == "Show 1-1");
 }
 
-TEST_CASE("CRT: the playing item's panel keeps the CRT's drops", "[guide_view]") {
+TEST_CASE("CRT: the playing item's panel keeps the CRT's drops", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = tuned_one(f, 0, 590.0);
     in.crt = true;
@@ -736,7 +738,7 @@ TEST_CASE("CRT: the playing item's panel keeps the CRT's drops", "[guide_view]")
     CHECK_FALSE(v.panel.show_next);
 }
 
-TEST_CASE("joins at m:ss is the tune's own join point", "[guide_view]") {
+TEST_CASE("joins at m:ss is the tune's own join point", "[guide_view][channel_guide_view]") {
     // With under 2 s of the on-air item left a tune starts the next item at
     // 0:00 (app::join_point); the note must say so, not 9:59.
     Fixture f;
@@ -750,7 +752,7 @@ TEST_CASE("joins at m:ss is the tune's own join point", "[guide_view]") {
     CHECK(v.panel.join_note == "joins at 9:58");
 }
 
-TEST_CASE("CRT geometry: ticks, now line and cells in exact px", "[guide_view]") {
+TEST_CASE("CRT geometry: ticks, now line and cells in exact px", "[guide_view][channel_guide_view]") {
     // 640x480: grid x24 w592, channel column 132, a 15-minute window.
     // px per second = (592 - 132 - 3) / 900 = 0.50778; cells start at 135.
     Fixture f;
@@ -782,7 +784,7 @@ TEST_CASE("CRT geometry: ticks, now line and cells in exact px", "[guide_view]")
 }
 
 TEST_CASE("the next item loaded in the on-air one's last 2 s keeps the schedule's times",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     // A boundary (or a tune) in the on-air item's last kMinJoinLeftS loads
     // the next item from its start: that IS the schedule's next airing, so
     // the panel keeps its exact times rather than ones derived from a
@@ -803,4 +805,38 @@ TEST_CASE("the next item loaded in the on-air one's last 2 s keeps the schedule'
     v = ui::layout_channel_guide(in);
     CHECK(v.panel.item_title == "Show 1-1");
     CHECK(v.panel.start_hm == "8:10");
+}
+
+TEST_CASE("guide NEXT follows the daily rotation at a broadcast boundary", "[guide_view][channel_guide_view]") {
+    Fixture f;
+    auto& ch = f.channels[1];
+    ch.day_start_h = 4;
+    ch.identity = "fixture3";
+    ch.items = {{1, 0, 100000}, {1, 1, 100000}, {1, 2, 100000}};
+    ch.total_s = 300000;
+    auto in = f.in();
+    in.cursor.row = 1;
+    in.now_utc = E + 86400 + 4 * 3600 - 60;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Show 1-0");
+    CHECK(v.panel.end_hm == "4:00");
+    // Jan 2's first item for fixture3 is index 2 (the fresh day's rotation).
+    CHECK(v.panel.next_title == "Show 1-2");
+}
+
+TEST_CASE("guide uses future zone offsets for schedule and time labels", "[guide_view][channel_guide_view]") {
+    Fixture f;
+    auto& ch = f.channels[1];
+    ch.day_start_h = 4;
+    ch.items = {{1, 0, 200000}};
+    ch.total_s = 200000;
+    const double spring = E + 86400 + 2 * 3600;
+    auto in = f.in();
+    in.cursor.row = 1;
+    in.now_utc = spring - 60;
+    in.utc_offset_at = [=](double utc) { return utc < spring ? 0 : 3600; };
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.start_hm == "4:00");
+    CHECK(v.panel.end_hm == "4:00");
+    CHECK(v.grid.ticks[1].label == "3:00");
 }

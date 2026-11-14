@@ -137,6 +137,8 @@ public:
     // Wall-clock UTC seconds (system_clock in the kiosk; hand-set in the
     // tests). Only the Channel Guide schedule reads it; waits stay steady.
     virtual double wall_now_utc() const = 0;
+    // In-memory local zone rules for any UTC instant, including lookahead.
+    virtual int utc_offset_s(double utc) const = 0;
 };
 
 class PlaylistPlayback {
@@ -166,7 +168,7 @@ public:
     // boundary, so a rebuilt list takes effect at the next one. Call it
     // again after EVERY rebuild (even into the same vector): a reload
     // renumbers the rows, so the tuned channel is re-found by
-    // AppState::last_channel_id (-1 when its playlist is gone). The
+    // AppState::last_channel_id (-1 when its channel is gone). The
     // guide_gave_up rows are NOT re-anchored — a reload can shift them —
     // and live until a channel proves it plays (kChannelPlaysS); only rows
     // past the new list's end are dropped. nullptr also forgets the tuned /
@@ -319,6 +321,7 @@ private:
     // ── Channel Guide ────────────────────────────────────────────────────
     // Channel `c` of the current list (nullptr in List style / out of range).
     const Channel* channel_at(int c) const;
+    std::string channel_identity(int c) const;
     // A tune's load, once its switch wait is over.
     void finish_tune(int channel, bool keep_overlay);
     // An item's natural end: load what is on the tuned channel now — but
@@ -335,6 +338,8 @@ private:
     // wait).
     double guide_item_ends_at_ = 0.0;
     double guide_item_length_ = 0.0;
+    double guide_item_end_position_ = 0.0;  // item.start + the (possibly cut) airing length
+    double guide_day_ends_at_ = 0.0;  // live civil boundary, even when the seek landed behind
     // The airing the last channel load loaded, and on which channel: the
     // next boundary on that channel never rejoins it (boundary_join). Kept
     // across set_channels; boundary_join itself drops the guard for that

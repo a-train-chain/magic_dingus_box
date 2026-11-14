@@ -31,8 +31,8 @@ using Catch::Approx;
 namespace {
 
 // A start of channel 01's and channel 02's schedule cycles (600 s and 50 s
-// long in the guide tests below): the epoch plus 1000 x 600 s.
-const double kW0 = app::kScheduleEpochUtc + 600.0 * 1000;
+// long in the guide tests below), at a broadcast-day start.
+const double kW0 = 1767585600.0;  // 2026-01-05 04:00 UTC; Cartoons rotates from a
 
 struct FakeTransport : app::PlaylistTransport {
     std::vector<std::string> calls;
@@ -54,6 +54,8 @@ struct FakeTransport : app::PlaylistTransport {
     // The wall clock behind wall_now_utc() (UTC seconds). advance() moves it
     // with the steady clock; a test may also jump it on its own.
     double wall = kW0;
+    int zone_offset = 0;
+    int utc_offset_s(double) const override { return zone_offset; }
     // load_playlist_item_at's offset_s, and the wall clock at that call.
     std::vector<double> offsets;
     std::vector<double> load_wall;
@@ -1458,7 +1460,7 @@ TEST_CASE("tuning 00 joins the mix: tuned channel 00, the source playlist plays"
     g.pb.tune(0, false);
     run_frames(g.pb, g.t, kSettled);
     REQUIRE(g.t.load_wall.size() == 1);
-    const auto oa = app::on_air(g.channels[0], g.t.load_wall[0]);
+    const auto oa = app::on_air(g.channels[0], g.t.load_wall[0], g.t.zone_offset);
     REQUIRE(oa);
     const app::ScheduledItem& want = g.channels[0].items[oa->index];
 
@@ -1568,7 +1570,7 @@ TEST_CASE("a rebuild that re-phases the tuned channel: the next boundary joins i
           "[playlist_playback][guide]") {
     // An upload to the tuned channel's playlist (media_info.poll() -> a
     // rebuild) changes its cycle: 01 gains d (420 s), 600 s -> 1020 s, and
-    // the epoch-anchored schedule moves every airing. b keeps its index, so
+    // the daily rotation changes when its item count changes. b keeps its index, so
     // only the airing check tells the boundary that "the live airing began
     // before b's old end" is a re-phase, not playback running ahead.
     Guide g;
@@ -1588,13 +1590,13 @@ TEST_CASE("a rebuild that re-phases the tuned channel: the next boundary joins i
     g.pb.set_channels(&rebuilt);
     g.channels.clear();
 
-    // b ends on its old time. New schedule (cycle start kW0 - 240): c airs
-    // 60-360 s, so it is 240.4 s in — not c from its start, out of phase.
+    // b ends on its old time. The four-item rotation starts with d,
+    // which airs 0-420 s: join it 300.4 s in, not its successor.
     g.s.update_playback_state(199.6, 200.0);
     g.t.wall = kW0 + 300.4;
     g.pb.tick_auto_advance();
-    CHECK(g.t.last() == "load_at Cartoons 2");
-    CHECK(g.t.last_offset() == Approx(240.4));
+    CHECK(g.t.last() == "load_at Cartoons 3");
+    CHECK(g.t.last_offset() == Approx(300.4));
 }
 
 TEST_CASE("an identical rebuild (a crop-only media info change) keeps the ahead guard",
@@ -1642,7 +1644,7 @@ TEST_CASE("a rebuilt channel list is used at the next boundary",
     g.playing();
 
     // Mid-item the library changes: c loses its length, so 01 is a, b — a
-    // 300 s cycle. The old list goes away entirely.
+    // 300 s cycle rotated b, a. The old list goes away entirely.
     auto info = guide_lengths();
     info.erase("c.mp4");
     std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, info);
@@ -1652,9 +1654,9 @@ TEST_CASE("a rebuilt channel list is used at the next boundary",
     CHECK(g.s.tuned_channel == 1);
 
     g.s.update_playback_state(199.6, 200.0);
-    g.t.wall = kW0 + 300.5;  // old list: c, 0.5 s in; new list: a, 0.5 s in
+    g.t.wall = kW0 + 300.5;  // old list: c, 0.5 s in; new list: b, 0.5 s in
     g.pb.tick_auto_advance();
-    CHECK(g.t.last() == "load_at Cartoons 0");
+    CHECK(g.t.last() == "load_at Cartoons 1");
     CHECK(g.t.last_offset() == Approx(0.5));
 }
 
@@ -2619,4 +2621,100 @@ TEST_CASE("a frozen stream that is not a channel load is still restarted with pl
     CHECK(g.t.calls == std::vector<std::string>{"play"});
     CHECK(err.count("restarting playback") == 1);
     CHECK(err.count("PLAYING (SUCCESS)") == 1);
+}
+
+TEST_CASE("a daily cut advances at the cut file position including a start trim", "[playlist_playback][guide]") {
+    Guide g;
+    g.s.playlists[1].items.resize(1);
+    g.s.playlists[1].items[0].start = 10;
+    g.s.playlists[1].items[0].end = 100010;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 86400 - 30;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.offsets.size() == 1);
+    g.playing();
+    g.s.update_playback_state(86409.4, 100010);
+    g.pb.tick_auto_advance();
+    CHECK(g.t.offsets.size() == 1);  // not at cut yet
+    g.s.update_playback_state(86409.6, 100010);
+    g.t.wall = kW0 + 86400 - 0.4;
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == 2);
+    CHECK(g.t.last_offset() == 0);
+}
+
+TEST_CASE("an offset change rejoins live once then protects the next loaded airing", "[playlist_playback][guide]") {
+    Guide g;
+    // +1 h is six whole 600 s passes: the live airing has the same index
+    // and start time, so validating only those would miss the zone change.
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.s.current_item_index == 1);
+    g.playing();
+    g.t.zone_offset = 3600;
+    g.t.wall = kW0 + 150;
+    g.s.update_playback_state(199.6, 200);
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == 2);
+    CHECK(g.s.current_item_index == 1);
+    CHECK(g.t.last_offset() == Approx(50));  // join live, not the old airing's successor
+    g.playing();
+    g.s.last_advanced_item_index = -1;
+    g.t.wall = kW0 + 160;
+    g.s.update_playback_state(199.6, 200);
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == 3);
+    CHECK(g.s.current_item_index == 2);
+    CHECK(g.t.last_offset() == 0);  // same zone now: never reload that airing again
+}
+
+TEST_CASE("the live day boundary cuts once even when a keyframe seek left playback behind", "[playlist_playback][guide]") {
+    Guide g;
+    g.t.wall = kW0 + 86400 - 30;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.offsets.size() == 1);
+    g.playing();
+    // The decoder is eight seconds behind the requested offset, far from EOS.
+    g.s.update_playback_state(292, 300);
+    g.t.wall = kW0 + 86400;
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == 2);
+    CHECK(g.t.last_offset() == 0);
+    g.pb.tick_auto_advance();
+    CHECK(g.t.offsets.size() == 2);
+}
+
+TEST_CASE("movie tunes persist and re-anchor by the canonical channel identity", "[playlist_playback][guide][identity]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 3 * 3600;
+    g.pb.tune(2, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.s.tuned_channel == 2);
+    CHECK(g.s.last_channel_id == "movies:mix");
+    app::Playlist added;
+    added.title = "New";
+    added.path = "/p/new.yaml";
+    added.items = {video_item("a")};
+    g.s.playlists.insert(g.s.playlists.begin() + 2, added);
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    CHECK(g.s.tuned_channel == 3);
+    CHECK(g.s.last_channel_id == "movies:mix");
+}
+
+TEST_CASE("manually constructed channels without identity retain playlist persistence", "[playlist_playback][guide][identity]") {
+    Guide g;
+    for (auto& ch : g.channels) ch.identity.clear();
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.last_channel_id == "path:/p/cartoons.yaml");
+    g.pb.set_channels(&g.channels);
+    CHECK(g.s.tuned_channel == 1);
 }

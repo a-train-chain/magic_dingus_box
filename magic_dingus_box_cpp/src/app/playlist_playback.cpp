@@ -361,6 +361,16 @@ const Channel* PlaylistPlayback::channel_at(int c) const {
     return &(*channels_)[c];
 }
 
+std::string PlaylistPlayback::channel_identity(int c) const {
+    const Channel* channel = channel_at(c);
+    if (!channel) return {};
+    if (!channel->identity.empty()) return channel->identity;
+    // Keep hand-built channels useful; build_channels always fills identity.
+    if (c == 0) return kShuffleChannelId;
+    return c < static_cast<int>(state_.playlists.size())
+        ? playlist_identity(state_.playlists[c]) : std::string{};
+}
+
 void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     channels_ = channels;
     if (!guide_style()) {
@@ -384,8 +394,10 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     // A reload renumbers the rows: re-find the tuned channel by the identity
     // it was tuned under rather than keep an index into the old list.
     const std::string& id = state_.last_channel_id;
-    int row = id == kShuffleChannelId ? 0 : find_playlist_by_identity(state_.playlists, id);
-    if (!channel_at(row)) row = -1;
+    int row = -1;
+    for (int c = 0; c < static_cast<int>(channels_->size()); ++c) {
+        if (channel_identity(c) == id) { row = c; break; }
+    }
     state_.tuned_channel = row;
 }
 
@@ -447,18 +459,16 @@ void PlaylistPlayback::land_on_channel(int channel) {
     // resume (act_on_failed_item), and a give-up must name this channel,
     // not the one tuned before it.
     state_.tuned_channel = channel;
-    if (channel == 0) {
-        state_.last_channel_id = kShuffleChannelId;
-    } else if (channel > 0 && channel < static_cast<int>(state_.playlists.size())) {
-        state_.last_channel_id = playlist_identity(state_.playlists[channel]);
-    }
+    state_.last_channel_id = channel_identity(channel);
 }
 
 void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     warn_if_still_playing();
     // On air NOW, not at the press: the wait must not put playback behind.
     const Channel* ch = channel_at(channel);
-    const auto oa = ch ? join_point(*ch, transport_.wall_now_utc()) : std::nullopt;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    const auto oa = ch ? join_point(*ch, now, offset(now), offset) : std::nullopt;
     if (!oa) {
         // The list was rebuilt during the wait and the channel lost its
         // schedule (or the style went back to List).
@@ -509,7 +519,9 @@ void PlaylistPlayback::rejoin_schedule() {
     // channel counts.
     std::optional<LoadedAiring> last;
     if (loaded_airing_ && loaded_airing_->channel == channel) last = loaded_airing_->airing;
-    const auto oa = ch ? boundary_join(*ch, transport_.wall_now_utc(), last) : std::nullopt;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    const auto oa = ch ? boundary_join(*ch, now, last, offset(now), offset) : std::nullopt;
     if (!oa) {
         // Not on a channel (a List-style item still playing when the style
         // changed) or the channel lost its schedule: end here, and the
@@ -547,11 +559,14 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     state_.current_item_index = si.item;
     guide_item_ends_at_ = oa.ends_at;
     guide_item_length_ = si.length_s;
+    guide_item_end_position_ = pl.items[si.item].start + (oa.ends_at - oa.starts_at);
+    guide_day_ends_at_ = oa.day_ends_at;
     LoadedAiring airing;
     airing.index = oa.index;
     airing.item = si;
     airing.starts_at = oa.starts_at;
     airing.ends_at = oa.ends_at;
+    airing.utc_offset_s = transport_.utc_offset_s(transport_.wall_now_utc());
     loaded_airing_ = ChannelAiring{channel, airing};
 
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
@@ -826,6 +841,17 @@ void PlaylistPlayback::tick_pipeline_error() {
 }
 
 void PlaylistPlayback::tick_auto_advance() {
+    // Live programmes cut at the civil day boundary even if a keyframe seek
+    // or pause has left the file position behind. A load records a new day
+    // deadline and clears playback_started_, so this cannot fire twice.
+    // Pick Ahead must bypass this live-only rule when it is wired in.
+    if (guide_style() && owns_pipeline() && state_.video_active &&
+        state_.playback_started_ && loaded_airing_ &&
+        loaded_airing_->channel == state_.tuned_channel &&
+        guide_day_ends_at_ > 0 && transport_.wall_now_utc() >= guide_day_ends_at_) {
+        rejoin_schedule();
+        return;
+    }
     // Auto-advance to next item in playlist when current video ends.
     // "Ends" honors the item's `end:` trim (decide_auto_advance) — the
     // old full-file comparison played every trimmed item to EOF.
@@ -850,6 +876,11 @@ void PlaylistPlayback::tick_auto_advance() {
             if (state_.current_item_index < static_cast<int>(adv_pl.items.size())) {
                 adv.item_end = adv_pl.items[state_.current_item_index].end;
             }
+        }
+        if (guide_style() && loaded_airing_ &&
+            loaded_airing_->channel == state_.tuned_channel && guide_item_end_position_ > 0) {
+            adv.item_end = adv.item_end > 0 ? std::min(adv.item_end, guide_item_end_position_)
+                                          : guide_item_end_position_;
         }
         adv.playback_started = state_.playback_started_;
         adv.master_shuffle = state_.master_shuffle_active;
@@ -985,8 +1016,10 @@ void PlaylistPlayback::on_channel_stall(const std::string& pipeline_note) {
             "stalled");
         return;
     }
-    const auto oa = join_point(*channel_at(channel), transport_.wall_now_utc());
-    if (!oa) return;  // not reached: stall_is_channels() saw a schedule
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    const auto oa = join_point(*channel_at(channel), now, offset(now), offset);
+    if (!oa) return;  // off air: the live day-boundary tick handles stopping
     std::cerr << "Playback stalled at " << state_.get_position()
               << "s while reported playing" << pipeline_note << " — reloading channel "
               << channel << " at its live point" << std::endl;
