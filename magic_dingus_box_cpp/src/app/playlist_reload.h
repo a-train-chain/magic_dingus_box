@@ -48,6 +48,7 @@ int find_playlist_by_identity(const std::vector<Playlist>& v, const std::string&
 // So re-find things by identity, not index. Taken BEFORE the swap.
 struct PlaylistReloadSnapshot {
     std::optional<AppState::LoadedMovie> loaded_movie;
+    std::optional<AppState::LoadedOnDemand> loaded_on_demand;
     std::string playing_id;
     std::string playing_item_path;
     std::string playing_item_title;
@@ -68,7 +69,9 @@ PlaylistReloadSnapshot snapshot_for_reload(const AppState& state,
 // `stop_playback` (controller.stop()) runs followed by stop_to_menu.
 // Movie refreshes retain the immutable loaded film until end even if its row
 // disappears. Explicit lock/style changes pass preserve_movie=false to leave
-// it immediately. current_playlist_item() remains valid without row indexes.
+// it immediately. Selected regular programmes separately retain their loaded
+// metadata through refresh; List-style exit ends that ownership. Both use
+// current_playlist_item() without requiring row indexes.
 void apply_reloaded_playlists(AppState& state,
                               PlaylistLoader::UiPlaylistSplit reloaded,
                               const PlaylistReloadSnapshot& snap,

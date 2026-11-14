@@ -175,7 +175,8 @@ public:
     // and live until a channel proves it plays (kChannelPlaysS); only rows
     // past the new list's end are dropped. nullptr also forgets the tuned /
     // given-up channels. A loaded movie survives ordinary rebuild/removal via
-    // AppState::loaded_movie; nullptr explicitly leaves it immediately.
+    // AppState::loaded_movie; selected regular programmes similarly retain
+    // loaded_on_demand. nullptr explicitly leaves either immediately.
     void set_channels(const std::vector<Channel>* channels);
     void set_movie_failure_hook(std::function<void()> hook) { movie_failure_hook_ = std::move(hook); }
     bool guide_style() const { return channels_ != nullptr; }

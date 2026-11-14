@@ -472,7 +472,7 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     if (!guide_style()) {
         state_.on_demand = false;
         state_.off_air_return_after_utc = 0;
-        if (state_.loaded_movie) {
+        if (state_.retained_playlist_item()) {
             transport_.stop();
             stop_to_menu(state_);
         }
@@ -506,11 +506,12 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     gave_up.erase(std::remove_if(gave_up.begin(), gave_up.end(),
                                  [this](int c) { return channel_at(c) == nullptr; }),
                   gave_up.end());
-    if (state_.tuned_channel < 0 && !state_.loaded_movie) return;
+    if (state_.tuned_channel < 0 && !state_.retained_playlist_item()) return;
     // A reload renumbers the rows: re-find the tuned channel by the identity
     // it was tuned under rather than keep an index into the old list.
     const std::string id = state_.loaded_movie
         ? state_.loaded_movie->channel_identity
+        : state_.loaded_on_demand ? state_.loaded_on_demand->channel_identity
         : (!state_.off_air_return_id.empty() && state_.tuned_channel == 0
                ? kShuffleChannelId : state_.last_channel_id);
     int row = -1;
@@ -558,6 +559,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     state_.playlist_switch_start_time = transport_.now();
     channel_load_at_.reset();  // the tune takes the pipeline over
     state_.loaded_movie.reset();
+    state_.loaded_on_demand.reset();
     state_.on_demand = false;
     // Point at the channel's row before the stop, as SELECT does: it keeps
     // the indexes through the stop, and the pending switch's "re-pointed"
@@ -830,12 +832,18 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     state_.loaded_movie.reset();
     if (is_movie_playlist(pl))
         state_.loaded_movie = AppState::LoadedMovie{channel_identity(channel), pl.items[si.item]};
+    state_.loaded_on_demand.reset();
+    if (on_demand && !is_movie_playlist(pl))
+        state_.loaded_on_demand = AppState::LoadedOnDemand{channel_identity(channel), playlist_identity(pl), pl.items[si.item]};
+    const auto selected = state_.loaded_on_demand;
     const auto movie = state_.loaded_movie;
     auto result = transport_.load_playlist_item_at(state_, pl, si.item,
                                                    playlist_directory_, oa.offset_s);
     // Controller clears the retained item when starting any new load. Both
-    // success and synchronous failure still belong to this attempted film.
+    // success and synchronous failure still belong to this attempted programme.
     state_.loaded_movie = movie;
+    state_.loaded_on_demand = selected;
+    state_.on_demand = on_demand;
     if (!result) {
         std::cerr << "Failed to load channel item: " << result.error() << std::endl;
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
@@ -1155,7 +1163,7 @@ void PlaylistPlayback::tick_auto_advance() {
         }
         adv.playback_started = state_.playback_started_;
         adv.master_shuffle = state_.master_shuffle_active;
-        adv.current_item = state_.loaded_movie ? 0 : state_.current_item_index;
+        adv.current_item = state_.retained_playlist_item() ? 0 : state_.current_item_index;
         adv.last_advanced_item = state_.last_advanced_item_index;
 
         switch (app::decide_auto_advance(adv)) {

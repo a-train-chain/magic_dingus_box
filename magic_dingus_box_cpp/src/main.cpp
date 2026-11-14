@@ -1929,7 +1929,7 @@ int main(int /* argc */, char* /* argv */[]) {
             guide_offset_s = guide_clock.offset(guide_now_utc, zone_offset);
             guide_source_aspect = playing_display_aspect();
             if (state.video_active && !playlist_playback.switch_pending() && state.current_playlist_item()) {
-                guide_playing.retained_item = state.loaded_movie ? &state.loaded_movie->item : nullptr;
+                guide_playing.retained_item = state.retained_playlist_item();
                 guide_playing.playlist = state.current_playlist_index;
                 guide_playing.item = state.current_item_index;
                 guide_playing.position_s = state.get_position();

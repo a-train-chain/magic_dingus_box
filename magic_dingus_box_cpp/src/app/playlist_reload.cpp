@@ -76,6 +76,17 @@ PlaylistReloadSnapshot snapshot_for_reload(const AppState& state,
         snap.playing_item_path = snap.loaded_movie->item.path;
         snap.playing_item_title = snap.loaded_movie->item.title;
     }
+    snap.loaded_on_demand = state.loaded_on_demand;
+    if (!snap.loaded_on_demand && !snap.loaded_movie && state.on_demand &&
+        state.video_active && !state.is_switching_playlist) {
+        if (const auto* item = state.current_playlist_item())
+            snap.loaded_on_demand = AppState::LoadedOnDemand{state.last_channel_id, snap.playing_id, *item};
+    }
+    if (snap.loaded_on_demand) {
+        snap.playing_id = snap.loaded_on_demand->source_identity;
+        snap.playing_item_path = snap.loaded_on_demand->item.path;
+        snap.playing_item_title = snap.loaded_on_demand->item.title;
+    }
     return snap;
 }
 
@@ -102,7 +113,23 @@ void apply_reloaded_playlists(AppState& state,
     // ── Playback is never interrupted, only re-anchored ──
     // Explicit decision: whatever is on screen keeps playing to its natural
     // end. Only the coordinates describing what comes NEXT are repaired.
-    if (snap.loaded_movie && preserve_movie) {
+    if (snap.loaded_on_demand) {
+        state.loaded_on_demand = snap.loaded_on_demand;
+        state.current_playlist_index = find_playlist_by_identity(state.playlists, snap.playing_id);
+        state.current_item_index = -1;
+        if (state.current_playlist_index >= 0) {
+            const auto& items = state.playlists[state.current_playlist_index].items;
+            const auto& held = snap.loaded_on_demand->item;
+            for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+                if (items[i].path == held.path && items[i].start == held.start && items[i].end == held.end) {
+                    state.current_item_index = i;
+                    break;
+                }
+            }
+        }
+        state.last_advanced_item_index = -1;
+        state.last_advanced_duration = 0;
+    } else if (snap.loaded_movie && preserve_movie) {
         state.loaded_movie = snap.loaded_movie;
         state.current_playlist_index = find_playlist_by_identity(state.playlists, snap.playing_id);
         state.current_item_index = -1;

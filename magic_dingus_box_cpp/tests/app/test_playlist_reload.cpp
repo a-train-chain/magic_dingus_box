@@ -343,3 +343,25 @@ TEST_CASE("movie refresh preserves the actual film through reorder and removal",
     app::apply_reloaded_playlists(s, std::move(fresh), snap, kStop, false);
     CHECK(stops == 1); CHECK_FALSE(s.video_active); CHECK_FALSE(s.loaded_movie);
 }
+
+TEST_CASE("selected regular programme reload retains actual item through removal and repeated refresh", "[playlist_reload][on_demand]") {
+    stops = 0;
+    app::AppState s; boot(s, disk_v1());
+    s.current_playlist_index = 1; s.current_item_index = 0; s.video_active = true; s.on_demand = true;
+    s.playlists[1].items[0].start = 10; s.playlists[1].items[0].end = 600;
+    bool removed_channel = false;
+    auto fresh = disk_v1();
+    SECTION("item removed") { fresh[0].items = {item("replacement")}; fresh[0].items[0].end = 60; }
+    SECTION("metadata replaced") { fresh[0].items[0].title = "edited"; fresh[0].items[0].start = 30; fresh[0].items[0].end = 60; }
+    SECTION("whole channel removed") { removed_channel = true; fresh.erase(fresh.begin()); }
+    reload(s, fresh);
+    CHECK(stops == 0); CHECK(s.video_active); REQUIRE(s.current_playlist_item());
+    CHECK(s.current_playlist_item()->title == "a"); CHECK(s.current_playlist_item()->start == 10);
+    CHECK(s.current_playlist_item()->end == 600); CHECK_FALSE(s.loaded_movie);
+    CHECK(s.current_item_index == -1);
+    if (removed_channel) CHECK(s.current_playlist_index == -1);
+    const auto snap = app::snapshot_for_reload(s, -1);
+    CHECK(snap.playing_id == "path:/data/playlists/cartoons.yaml"); CHECK(snap.playing_item_title == "a");
+    reload(s, fresh);
+    REQUIRE(s.current_playlist_item()); CHECK(s.current_playlist_item()->title == "a");
+}

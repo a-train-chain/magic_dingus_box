@@ -254,8 +254,20 @@ struct AppState {
         PlaylistItem item;
     };
     std::optional<LoadedMovie> loaded_movie;
-    const PlaylistItem* current_playlist_item() const {
+    // The regular programme selected in Pick Ahead. It remains the actual
+    // playing item when an ordinary playlist refresh removes/replaces it.
+    struct LoadedOnDemand {
+        std::string channel_identity;
+        std::string source_identity;
+        PlaylistItem item;
+    };
+    std::optional<LoadedOnDemand> loaded_on_demand;
+    const PlaylistItem* retained_playlist_item() const {
         if (loaded_movie) return &loaded_movie->item;
+        return loaded_on_demand ? &loaded_on_demand->item : nullptr;
+    }
+    const PlaylistItem* current_playlist_item() const {
+        if (const auto* retained = retained_playlist_item()) return retained;
         if (current_playlist_index < 0 ||
             current_playlist_index >= static_cast<int>(playlists.size())) return nullptr;
         const auto& items = playlists[current_playlist_index].items;

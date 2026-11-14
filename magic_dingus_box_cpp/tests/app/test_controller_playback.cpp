@@ -833,3 +833,33 @@ TEST_CASE("movie media key stays with the actual loaded film across refresh", "[
 }
 
 }  // namespace
+
+TEST_CASE("a new controller load releases selected metadata only when it takes the stream", "[controller][on_demand]") {
+    Rig r; const int pl = r.add_playlist("new", 1);
+    auto selected = r.video("selected"); selected.end = 600;
+    r.state.loaded_on_demand = app::AppState::LoadedOnDemand{"channel", "source", selected};
+    r.state.on_demand = true;
+    auto next = r.state.playlists[pl];
+    SECTION("missing media leaves selected ownership intact") {
+        next.items[0] = r.video("absent", false);
+        CHECK_FALSE(r.controller.load_playlist_item(r.state, next, 0, ""));
+        REQUIRE(r.state.retained_playlist_item()); CHECK(r.state.retained_playlist_item()->title == "selected");
+        CHECK(r.state.on_demand);
+    }
+    SECTION("a real load clears selected ownership") {
+        REQUIRE(r.controller.load_playlist_item(r.state, next, 0, ""));
+        CHECK(r.state.retained_playlist_item() == nullptr); CHECK_FALSE(r.state.on_demand);
+    }
+}
+
+TEST_CASE("a retained selected regular stream keeps its published title without source rows", "[controller][on_demand]") {
+    Rig r; auto selected = r.video("selected"); selected.end = 600;
+    r.state.loaded_on_demand = app::AppState::LoadedOnDemand{"channel", "source", selected};
+    r.state.on_demand = true; r.state.current_playlist_index = -1; r.state.current_item_index = -1;
+    r.state.video_active = true; r.state.now_playing_title = "selected";
+    r.player.duration = 0; r.player.position = 0; r.player.playing = false;
+    for (int frame = 0; frame < 4; ++frame) r.controller.update_state(r.state);
+    CHECK_FALSE(r.state.video_active);
+    CHECK(r.state.now_playing_title == "selected"); REQUIRE(r.state.current_playlist_item());
+    CHECK(r.state.current_playlist_item()->end == 600);
+}

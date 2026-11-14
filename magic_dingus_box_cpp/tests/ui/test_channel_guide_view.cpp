@@ -942,3 +942,19 @@ TEST_CASE("on-demand NEXT does not promise an adjacent repeat or an exhausted pr
         CHECK(v.panel.item_title == "Show 1-0"); CHECK(v.panel.next_title.empty()); CHECK_FALSE(v.panel.show_next);
     }
 }
+
+TEST_CASE("selected regular panel uses retained title and trim after source replacement", "[channel_guide_view][on_demand]") {
+    Fixture f;
+    app::AppState state;
+    app::PlaylistItem selected; selected.title = "Selected original"; selected.path = "a.mp4";
+    selected.start = 10; selected.end = 600;
+    state.loaded_on_demand = app::AppState::LoadedOnDemand{"channel", "source", selected};
+    f.playlists[1].items[0].title = "Replacement"; f.playlists[1].items[0].start = 30; f.playlists[1].items[0].end = 60;
+    auto in = f.in(); in.tuned = 1; in.cursor.row = 1; in.on_demand = true;
+    in.playing.retained_item = state.retained_playlist_item();
+    in.playing.playlist = 1; in.playing.item = -1; in.playing.position_s = 120; in.playing.duration_s = 800;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Selected original"); CHECK(v.panel.eyebrow == "ON DEMAND");
+    CHECK(std::fabs(v.panel.progress - 0.18644) < 0.0001);
+    CHECK(v.panel.start_hm == "8:12"); CHECK(v.panel.end_hm == "8:22");
+}

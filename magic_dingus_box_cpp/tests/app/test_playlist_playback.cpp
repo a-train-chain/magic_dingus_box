@@ -100,6 +100,8 @@ struct FakeTransport : app::PlaylistTransport {
     utils::Result<> load_playlist_item_at(app::AppState& state, const app::Playlist& pl, int idx,
                                           const std::string&, double offset_s) override {
         state.loaded_movie.reset();  // Controller::load_playlist_item clears retained ownership
+        state.loaded_on_demand.reset();
+        state.on_demand = false;
         calls.push_back("load_at " + pl.title + " " + std::to_string(idx));
         load_at_ms.push_back(elapsed_ms());
         offsets.push_back(offset_s);
@@ -3420,4 +3422,54 @@ TEST_CASE("a final selected movie with no 00 schedule cannot auto-tune into repl
     nothing_playing_rule(g);
     CHECK_FALSE(g.pb.switch_pending()); CHECK(g.s.current_playlist_item() == nullptr);
     CHECK(std::find(g.s.guide_gave_up.begin(), g.s.guide_gave_up.end(), 2) != g.s.guide_gave_up.end());
+}
+
+TEST_CASE("a loaded selected regular programme keeps its metadata through refresh", "[playlist_playback][on_demand][playlist_reload]") {
+    Guide g; g.s.playlists[1].items[0].start = 10; g.s.playlists[1].items[0].end = 600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 20;
+    const auto selected = app::on_air(g.channels[1], g.t.wall, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto loads = g.t.offsets.size();
+    auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+    bool removed_channel = false;
+    SECTION("selected item removed and a shorter replacement remains") {
+        fresh.video[1].items = {video_item("replacement")}; fresh.video[1].items[0].end = 60;
+    }
+    SECTION("same path metadata edited") {
+        fresh.video[1].items[0].title = "edited"; fresh.video[1].items[0].start = 30; fresh.video[1].items[0].end = 60;
+    }
+    SECTION("whole selected channel removed") { removed_channel = true; fresh.video.erase(fresh.video.begin() + 1); }
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    REQUIRE(g.s.current_playlist_item());
+    CHECK(g.s.current_playlist_item()->title == "a"); CHECK(g.s.current_playlist_item()->start == 10);
+    CHECK(g.s.current_playlist_item()->end == 600); CHECK(g.s.on_demand); CHECK(g.s.video_active);
+    g.s.update_playback_state(120, 800); g.pb.tick_auto_advance();
+    CHECK(g.t.offsets.size() == loads); REQUIRE(g.s.current_playlist_item());
+    CHECK(g.s.current_playlist_item()->title == "a");
+    // Repeated refresh must not capture the replacement row as the source.
+    snap = app::snapshot_for_reload(g.s, -1); CHECK(snap.playing_item_title == "a");
+    g.s.update_playback_state(600, 800); g.pb.tick_auto_advance();
+    CHECK_FALSE(g.s.on_demand);
+    CHECK(g.t.offsets.size() == loads + 1);
+    REQUIRE(g.s.current_playlist_item()); CHECK(g.s.current_playlist_item()->title != "a");
+    if (removed_channel) CHECK(g.s.tuned_channel == 0);
+}
+
+TEST_CASE("explicit playback exits release a selected regular programme", "[playlist_playback][on_demand][playback_reset]") {
+    Guide g; g.t.wall = kW0 + 20;
+    const auto selected = app::on_air(g.channels[1], g.t.wall, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    SECTION("live tune replaces it") {
+        g.t.wall = kW0 + 130; g.pb.tune(1, true); run_frames(g.pb, g.t, kSettled);
+        REQUIRE(g.s.current_playlist_item()); CHECK(g.s.current_playlist_item()->title == "b");
+    }
+    SECTION("List style stops it") { g.pb.set_channels(nullptr); CHECK_FALSE(g.s.video_active); CHECK(g.s.current_playlist_item() == nullptr); }
+    SECTION("stop-to-menu releases it") { app::stop_to_menu(g.s); CHECK(g.s.current_playlist_item() == nullptr); }
+    SECTION("Media Browser handover releases it") { app::reset_main_ui_for_media_browser(g.s); CHECK(g.s.current_playlist_item() == nullptr); }
+    SECTION("game handover clear releases ownership") { app::clear_now_playing(g.s); }
+    CHECK_FALSE(g.s.loaded_on_demand);
+    CHECK_FALSE(g.s.on_demand);
 }

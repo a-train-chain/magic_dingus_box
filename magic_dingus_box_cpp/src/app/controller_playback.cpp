@@ -367,7 +367,7 @@ void Controller::update_state(AppState& state) {
     if (was_active && !state.video_active && !video_ended) {
         // Only reset if we don't have a valid playlist index set
         // This prevents resetting during playlist switches
-        if (state.current_playlist_index < 0 && !state.loaded_movie) {
+        if (state.current_playlist_index < 0 && !state.retained_playlist_item()) {
             state.current_item_index = -1;
             // Clear the published now-playing info too, so the phone
             // remote doesn't keep showing a track that has stopped.
@@ -457,6 +457,8 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
     }
 
     state.loaded_movie.reset();
+    state.loaded_on_demand.reset();
+    state.on_demand = false;
     // Publish "what is playing" for StatusWriter -> kiosk_status.json ->
     // the phone remote. These AppState fields were declared and
     // serialized but never assigned anywhere, so remote.js's
