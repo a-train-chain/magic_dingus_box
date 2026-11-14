@@ -9,6 +9,7 @@ import re
 import secrets
 import stat
 import subprocess
+import time
 from typing import Callable, Optional, Union
 
 from .common import Paths, atomic_write, bounded_lock
@@ -119,8 +120,12 @@ class ControlClient:
         self.paths = paths
         self.runner = runner
 
-    def _run(self, args, *, input=None, timeout):
+    def _run(self, args, *, input=None, timeout, deadline=None):
         try:
+            if deadline is not None:
+                timeout = min(timeout, deadline-time.monotonic())
+                if timeout <= 0:
+                    raise ControlError('control deadline exceeded')
             result = self.runner(args, input=input, capture_output=True, text=True,
                                  timeout=timeout, check=False)
             if result.returncode != 0:
@@ -130,19 +135,51 @@ class ControlClient:
             # Includes TimeoutExpired/CalledProcessError carrying argv/stdout.
             raise ControlError('control command failed or timed out') from None
 
-    def _identity(self, container_id):
+    def _identity(self, container_id, *, deadline=None):
         # Inspect only identity fields: a complete docker inspect includes keys.
         output = self._run(['docker', 'inspect', '--format',
                             '{{.Id}} {{.State.Pid}} {{.State.StartedAt}} {{.State.Running}}',
-                            container_id], timeout=INSPECT_TIMEOUT_S)
+                            container_id], timeout=INSPECT_TIMEOUT_S, deadline=deadline)
         fields = output.split()
         if (len(fields) != 4 or fields[0] != container_id or not fields[1].isdigit()
                 or int(fields[1]) <= 0 or fields[3] != 'true'):
             raise ControlError('container generation unavailable or changed')
         return tuple(fields[:3])
 
-    def get(self, path, container_id) -> dict:
-        result = self._request('GET', path, None, container_id)
+    def observe_generation(self, container_id=None, *, deadline=None) -> dict:
+        """Canonical tunnel identity, including tun0 replacement in one container.
+
+        Uses inspect → interface index → inspect, each command <=3 seconds.
+        None resolves the current mdb_gluetun container. No lock/auth required;
+        missing/replaced containers or absent tun0 raise sanitized ControlError.
+        Consumers compare the complete JSON-safe dictionary, never just ID.
+        """
+        if container_id is None:
+            output = self._run(['docker', 'inspect', '--format',
+                                '{{.Id}} {{.State.Pid}} {{.State.StartedAt}} {{.State.Running}}',
+                                'mdb_gluetun'], timeout=INSPECT_TIMEOUT_S, deadline=deadline)
+            fields = output.split()
+            if (len(fields) != 4 or not re.fullmatch(r'[0-9a-f]{64}', fields[0])
+                    or not fields[1].isdigit() or int(fields[1]) <= 0 or fields[3] != 'true'):
+                raise ControlError('container generation unavailable or changed')
+            container_id, pid, started_at = fields[:3]
+            identity = (container_id, pid, started_at)
+        else:
+            if not isinstance(container_id, str) or not re.fullmatch(r'[0-9a-f]{64}', container_id):
+                raise ControlError('invalid container identity')
+            identity = self._identity(container_id, deadline=deadline)
+        output = self._run(['docker', 'exec', container_id, 'ip', '-o', 'link', 'show', 'dev', 'tun0'],
+                           timeout=INSPECT_TIMEOUT_S, deadline=deadline)
+        match = re.fullmatch(r'([1-9][0-9]*): tun0(?:@[^: ]+)?:[^\n]*(?:\n)?', output)
+        if not match:
+            raise ControlError('tunnel generation unavailable')
+        if self._identity(container_id, deadline=deadline) != identity:
+            raise ControlError('container generation changed')
+        return {'container_id': container_id, 'pid': int(identity[1]),
+                'started_at': identity[2], 'tunnel_ifindex': int(match[1])}
+
+    def get(self, path, container_id, *, deadline=None) -> dict:
+        result = self._request('GET', path, None, container_id, deadline=deadline)
         if not isinstance(result, dict):
             raise ControlError('invalid control JSON response')
         return result
@@ -188,7 +225,7 @@ class ControlClient:
         if not valid:
             raise ControlError('invalid partial VPN settings mutation')
 
-    def _request(self, method, path, payload, container_id, precondition=None):
+    def _request(self, method, path, payload, container_id, precondition=None, *, deadline=None):
         if (method == 'GET' and path not in PUBLIC_READS + PRIVATE_ROUTES
                 or method == 'PUT' and path not in PRIVATE_ROUTES):
             raise ControlError('control route not allowed')
@@ -196,7 +233,7 @@ class ControlClient:
             raise ControlError('invalid container identity')
         if method == 'PUT':
             self._validate_payload(path, payload)
-        identity = self._identity(container_id)
+        identity = self._identity(container_id, deadline=deadline)
         try:
             key = (_auth_dir(self.paths)/'recovery.key').read_text().strip() if path in PRIVATE_ROUTES else ''
             if path in PRIVATE_ROUTES and not re.fullmatch(r'[0-9a-f]{64}', key):
@@ -206,7 +243,7 @@ class ControlClient:
             raise ControlError('control credential or payload unavailable') from None
         # Fence the generation again after local preparation, then let the
         # controller recheck intent/revision/playback immediately before I/O.
-        if self._identity(container_id) != identity:
+        if self._identity(container_id, deadline=deadline) != identity:
             raise ControlError('container generation changed')
         if precondition is not None:
             try:
@@ -216,8 +253,8 @@ class ControlClient:
             if not allowed:
                 raise ControlError('control precondition rejected')
         output = self._run(['nsenter', '--target', identity[1], '--net',
-                            'python3', '-c', _HTTP_SCRIPT], input=request, timeout=REQUEST_TIMEOUT_S)
-        if self._identity(container_id) != identity:
+                            'python3', '-c', _HTTP_SCRIPT], input=request, timeout=REQUEST_TIMEOUT_S, deadline=deadline)
+        if self._identity(container_id, deadline=deadline) != identity:
             raise ControlError('container generation changed')
         try:
             envelope = json.loads(output)
