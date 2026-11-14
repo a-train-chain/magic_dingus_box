@@ -50,7 +50,7 @@ public:
         std::function<void(const Consent&)> resume;
         // Optional crash recovery, serialized before claims and retried only
         // while idle with no held pause. Never races a later session.
-        std::function<bool()> recover;
+        std::function<bool()> recover{};
     };
 
     explicit MovieQuietMode(Actions actions);

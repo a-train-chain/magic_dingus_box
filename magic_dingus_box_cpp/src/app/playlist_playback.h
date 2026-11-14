@@ -171,9 +171,9 @@ public:
     // renumbers the rows, so the tuned channel is re-found by
     // AppState::last_channel_id (-1 when its channel is gone); overnight
     // parking retains channel 00 independently of the remembered movie. The
-    // guide_gave_up rows are NOT re-anchored — a reload can shift them —
-    // and live until a channel proves it plays (kChannelPlaysS); only rows
-    // past the new list's end are dropped. nullptr also forgets the tuned /
+    // guide_gave_up rows are re-anchored by stable channel identity, including
+    // an absent channel returning later, until a channel proves it plays
+    // (kChannelPlaysS). nullptr also forgets the tuned /
     // given-up channels. A loaded movie survives ordinary rebuild/removal via
     // AppState::loaded_movie; selected regular programmes similarly retain
     // loaded_on_demand. nullptr explicitly leaves either immediately.
