@@ -153,12 +153,22 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
     }
     const auto enter_row = [&] {
         if (!f.pick_ahead || !f.cursor_row_tunable || cursor.on_picture ||
+            cursor.row < 0 || cursor.row >= f.rows ||
             first == f.row_airings.end() || viewer_tune_waiting(s, f)) return false;
         cursor.pick_at = first->starts_at;
         own(s);
         return true;
     };
     switch (e) {
+        case GuideEvent::PickAhead:
+            if (!f.pick_ahead || s.showing_intro_video || viewer_tune_waiting(s, f)) break;
+            if (!f.on_screen) {
+                own(s);
+                s.is_fading = false;
+                cursor = guide_open(f.pending_tune.value_or(s.tuned_channel), f.rows);
+            }
+            if (!cursor.pick_at) enter_row();
+            break;
         case GuideEvent::Back:
             if (f.pick_ahead && f.on_screen && cursor.pick_at && !viewer_tune_waiting(s, f)) {
                 cursor.pick_at.reset();
@@ -205,7 +215,6 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
                 s.guide_cursor = guide_open(tuned, f.rows);
                 break;
             }
-            if (f.pick_ahead && !cursor.pick_at && enter_row()) break;
             if (f.pick_ahead && cursor.pick_at && picked != f.row_airings.end() &&
                 picked->starts_at > f.now_utc) {
                 cmd.on_demand = *picked;

@@ -51,6 +51,7 @@
 #include "app/game_handoff_kiosk.h"
 #include "app/guide_clock.h"
 #include "app/guide_nav.h"
+#include "app/guide_select_hold.h"
 #include "app/intro_sequence.h"
 #include "app/intro_sequence_kiosk.h"
 #include "app/media_info.h"
@@ -1026,6 +1027,18 @@ int main(int /* argc */, char* /* argv */[]) {
     // its game browser, Controller Setup wizard and pairing screen. `mode`
     // and `playlist_directory` are borrowed live.
     app::MenuButtonHold menu_hold;
+    app::GuideSelectHold guide_select_hold;
+    // Ownership survives cancellation until release, so a guide gesture
+    // cannot leak a release/repeat into a menu, game or replacement target.
+    bool guide_select_owned = false;
+    app::GuideCursor guide_select_cursor;
+    bool guide_select_shown = false;
+    bool guide_select_tunable = false;
+    int guide_select_tuned = -1;
+    std::optional<int> guide_select_pending;
+    uint64_t guide_select_generation = 0;
+    app::DisplayMode guide_select_display_mode{};
+    std::optional<double> guide_select_ends_at;
     app::SettingsInputContext settings_input{
         state,
         settings_menu,
@@ -1434,6 +1447,15 @@ int main(int /* argc */, char* /* argv */[]) {
         // way out — hands control back to MainMenu. It also evicts the MB
         // first if the display mode can no longer host it. See
         // MediaBrowserHost::handle_input.
+        if (guide_select_owned && state.current_screen == app::AppScreen::MediaBrowser) {
+            guide_select_hold.cancel();
+            input_events.erase(std::remove_if(input_events.begin(), input_events.end(),
+                [&](const platform::InputEvent& ev) {
+                    if (ev.action != InputAction::SELECT || !guide_select_owned) return false;
+                    if (!ev.pressed) guide_select_owned = false;
+                    return true;
+                }), input_events.end());
+        }
         mb_host.handle_input(input_events, mode.width, mode.height);
 #endif
 
@@ -1451,10 +1473,12 @@ int main(int /* argc */, char* /* argv */[]) {
             f.now_utc = playlist_transport.wall_now_utc();
             f.rows = static_cast<int>(channels.size());
             f.pending_tune = playlist_playback.pending_tune();
-            const int row = state.guide_cursor.row;
+            // Hidden holds open on the tuned channel, never the old cursor.
+            const int row = !on_screen && event == app::GuideEvent::PickAhead
+                ? f.pending_tune.value_or(state.tuned_channel) : state.guide_cursor.row;
             f.cursor_row_tunable =
                 playlist_playback.channel_on_air(row);
-            if (f.pick_ahead && on_screen && f.cursor_row_tunable &&
+            if (f.pick_ahead && (on_screen || event == app::GuideEvent::PickAhead) && f.cursor_row_tunable &&
                 row >= 0 && row < f.rows) {
                 f.row_airings = app::lineup(channels[row], f.now_utc, f.now_utc + 24 * 3600,
                                            zone_offset(f.now_utc), zone_offset);
@@ -1480,7 +1504,51 @@ int main(int /* argc */, char* /* argv */[]) {
             return apply_guide_input(app::GuideEvent::Back, 0, true);
         };
 
+        const auto guide_select_context = [&] {
+            return playlist_playback.guide_style() &&
+                state.display_settings.guide_mode == app::GuideMode::PickAhead &&
+                !settings_menu.is_active() && !settings_menu.is_opening() &&
+                !settings_menu.is_closing() && !keyboard.is_active() &&
+                !state.showing_intro_video && !state.is_loading_game &&
+                post_game_gate.accepts_input() && !menu_hold.button_held
+#ifdef MEDIA_BROWSER_ENABLED
+                && state.current_screen != app::AppScreen::MediaBrowser
+#endif
+                ;
+        };
+        const auto guide_select_unchanged = [&] {
+            const int row = guide_select_shown ? state.guide_cursor.row
+                : playlist_playback.pending_tune().value_or(state.tuned_channel);
+            return guide_select_context() &&
+                guide_select_shown == app::guide_visible(state) &&
+                guide_select_cursor.row == state.guide_cursor.row &&
+                guide_select_cursor.on_picture == state.guide_cursor.on_picture &&
+                guide_select_cursor.pick_at == state.guide_cursor.pick_at &&
+                guide_select_tuned == state.tuned_channel &&
+                guide_select_pending == playlist_playback.pending_tune() &&
+                guide_select_generation == channels_generation &&
+                guide_select_display_mode == state.display_settings.mode &&
+                guide_select_tunable == playlist_playback.channel_on_air(row) &&
+                (!guide_select_ends_at || playlist_transport.wall_now_utc() < *guide_select_ends_at);
+        };
+        const auto apply_guide_select = [&](app::GuideSelectHold::Action action) {
+            if (action == app::GuideSelectHold::Action::None) return;
+            apply_guide_input(action == app::GuideSelectHold::Action::Hold
+                ? app::GuideEvent::PickAhead : app::GuideEvent::Select,
+                0, app::guide_visible(state));
+        };
+
         for (const auto& ev : input_events) {
+            if (guide_select_hold.pending() &&
+                (!guide_select_unchanged() || ev.action != InputAction::SELECT))
+                guide_select_hold.cancel();
+            if (ev.action == InputAction::SELECT && guide_select_owned) {
+                if (!ev.pressed) {
+                    apply_guide_select(guide_select_hold.release(std::chrono::steady_clock::now()));
+                    guide_select_owned = false;
+                }
+                continue;
+            }
             // A game session ended inside an earlier event of THIS batch:
             // the remaining events were pressed before the game ran, and
             // the screen they were aimed at is gone (app/post_game_gate.h).
@@ -1562,6 +1630,35 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                 case InputAction::SELECT:
                     if (!ev.pressed) break; // Only trigger on press
+                    if (guide_select_context()) {
+                        guide_select_owned = true;
+                        guide_select_cursor = state.guide_cursor;
+                        guide_select_shown = guide_shown;
+                        guide_select_tuned = state.tuned_channel;
+                        guide_select_pending = playlist_playback.pending_tune();
+                        guide_select_generation = channels_generation;
+                        guide_select_display_mode = state.display_settings.mode;
+                        const int row = guide_shown ? state.guide_cursor.row
+                            : guide_select_pending.value_or(state.tuned_channel);
+                        guide_select_tunable = playlist_playback.channel_on_air(row);
+                        guide_select_ends_at.reset();
+                        // Retain programme identity across the gesture. If it
+                        // expires before release, discard rather than retarget.
+                        if (guide_shown && guide_select_cursor.pick_at &&
+                            row >= 0 && row < static_cast<int>(channels.size())) {
+                            const double now = playlist_transport.wall_now_utc();
+                            for (const auto& airing : app::lineup(channels[row], now,
+                                     now + 24 * 3600, zone_offset(now), zone_offset)) {
+                                if (airing.starts_at == *guide_select_cursor.pick_at) {
+                                    guide_select_ends_at = airing.ends_at;
+                                    break;
+                                }
+                            }
+                            if (!guide_select_ends_at) break;
+                        }
+                        guide_select_hold.press(std::chrono::steady_clock::now());
+                        break;
+                    }
                     if (guide_style) {
                         // Channel Guide: hidden, SELECT opens it on the tuned
                         // channel; open, it acts on the cursor — tune another
@@ -1614,6 +1711,11 @@ int main(int /* argc */, char* /* argv */[]) {
                 default:
                     break;
             }
+        }
+
+        if (guide_select_hold.pending()) {
+            if (!guide_select_unchanged()) guide_select_hold.cancel();
+            else apply_guide_select(guide_select_hold.tick(std::chrono::steady_clock::now()));
         }
 
         // Settings → Display → Menu Style may have flipped the style in the

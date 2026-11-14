@@ -149,7 +149,8 @@ enum class GuideEvent {
     Horizontal,   // directional LEFT / RIGHT (delta)
     Back,         // short menu press leaves a picked row
     Rotate,       // encoder turn / D-pad up-down (delta)
-    Select,       // encoder press / SELECT (press edge)
+    Select,       // completed short tap (press edge outside Pick Ahead)
+    PickAhead,    // explicit Select hold: enter on-now without playing
     ChannelStep,  // NEXT / PREV (press edge), after on_next() / on_prev() ran
 };
 
@@ -185,10 +186,14 @@ struct GuideCommand {
     bool toggle_picture = false;  // the transport's toggle_picture_crop()
 };
 
-// Pick Ahead: Select/RIGHT enters a tunable row on now; in the row,
+// Pick Ahead: PickAhead/RIGHT enters a tunable row on now; in the row,
 // turns/LEFT/RIGHT walk programmes through the exclusive 24-hour horizon.
 // Before on-now leaves the row; Back leaves it and returns consumed. Select
 // on-now uses the Live Tune/Close rules; a future choice emits on_demand.
+// An unpicked row uses the same Tune/Close rules on its first Select.
+// PickAhead does nothing in Live; hidden, it opens on the tuned row and
+// enters on-now using facts gathered for that tuned row. An existing
+// picked programme stays selected through another hold.
 // Horizontal/Back do nothing in Live.
 //
 // One input in Channel Guide style (the intro ignores SELECT, as on_select):

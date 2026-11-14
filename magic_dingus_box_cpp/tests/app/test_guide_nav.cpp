@@ -15,6 +15,7 @@
 
 #include "app/app_state.h"
 #include "app/guide_nav.h"
+#include "app/guide_select_hold.h"
 #include "app/playback_reset.h"
 #include "platform/input_manager.h"
 
@@ -1008,11 +1009,11 @@ app::GuideFacts pick_facts(const app::AppState& s) {
 }
 }
 
-TEST_CASE("Pick Ahead enters a tunable row before selecting its on-now programme", "[guide_nav][pick_ahead]") {
+TEST_CASE("Pick Ahead hold enters a tunable row before selecting its on-now programme", "[guide_nav][pick_ahead]") {
     app::AppState s; put_playing(s, 1); s.ui_visible_when_playing = true;
     s.guide_cursor.row = 2;
     auto f = pick_facts(s);
-    const auto enter = app::guide_input(s, app::GuideEvent::Select, 0, f);
+    const auto enter = app::guide_input(s, app::GuideEvent::PickAhead, 0, f);
     CHECK(enter.tune == -1); CHECK_FALSE(enter.on_demand);
     CHECK(s.guide_cursor.pick_at == 900);
     CHECK(s.guide_opened_by_viewer);
@@ -1137,9 +1138,105 @@ TEST_CASE("selecting on now from the tuned on-demand row explicitly tunes live",
     app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.on_demand = true;
     s.guide_cursor.row = 1;
     auto f = pick_facts(s);
-    CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == -1);
+    CHECK(app::guide_input(s, app::GuideEvent::PickAhead, 0, f).tune == -1);
     REQUIRE(s.guide_cursor.pick_at == 900);
     const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
     CHECK(cmd.tune == 1); CHECK_FALSE(cmd.on_demand);
     CHECK_FALSE(s.guide_cursor.pick_at); CHECK_FALSE(s.guide_opened_by_viewer);
+}
+
+TEST_CASE("Pick Ahead short tap watches another visible row immediately", "[guide_nav][pick_ahead][select_hold]") {
+    app::AppState s; put_playing(s, 1); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 2;
+    const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, pick_facts(s));
+    CHECK(cmd.tune == 2);
+    CHECK_FALSE(cmd.on_demand);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+    CHECK_FALSE(s.guide_opened_by_viewer);
+}
+
+TEST_CASE("guide Select separates a tap from a single hold at the deadline", "[guide_nav][select_hold]") {
+    app::GuideSelectHold hold;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    using namespace std::chrono_literals;
+    CHECK(hold.release(start) == Action::None);
+    CHECK(hold.tick(start + 1s) == Action::None);
+    hold.press(start);
+    REQUIRE(hold.pending());
+    SECTION("release at 499 milliseconds is a tap") {
+        CHECK(hold.tick(start + 499ms) == Action::None);
+        CHECK(hold.release(start + 499ms) == Action::Tap);
+    }
+    SECTION("the 500 millisecond tick emits once and consumes release") {
+        CHECK(hold.tick(start + 500ms) == Action::Hold);
+        CHECK(hold.tick(start + 1s) == Action::None);
+        CHECK(hold.release(start + 1s) == Action::None);
+    }
+    SECTION("release at the deadline emits the unticked hold") {
+        CHECK(hold.release(start + 500ms) == Action::Hold);
+    }
+    SECTION("a duplicate press keeps the original deadline") {
+        hold.press(start + 400ms);
+        CHECK(hold.tick(start + 500ms) == Action::Hold);
+        CHECK(hold.release(start + 501ms) == Action::None);
+    }
+    SECTION("cancel discards an uncompleted gesture") {
+        hold.cancel();
+        CHECK(hold.tick(start + 1s) == Action::None);
+        CHECK(hold.release(start + 1s) == Action::None);
+    }
+    SECTION("cancel after a hold still discards the release") {
+        CHECK(hold.tick(start + 500ms) == Action::Hold);
+        hold.cancel();
+        CHECK(hold.release(start + 1s) == Action::None);
+    }
+    CHECK_FALSE(hold.pending());
+    CHECK(hold.release(start + 2s) == Action::None);
+    hold.press(start + 3s);
+    CHECK(hold.release(start + 3100ms) == Action::Tap);
+}
+
+TEST_CASE("hidden Pick Ahead hold opens the tuned row and ignores the stale cursor", "[guide_nav][pick_ahead][select_hold]") {
+    app::AppState s; put_playing(s, 3);
+    s.guide_cursor = {6, 2, true, 1500};
+    auto f = pick_facts(s);
+    REQUIRE_FALSE(f.on_screen);
+    SECTION("tap opens only") {
+        const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
+        CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand);
+        CHECK_FALSE(s.guide_cursor.pick_at);
+    }
+    SECTION("hold opens and enters on now") {
+        const auto cmd = app::guide_input(s, app::GuideEvent::PickAhead, 0, f);
+        CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand);
+        CHECK(s.guide_cursor.pick_at == 900);
+        app::guide_input(s, app::GuideEvent::Rotate, 1, pick_facts(s));
+        const auto play = app::guide_input(s, app::GuideEvent::Select, 0, pick_facts(s));
+        REQUIRE(play.on_demand); CHECK(play.on_demand->starts_at == 1500);
+    }
+    CHECK(s.guide_cursor.row == 3);
+}
+
+TEST_CASE("Pick Ahead hold cannot tune invalid off-air Picture or Live rows", "[guide_nav][pick_ahead][select_hold]") {
+    app::AppState s; put_playing(s, 1); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 2;
+    auto f = pick_facts(s);
+    SECTION("invalid row") { s.guide_cursor.row = 99; }
+    SECTION("off air") { f.cursor_row_tunable = false; f.row_airings.clear(); }
+    SECTION("Picture control") { s.guide_cursor.on_picture = true; }
+    SECTION("Live mode") { f.pick_ahead = false; }
+    SECTION("intro") { s.showing_intro_video = true; }
+    SECTION("viewer tune waiting") { s.guide_viewer_tune = 2; f.pending_tune = 2; }
+    const auto cmd = app::guide_input(s, app::GuideEvent::PickAhead, 0, f);
+    CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand); CHECK_FALSE(cmd.toggle_picture);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("holding Select again preserves a selected future programme", "[guide_nav][pick_ahead][select_hold]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    const auto cmd = app::guide_input(s, app::GuideEvent::PickAhead, 0, pick_facts(s));
+    CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand);
+    CHECK(s.guide_cursor.pick_at == 1500);
 }

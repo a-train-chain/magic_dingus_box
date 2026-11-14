@@ -966,6 +966,10 @@ std::vector<InputEvent> InputManager::poll() {
                 }
             }
             
+            // EV_KEY value 2 is autorepeat, not release. Select consumers
+            // time the real down/up gesture; never manufacture an up edge.
+            if (ev.type == EV_KEY && ev.value == 2 && input_ev.action == InputAction::SELECT)
+                input_ev.action = InputAction::NONE;
             if (input_ev.action != InputAction::NONE) {
                 events.push_back(input_ev);
             }
