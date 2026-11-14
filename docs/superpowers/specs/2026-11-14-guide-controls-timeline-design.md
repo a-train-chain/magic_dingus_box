@@ -20,6 +20,8 @@ schedule data.
 
 ## Interaction
 
+- The hold-to-browse gesture applies in Guide Mode: Pick Ahead. Live mode retains
+  its existing one-press watch behavior.
 - In the open Channel Guide, one short Select/encoder press watches the highlighted
   channel immediately. While browsing future programmes, it plays the selected
   programme from its beginning as today.
