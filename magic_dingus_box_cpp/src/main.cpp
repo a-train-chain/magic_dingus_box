@@ -1027,10 +1027,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // its game browser, Controller Setup wizard and pairing screen. `mode`
     // and `playlist_directory` are borrowed live.
     app::MenuButtonHold menu_hold;
-    app::GuideSelectHold guide_select_hold;
-    // Ownership survives cancellation until release, so a guide gesture
-    // cannot leak a release/repeat into a menu, game or replacement target.
-    bool guide_select_owned = false;
+    app::GuideSelectInput guide_select_hold;
     app::GuideCursor guide_select_cursor;
     bool guide_select_shown = false;
     bool guide_select_tunable = false;
@@ -1411,6 +1408,15 @@ int main(int /* argc */, char* /* argv */[]) {
             auto gpio_events = gpio.poll();
             input_events.insert(input_events.end(), gpio_events.begin(), gpio_events.end());
         }
+        // Device removal supplies cancellation, never an artificial release.
+        // Drop any earlier Select events from a source lost in this poll too.
+        const auto lost_sources = input.take_disconnected_sources();
+        for (const auto source : lost_sources) guide_select_hold.source_lost(source);
+        input_events.erase(std::remove_if(input_events.begin(), input_events.end(),
+            [&](const platform::InputEvent& ev) {
+                return ev.action == InputAction::SELECT &&
+                    std::find(lost_sources.begin(), lost_sources.end(), ev.source_id) != lost_sources.end();
+            }), input_events.end());
         // For the redraw gate: ANY input draws this iteration. Captured
         // before the unlock-sequence detector and the MB dispatcher
         // consume events, so a swallowed press still counts.
@@ -1447,12 +1453,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // way out — hands control back to MainMenu. It also evicts the MB
         // first if the display mode can no longer host it. See
         // MediaBrowserHost::handle_input.
-        if (guide_select_owned && state.current_screen == app::AppScreen::MediaBrowser) {
+        if (state.current_screen == app::AppScreen::MediaBrowser) {
             guide_select_hold.cancel();
             input_events.erase(std::remove_if(input_events.begin(), input_events.end(),
                 [&](const platform::InputEvent& ev) {
-                    if (ev.action != InputAction::SELECT || !guide_select_owned) return false;
-                    if (!ev.pressed) guide_select_owned = false;
+                    if (ev.action != InputAction::SELECT || !guide_select_hold.owns(ev.source_id)) return false;
+                    if (!ev.pressed) guide_select_hold.release(ev.source_id, std::chrono::steady_clock::now());
                     return true;
                 }), input_events.end());
         }
@@ -1542,10 +1548,9 @@ int main(int /* argc */, char* /* argv */[]) {
             if (guide_select_hold.pending() &&
                 (!guide_select_unchanged() || ev.action != InputAction::SELECT))
                 guide_select_hold.cancel();
-            if (ev.action == InputAction::SELECT && guide_select_owned) {
+            if (ev.action == InputAction::SELECT && guide_select_hold.owns(ev.source_id)) {
                 if (!ev.pressed) {
-                    apply_guide_select(guide_select_hold.release(std::chrono::steady_clock::now()));
-                    guide_select_owned = false;
+                    apply_guide_select(guide_select_hold.release(ev.source_id, std::chrono::steady_clock::now()));
                 }
                 continue;
             }
@@ -1631,7 +1636,6 @@ int main(int /* argc */, char* /* argv */[]) {
                 case InputAction::SELECT:
                     if (!ev.pressed) break; // Only trigger on press
                     if (guide_select_context()) {
-                        guide_select_owned = true;
                         guide_select_cursor = state.guide_cursor;
                         guide_select_shown = guide_shown;
                         guide_select_tuned = state.tuned_channel;
@@ -1656,7 +1660,7 @@ int main(int /* argc */, char* /* argv */[]) {
                             }
                             if (!guide_select_ends_at) break;
                         }
-                        guide_select_hold.press(std::chrono::steady_clock::now());
+                        guide_select_hold.press(ev.source_id, std::chrono::steady_clock::now());
                         break;
                     }
                     if (guide_style) {

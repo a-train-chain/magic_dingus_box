@@ -43,6 +43,7 @@ static_assert(mc::kAbsHat0X == ABS_HAT0X && mc::kAbsHat0Y == ABS_HAT0Y,
 namespace platform {
 
 struct InputManager::Device {
+    uint64_t source_id = 0;
     int fd;
     struct libevdev* dev;
     std::string name;
@@ -309,6 +310,7 @@ bool InputManager::open_joystick_devices() {
             }
             
             std::string device_name = device->name;  // Save name before move
+            device->source_id = next_source_id_++;
             devices_.push_back(std::move(device));
             found = true;
             std::cout << "  Found joystick: " << device_name << " at " << path << std::endl;
@@ -362,6 +364,7 @@ void InputManager::reprobe_phone_remote() {
                 // know if the dying device was the one holding a direction.
                 dpad_held_x_ = 0;
                 dpad_held_y_ = 0;
+                disconnected_sources_.push_back(d->source_id);
                 it = devices_.erase(it);  // ~Device closes fd + frees libevdev
                 continue;
             }
@@ -418,6 +421,7 @@ void InputManager::reprobe_phone_remote() {
                 std::cerr << "  Warning: could not grab reopened phone remote"
                           << std::endl;
             }
+            device->source_id = next_source_id_++;
             devices_.push_back(std::move(device));
             std::cout << "  Reopened phone remote at " << path << std::endl;
             closedir(dir);
@@ -490,6 +494,7 @@ bool InputManager::open_keyboard_devices() {
             }
             
             std::string device_name = device->name;  // Save name before move
+            device->source_id = next_source_id_++;
             devices_.push_back(std::move(device));
             found = true;
             std::cout << "  Found keyboard: " << device_name << " at " << path << std::endl;
@@ -551,6 +556,7 @@ bool InputManager::open_rotary_devices() {
             }
             
             std::string device_name = device->name;
+            device->source_id = next_source_id_++;
             devices_.push_back(std::move(device));
             found = true;
             std::cout << "  Found rotary encoder: " << device_name << " at " << path << std::endl;
@@ -576,6 +582,7 @@ std::vector<InputEvent> InputManager::poll() {
 
         while (rc == LIBEVDEV_READ_STATUS_SYNC || rc == LIBEVDEV_READ_STATUS_SUCCESS) {
             InputEvent input_ev;
+            input_ev.source_id = device->source_id;
             input_ev.action = InputAction::NONE;
             input_ev.delta = 0;
             input_ev.pressed = false;
@@ -993,6 +1000,7 @@ std::vector<InputEvent> InputManager::poll() {
 
     if (!dead_devices.empty()) {
         for (Device* d : dead_devices) {
+            disconnected_sources_.push_back(d->source_id);
             std::cout << "  Input device disconnected, dropping: " << d->name << std::endl;
         }
         // A device that vanishes mid-hold never delivers its release event,
@@ -1226,6 +1234,7 @@ std::optional<retroarch::CaptureDeviceCaps> InputManager::device_caps(uint16_t v
 
 void InputManager::cleanup() {
     for (auto& device : devices_) {
+        disconnected_sources_.push_back(device->source_id);
         if (device->dev) {
             libevdev_grab(device->dev, LIBEVDEV_UNGRAB);
         }

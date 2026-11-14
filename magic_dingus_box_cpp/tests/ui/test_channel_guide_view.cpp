@@ -1178,3 +1178,47 @@ TEST_CASE("continuation markers describe either clipped edge even without title 
         f.channels[1].total_s = base + 300 + 3600;
     }
 }
+
+TEST_CASE("retained films forecast the genuine morning opener even when it repeats", "[channel_guide_view][morning_return]") {
+    Fixture f;
+    auto& ch = f.channels[1]; ch.day_start_h = 6; ch.on_air_h = 19;
+    ch.items = {{1, 0, 7200}}; ch.total_s = 7200;
+    auto& film = f.playlists[1].items[0];
+    film.path = "only-film.mp4"; film.movie_tmdb_id = 42; film.end = 7200;
+    const auto retained = film;
+    for (bool crt : {false, true}) {
+        for (bool selected : {false, true}) {
+            INFO("CRT " << crt << " on demand " << selected);
+            auto in = f.in(crt); in.now_utc = E + 86400 + 1800;
+            in.tuned = 1; in.cursor.row = 1; in.on_demand = selected;
+            in.playing.playlist = 1; in.playing.item = 0;
+            in.playing.retained_item = &retained;
+            in.playing.position_s = 1800; in.playing.duration_s = 7200;
+            in.playing.live_cutoff_utc = E + 86400 + 3600;
+            const auto v = ui::layout_channel_guide(in);
+            CHECK(v.panel.item_title == "Show 1-0");
+            CHECK(v.panel.end_hm == (selected ? "2:00" : "1:00"));
+            CHECK(v.panel.next_title == "Show 1-0");
+            CHECK(v.panel.next_hm == "6:00");
+            CHECK(v.panel.show_next == !crt);
+        }
+    }
+}
+
+TEST_CASE("retained film replay suppression reaches morning after the final same-day candidate", "[channel_guide_view][morning_return]") {
+    Fixture f;
+    auto& ch = f.channels[1]; ch.day_start_h = 6; ch.on_air_h = 19;
+    ch.items = {{1, 0, 7200}}; ch.total_s = 7200;
+    auto& film = f.playlists[1].items[0];
+    film.path = "only-film.mp4"; film.movie_tmdb_id = 42; film.end = 7200;
+    const auto retained = film;
+    auto in = f.in(); in.now_utc = E + 23 * 3600 + 1800;
+    in.tuned = 1; in.cursor.row = 1; in.on_demand = true;
+    in.playing.playlist = 1; in.playing.item = 0; in.playing.retained_item = &retained;
+    // This copy ends at midnight: today's final matching slot is suppressed,
+    // but the next broadcast day's first film really does play at 6 AM.
+    in.playing.position_s = 5400; in.playing.duration_s = 7200;
+    const auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.next_title == "Show 1-0");
+    CHECK(v.panel.next_hm == "6:00");
+}

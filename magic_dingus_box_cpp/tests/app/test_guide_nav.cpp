@@ -1240,3 +1240,85 @@ TEST_CASE("holding Select again preserves a selected future programme", "[guide_
     CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand);
     CHECK(s.guide_cursor.pick_at == 1500);
 }
+
+TEST_CASE("lost Select source abandons timing and ownership without a tap", "[guide_nav][select_source_loss]") {
+    using namespace std::chrono_literals;
+    app::GuideSelectInput select;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    select.press(11, start);
+    REQUIRE(select.owns(11));
+    SECTION("loss during a short press") {
+        select.source_lost(11);
+    }
+    SECTION("loss after ordinary context cancellation") {
+        select.cancel();
+        REQUIRE(select.owns(11));  // still-live stale release remains guarded
+        select.source_lost(11);
+    }
+    SECTION("loss after a hold has fired") {
+        REQUIRE(select.tick(start + 500ms) == Action::Hold);
+        select.source_lost(11);
+    }
+    CHECK_FALSE(select.owns(11));
+    CHECK_FALSE(select.pending());
+    CHECK(select.tick(start + 1s) == Action::None);
+    CHECK(select.release(11, start + 1100ms) == Action::None);
+    // A reconnect has a fresh source identity; its first gesture works.
+    select.press(12, start + 2s);
+    REQUIRE(select.owns(12));
+    CHECK(select.release(12, start + 2100ms) == Action::Tap);
+    CHECK_FALSE(select.owns(12));
+}
+
+TEST_CASE("Select sources cannot release or cancel another live gesture", "[guide_nav][select_source_loss]") {
+    using namespace std::chrono_literals;
+    app::GuideSelectInput select;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    select.press(21, start);
+    select.source_lost(99);
+    CHECK(select.release(99, start + 100ms) == Action::None);
+    CHECK(select.pending()); CHECK(select.owns(21));
+    select.press(21, start + 400ms); // repeats do not restart the clock
+    CHECK(select.tick(start + 500ms) == Action::Hold);
+    CHECK(select.tick(start + 1s) == Action::None);
+    CHECK(select.release(21, start + 1100ms) == Action::None);
+    CHECK_FALSE(select.owns(21));
+    select.press(21, start + 2s);
+    CHECK(select.release(21, start + 2100ms) == Action::Tap);
+}
+
+TEST_CASE("a canceled still-live source release cannot finish a fresh Select gesture", "[guide_nav][select_source_loss]") {
+    using namespace std::chrono_literals;
+    app::GuideSelectInput select;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    select.press(31, start);
+    select.cancel(); // navigation/menu change: keep old release ownership
+    REQUIRE(select.owns(31));
+    select.press(32, start + 1s);
+    REQUIRE(select.owns(32));
+    REQUIRE(select.owns(31));
+    CHECK(select.release(31, start + 1100ms) == Action::None);
+    CHECK_FALSE(select.owns(31));
+    CHECK(select.owns(32)); CHECK(select.pending());
+    CHECK(select.release(32, start + 1200ms) == Action::Tap);
+    CHECK_FALSE(select.owns(32));
+    CHECK(select.tick(start + 2s) == Action::None);
+}
+
+TEST_CASE("a fresh Select source supersedes a pending one without accepting its stale release", "[guide_nav][select_source_loss]") {
+    using namespace std::chrono_literals;
+    app::GuideSelectInput select;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    const platform::InputEvent gpio{};
+    platform::InputEvent pad{}; pad.source_id = 41;
+    select.press(gpio.source_id, start); // GPIO is independent of evdev identities
+    select.press(pad.source_id, start + 400ms);
+    CHECK(select.tick(start + 500ms) == Action::None);
+    CHECK(select.release(0, start + 600ms) == Action::None);
+    CHECK(select.pending());
+    CHECK(select.release(41, start + 700ms) == Action::Tap);
+}

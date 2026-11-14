@@ -543,11 +543,10 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
             p.end_hm = d::hm(local_at(ends));
             const double shown_length = ends - started;
             p.progress = shown_length > 0 ? std::clamp(playing.played_s / shown_length, 0.0, 1.0) : 1.0;
-            // Next: what the channel joins when it ends — never the same
-            // item again (the boundary's rule, app::boundary_join).
+            // Suppress same-day replays at the immediate join, as playback
+            // does. A genuine overnight return starts a fresh broadcast day.
             auto nx = app::join_point(ch, ends, in.utc_offset_s, in.utc_offset_at);
-            const bool ends_off_air = !nx;
-            if (!nx) nx = at_next_opening(ends);
+            const double closing = nx ? nx->day_ends_at : ends;
             const auto watched = [&](const app::ScheduledItem& si) {
                 if (!in.playing.retained_item)
                     return si.playlist == playing.at.playlist && si.item == playing.at.item;
@@ -562,8 +561,10 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                        ch.items[nx->index].item == playing.at.item) {
                 nx = app::airing_after(ch, *nx, in.utc_offset_s, in.utc_offset_at);
             }
+            const bool returns_after_closure = !nx;
+            if (!nx) nx = at_next_opening(closing);
             if (nx) {
-                p.next_hm = d::hm(local_at(ends_off_air ? nx->starts_at : ends));
+                p.next_hm = d::hm(local_at(returns_after_closure ? nx->starts_at : ends));
                 p.next_title = d::title_of(in, ch.items[nx->index]);
             }
         };
