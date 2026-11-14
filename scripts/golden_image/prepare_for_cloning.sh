@@ -625,6 +625,10 @@ ARR_APPS=(radarr sonarr prowlarr)
 # $SECRET_STASH was chosen at preflight: the movie drive, never /dev/shm
 # unless the operator passed --allow-ram-stash.
 SECRET_PATHS=(
+    # Exact pause/cap ownership must leave the image and return to the source.
+    "${CPP_DIR}/data/qbit_paused_by_kiosk"
+    "${CPP_DIR}/data/qbit_paused_by_kiosk.services"
+    "${CPP_DIR}/data/qbit_paused_by_kiosk.services.claims"
     # Globbed, not the bare literal: an operator `.env.bak` / `.env.old` made
     # during a maintenance session carries the same credentials as .env itself,
     # sat outside every pattern (the tripwire scans only /home/magic and
@@ -982,6 +986,19 @@ for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
     shopt -u nullglob
 done
 unset _d _pl _base _keep _want _m _refs_file
+
+# Private owner movie titles never ship; interrupted/build ownership is disposable.
+for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
+    rm -f "${_d}/movie_library.json" "${_d}/movie_library.json.tmp" \
+          "${_d}/qbit_paused_by_kiosk.tmp" \
+          "${_d}/qbit_paused_by_kiosk.services.tmp" \
+          "${_d}/qbit_paused_by_kiosk.services.claims.tmp"
+done
+# Only data/ journals are live recovery authority; their originals are stashed below.
+rm -f "${CPP_DIR}/build/data/qbit_paused_by_kiosk" \
+      "${CPP_DIR}/build/data/qbit_paused_by_kiosk.services" \
+      "${CPP_DIR}/build/data/qbit_paused_by_kiosk.services.claims"
+unset _d
 
 # 3. The per-video store, <data>/media_info.json. It names every video the
 # box ever had a Crop setting or a length for — the operator's own file

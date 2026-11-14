@@ -339,3 +339,19 @@ PY
         }
     done
 }
+
+@test "private movie snapshots and quiet ownership survive local sync but never transfer" {
+    python3 "$BATS_TEST_DIRNAME/../lib/movie_privacy_checks.py" sync_filters "$TESTS_REPO_ROOT"
+}
+
+@test "source release tarball omits private movie snapshots and quiet ownership" {
+    python3 "$BATS_TEST_DIRNAME/../lib/movie_privacy_checks.py" release "$TESTS_REPO_ROOT"
+}
+
+@test "CMake data and dev_data staging omit private movie snapshots and quiet ownership" {
+    python3 "$BATS_TEST_DIRNAME/../lib/movie_privacy_checks.py" staging "$TESTS_REPO_ROOT"
+}
+
+@test "git ignores private movie snapshots and quiet ownership before accidental source commits" {
+    python3 "$BATS_TEST_DIRNAME/../lib/movie_privacy_checks.py" source_ignore "$TESTS_REPO_ROOT"
+}

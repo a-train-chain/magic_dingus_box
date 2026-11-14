@@ -1870,7 +1870,14 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json.tmp' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude 'magic_dingus_box_cpp/build.prev.*' \
@@ -1960,6 +1967,9 @@ install_update() {
     #                       - Transient kiosk<->web runtime files;
     #                          excluded so an OTA can't yank them out
     #                          from under the running web admin.
+    #   - data/movie_library.json and .tmp: private owner movie titles
+    #   - data/qbit_paused_by_kiosk{,.tmp,.services{,.tmp,.claims{,.tmp}}}:
+    #     device-owned pause/cap recovery journals, preserved locally
     #   - data/media_info.json, data/media_info.json.lock
     #                       - Per-video info (each video's Crop setting and
     #                          probed length/shape; the lock is its writers'
@@ -2070,7 +2080,14 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json.tmp' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
@@ -2537,7 +2554,14 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json.tmp' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
@@ -2701,7 +2725,14 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json.tmp' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \

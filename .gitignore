@@ -130,3 +130,13 @@ magic_dingus_box_cpp/services/.env
 
 # Local Claude Code state — not for the repo
 .claude/
+
+# Private owner movie titles and device pause ownership must never be committed.
+magic_dingus_box_cpp/data/movie_library.json
+magic_dingus_box_cpp/data/movie_library.json.tmp
+magic_dingus_box_cpp/data/qbit_paused_by_kiosk
+magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp
+magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services
+magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp
+magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims
+magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp

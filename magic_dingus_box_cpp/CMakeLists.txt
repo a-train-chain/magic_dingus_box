@@ -457,6 +457,15 @@ file(COPY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
 # Copy data directory structure but EXCLUDE large user data (roms, media)
 # These are user files that shouldn't be copied during build
 file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
+    # Private owner movie titles and device pause ownership are runtime-only.
+    PATTERN "movie_library.json" EXCLUDE
+    PATTERN "movie_library.json.tmp" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.tmp" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.services" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.services.tmp" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.services.claims" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.services.claims.tmp" EXCLUDE
     PATTERN "roms" EXCLUDE
     PATTERN "media" EXCLUDE
     PATTERN "*.chd" EXCLUDE
@@ -471,6 +480,15 @@ file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
 # dev_data only needed for local development, skip in production builds
 if(EXISTS ${CMAKE_SOURCE_DIR}/dev_data)
     file(COPY ${CMAKE_SOURCE_DIR}/dev_data DESTINATION ${CMAKE_BINARY_DIR}
+        # Private owner movie titles and device pause ownership are runtime-only.
+        PATTERN "movie_library.json" EXCLUDE
+        PATTERN "movie_library.json.tmp" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.tmp" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.services" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.services.tmp" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.services.claims" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.services.claims.tmp" EXCLUDE
         PATTERN "roms" EXCLUDE
         PATTERN "media" EXCLUDE
         PATTERN "*.chd" EXCLUDE

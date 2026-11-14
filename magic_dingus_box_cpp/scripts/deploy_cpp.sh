@@ -149,6 +149,7 @@ echo ""
 # playing whack-a-mole one filename at a time.
 ssh "${PI_HOST}" "sudo chown -R magic:magic ${PI_DIR} 2>/dev/null || true"
 
+# Keep private owner movie titles and device pause ownership on this box.
 echo "Step 1: Syncing code to ${PI_HOST}:${PI_DIR}/magic_dingus_box_cpp"
 rsync -avz --checksum \
     --delete \
@@ -173,7 +174,14 @@ rsync -avz --checksum \
     --exclude 'data/pairing_session.json' \
     --exclude 'data/pairing_audit.log' \
     --exclude 'data/pending_revocations.txt' \
+    --exclude 'data/movie_library.json' \
+    --exclude 'data/movie_library.json.tmp' \
     --exclude 'data/qbit_paused_by_kiosk' \
+    --exclude 'data/qbit_paused_by_kiosk.tmp' \
+    --exclude 'data/qbit_paused_by_kiosk.services' \
+    --exclude 'data/qbit_paused_by_kiosk.services.tmp' \
+    --exclude 'data/qbit_paused_by_kiosk.services.claims' \
+    --exclude 'data/qbit_paused_by_kiosk.services.claims.tmp' \
     --exclude 'data/flask_secret.key' \
     --exclude 'data/kiosk_status.json' \
     --exclude 'data/seek_request.json' \
