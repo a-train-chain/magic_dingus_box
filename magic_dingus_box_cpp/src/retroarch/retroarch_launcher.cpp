@@ -541,8 +541,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     // and no detected pads at all falls back to today's single
     // get_mapping(controller_type, core_name) path unchanged --
     // see resolve_port_mappings() for the exact preserved-behavior
-    // contract (also unit-tested on Mac against a synthetic pad
-    // list, since this /dev/input scan itself has no Mac build).
+    // contract (unit-tested on Mac with synthetic inventories and
+    // filesystem fixtures exercising the real event-device scanner).
     const auto pads = detect_connected_controllers();
     const auto profile_store = load_profile_store();
     const auto port_mappings =
