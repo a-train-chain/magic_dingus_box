@@ -34,6 +34,12 @@ struct Movie : MovieSearchHit {
     // "inCinemas" / "released" / "deleted". "released" means a home
     // (digital/physical) release exists per Radarr's metadata.
     std::string status;
+    std::vector<std::string> genres;
+    std::string certification;
+    // Exact imported-file duration in seconds and verbatim Radarr codec.
+    // Empty/zero when the file or its media info is unavailable.
+    double file_runtime_s = 0;
+    std::string file_video_codec;
     // Actual duration of the imported file (movieFile.mediaInfo.runTime,
     // floored to minutes). 0 when there's no file or Radarr hasn't
     // probed it yet.

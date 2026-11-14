@@ -86,6 +86,64 @@ TEST_CASE("parse_movie_list: extracts movieFile.path as file_container_path",
     REQUIRE(movies[0].file_runtime_minutes == 14);  // "0:14:48" floored
 }
 
+TEST_CASE("parse_movie_list: library facts", "[radarr_parsers]") {
+    const auto movies = media_browser::RadarrParsers::parse_movie_list(
+        read_fixture("movie_library.json"));
+    REQUIRE(movies.size() == 5);
+    CHECK(movies[0].genres == std::vector<std::string>{"Animation", "Family"});
+    CHECK(movies[0].certification == "G");
+    CHECK(movies[0].file_runtime_s == 4863.0);
+    CHECK(movies[0].file_video_codec == "x264");
+    CHECK(movies[0].file_runtime_minutes == 81);
+    CHECK(movies[1].certification == "R");
+    CHECK(movies[1].genres == std::vector<std::string>{"Horror"});
+    CHECK(movies[1].file_runtime_s == 6060.0);
+    CHECK(movies[1].file_video_codec == "x264");
+    CHECK(movies[2].certification == "PG-13");
+    CHECK(movies[2].genres == std::vector<std::string>{"Comedy"});
+    CHECK(movies[2].file_runtime_s == 5910.0);
+    CHECK(movies[2].file_video_codec == "x265");
+    CHECK(movies[3].certification == "NR");
+    CHECK(movies[3].genres == std::vector<std::string>{"Drama", "Romance"});
+    CHECK(movies[3].file_runtime_s == 7275.0);
+    CHECK(movies[3].file_video_codec == "h264");
+    CHECK_FALSE(movies[4].has_file);
+    CHECK(movies[4].genres == std::vector<std::string>{"Adventure"});
+    CHECK(movies[4].certification == "PG");
+    CHECK(movies[4].file_runtime_s == 0.0);
+    CHECK(movies[4].file_video_codec.empty());
+}
+
+TEST_CASE("parse_movie: library facts skip malformed genres", "[radarr_parsers]") {
+    SECTION("genres must be an array") {
+        const auto movie = media_browser::RadarrParsers::parse_movie(
+            R"({"genres":"Comedy"})");
+        REQUIRE(movie.has_value());
+        CHECK(movie->genres.empty());
+    }
+    SECTION("only strings in the array are retained") {
+        const auto movie = media_browser::RadarrParsers::parse_movie(
+            R"({"genres":["Drama",null,42,{},[],true,"Romance"],
+                "certification":"NR", "hasFile":true,
+                "movieFile":{"mediaInfo":{"runTime":"2:01:15","videoCodec":"H264"}}})");
+        REQUIRE(movie.has_value());
+        CHECK(movie->genres == std::vector<std::string>{"Drama", "Romance"});
+        CHECK(movie->certification == "NR");
+        CHECK(movie->file_runtime_s == 7275.0);
+        CHECK(movie->file_video_codec == "H264");
+        CHECK(movie->file_runtime_minutes == 121);
+    }
+    SECTION("missing metadata retains empty and zero defaults") {
+        const auto movie = media_browser::RadarrParsers::parse_movie(
+            R"({"hasFile":true,"movieFile":{}})");
+        REQUIRE(movie.has_value());
+        CHECK(movie->genres.empty());
+        CHECK(movie->certification.empty());
+        CHECK(movie->file_runtime_s == 0.0);
+        CHECK(movie->file_video_codec.empty());
+    }
+}
+
 TEST_CASE("parse_active_searches: collects movieIds from running searches",
           "[radarr][parsers][search-status]") {
     // Radarr /api/v3/command: a per-movie MoviesSearch carries

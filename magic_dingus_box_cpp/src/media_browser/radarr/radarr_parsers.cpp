@@ -84,6 +84,12 @@ void fill_library_fields(const Json::Value& r, Movie& m) {
     m.monitored = r.get("monitored", false).asBool();
     m.has_file = r.get("hasFile", false).asBool();
     m.status = r.get("status", "").asString();
+    m.certification = r.get("certification", "").asString();
+    if (r["genres"].isArray()) {
+        for (const auto& genre : r["genres"]) {
+            if (genre.isString()) m.genres.push_back(genre.asString());
+        }
+    }
     if (r.isMember("movieFile") && r["movieFile"].isObject()) {
         const auto& f = r["movieFile"];
         m.file_path = f.get("relativePath", "").asString();
@@ -94,8 +100,12 @@ void fill_library_fields(const Json::Value& r, Movie& m) {
         }
         m.file_size_bytes = f.get("size", 0).asInt64();
         if (f["mediaInfo"].isObject()) {
-            m.file_runtime_minutes = parse_timeleft_to_seconds(
-                f["mediaInfo"].get("runTime", "").asString()) / 60;
+            const auto& info = f["mediaInfo"];
+            const int runtime_s = parse_timeleft_to_seconds(
+                info.get("runTime", "").asString());
+            m.file_runtime_s = runtime_s;
+            m.file_runtime_minutes = runtime_s / 60;
+            m.file_video_codec = info.get("videoCodec", "").asString();
         }
     }
     m.added_at = r.get("added", "").asString();

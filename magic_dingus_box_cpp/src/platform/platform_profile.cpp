@@ -78,6 +78,7 @@ PlatformProfile profile_for(PiModel model) {
             // 1.5 GB envelope board: posters get the smallest budget
             // (see header — ~230 w185 grid posters).
             p.artwork_cache_budget_bytes = 64u * 1024u * 1024u;
+            p.movie_channel_codecs = {"x264", "h264", "avc"};
             break;
         case PiModel::Pi5:
             p.has_analog_audio = false;
@@ -94,6 +95,7 @@ PlatformProfile profile_for(PiModel model) {
             // Pi 4 / Unknown keep the full pause (struct default false).
             p.trickle_torrents_during_video = true;
             p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
+            p.movie_channel_codecs = {};
             break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on
@@ -103,6 +105,7 @@ PlatformProfile profile_for(PiModel model) {
             p.gpiochip_labels = {"pinctrl-rp1", "pinctrl-bcm2711",
                                  "pinctrl-bcm2835"};
             p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
+            p.movie_channel_codecs = {};
             break;
     }
     return p;
@@ -167,6 +170,7 @@ PlatformProfile apply_policy_override(PlatformProfile detected,
     detected.unsupported_game_systems = pi4.unsupported_game_systems;
     detected.unsupported_emulator_cores = pi4.unsupported_emulator_cores;
     detected.artwork_cache_budget_bytes = pi4.artwork_cache_budget_bytes;
+    detected.movie_channel_codecs = pi4.movie_channel_codecs;
     detected.policy_override = "pi4";
     return detected;
 }
