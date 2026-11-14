@@ -71,8 +71,68 @@ def read_intent(paths):
     return state
 
 
+COMPLETED_RETENTION_S = 600
+COMPLETED_LIMIT = 64
+
+
+def _finite(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _completed_operations(history, now):
+    """Attribution only: never read by may_recover or used as an inhibit."""
+    if not isinstance(history, list) or not _finite(now):
+        return []
+    result = []
+    for entry in history[-128:]:
+        if not isinstance(entry, dict):
+            continue
+        start, end = entry.get('created_at'), entry.get('completed_at')
+        if (_finite(start) and _finite(end) and 0 <= end-start <= 86400
+                and 0 <= now-end <= COMPLETED_RETENTION_S
+                and isinstance(entry.get('generation'), dict)
+                and isinstance(entry['generation'].get('container_id'), str)):
+            result.append(entry)
+    return result[-COMPLETED_LIMIT:]
+
+
+def owns_stop(paths, container_id, event_at, now=None):
+    """Attribute an observed event to live or recently completed maintenance.
+
+    This never changes enabled intent and grants no container-start permission.
+    Completed records cover only [created_at, completed_at], not their entire
+    retention period. A later stop cannot borrow an old operation's ownership.
+    """
+    if not isinstance(container_id, str) or not _finite(event_at):
+        return False
+    now = time.time() if now is None else now
+    state = read_intent(paths)
+    current_boot = boot_id()
+    for entry in state.get('inhibits', {}).values():
+        if not isinstance(entry, dict):
+            continue
+        start, end = entry.get('created_at'), entry.get('expires_at')
+        generation = entry.get('generation') or {}
+        if (isinstance(generation, dict) and generation.get('container_id') == container_id
+                and _finite(start) and _finite(end) and start <= event_at <= end
+                and entry.get('boot_id') == current_boot and entry.get('owner_start') is not None
+                and process_start(entry.get('owner_pid')) == entry['owner_start']):
+            return True
+    for entry in _completed_operations(state.get('completed_operations', []), now):
+        if (entry['generation'].get('container_id') == container_id
+                and entry.get('boot_id') == current_boot and entry.get('owner_start') is not None
+                and entry['created_at'] <= event_at <= entry['completed_at']):
+            return True
+    return False
+
+
 def _save(paths, state):
-    state.update(version=1, revision=uuid.uuid4().hex, updated_at=time.time())
+    now = time.time()
+    state['completed_operations'] = _completed_operations(state.get('completed_operations', []), now)
+    state.update(version=1, revision=uuid.uuid4().hex, updated_at=now)
     atomic_json(paths.state/'intent.json', state)
     return state
 
@@ -105,7 +165,13 @@ def release_inhibit(paths, token):
     with intent_lock(paths):
         s = read_intent(paths)
         if s:
-            s['inhibits'].pop(token, None)
+            completed = s['inhibits'].pop(token, None)
+            if isinstance(completed, dict):
+                history = _completed_operations(s.get('completed_operations', []), time.time())
+                # Keep historical evidence atomically with releasing inhibition.
+                # Neither release nor this journal can enable stopped intent.
+                history.append({**completed, 'completed_at': time.time()})
+                s['completed_operations'] = history
             return _save(paths, s)
         return {}
 

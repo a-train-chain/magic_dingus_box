@@ -24,7 +24,7 @@ from .catalog import CatalogStore, bounded_history, eligible_candidates, select_
 from .control import ControlClient, ControlError
 from .port_sync import PortSynchronizer, QbitClient
 from .intent import (read_json, read_intent, may_recover, adopt_running, set_intent,
-                     settings_revision, boot_id, process_start)
+                     settings_revision, boot_id, process_start, owns_stop)
 from .policy import decide, finite
 
 
@@ -104,12 +104,14 @@ class SystemAdapters:
 
     def config(self): return load_config(self.paths)
 
-    def run(self, args, deadline, cap=3):
+    def run(self, args, deadline, cap=3, *, on_submit=None):
         remaining = min(cap, deadline-self.mono())
         if remaining <= 0:
             raise TimeoutError('observation deadline')
         # No response or exception from Docker crosses the sanitized boundary.
         try:
+            if on_submit is not None:
+                on_submit()
             result = self.runner(args, capture_output=True, text=True, timeout=remaining, check=False)
             if result.returncode or len(result.stdout) > 1048576:
                 raise ValueError()
@@ -155,12 +157,12 @@ class SystemAdapters:
         try:
             output = self.run(['docker','events','--since',str(self.event_cursor),'--until',str(now),
                               '--filter','container=mdb_gluetun','--filter','event=stop',
-                              '--format','{{.Time}} {{.Actor.ID}}'],deadline,.5)
+                              '--format','{{.TimeNano}} {{.Actor.ID}}'],deadline,.5)
             self.event_cursor = now
             for line in output.splitlines()[-100:]:
                 fields = line.split()
                 if len(fields)==2 and fields[0].isdigit() and re.fullmatch('[a-f0-9]{64}',fields[1]):
-                    observation.update(explicit_stop=True,stop_at=int(fields[0]),stop_container=fields[1])
+                    observation.update(explicit_stop=True,stop_at=int(fields[0])/1_000_000_000,stop_container=fields[1])
         except Exception:
             pass  # Current stopped state still prevents ambiguous resurrection.
 
@@ -226,10 +228,25 @@ class SystemAdapters:
                     # Host traffic is public probe metadata only, never indexer traffic.
                     self.traffic['wan']=self._traffic(generation,deadline,host=True)
             o.update(self.traffic)
+            endpoint = None
             try:
                 endpoint=parse_endpoint(self.run(['docker','exec',generation['container_id'],'iptables','-S','OUTPUT'],deadline,.4))
-                if self.control.observe_generation(deadline=deadline)==generation: o['endpoint']=endpoint
-            except Exception: pass
+            except Exception:
+                pass
+            try:
+                current_generation = self.control.observe_generation(deadline=deadline)
+            except Exception:
+                current_generation = None
+            if current_generation == generation:
+                o['endpoint'] = endpoint
+            else:
+                # A known replacement (or failed final fence) invalidates the
+                # entire snapshot, including traffic cached before this tick.
+                # Force a fresh traffic probe on the next coherent generation.
+                self.traffic = {}
+                o.update(generation=current_generation, port=None, port_generation=None,
+                         qbit_synced=False, qbit_port=None, traffic=None,
+                         traffic_generation=None, control_available=None)
         else:
             # Missing tun0 is current affirmative tunnel failure; no cached port.
             o.update(traffic=False,traffic_at=self.mono(),port=None)
@@ -245,14 +262,14 @@ class SystemAdapters:
                          generation['container_id']],deadline,2)
         return bool(re.search(r'Using protonvpn servers from file which are .* more recent',output))
 
-    def container_action(self, action, observation, deadline):
+    def container_action(self, action, observation, deadline, *, on_submit=None):
         """Caller owns compose lock; no nested lock or health wait.
 
         Dependent shell helper is sourceable and has explicit inherited-lock
         mode. Its whole process group is bounded by GNU timeout on the Pi.
         """
         if action=='restart_container':
-            self.run(['docker','restart','--time','5','mdb_gluetun'],deadline,20)
+            self.run(['docker','restart','--time','5','mdb_gluetun'],deadline,20,on_submit=on_submit)
             return True
         script=self.paths.base/'magic_dingus_box_cpp/scripts/gluetun_cascade_restart.sh'
         # bash source with static argv; no interpolated settings/credentials.
@@ -303,7 +320,15 @@ class Controller:
         self.last_selection=durable.get('last_selection') if isinstance(durable.get('last_selection'),dict) else None
         pending_load=read_json(paths.state/'load-pending.json',9*1024*1024)
         try:
-            self.load_pending={'snapshot':validate_catalog(pending_load['provider'],self.a.wall()),'old_container':pending_load['old_container']}
+            submitted_wall = pending_load['submitted_wall']
+            if not finite(submitted_wall) or not 0 <= self.a.wall()-submitted_wall <= 86400:
+                raise ValueError('invalid load submission time')
+            snapshot = validate_catalog(pending_load['provider'],self.a.wall())
+            self.load_pending={'snapshot':snapshot,'old_container':pending_load['old_container']}
+            if submitted_wall >= self.last_load_wall:
+                self.last_load_identity = snapshot.identity
+                self.last_load_wall = submitted_wall
+                self.state['last_restart'] = self.a.mono()-(self.a.wall()-submitted_wall)
         except (KeyError,ValueError,TypeError):pass
         loaded=read_json(paths.state/'loaded.json',9*1024*1024)
         try:
@@ -333,6 +358,7 @@ class Controller:
     def _perform(self, ctx):
         action=ctx['action']; deadline=self.a.mono()+30
         allowed=[True]
+        submission = {}
         def precondition():
             allowed[0]=self._fence(ctx,deadline,require_tunnel=bool(ctx.get('generation')))
             return allowed[0]
@@ -358,22 +384,35 @@ class Controller:
                 return {'status':'issued'}
             with bounded_lock(self.paths.compose_lock,.25):
                 if not precondition(): raise Deferred()
-                if action=='restart_container':
-                    if ctx.get('snapshot'):
-                        atomic_json(self.paths.state/'load-pending.json',{'provider':ctx['snapshot'].provider,'old_container':self.container_key(ctx.get('generation') or ctx['observation'])})
-                    self.operation={'generation':ctx.get('generation') or self.container_key(ctx['observation']),'started_wall':self.a.wall(),
-                                    'until_wall':self.a.wall()+60,'owner_pid':os.getpid(),
-                                    'owner_start':process_start(os.getpid()),'boot_id':boot_id()}
-                    atomic_json(self.paths.state/'operation.json',self.operation)
                 atomic_json(self.paths.runtime/'action.json',{'revision':ctx['revision'],'intent_revision':ctx['intent_revision'],'container':self.container_key(ctx.get('generation') or ctx['observation'])})
-                self.a.container_action(action,ctx['observation'],deadline)
-            return {'status':'issued'}
+                if action == 'restart_container':
+                    def record_submission():
+                        submitted_wall = self.a.wall()
+                        operation = {'generation':ctx.get('generation') or self.container_key(ctx['observation']),
+                                     'started_wall':submitted_wall, 'until_wall':submitted_wall+60,
+                                     'owner_pid':os.getpid(), 'owner_start':process_start(os.getpid()), 'boot_id':boot_id()}
+                        atomic_json(self.paths.state/'operation.json',operation)
+                        if ctx.get('snapshot'):
+                            atomic_json(self.paths.state/'load-pending.json',
+                                        {'provider':ctx['snapshot'].provider,
+                                         'old_container':self.container_key(ctx.get('generation') or ctx['observation']),
+                                         'submitted_wall':submitted_wall})
+                        self.operation = operation
+                        submission.update(wall=submitted_wall, mono=self.a.mono(),
+                                          catalog_identity=ctx['snapshot'].identity if ctx.get('snapshot') else None)
+                    # The adapter invokes this only after deadline checks and
+                    # immediately before submitting Docker I/O under our lock.
+                    self.a.container_action(action,ctx['observation'],deadline,on_submit=record_submission)
+                else:
+                    self.a.container_action(action,ctx['observation'],deadline)
+            return {'status':'issued', 'submission':submission}
         except ControlError as exc:
-            return {'status':'deferred' if not allowed[0] or str(exc)=='control mutation deferred' else 'failed'}
+            return {'status':'deferred' if not allowed[0] or str(exc)=='control mutation deferred' else 'failed',
+                    'submission':submission}
         except (Deferred,TimeoutError,OSError):
-            return {'status':'deferred'}
+            return {'status':'deferred', 'submission':submission}
         except Exception:
-            return {'status':'failed' if allowed[0] else 'deferred'}
+            return {'status':'failed' if allowed[0] else 'deferred', 'submission':submission}
 
     def _complete(self, o):
         if not self.pending or not self.pending.done(): return
@@ -387,6 +426,23 @@ class Controller:
             delay=max(600,min(88200,r.get('next_due',self.a.wall()+600)-self.a.wall())) if finite(r.get('next_due')) else 600
             self.next_refresh=self.a.mono()+delay
             return
+        if ctx['action'] == 'restart_container':
+            submission = result.get('submission') or {}
+            if submission:
+                # Submitted-but-uncertain Docker I/O still consumes the bound.
+                # This bookkeeping is attribution, never start permission.
+                self.last_load_identity = submission['catalog_identity']
+                self.last_load_wall = submission['wall']
+                self.state['last_restart'] = submission['mono']
+            elif result['status'] == 'deferred' and self.state.get('last_restart') == ctx.get('decision_mono'):
+                # A lock/precondition deferral made no request. Restore only
+                # our own provisional timers, preserving newer observations.
+                for key in ('last_restart', 'candidate_until'):
+                    previous = ctx.get('restart_before', {}).get(key)
+                    if previous is None:
+                        self.state.pop(key, None)
+                    else:
+                        self.state[key] = previous
         if (ctx['revision']!=settings_revision(self.paths) or ctx['intent_revision']!=read_intent(self.paths).get('revision')):
             return
         if ctx['action'] in ('rotate_server','sync_port') and self.container_key(o.get('generation'))!=self.container_key(ctx['generation']):
@@ -396,7 +452,7 @@ class Controller:
             if result['status']=='issued':
                 candidate=ctx['candidate'];self.attempted={**asdict(candidate),'prior_generation':ctx['generation']}
                 if candidate.hostname not in self.round_attempts: self.round_attempts.append(candidate.hostname)
-        elif ctx['action']=='restart_container' and result['status']=='issued':
+        elif ctx['action']=='restart_container' and result.get('submission'):
             self.api_failed=False
             self.load_pending={'snapshot':ctx.get('snapshot'),'old_container':self.container_key(ctx.get('generation'))}
         elif ctx['action']=='relink_dependents' and result['status']=='issued':
@@ -412,12 +468,23 @@ class Controller:
 
     def tick(self):
         now,wall=self.a.mono(),self.a.wall(); deadline=now+9
-        try: config=self.a.config()
-        except Exception: config={}
-        try: o=self.a.observe(deadline=deadline,traffic_due=now>=self.next_traffic)
+        config_revision = None
+        try:
+            before_revision = settings_revision(self.paths)
+            config = self.a.config()
+            if settings_revision(self.paths) == before_revision:
+                config_revision = before_revision
+        except Exception:
+            config = {}
+        traffic_due = now >= self.next_traffic
+        probe_start = now
+        try: o=self.a.observe(deadline=deadline,traffic_due=traffic_due)
         except Exception: o={'running':None}
         now,wall=self.a.mono(),self.a.wall()
-        if now>=self.next_traffic:self.next_traffic=now+30
+        # Advance only a requested probe, anchored to its scheduled start.
+        # Observation completion crossing a deadline must not skip that probe.
+        if traffic_due:
+            self.next_traffic = probe_start + 30
         actual={k:o.get(k) for k in ('running','unit_active','configured')}
         adopt_running(self.paths,actual)
         if o.get('explicit_stop'):
@@ -427,15 +494,10 @@ class Controller:
             own=(finite(o.get('stop_at')) and isinstance(op.get('generation'),dict) and finite(op.get('started_wall')) and finite(op.get('until_wall')) and
                  event_container==op['generation'].get('container_id') and
                  op.get('started_wall',wall+1)<=o['stop_at']<=op.get('until_wall',0))
-            for token in read_intent(self.paths).get('inhibits',{}).values():
-                if not isinstance(token,dict):continue
-                owned_generation=token.get('generation') or {}
-                if (event_container==owned_generation.get('container_id') and finite(o.get('stop_at'))
-                        and token.get('created_at',wall+1)<=o['stop_at']+1
-                        and token.get('boot_id')==boot_id() and token.get('owner_start') is not None
-                        and process_start(token.get('owner_pid'))==token['owner_start']):own=True
+            own = own or owns_stop(self.paths, event_container, o.get('stop_at'), wall)
             if not own:set_intent(self.paths,False,'observed Docker stop')
-        o['allowed']=may_recover(self.paths,actual)
+        config_current = config_revision is not None and settings_revision(self.paths) == config_revision
+        o['allowed'] = may_recover(self.paths,actual) and config_current
         self._complete(o)
         generation=o.get('generation'); container=self.container_key(generation)
         if self.loaded_container!=container:self.loaded=None
@@ -491,6 +553,7 @@ class Controller:
         if container and self.relinked and container!=self.relinked:o['needs_relink']=True
         if o.get('host_reachable') is False and not o.get('needs_converge') and now-self.last_converge>=300:o['needs_relink']=True
         if now-self.last_converge<300:o['needs_converge']=False
+        restart_before = {key:self.state.get(key) for key in ('last_restart','candidate_until')}
         decision=decide(o,self.state,config,now,wall)
         self.state=decision['next_state']
         if decision.get('new_round'):
@@ -510,10 +573,9 @@ class Controller:
                 self.state.update(backoff_until=now+(120,300,600)[level],backoff_level=min(2,level+1))
                 decision['reason']='Recovery backoff' 
         if action!='none' and not self.pending:
-            ctx={'action':action,'revision':settings_revision(self.paths),'intent_revision':read_intent(self.paths).get('revision'),
-                 'generation':generation,'observation':copy.deepcopy(o),'candidate':candidate,'snapshot':downloaded}
-            if action=='restart_container':
-                self.last_load_identity=downloaded.identity if downloaded else None;self.last_load_wall=wall
+            ctx={'action':action,'revision':config_revision,'intent_revision':read_intent(self.paths).get('revision'),
+                 'generation':generation,'observation':copy.deepcopy(o),'candidate':candidate,'snapshot':downloaded,
+                 'decision_mono':now,'restart_before':restart_before}
             self.last_reason=decision['reason']
             self.pending_context=ctx;self.pending=self.executor.submit(self._perform,ctx)
         elif not self.pending and not self.load_pending and now>=self.next_refresh and o.get('allowed'):

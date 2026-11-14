@@ -54,7 +54,8 @@ class FakeAdapters:
             if precondition and not precondition(): return {'status':'deferred'}
             self.calls.append(('sync', expected_generation))
         return {'status':'synced', 'generation':expected_generation}
-    def container_action(self, action, observation, deadline):
+    def container_action(self, action, observation, deadline, *, on_submit=None):
+        if on_submit is not None: on_submit()
         self.calls.append((action, observation['generation']))
         return True
     def load(self): return self.catalog
@@ -301,6 +302,172 @@ class RuntimeTests(unittest.TestCase):
         saved=json.loads((self.paths.state/'controller.json').read_text())
         self.assertEqual(saved.get('last_selection',{}).get('hostname'),'node-ca-59.protonvpn.net')
         self.assertEqual(len(saved['failures']),1)
+
+    def test_traffic_cadence_survives_nonzero_observation_duration(self):
+        requested=[]
+        cached={}
+        original=self.a.observe
+        self.a.observation.update(port=1234,qbit_synced=True)
+        def observe(*,deadline,traffic_due):
+            started=self.a.now
+            if traffic_due:
+                requested.append(started)
+                cached.update(traffic=True,traffic_at=started,traffic_generation=GEN)
+            self.a.now+=.25
+            return {**original(deadline=deadline,traffic_due=traffic_due),**cached}
+        self.a.observe=observe
+        for t in range(0,121,10):
+            self.assertTrue(self.tick(t)['ready'])
+        self.assertEqual(requested,[0,30,60,90,120])
+
+    def test_final_generation_fence_invalidates_cached_and_fresh_readiness(self):
+        from types import SimpleNamespace
+        from vpn_recovery.runtime import SystemAdapters
+        from vpn_recovery.policy import decide
+        newer={**GEN,'tunnel_ifindex':3}
+        for fresh in [False,True]:
+            with self.subTest(fresh=fresh):
+                a=SystemAdapters(self.paths)
+                a.mono=lambda:100
+                a.current=lambda *_:dict(running=True,configured=True,unit_active=True)
+                a._events=lambda *_:None
+                a._dependents=lambda *_:{'dependents_ok':True}
+                a.ports=SimpleNamespace(observe=lambda **_:dict(generation=GEN,forwarded_port=1234,status='synced',qbit_port=1234))
+                a.traffic=dict(traffic=True,traffic_at=90,traffic_generation=GEN)
+                a._traffic=lambda *_:True
+                sequence=iter([GEN,newer] if fresh else [newer])
+                a.control=SimpleNamespace(observe_generation=lambda **_:next(sequence))
+                a.run=lambda *_:'-A OUTPUT -d 84.20.16.29/32 -o eth0 -p udp --dport 51820 -j ACCEPT'
+                obs=a.observe(deadline=109,traffic_due=fresh)
+                obs['allowed']=True
+                decision=decide(obs,{},self.a.config(),100,self.a.wall())
+                self.assertNotEqual(decision['reason'],'Ready')
+                self.assertIsNone(obs['port'])
+                self.assertFalse(obs['qbit_synced'])
+                self.assertIsNone(obs['traffic'])
+                self.assertEqual(a.traffic,{})
+
+    def test_deferred_catalog_load_keeps_allowance_and_retries_after_lock_release(self):
+        self.c.loaded=None
+        self.tick(0)
+        with bounded_lock(self.paths.compose_lock,0):
+            self.tick(120);self.finish()
+        self.assertIsNone(self.c.last_load_identity)
+        self.assertFalse((self.paths.state/'load-pending.json').exists())
+        self.tick(130);self.finish()
+        self.tick(720);self.finish()
+        self.assertEqual(sum(c[0]=='restart_container' for c in self.a.calls),1)
+        self.assertGreater(self.c.last_load_wall,1800000120)
+
+    def test_settings_changed_during_observation_cannot_authorize_old_candidate(self):
+        from vpn_recovery.common import load_config
+        env=self.paths.services/'.env'
+        env.write_text('VPN_COUNTRIES=Canada\nVPN_PORT_FORWARDING=on\n')
+        self.a.config=lambda:load_config(self.paths)
+        self.tick(0)
+        original=self.a.observe
+        def observe(**kwargs):
+            env.write_text('VPN_COUNTRIES=Netherlands\nVPN_PORT_FORWARDING=on\n')
+            return original(**kwargs)
+        self.a.observe=observe
+        self.tick(120);self.finish()
+        self.assertFalse(self.a.calls)
+        self.a.observe=original
+        self.tick(130);self.finish()
+        puts=[c[1]['provider']['server_selection'] for c in self.a.calls if c[0]=='put']
+        self.assertTrue(puts)
+        self.assertEqual(puts[0]['countries'],['Netherlands'])
+
+    def test_nanosecond_docker_event_attributes_same_second_own_stop(self):
+        from vpn_recovery.runtime import SystemAdapters
+        from vpn_recovery.intent import may_recover
+        self.a.now=.75
+        a=SystemAdapters(self.paths)
+        a.wall=lambda:1800000001.25
+        calls=[]
+        def events(args,*_):
+            calls.append(args)
+            return str(1800000000800000000)+' '+GEN['container_id']
+        a.run=events
+        obs={}
+        a._events(obs,10)
+        self.assertIn('{{.TimeNano}} {{.Actor.ID}}',calls[0])
+        self.c.operation={'generation':GEN,'started_wall':1800000000.75,'until_wall':1800000060.75}
+        self.a.observation.update(obs)
+        self.tick(1.25)
+        self.assertTrue(may_recover(self.paths))
+        self.assertAlmostEqual(obs['stop_at'],1800000000.8)
+
+    def test_completed_maintenance_attribution_survives_next_poll_without_resurrection(self):
+        import os
+        from unittest.mock import patch
+        from vpn_recovery.intent import read_intent, boot_id
+        current_boot = boot_id()
+        with patch('vpn_recovery.intent.time.time',return_value=1800000000), patch('vpn_recovery.intent.boot_id',return_value=current_boot):
+            inhibit(self.paths,'completed',os.getpid(),'recreate',generation=GEN)
+        with patch('vpn_recovery.intent.time.time',return_value=1800000002):
+            release_inhibit(self.paths,'completed')
+        self.a.observation.update(explicit_stop=True,stop_container=GEN['container_id'],stop_at=1800000001)
+        self.tick(10)
+        self.assertTrue(read_intent(self.paths)['enabled'])
+        self.assertFalse(read_intent(self.paths)['inhibits'])
+        self.a.observation['running']=False
+        self.tick(20)
+        self.assertFalse(self.a.calls)
+        # A later stop cannot borrow a completed operation's attribution.
+        self.a.observation['stop_at']=1800000003
+        self.tick(30)
+        self.assertFalse(read_intent(self.paths)['enabled'])
+
+    def test_submitted_uncertain_catalog_load_keeps_allowance_across_watcher_restart(self):
+        self.c.loaded=None
+        original=self.a.container_action
+        def uncertain(action,observation,deadline,*,on_submit=None):
+            original(action,observation,deadline,on_submit=on_submit)
+            raise TimeoutError('Docker reply lost after submission')
+        self.a.container_action=uncertain
+        self.tick(0);self.tick(120);self.finish()
+        # The worker's submission journal survives before the next poll saves
+        # controller.json, including a lost/failed client reply.
+        restored=Controller(self.paths,self.a)
+        self.addCleanup(restored.close)
+        self.assertEqual(restored.last_load_identity,self.a.catalog.identity)
+        self.assertEqual(restored.last_load_wall,1800000120)
+        self.tick(130)
+        self.assertEqual(self.c.last_load_identity,self.a.catalog.identity)
+        self.assertEqual(self.c.last_load_wall,1800000120)
+        self.tick(720)
+        self.assertEqual(sum(c[0]=='restart_container' for c in self.a.calls),1)
+
+    def test_exhausted_command_deadline_never_marks_catalog_submission(self):
+        from vpn_recovery.runtime import SystemAdapters
+        calls=[]
+        def runner(*args,**kwargs):
+            calls.append('runner')
+            raise AssertionError('deadline must prevent submission')
+        a=SystemAdapters(self.paths,runner)
+        a.mono=lambda:30
+        with self.assertRaises(TimeoutError):
+            a.container_action('restart_container',{},30,on_submit=lambda:calls.append('submitted'))
+        self.assertEqual(calls,[])
+
+    def test_config_snapshot_changing_during_read_defers(self):
+        original=self.a.config
+        def config():
+            old=original()
+            (self.paths.services/'.env').write_text('VPN_COUNTRIES=Netherlands\n')
+            return old
+        self.tick(0)
+        self.a.config=config
+        self.tick(120);self.finish()
+        self.assertFalse(self.a.calls)
+
+    def test_nanosecond_stop_before_operation_is_not_attributed(self):
+        from vpn_recovery.intent import read_intent
+        self.c.operation={'generation':GEN,'started_wall':1800000000.75,'until_wall':1800000060.75}
+        self.a.observation.update(explicit_stop=True,stop_at=1800000000.70,stop_container=GEN['container_id'])
+        self.tick(1)
+        self.assertFalse(read_intent(self.paths)['enabled'])
 
     def test_unique_public_endpoint_only(self):
         rule='-A OUTPUT -d 84.20.16.29/32 -o eth0 -p udp -m udp --dport 51820 -j ACCEPT\n'

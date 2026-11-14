@@ -63,6 +63,38 @@ class IntentTests(unittest.TestCase):
         atomic_json(self.paths.state/'intent.json',state)
         self.assertTrue(intent.may_recover(self.paths,actual={'running':True,'configured':True,'unit_active':True}))
 
+    def test_completed_operation_history_is_bounded_and_not_an_inhibit(self):
+        from unittest.mock import patch
+        intent.set_intent(self.paths,True,'setup')
+        with patch('vpn_recovery.intent.time.time',return_value=1800000000):
+            for index in range(70):
+                token='operation_'+str(index)
+                intent.inhibit(self.paths,token,os.getpid(),'maintenance',generation={'container_id':'a'*64})
+                intent.release_inhibit(self.paths,token)
+            state=intent.read_intent(self.paths)
+            self.assertEqual(len(state.get('completed_operations',[])),64)
+            self.assertFalse(state['inhibits'])
+            self.assertTrue(intent.may_recover(self.paths))
+        with patch('vpn_recovery.intent.time.time',return_value=1800000601):
+            intent.set_intent(self.paths,False,'operator stop')
+            self.assertEqual(intent.read_intent(self.paths).get('completed_operations'),[])
+            self.assertFalse(intent.may_recover(self.paths))
+
+    def test_completed_history_cannot_enable_new_stop_or_match_another_container(self):
+        from unittest.mock import patch
+        current_boot=intent.boot_id()
+        with patch('vpn_recovery.intent.time.time',return_value=1800000000), patch('vpn_recovery.intent.boot_id',return_value=current_boot):
+            intent.set_intent(self.paths,True,'setup')
+            intent.inhibit(self.paths,'history',os.getpid(),'recreate',generation={'container_id':'a'*64})
+        with patch('vpn_recovery.intent.time.time',return_value=1800000002):
+            intent.set_intent(self.paths,False,'explicit stop')
+            intent.release_inhibit(self.paths,'history')
+        self.assertTrue(intent.owns_stop(self.paths,'a'*64,1800000001,1800000010))
+        self.assertFalse(intent.owns_stop(self.paths,'b'*64,1800000001,1800000010))
+        self.assertFalse(intent.owns_stop(self.paths,'a'*64,1800000003,1800000010))
+        self.assertFalse(intent.owns_stop(self.paths,'a'*64,1800000001,1800000603))
+        self.assertFalse(intent.may_recover(self.paths,actual={'running':True,'unit_active':True,'configured':True}))
+
     def test_revision_fence(self):
         before = intent.settings_revision(self.paths)
         (self.paths.services/'.env').write_text('VPN_COUNTRIES=Canada\n')
