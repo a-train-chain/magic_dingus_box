@@ -47,10 +47,10 @@ The current code has five relevant gaps:
   routing and credential complexity; it is outside this change.
 
 The agent recommends the second approach based on the owner's reliability
-goal. The owner has not yet approved it. Proposed country policy: Canada
-first, then United States, with no other country unless the owner chooses it.
-An asynchronous question about that policy is pending; this is a proposal,
-not a recorded owner preference.
+goal. The owner has not yet approved the overall design. The owner confirmed
+the country policy on 2026-11-14: try another Canadian server first, then
+fall back to the United States, with the VPN firewall active throughout.
+No other country is allowed unless the owner changes that preference.
 
 ## Scope and constraints
 
@@ -59,7 +59,7 @@ selection. Custom providers and intentionally disabled forwarding keep their
 existing behavior; unsupported combinations must be identified explicitly.
 Country preferences are per box: existing installations inherit their current
 configured country and have no cross-country fallback unless configured.
-Canada then United States is proposed for magicpi5 only; it must not silently
+Canada then United States is approved for magicpi5 only; it must not silently
 replace other owners' settings in a shared image/update.
 Keep the current pinned Gluetun version unless implementation discovers a
 documented blocker requiring a separately reviewed pin change.
@@ -264,6 +264,6 @@ probe fallback hostname are left to the builder, subject to the contracts above.
 
 Builder review: Astra reviewed the recovery/control/locking design and found
 no remaining blocking planning questions after the operator-intent clarification.
-Owner country preference and design approval remain pending. Sol 6.1 is the
+Owner country preference is confirmed; overall design approval remains pending. Sol 6.1 is the
 intended implementation model for most tasks; reserve Astra for the most
 difficult recovery/concurrency work and final integration review.
