@@ -143,6 +143,9 @@ struct GuideRow {
     std::string name;         // upper-cased, truncated to the channel column
     GuideTone num_tone = GuideTone::Fg, name_tone = GuideTone::Fg;
     bool cursor_bar = false;
+    bool off_air = false;
+    std::string off_air_text;
+    int off_air_text_px = 14;
     bool no_schedule = false;  // "NO SCHEDULE YET" (Dim), no cells
     std::vector<GuideCell> cells;
 };
@@ -419,7 +422,12 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
         row.num_tone = is_tuned ? GuideTone::Green : row.cursor_bar ? GuideTone::Gold : GuideTone::Fg;
         row.name_tone = is_tuned ? GuideTone::Green : GuideTone::Fg;
         row.no_schedule = ch.items.empty();
-        if (row.no_schedule) {
+        if (const auto back = app::back_on_air_at(ch, in.now_utc, in.utc_offset_s, in.utc_offset_at)) {
+            row.off_air = true;
+            row.off_air_text = "OFF THE AIR · BACK AT " + d::hm(local_at(*back)) + " " +
+                               d::clock_of(local_at(*back)).ap;
+        }
+        if (row.no_schedule || row.off_air) {
             row.name_tone = GuideTone::Dim;
         } else {
             for (const app::OnAir& a : app::lineup(ch, win_start, win_end, in.utc_offset_s, in.utc_offset_at)) {
@@ -575,7 +583,8 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     // Picture control on the tuned row (only when the video is not 4:3);
     // nothing on the tuned row otherwise, nothing on a row with no schedule
     // (a press does nothing); PRESS TO WATCH on another tunable channel.
-    const bool pc_tunable = pc >= 0 && pc < n_channels && !channels[pc].items.empty();
+    const bool pc_tunable = pc >= 0 && pc < n_channels &&
+        app::join_point(channels[pc], in.now_utc, in.utc_offset_s, in.utc_offset_at).has_value();
     if (on_tuned)
         p.bottom = in.picture_available ? GuideBottom::Picture : GuideBottom::None;
     else

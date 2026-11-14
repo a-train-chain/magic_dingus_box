@@ -338,3 +338,18 @@ TEST_CASE("auto-tune waits for movie snapshot before resolving last movie row", 
     in.movie_library_read = true;
     CHECK(app::auto_tune_gates_open(in)); CHECK(decide_auto_tune(in) == 1);
 }
+
+TEST_CASE("power-on with an overnight last movie parks on 00", "[auto_tune][off_air]") {
+    auto in = ready();
+    in.last_channel = 2; in.last_channel_off_air = true; in.tunable[2] = false;
+    CHECK(decide_auto_tune(in) == 0);
+    SECTION("00 given up cannot spin back into the failed channel") {
+        in.gave_up = {0, 2}; CHECK(decide_auto_tune(in) == 3);
+    }
+    SECTION("00 without a schedule falls back to something playable") {
+        in.tunable[0] = false; CHECK(decide_auto_tune(in) == 1);
+    }
+    SECTION("a given-up movie uses ordinary failure fallback") {
+        in.gave_up = {2}; CHECK(decide_auto_tune(in) == 3);
+    }
+}

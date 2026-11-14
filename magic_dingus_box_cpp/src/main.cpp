@@ -43,6 +43,7 @@
 #include "app/app_state.h"
 #include "app/audio_router.h"
 #include "app/auto_tune.h"
+#include "app/off_air.h"
 #include "app/bezel_catalog.h"
 #include "app/channel_schedule.h"
 #include "app/game_quiet_mode.h"
@@ -721,6 +722,7 @@ int main(int /* argc */, char* /* argv */[]) {
         if (movie_channels_on)
             movies = app::build_movie_playlists(movie_library.movies(), state.platform_profile.movie_channel_codecs);
 #endif
+        if (!movie_channels_on) state.off_air_return_id.clear();
         app::merge_movie_playlists(rows.video, std::move(movies));
         app::apply_reloaded_playlists(state, std::move(rows), snap,
             [&controller] { controller.stop(); }, movie_channels_on);
@@ -1041,6 +1043,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // only when its id or the channel list changes.
     app::AutoTuneInput auto_tune;
     app::LastChannelRowCache auto_tune_last_row;
+    app::LastChannelRowCache off_air_return_cache;
     // Times a stream no channel owns (app::OrphanStreamGuard), guide style.
     app::OrphanStreamGuard orphan_stream_guard;
 
@@ -1445,7 +1448,7 @@ int main(int /* argc */, char* /* argv */[]) {
             f.pending_tune = playlist_playback.pending_tune();
             const int row = state.guide_cursor.row;
             f.cursor_row_tunable =
-                row >= 0 && row < f.rows && !channels[row].items.empty();
+                playlist_playback.channel_on_air(row);
             f.owns_pipeline = playlist_playback.owns_pipeline();
             f.now = std::chrono::steady_clock::now();
             const app::GuideCommand cmd = app::guide_input(state, event, delta, f);
@@ -1739,6 +1742,22 @@ int main(int /* argc */, char* /* argv */[]) {
             auto_tune.post_game_pending = post_game_gate.settling();
             auto_tune.now_utc = playlist_transport.wall_now_utc();
             auto_tune.wait_until_utc = state.guide_wait_until_utc;
+            // Overnight return uses the actual tuned row, not the persisted
+            // last movie identity: library refreshes keep 00 on screen.
+            if (!state.off_air_return_id.empty() && on_main_screen &&
+                state.intro_complete && !state.is_loading_game && !post_game_gate.settling()) {
+                const int row = off_air_return_cache.get(
+                    state.off_air_return_id, channels_generation,
+                    [&state](const std::string& id) {
+                        return app::find_playlist_by_identity(state.playlists, id);
+                    });
+                if (const auto target = app::off_air_return_row(
+                        state, row, playlist_playback.channel_on_air(row), auto_tune.switch_pending)) {
+                    playlist_playback.tune(*target, /*keep_overlay=*/true);
+                    auto_tune.switch_pending =
+                        playlist_playback.switch_pending() || state.is_switching_playlist;
+                }
+            }
             // The target only matters once every gate is open. Resolving it
             // scans the playlists building an identity string per row, so
             // it is skipped on the frames a video plays (nearly all of them)
@@ -1754,6 +1773,10 @@ int main(int /* argc */, char* /* argv */[]) {
                         if (last_id == app::kShuffleChannelId) return 0;
                         return app::find_playlist_by_identity(state.playlists, last_id);
                     });
+                const int last = auto_tune.last_channel;
+                auto_tune.last_channel_off_air = last >= 0 && last < static_cast<int>(channels.size()) &&
+                    app::back_on_air_at(channels[last], auto_tune.now_utc,
+                        zone_offset(auto_tune.now_utc), zone_offset).has_value();
                 auto_tune.tunable.assign(channels.size(), false);
                 for (size_t c = 0; c < channels.size(); ++c) {
                     auto_tune.tunable[c] = playlist_playback.channel_on_air(static_cast<int>(c));
@@ -1764,6 +1787,10 @@ int main(int /* argc */, char* /* argv */[]) {
                     // viewer does not own when it RUNS (the video simply
                     // comes back) and keeps a guide the viewer owns then —
                     // AppState::guide_opened_by_viewer, app/guide_nav.h.
+                    if (*channel == 0 && auto_tune.last_channel_off_air &&
+                        std::find(auto_tune.gave_up.begin(), auto_tune.gave_up.end(),
+                                  auto_tune.last_channel) == auto_tune.gave_up.end())
+                        state.off_air_return_id = state.last_channel_id;
                     playlist_playback.tune(*channel, /*keep_overlay=*/false);
                     // tune() drops a call it cannot take yet (the stuck-switch
                     // timeout's 200 ms settle); log only one it took.
@@ -2669,7 +2696,8 @@ int main(int /* argc */, char* /* argv */[]) {
         // settings poke above, and the same accepted cost: one unlink and
         // one zoneinfo read per web-admin action, never per tick. The guide
         // looks its UTC offset up again on the next frame it paints
-        // (GuideClock::invalidate).
+        // (GuideClock::invalidate); the same hook rephases owned live
+        // playback once so a captured civil deadline cannot stay stale.
         {
             static int timezone_reload_check = 0;
             if (++timezone_reload_check >= 60) {
@@ -2681,6 +2709,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     fs::remove(tz_marker, rm_ec);
                     tzset();
                     guide_clock.invalidate();
+                    playlist_playback.on_timezone_reload();
                     LOG_INFO("Time zone reloaded (web-admin poke)");
                 }
             }

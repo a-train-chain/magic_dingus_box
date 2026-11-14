@@ -504,6 +504,12 @@ void Renderer::GuidePainter::grid() {
              tone(row.name_tone));
 
         const float cells_x = gx + col_w + 3.0f;
+        if (row.off_air) {
+            fill(cells_x, ry, gx + g.rect.w - cells_x, rh, t_.bg_lift);
+            text(row.off_air_text, cells_x + m_.cell_pad,
+                 baseline_in(ry, rh, row.off_air_text_px, false), row.off_air_text_px, t_.dim);
+            continue;
+        }
         if (row.no_schedule) {
             fill(cells_x, ry, gx + g.rect.w - cells_x, rh, t_.bg_lift);
             text(gp::kNoSchedule, cells_x + m_.cell_pad, baseline_in(ry, rh, gp::kBody, false),

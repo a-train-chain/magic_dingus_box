@@ -852,3 +852,38 @@ TEST_CASE("the tuned movie panel describes the loaded film after its row is repl
     const auto view = ui::layout_channel_guide(in);
     CHECK(view.panel.item_title == "Film actually on screen");
 }
+
+TEST_CASE("an off-air movie has no watch action or programme cells", "[channel_guide_view][off_air]") {
+    Fixture f;
+    f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+    auto in = f.in(true); in.now_utc = E + 3 * 3600; in.cursor.row = 1;
+    const auto view = ui::layout_channel_guide(in);
+    REQUIRE(view.grid.rows.size() > 1);
+    CHECK(view.grid.rows[1].cells.empty());
+    CHECK(view.grid.rows[1].name_tone == ui::GuideTone::Dim);
+    CHECK(view.panel.bottom == ui::GuideBottom::None);
+}
+
+TEST_CASE("off-air row shows the next six AM in its own zone and fits CRT", "[channel_guide_view][off_air]") {
+    for (int offset : {-8 * 3600, 3600}) {
+        DYNAMIC_SECTION("offset " << offset) {
+            Fixture f; f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+            auto in = f.in(true); in.now_utc = E + 3 * 3600 - offset;
+            in.utc_offset_s = offset; in.cursor.row = 1;
+            const auto v = ui::layout_channel_guide(in);
+            const auto& row = v.grid.rows[1];
+            CHECK(row.off_air); CHECK(row.off_air_text == "OFF THE AIR · BACK AT 6:00 AM");
+            CHECK(row.cells.empty()); CHECK_FALSE(row.no_schedule);
+            CHECK(row.name_tone == ui::GuideTone::Dim);
+            CHECK(ui::guide_detail::kMonoAdvanceEm * row.off_air_text_px * 29 <=
+                  v.grid.rect.w - v.grid.column_w - 3 - 2 * ui::guide_detail::kCellPadX);
+        }
+    }
+    SECTION("back time uses post-DST offset") {
+        Fixture f; f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+        auto in = f.in(true); in.now_utc = E + 3600;
+        in.utc_offset_at = [](double utc) { return utc < E + 2 * 3600 ? 0 : 3600; };
+        const auto v = ui::layout_channel_guide(in);
+        CHECK(v.grid.rows[1].off_air_text == "OFF THE AIR · BACK AT 6:00 AM");
+    }
+}

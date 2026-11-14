@@ -306,6 +306,8 @@ public:
     // Channel Guide: the channel last tuned, as a playlist_identity() string
     // ("shuffle" = channel 00, "" = none). Persisted as playback.last_channel.
     std::string last_channel_id;
+    // Overnight parking destination; transient, never persisted.
+    std::string off_air_return_id;
     // Channel Guide, written by PlaylistPlayback (render thread only):
     // tuned_channel: the channel (= UI row) on screen, or waiting for its
     //   next item after a failed one; -1 = none. 00 stays 00 while the

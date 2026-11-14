@@ -169,7 +169,8 @@ public:
     // boundary, so a rebuilt list takes effect at the next one. Call it
     // again after EVERY rebuild (even into the same vector): a reload
     // renumbers the rows, so the tuned channel is re-found by
-    // AppState::last_channel_id (-1 when its channel is gone). The
+    // AppState::last_channel_id (-1 when its channel is gone); overnight
+    // parking retains channel 00 independently of the remembered movie. The
     // guide_gave_up rows are NOT re-anchored — a reload can shift them —
     // and live until a channel proves it plays (kChannelPlaysS); only rows
     // past the new list's end are dropped. nullptr also forgets the tuned /
@@ -180,6 +181,11 @@ public:
     bool guide_style() const { return channels_ != nullptr; }
     // Pure schedule eligibility for auto-tune, including movie off-air gaps.
     bool channel_on_air(int channel) const;
+    // main.cpp calls this immediately after the timezone_reload_request
+    // tzset/invalidate hook. Rephase once at the next owned live frame;
+    // a pending tune already reads the new rules when its load runs.
+    // Task9 selected whole programmes must defer/bypass this live rule.
+    void on_timezone_reload() { timezone_reload_pending_ = true; }
     // Tune `channel` live. The playlist switch above, unchanged — stop now,
     // then the settle / re-poll wait per frame, then the load — except that
     // the load joins whatever is on air when it RUNS (on_air at
@@ -333,12 +339,16 @@ private:
     void finish_tune(int channel, bool keep_overlay);
     // An item's natural end: load what is on the tuned channel now — but
     // never the airing just loaded again (app::boundary_join).
-    void rejoin_schedule();
+    void rejoin_schedule(bool programme_ended = true);
+    // True if the channel is in its overnight gap; load 00 immediately,
+    // preserving both the remembered movie identity and overlay state.
+    bool park_off_air(int channel);
     // tuned_channel + last_channel_id, set when a tune's load runs.
     void land_on_channel(int channel);
     // Load channel `channel`'s scheduled item `oa` at its offset; true when
     // the load returned OK.
     bool load_on_air(int channel, const OnAir& oa, bool keep_overlay);
+    bool timezone_reload_pending_ = false;
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
     // the channel picks up again from there — but no later than its length
     // from the failure (a wall clock that jumped back must not stretch the

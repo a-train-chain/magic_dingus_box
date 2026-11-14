@@ -28,6 +28,8 @@ std::optional<int> decide_auto_tune(const AutoTuneInput& in) {
         return c >= 0 && c < n && in.tunable[c] && !contains(in.gave_up, c);
     };
 
+    if (in.last_channel_off_air && !contains(in.gave_up, in.last_channel) && eligible(0))
+        return 0;
     if (eligible(in.last_channel)) return in.last_channel;
 
     if (!in.gave_up.empty()) {

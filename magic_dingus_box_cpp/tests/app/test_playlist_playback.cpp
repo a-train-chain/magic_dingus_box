@@ -20,6 +20,7 @@
 
 #include "app/app_state.h"
 #include "app/auto_tune.h"
+#include "app/off_air.h"
 #include "app/channel_schedule.h"
 #include "app/media_info.h"
 #include "app/playback_reset.h"
@@ -55,7 +56,8 @@ struct FakeTransport : app::PlaylistTransport {
     // with the steady clock; a test may also jump it on its own.
     double wall = kW0;
     int zone_offset = 0;
-    int utc_offset_s(double) const override { return zone_offset; }
+    app::UtcOffsetAt offset_at;
+    int utc_offset_s(double utc) const override { return offset_at ? offset_at(utc) : zone_offset; }
     // load_playlist_item_at's offset_s, and the wall clock at that call.
     std::vector<double> offsets;
     std::vector<double> load_wall;
@@ -2147,7 +2149,15 @@ void nothing_playing_rule(Guide& g) {
     for (int row = 0; row < static_cast<int>(g.channels.size()); ++row)
         in.tunable.push_back(g.pb.channel_on_air(row));
     in.gave_up = g.s.guide_gave_up;
-    if (const auto c = app::decide_auto_tune(in)) g.pb.tune(*c, /*keep_overlay=*/false);
+    in.last_channel_off_air = in.last_channel >= 0 &&
+        app::back_on_air_at(g.channels[in.last_channel], in.now_utc,
+            g.t.utc_offset_s(in.now_utc), [&](double utc) { return g.t.utc_offset_s(utc); }).has_value();
+    if (const auto c = app::decide_auto_tune(in)) {
+        if (*c == 0 && in.last_channel_off_air &&
+            std::find(in.gave_up.begin(), in.gave_up.end(), in.last_channel) == in.gave_up.end())
+            g.s.off_air_return_id = g.s.last_channel_id;
+        g.pb.tune(*c, /*keep_overlay=*/false);
+    }
 }
 
 // main.cpp's per-frame playback ticks, in its order, every 16 ms for `total`
@@ -2763,18 +2773,25 @@ TEST_CASE("a playing channel keeps both live cut limits when a reload renumbers 
                     g.t.wall = close - 0.4;
                     g.s.update_playback_state(cut_position - 0.4, 100010);
                 }
+                if (movie && !clock_cut) {
+                    g.pb.tick_auto_advance();
+                    CHECK(g.t.calls.size() == calls_before_cut); // retain until the exact civil close
+                    g.t.wall = close;
+                }
                 g.pb.tick_auto_advance();
-                REQUIRE(g.t.calls.size() == calls_before_cut + 1);
+                const auto cut_calls = calls_before_cut + (movie ? 2 : 1);
+                REQUIRE(g.t.calls.size() == cut_calls);
                 if (movie) {
-                    CHECK(g.t.last() == "stop");
-                    CHECK(g.s.current_playlist_index == -1);
+                    CHECK(g.s.tuned_channel == 0);
+                    CHECK(g.s.off_air_return_id == "movies:mix");
+                    CHECK(g.s.last_channel_id == "movies:mix");
                 } else {
                     CHECK(g.t.last() == "load_at Cartoons 0");
                     CHECK(g.t.last_offset() == 0);
                     CHECK(g.s.current_playlist_index == 2);
                 }
                 g.pb.tick_auto_advance();
-                CHECK(g.t.calls.size() == calls_before_cut + 1);  // exactly one cut
+                CHECK(g.t.calls.size() == cut_calls);  // exactly one cut
             }
         }
     }
@@ -3033,4 +3050,166 @@ TEST_CASE("failed-film fallback does not spin on other off-air movie channels", 
     guide_frames(g, std::chrono::seconds(5), true);
     CHECK(g.s.tuned_channel == -1); CHECK_FALSE(g.pb.switch_pending());
     CHECK(g.t.offsets.size() == loads); CHECK(g.t.calls.size() == calls);
+}
+
+TEST_CASE("a live film is cut at one and parks on 00 without changing last channel", "[playlist_playback][off_air]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.wall = kW0 + 21 * 3600 - 20;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, true);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.ui_visible_when_playing = true;
+    const auto loads = g.t.offsets.size();
+    g.t.wall = kW0 + 21 * 3600;
+    g.pb.tick_auto_advance();
+    CHECK(g.s.tuned_channel == 0);
+    CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK(g.s.last_channel_id == "movies:comedy");
+    CHECK(g.t.offsets.size() == loads + 1);
+    CHECK_FALSE(g.s.loaded_movie);
+    CHECK(g.s.ui_visible_when_playing);
+}
+
+TEST_CASE("refresh while parked retains 00 and returns to movie by identity at six", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.wall = kW0 + 21 * 3600 - 20;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.wall = kW0 + 21 * 3600; g.pb.tick_auto_advance(); g.playing();
+    REQUIRE(g.s.tuned_channel == 0);
+    const auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+    std::swap(fresh.video[1], fresh.video[2]);
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.last_channel_id == "movies:comedy");
+    CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK_FALSE(app::off_air_return_row(g.s, 1, g.pb.channel_on_air(1), false));
+    g.t.wall = kW0 + 26 * 3600;
+    const auto row = app::off_air_return_row(g.s, 1, g.pb.channel_on_air(1), false);
+    REQUIRE(row == 1); g.pb.tune(*row, true); run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.tuned_channel == 1); CHECK(g.s.off_air_return_id.empty());
+    CHECK(g.s.last_channel_id == "movies:comedy"); REQUIRE(g.s.loaded_movie);
+    CHECK(g.s.loaded_movie->item.movie_tmdb_id == 42);
+}
+
+TEST_CASE("channel step skips off-air movies", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[1].path = "movies:kids";
+    g.t.wall = kW0 + 23 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(0, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.pb.on_next(); CHECK(g.pb.pending_tune() == 2);
+}
+
+TEST_CASE("timezone reload rephases a live channel once across civil boundaries", "[playlist_playback][off_air][timezone_reload]") {
+    Guide g;
+    bool movie = true;
+    SECTION("new zone enters the one AM close") { g.t.wall = kW0 + 20 * 3600; }
+    SECTION("new zone crosses the four AM playlist reset") { movie = false; g.t.wall = kW0 - 3600; }
+    SECTION("new zone crosses the six AM movie start") { g.t.wall = kW0 + 3 * 3600; }
+    if (movie) { g.s.playlists[2].path = "movies:comedy"; g.s.playlists[2].items[0].movie_tmdb_id = 42; }
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto loads = g.t.offsets.size();
+    g.t.zone_offset = g.t.wall < kW0 ? 2 * 3600 : (g.t.wall < kW0 + 5 * 3600 ? -3600 : 2 * 3600);
+    g.pb.on_timezone_reload(); g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == loads + 1);
+    CHECK(g.s.tuned_channel == (g.t.wall > kW0 + 5 * 3600 ? 0 : 2));
+    if (g.s.tuned_channel == 2) {
+        const auto oa = app::join_point(g.channels[2], g.t.wall, g.t.zone_offset);
+        REQUIRE(oa); CHECK(g.t.last_offset() == Approx(oa->offset_s));
+    } else CHECK(g.s.off_air_return_id == "movies:comedy");
+    g.playing(); g.pb.tick_auto_advance(); CHECK(g.t.offsets.size() == loads + 1);
+}
+
+TEST_CASE("a live film parks at the first repeated one AM until six after DST", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.offset_at = [](double utc) { return utc < kW0 + 21 * 3600 ? 3600 : 0; };
+    g.t.wall = kW0 + 20 * 3600 - 20;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.wall = kW0 + 20 * 3600; g.pb.tick_auto_advance();
+    REQUIRE(g.s.tuned_channel == 0); CHECK(g.s.off_air_return_id == "movies:comedy");
+    g.t.wall = kW0 + 22 * 3600;
+    CHECK_FALSE(app::off_air_return_row(g.s, 2, g.pb.channel_on_air(2), false));
+    g.t.wall = kW0 + 26 * 3600;
+    CHECK(app::off_air_return_row(g.s, 2, g.pb.channel_on_air(2), false) == 2);
+}
+
+TEST_CASE("overnight power-on preserves the last movie through the 00 load", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:kids"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.s.last_channel_id = "movies:kids"; g.t.wall = kW0 + 23 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    nothing_playing_rule(g); REQUIRE(g.pb.pending_tune() == 0);
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.last_channel_id == "movies:kids");
+    CHECK(g.s.off_air_return_id == "movies:kids");
+}
+
+TEST_CASE("zone reload replaces a live deadline even when the current offset is unchanged", "[playlist_playback][timezone_reload]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42; g.s.playlists[2].items[0].end = 100000;
+    g.t.wall = kW0 + 19 * 3600; // 23:00 UTC, initially UTC local time
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.update_playback_state(100, 100000);
+    // A replacement named zone has the same offset NOW, but gains an hour
+    // at midnight: its first 1AM is midnight UTC, not the old 01:00 UTC.
+    g.t.offset_at = [](double utc) { return utc < kW0 + 20 * 3600 ? 0 : 3600; };
+    g.pb.on_timezone_reload(); g.pb.tick_auto_advance(); g.playing();
+    const auto loads = g.t.offsets.size();
+    g.t.wall = kW0 + 20 * 3600;
+    g.pb.tick_auto_advance();
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK(g.t.offsets.size() == loads + 1);
+}
+
+TEST_CASE("an overnight park without a 00 schedule stops once and remains bounded", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.wall = kW0 + 21 * 3600 - 20;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.channels[0].items.clear();
+    g.pb.set_channels(&g.channels); g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto calls = g.t.calls.size();
+    g.t.wall = kW0 + 21 * 3600;
+    for (int frame = 0; frame < 60; ++frame) g.pb.tick_auto_advance();
+    CHECK(g.t.calls.size() == calls + 1); CHECK(g.t.last() == "stop");
+    CHECK(g.s.tuned_channel == 0); CHECK_FALSE(g.s.loaded_movie);
+    CHECK(g.s.off_air_return_id == "movies:comedy"); CHECK(g.s.last_channel_id == "movies:comedy");
+    g.pb.set_channels(nullptr); CHECK(g.s.off_air_return_id.empty());
+}
+
+TEST_CASE("the end tolerance before one AM cannot lose the overnight return", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42; g.s.playlists[2].items[0].end = 100000;
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 30;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto calls = g.t.calls.size();
+    g.s.update_playback_state(19 * 3600 - 0.4, 100000); g.t.wall = close - 0.4;
+    g.pb.tick_auto_advance(); nothing_playing_rule(g);
+    CHECK(g.t.calls.size() == calls); CHECK(g.s.loaded_movie); CHECK_FALSE(g.pb.switch_pending());
+    g.t.wall = close; g.pb.tick_auto_advance();
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK(g.s.last_channel_id == "movies:comedy");
+}
+
+TEST_CASE("the final-frame hold cannot strand a programme that ends early", "[playlist_playback][off_air]") {
+    for (double left : {1.0, 60.0, 3600.0}) {
+        DYNAMIC_SECTION("seconds before close " << left) {
+            Guide g; g.s.playlists[2].path = "movies:comedy";
+            g.s.playlists[2].items[0].movie_tmdb_id = 42; g.s.playlists[2].items[0].end = 100000;
+            const double close = kW0 + 21 * 3600;
+            g.t.wall = close - 4000;
+            g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+            g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+            const auto calls = g.t.calls.size();
+            g.t.wall = close - left; g.s.update_playback_state(100000, 100000);
+            g.pb.tick_auto_advance();
+            CHECK(g.t.calls.size() == calls + 1); CHECK(g.t.last() == "stop");
+            CHECK_FALSE(g.s.loaded_movie); CHECK(g.s.off_air_return_id.empty());
+        }
+    }
 }

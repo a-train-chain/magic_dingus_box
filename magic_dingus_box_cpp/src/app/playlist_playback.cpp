@@ -474,6 +474,8 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         }
         // List style: nothing is tuned, and nothing is owed a retry.
         state_.tuned_channel = -1;
+        state_.off_air_return_id.clear();
+        timezone_reload_pending_ = false;
         state_.guide_gave_up.clear();
         gave_up_identities_.clear();
         state_.guide_wait_until_utc = 0.0;
@@ -503,8 +505,10 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     if (state_.tuned_channel < 0 && !state_.loaded_movie) return;
     // A reload renumbers the rows: re-find the tuned channel by the identity
     // it was tuned under rather than keep an index into the old list.
-    const std::string& id = state_.loaded_movie
-        ? state_.loaded_movie->channel_identity : state_.last_channel_id;
+    const std::string id = state_.loaded_movie
+        ? state_.loaded_movie->channel_identity
+        : (!state_.off_air_return_id.empty() && state_.tuned_channel == 0
+               ? kShuffleChannelId : state_.last_channel_id);
     int row = -1;
     for (int c = 0; c < static_cast<int>(channels_->size()); ++c) {
         if (channel_identity(c) == id) { row = c; break; }
@@ -556,7 +560,7 @@ void PlaylistPlayback::on_channel_step(int delta) {
     for (int i = 0; i < n; ++i) {
         c = ((c + step) % n + n) % n;
         if (c == from) return;  // no other channel has a schedule
-        if (!(*channels_)[c].items.empty()) {
+        if (channel_on_air(c)) {
             // keep_overlay: the load leaves the overlay alone, so it is as
             // it stands THEN — `tune(c, ui_visible_when_playing)` froze it as
             // it stood at the press, and a guide opened during the ~200 ms
@@ -572,7 +576,9 @@ void PlaylistPlayback::land_on_channel(int channel) {
     // resume (act_on_failed_item), and a give-up must name this channel,
     // not the one tuned before it.
     state_.tuned_channel = channel;
-    state_.last_channel_id = channel_identity(channel);
+    if (channel != 0 || state_.off_air_return_id.empty())
+        state_.last_channel_id = channel_identity(channel);
+    if (channel != 0) state_.off_air_return_id.clear();
 }
 
 void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
@@ -583,6 +589,7 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
     const auto oa = ch ? join_point(*ch, now, offset(now), offset) : std::nullopt;
     if (!oa) {
+        if (park_off_air(channel)) return;
         // The list was rebuilt during the wait and the channel lost its
         // schedule (or the style went back to List).
         std::cerr << "Tune to channel " << channel << " failed: nothing scheduled"
@@ -624,19 +631,47 @@ void PlaylistPlayback::prove_channel() {
     gave_up_identities_.clear();
 }
 
-void PlaylistPlayback::rejoin_schedule() {
-    prove_channel();  // the item played to its natural end
+bool PlaylistPlayback::park_off_air(int channel) {
+    const auto* ch = channel_at(channel);
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    if (!ch || !back_on_air_at(*ch, now, offset(now), offset)) return false;
+    if (state_.off_air_return_id.empty()) state_.off_air_return_id = channel_identity(channel);
+    const auto* mix = channel_at(0);
+    const auto live = mix ? join_point(*mix, now, offset(now), offset) : std::nullopt;
+    transport_.stop();
+    if (live) load_on_air(0, *live, /*keep_overlay=*/true);
+    else {
+        land_on_channel(0);
+        stop_to_menu(state_);
+    }
+    return true;
+}
+
+void PlaylistPlayback::rejoin_schedule(bool programme_ended) {
+    if (programme_ended) prove_channel();  // the item played to its natural end
     const int channel = state_.tuned_channel;
+    if (park_off_air(channel)) return;
     const Channel* ch = channel_at(channel);
     // Never back to the airing that just ended (playback can be ahead of
     // the schedule here — boundary_join): only an airing loaded on THIS
     // channel counts.
     std::optional<LoadedAiring> last;
-    if (loaded_airing_ && loaded_airing_->channel == channel) last = loaded_airing_->airing;
+    if (programme_ended && loaded_airing_ && loaded_airing_->channel == channel) last = loaded_airing_->airing;
     const double now = transport_.wall_now_utc();
     const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
     const auto oa = ch ? boundary_join(*ch, now, last, offset(now), offset) : std::nullopt;
     if (!oa) {
+        // The EOF tolerance may fire a fraction before the civil close.
+        // Keep the final picture until that deadline instead of exposing
+        // a nothing-playing frame that could forget the movie identity.
+        const auto ending = ch ? on_air(*ch, now, offset(now), offset) : std::nullopt;
+        if (ending && ending->day_ends_at > now &&
+            ending->day_ends_at - now <= 0.5 &&
+            back_on_air_at(*ch, ending->day_ends_at, offset(ending->day_ends_at), offset)) {
+            guide_day_ends_at_ = ending->day_ends_at;
+            return;
+        }
         // Not on a channel (a List-style item still playing when the style
         // changed) or the channel lost its schedule: end here, and the
         // nothing-playing rule tunes live from the menu.
@@ -651,6 +686,7 @@ void PlaylistPlayback::rejoin_schedule() {
 }
 
 bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay) {
+    timezone_reload_pending_ = false;  // this load uses the current zone rules
     land_on_channel(channel);
     channel_progress_ = {};
     const ScheduledItem& si = (*channels_)[channel].items[oa.index];
@@ -964,6 +1000,11 @@ void PlaylistPlayback::tick_pipeline_error() {
 }
 
 void PlaylistPlayback::tick_auto_advance() {
+    if (timezone_reload_pending_ && guide_style() && loaded_airing_ && owns_pipeline()) {
+        timezone_reload_pending_ = false;
+        rejoin_schedule(/*programme_ended=*/false);
+        return;
+    }
     const bool owns_cut = guide_style() && loaded_airing_ &&
         !loaded_airing_->identity.empty() &&
         (loaded_airing_->identity == channel_identity(state_.tuned_channel) ||

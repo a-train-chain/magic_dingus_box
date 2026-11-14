@@ -955,3 +955,35 @@ TEST_CASE("only a full-screen guide film uses the whole output", "[guide_nav]") 
     }
 #endif
 }
+
+TEST_CASE("viewer channel choices cancel overnight return but closing 00 keeps it", "[guide_nav][off_air]") {
+    app::AppState s;
+    s.off_air_return_id = "movies:comedy"; s.tuned_channel = 0;
+    s.current_playlist_index = 1; s.current_item_index = 0; s.video_active = true;
+    s.ui_visible_when_playing = true;
+    app::GuideFacts f; f.on_screen = true; f.rows = 3; f.cursor_row_tunable = true;
+    SECTION("Tune") {
+        s.guide_cursor.row = 1;
+        CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == 1);
+        CHECK(s.off_air_return_id.empty());
+    }
+    SECTION("ChannelStep with guide shown") {
+        app::guide_input(s, app::GuideEvent::ChannelStep, 1, f);
+        CHECK(s.off_air_return_id.empty());
+    }
+    SECTION("ChannelStep with guide hidden") {
+        f.on_screen = false;
+        app::guide_input(s, app::GuideEvent::ChannelStep, 1, f);
+        CHECK(s.off_air_return_id.empty());
+    }
+    SECTION("Close") {
+        s.guide_cursor.row = 0;
+        CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == -1);
+        CHECK(s.off_air_return_id == "movies:comedy");
+    }
+    SECTION("off-air row press is not a Tune") {
+        s.guide_cursor.row = 1; f.cursor_row_tunable = false;
+        CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == -1);
+        CHECK(s.off_air_return_id == "movies:comedy");
+    }
+}

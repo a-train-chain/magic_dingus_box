@@ -162,6 +162,7 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
             }
             switch (press) {
                 case GuidePress::Tune:
+                    s.off_air_return_id.clear();
                     // The viewer's tune closes the guide when its load runs
                     // (PlaylistPlayback decides then): ownership goes first.
                     s.guide_opened_by_viewer = false;
@@ -194,6 +195,7 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
         }
 
         case GuideEvent::ChannelStep:
+            s.off_air_return_id.clear();
             if (!f.on_screen) break;
             if (!viewer_tune_waiting(s, f)) own(s);
             // tuned_channel changes only when the load runs: follow the

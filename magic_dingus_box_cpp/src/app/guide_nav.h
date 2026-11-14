@@ -181,6 +181,8 @@ struct GuideCommand {
 //                press RETRIES the channel (Tune; None without a
 //                schedule); TogglePicture (when owns_pipeline) and None:
 //                the viewer's.
+//   Tune or ChannelStep cancels a pending overnight return to a movie;
+//   Close, opening, rotating and picture changes leave it alone.
 //   ChannelStep  shown: the viewer's, the cursor onto the pending tune.
 // During a viewer's Tune wait (guide_viewer_tune is the pending tune) the
 // guide is not taken back: Rotate does nothing at all, and ChannelStep —
