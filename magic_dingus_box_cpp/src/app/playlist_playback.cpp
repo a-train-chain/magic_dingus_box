@@ -640,8 +640,12 @@ bool PlaylistPlayback::park_off_air(int channel) {
     const auto* mix = channel_at(0);
     const auto live = mix ? join_point(*mix, now, offset(now), offset) : std::nullopt;
     transport_.stop();
-    if (live) load_on_air(0, *live, /*keep_overlay=*/true);
-    else {
+    if (live) {
+        // Parking changes channel just like finish_tune: the outgoing
+        // movie's failures must not consume 00's own retry budget.
+        if (state_.tuned_channel != 0) error_policy_ = video::PlaybackErrorPolicy{};
+        load_on_air(0, *live, /*keep_overlay=*/true);
+    } else {
         land_on_channel(0);
         stop_to_menu(state_);
     }

@@ -3213,3 +3213,38 @@ TEST_CASE("the final-frame hold cannot strand a programme that ends early", "[pl
         }
     }
 }
+
+TEST_CASE("overnight parking gives 00 its full failure budget after a late movie failure", "[playlist_playback][off_air][movie_failure]") {
+    Guide g;
+    g.s.playlists[1].path = "movies:comedy";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 2 * 3600 + 10;
+    g.pb.tune(1, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    // The decoder fails just before close, after the film has lagged its
+    // schedule. Advance starts the next scheduled film from its beginning.
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 2; g.t.error = true;
+    g.pb.tick_pipeline_error();
+    REQUIRE(g.s.tuned_channel == 1); REQUIRE(g.s.loaded_movie);
+    g.t.error = false; ++g.t.generation; g.t.position = 0; g.playing();
+    g.pb.tick_pipeline_error(); // fewer than three healthy seconds: old failure is outstanding
+    g.t.wall = close; g.pb.tick_auto_advance();
+    REQUIRE(g.s.tuned_channel == 0); REQUIRE_FALSE(g.s.loaded_movie);
+    REQUIRE(g.pb.failure_budget() == 10);
+    for (int failure = 1; failure <= 10; ++failure) {
+        INFO("00 failure " << failure);
+        if (failure > 1) {
+            g.t.error = false; g.pb.tune(0, true); run_frames(g.pb, g.t, kSettled);
+        }
+        ++g.t.generation; g.t.position = 0; g.t.error = true; g.playing();
+        g.pb.tick_pipeline_error();
+        if (failure < 10) {
+            REQUIRE(g.s.tuned_channel == 0);
+            CHECK(g.s.guide_gave_up.empty());
+        } else {
+            CHECK(g.s.tuned_channel == -1);
+            CHECK(g.s.guide_gave_up == std::vector<int>{0});
+        }
+    }
+}
