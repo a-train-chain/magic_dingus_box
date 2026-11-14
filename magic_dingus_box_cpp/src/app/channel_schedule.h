@@ -35,6 +35,12 @@ struct Channel {
 // has no playlist file, so it has no playlist_identity of its own).
 inline constexpr const char* kShuffleChannelId = "shuffle";
 
+inline constexpr const char* kMovieChannelPrefix = "movies:";
+// Lexical identity check, available even in builds without Media Browser.
+inline bool is_movie_playlist(const Playlist& playlist) {
+    return playlist.path.rfind(kMovieChannelPrefix, 0) == 0;
+}
+
 // Lexical only (no filesystem): strips a leading "./" and "data/", giving the
 // media_info.json key form, e.g. "media/x.mp4".
 std::string media_key_of_item(const PlaylistItem& item);

@@ -293,6 +293,8 @@ if(BUILD_KIOSK)
             # undefined LibraryDb::*/WatchStore::*.
             src/media_browser/library/library_db.cpp
             src/media_browser/library/watch_store.cpp
+            src/media_browser/channels/movie_library.cpp
+            src/media_browser/channels/movie_channels.cpp
             # The one libcurl transport every MB HTTP call goes through
             # (dual-listed: also in MEDIA_BROWSER_SOURCES for the tests).
             src/media_browser/http/http_request.cpp
@@ -514,6 +516,8 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/sonarr/sonarr_mock.cpp
         src/media_browser/library/library_db.cpp
         src/media_browser/library/watch_store.cpp
+        src/media_browser/channels/movie_library.cpp
+        src/media_browser/channels/movie_channels.cpp
         src/media_browser/tmdb_client.cpp
         src/media_browser/torrent/torrent_session.cpp
         src/media_browser/radarr/radarr_parsers.cpp
@@ -563,6 +567,8 @@ if(ENABLE_MEDIA_BROWSER)
     set(MEDIA_BROWSER_TEST_SOURCES
         tests/media_browser/test_smoke.cpp
         tests/media_browser/test_movie_drive.cpp
+        tests/media_browser/test_movie_library.cpp
+        tests/media_browser/test_movie_channels.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_watch_store.cpp
         tests/media_browser/test_tmdb_client.cpp

@@ -399,3 +399,26 @@ TEST_CASE("Master Shuffle order is a golden permutation", "[channel_schedule]") 
     const std::vector<std::pair<int, int>> golden = {{2, 1}, {2, 0}, {1, 2}, {1, 1}, {1, 0}, {2, 2}};
     CHECK(got == golden);
 }
+
+TEST_CASE("movie playlist identities are lexical and their exact trims schedule without media info", "[channel_schedule]") {
+    app::Playlist movies;
+    movies.path = "movies:mix";
+    app::PlaylistItem film;
+    film.path = "/host/movies/film.mp4";
+    film.source_type = "local";
+    film.movie_tmdb_id = 42;
+    film.end = 4863.25;
+    movies.items.push_back(film);
+    CHECK(app::is_movie_playlist(movies));
+    app::Playlist ordinary;
+    ordinary.path = "data/playlists/movies:mix.yaml";
+    CHECK_FALSE(app::is_movie_playlist(ordinary));
+    ordinary.path = "movies";
+    CHECK_FALSE(app::is_movie_playlist(ordinary));
+    ordinary.path.clear();
+    CHECK_FALSE(app::is_movie_playlist(ordinary));
+    const auto channels = app::build_channels({{}, movies}, {});
+    REQUIRE(channels.size() == 2);
+    REQUIRE(channels[1].items.size() == 1);
+    CHECK(channels[1].items[0].length_s == 4863.25);
+}

@@ -113,6 +113,7 @@ struct PlaylistItem {
     // loses a meaningful value by using 0 as the sentinel.
     double start = 0.0;
     double end = 0.0;
+    int movie_tmdb_id = 0;  // 0 for ordinary playlist items
 };
 
 struct Playlist {
