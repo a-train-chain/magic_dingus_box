@@ -40,6 +40,8 @@ public:
 
     void start(); // one boot snapshot read, any outcome lifts the boot gate
     void request_drive_check();
+    // Network refresh only while healthy; cached mount/file revalidation on
+    // the same 15-minute cadence also works offline. Both run on the worker.
     bool poll(bool tunnel_healthy); // true only when movies() changes
     const std::vector<LibraryMovie>& movies() const { return movies_; }
     bool first_load_finished() const { return first_load_finished_; }
@@ -69,6 +71,8 @@ private:
     bool first_load_finished_ = false;
     bool fetch_outstanding_ = false;
     std::optional<std::chrono::steady_clock::time_point> last_attempt_finished_;
+    std::optional<std::chrono::steady_clock::time_point> last_drive_check_finished_;
+    bool drive_check_outstanding_ = false;
 
     // Worker only; jobs run serially.
     std::vector<LibraryMovie> full_list_;
@@ -84,6 +88,7 @@ private:
     bool write_failed_ = false;
     std::optional<std::vector<LibraryMovie>> result_;
     std::optional<std::chrono::steady_clock::time_point> attempt_finished_;
+    std::optional<std::chrono::steady_clock::time_point> drive_check_finished_;
 
     // LAST: joins/drains before any data used by the jobs is destroyed.
     utils::LatestWinsWorker worker_;

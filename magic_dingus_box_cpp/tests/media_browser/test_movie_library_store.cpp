@@ -364,3 +364,57 @@ TEST_CASE("movie drive predicate failures keep the last published list", "[movie
     REQUIRE(store.movies().size() == 1);
     CHECK(store.movies()[0].tmdb_id == 1);
 }
+
+TEST_CASE("failed scheduled fetches recheck drive and recover cached films after remount", "[movie_library_store][refresh_drive]") {
+    Sandbox box;
+    const auto snapshot = app::serialize_movie_library({film(1, "/movie.mp4")});
+    box.write(snapshot);
+    FakeClock clock;
+    bool mounted = true;
+    int checks = 0;
+    MovieLibraryStore store(box.file.string(), [] { return std::nullopt; },
+        [](const std::string&) { return true; }, nullptr, [&] { return clock.now(); },
+        [&] { ++checks; return mounted; });
+    store.start(); store.wait_idle_for_tests(); store.poll(false);
+    REQUIRE(store.movies().size() == 1);
+    mounted = false;
+    store.poll(true); store.wait_idle_for_tests();
+    CHECK(store.poll(false)); CHECK(store.movies().empty());
+    const int checks_after_failure = checks;
+    mounted = true;
+    for (int i = 0; i < 100; ++i) store.poll(true);
+    store.wait_idle_for_tests();
+    CHECK(checks == checks_after_failure); // no checks/retries between scheduled attempts
+    clock.seconds = 900;
+    store.poll(true); store.wait_idle_for_tests();
+    CHECK(store.poll(false)); REQUIRE(store.movies().size() == 1);
+    CHECK(store.movies()[0].tmdb_id == 1); CHECK(box.read() == snapshot);
+}
+
+TEST_CASE("offline periodic drive checks hide unmounted films and restore them without HTTP", "[movie_library_store][offline_drive]") {
+    Sandbox box;
+    box.write(app::serialize_movie_library({film(1, "/movie.mp4")}));
+    FakeClock clock;
+    bool mounted = true;
+    int fetches = 0;
+    int checks = 0;
+    const auto owner = std::this_thread::get_id();
+    bool worker_only = true;
+    MovieLibraryStore store(box.file.string(), [&]() -> std::optional<std::vector<LibraryMovie>> {
+        ++fetches; return std::nullopt;
+    }, [](const std::string&) { return true; }, nullptr, [&] { return clock.now(); }, [&] {
+        worker_only &= std::this_thread::get_id() != owner;
+        ++checks; return mounted;
+    });
+    store.start(); store.wait_idle_for_tests(); store.poll(false);
+    REQUIRE(store.movies().size() == 1);
+    mounted = false; clock.seconds = 899;
+    for (int i = 0; i < 100; ++i) store.poll(false);
+    store.wait_idle_for_tests(); CHECK(checks == 1);
+    clock.seconds = 900; store.poll(false); store.wait_idle_for_tests();
+    CHECK(store.poll(false)); CHECK(store.movies().empty());
+    mounted = true; clock.seconds = 1800;
+    store.poll(false); store.wait_idle_for_tests();
+    CHECK(store.poll(false)); REQUIRE(store.movies().size() == 1);
+    CHECK(fetches == 0); CHECK(checks == 3); CHECK(worker_only);
+}

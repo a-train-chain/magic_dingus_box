@@ -2777,3 +2777,88 @@ TEST_CASE("a playing channel keeps both live cut limits when a reload renumbers 
         }
     }
 }
+
+TEST_CASE("a removed movie channel retains its film until end then stops exactly once", "[playlist_playback][movie_reload]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.wall = kW0 + 3 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, false);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh;
+    fresh.video = g.s.playlists; fresh.video.erase(fresh.video.begin() + 2);
+    const auto before = g.t.calls.size();
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    CHECK(g.t.calls.size() == before); CHECK(g.s.tuned_channel == -1);
+    CHECK(g.pb.owns_pipeline());
+    g.s.update_playback_state(5, 50); g.pb.tick_auto_advance();
+    CHECK(g.t.calls.size() == before);
+    SECTION("natural end") { g.s.update_playback_state(50, 50); }
+    SECTION("live day deadline still applies to the retained film") {
+        g.t.wall = kW0 + 21 * 3600;
+    }
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.calls.size() == before + 1); CHECK(g.t.last() == "stop");
+    CHECK_FALSE(g.s.loaded_movie); CHECK_FALSE(g.s.video_active);
+    g.pb.tick_auto_advance(); CHECK(g.t.calls.size() == before + 1);
+}
+
+TEST_CASE("leaving guide style releases a loaded movie immediately", "[playlist_playback][movie_reload]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    g.t.wall = kW0 + 3 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, false);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    REQUIRE(g.s.loaded_movie);
+    const auto before = g.t.calls.size();
+    g.pb.set_channels(nullptr);
+    CHECK(g.t.calls.size() == before + 1); CHECK(g.t.last() == "stop");
+    CHECK_FALSE(g.s.loaded_movie); CHECK_FALSE(g.s.video_active);
+}
+
+TEST_CASE("a returned movie channel reanchors its still-playing retained film", "[playlist_playback][movie_reload]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    const auto original = g.s.playlists;
+    g.t.wall = kW0 + 3 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, false);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    auto replace = [&](std::vector<app::Playlist> rows) {
+        const auto snap = app::snapshot_for_reload(g.s, -1);
+        app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = std::move(rows);
+        app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+        g.channels = app::build_channels(g.s.playlists, guide_lengths());
+        g.pb.set_channels(&g.channels);
+    };
+    auto without = original; without.erase(without.begin() + 2);
+    const auto before = g.t.calls.size();
+    replace(without); REQUIRE(g.s.tuned_channel == -1);
+    replace(original);
+    CHECK(g.s.tuned_channel == 2); CHECK(g.t.calls.size() == before);
+    REQUIRE(g.s.current_playlist_item()); CHECK(g.s.current_playlist_item()->title == "m");
+}
+
+TEST_CASE("a movie refresh reanchors a pending tune by identity before its load", "[playlist_playback][movie_reload]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    g.t.wall = kW0 + 3 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, false);
+    const auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+    app::Playlist added; added.title = "New"; added.path = "/p/new.yaml";
+    fresh.video.insert(fresh.video.begin() + 1, added);
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.t.last() == "load_at Movies 0");
+    CHECK(g.s.tuned_channel == 3); REQUIRE(g.s.loaded_movie);
+    CHECK(g.s.loaded_movie->channel_identity == "movies:mix");
+}

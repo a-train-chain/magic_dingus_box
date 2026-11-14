@@ -3,6 +3,7 @@
 namespace app {
 
 void stop_to_menu(AppState& state, const std::string& error_message) {
+    state.loaded_movie.reset();
     state.video_active = false;
     state.is_switching_playlist = false;
     state.update_playback_state(0.0, 0.0);
@@ -21,6 +22,7 @@ void stop_to_menu(AppState& state, const std::string& error_message) {
 }
 
 void reset_main_ui_for_media_browser(AppState& state) {
+    state.loaded_movie.reset();
     state.video_active = false;
     state.is_switching_playlist = false;
     state.current_playlist_index = -1;
@@ -30,6 +32,7 @@ void reset_main_ui_for_media_browser(AppState& state) {
 }
 
 void clear_now_playing(AppState& state) {
+    state.loaded_movie.reset();
     state.now_playing_title.clear();
     state.now_playing_subtitle.clear();
     state.now_playing_kind.clear();

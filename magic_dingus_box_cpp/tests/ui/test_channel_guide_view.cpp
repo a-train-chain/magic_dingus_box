@@ -840,3 +840,15 @@ TEST_CASE("guide uses future zone offsets for schedule and time labels", "[guide
     CHECK(v.panel.end_hm == "4:00");
     CHECK(v.grid.ticks[1].label == "3:00");
 }
+
+TEST_CASE("the tuned movie panel describes the loaded film after its row is replaced", "[guide_view][movie_reload]") {
+    Fixture f;
+    auto in = f.in(); in.tuned = 1; in.cursor.row = 1;
+    app::PlaylistItem loaded; loaded.title = "Film actually on screen";
+    loaded.movie_tmdb_id = 42; loaded.end = 7200;
+    in.playing.playlist = 1; in.playing.item = 0;
+    in.playing.position_s = 60; in.playing.duration_s = 7200;
+    in.playing.retained_item = &loaded;
+    const auto view = ui::layout_channel_guide(in);
+    CHECK(view.panel.item_title == "Film actually on screen");
+}

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "media_browser/channels/movie_library_store.h"
+
 // Media Browser service-client setup — the part of main() that used to
 // build the Radarr / Sonarr / TMDB / Prowlarr / qBittorrent clients, start
 // the Layer 3 VPN health monitor and run qBit's boot-time alt-limit
@@ -87,6 +89,13 @@ MbServiceClients make_service_clients(
 
 // Production overload: std::getenv + utils::kServicesEnvPath.
 MbServiceClients make_service_clients();
+
+// Invoked only by MovieLibraryStore's worker: checked failures keep the snapshot.
+app::MovieLibraryStore::Fetch make_movie_library_fetch(RadarrClient& radarr);
+// Linux mountinfo gate: a real non-root mount must own the configured library.
+// Worker only: opens mountinfo, never called directly from the render loop.
+bool movie_drive_ready(const std::string& host_library_prefix,
+                      const std::string& mountinfo_path = "/proc/self/mountinfo");
 
 // Trickle-limit bootstrap (movie playback contention guard): converge the
 // alt-limit RATES and clear a crash-stranded alt-limit cap. Best-effort

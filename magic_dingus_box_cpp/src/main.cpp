@@ -38,6 +38,7 @@
 #include "media_browser/mb_entry_gate.h"
 #include "media_browser/mb_host.h"
 #include "media_browser/mb_services.h"
+#include "media_browser/channels/movie_channels.h"
 #endif
 #include "app/app_state.h"
 #include "app/audio_router.h"
@@ -672,6 +673,22 @@ int main(int /* argc */, char* /* argv */[]) {
     app::PlaylistPlayback playlist_playback(state, playlist_transport,
                                             playlist_directory);
     
+#ifdef MEDIA_BROWSER_ENABLED
+    // Shared clients outlive the library worker and Media Browser screens.
+    media_browser::MbServiceClients mb_clients =
+        media_browser::make_service_clients();
+    app::MovieLibraryStore movie_library(
+        config::get_data_path() + "/movie_library.json",
+        media_browser::make_movie_library_fetch(*mb_clients.radarr),
+        [](const std::string& path) { std::error_code ec; return std::filesystem::exists(path, ec); },
+        nullptr, nullptr,
+        [radarr = mb_clients.radarr.get()] {
+            return media_browser::movie_drive_ready(radarr->host_library_prefix());
+        });
+    movie_library.start();
+    bool channels_mb_unlocked = state.media_browser_unlocked;
+#endif
+
     // Channel Guide (app/channel_schedule.h): one live channel per main-menu
     // row, held by playlist_playback through a pointer. rebuild_channels()
     // is the ONE place the list is built and handed over — in List style
@@ -688,7 +705,24 @@ int main(int /* argc */, char* /* argv */[]) {
     std::vector<app::Channel> channels;
     uint64_t channels_generation = 0;
     auto rebuild_channels = [&state, &media_info, &channels, &playlist_playback,
-                             &channels_generation]() {
+                             &channels_generation, &controller
+#ifdef MEDIA_BROWSER_ENABLED
+                             , &movie_library
+#endif
+                             ]() {
+        const auto snap = app::snapshot_for_reload(state, -1);
+        app::PlaylistLoader::UiPlaylistSplit rows{state.playlists, state.game_playlists};
+        bool movie_channels_on = false;
+        std::vector<app::Playlist> movies;
+#ifdef MEDIA_BROWSER_ENABLED
+        movie_channels_on = state.display_settings.menu_style == app::MenuStyle::ChannelGuide &&
+                            state.media_browser_unlocked;
+        if (movie_channels_on)
+            movies = app::build_movie_playlists(movie_library.movies(), state.platform_profile.movie_channel_codecs);
+#endif
+        app::merge_movie_playlists(rows.video, std::move(movies));
+        app::apply_reloaded_playlists(state, std::move(rows), snap,
+            [&controller] { controller.stop(); }, movie_channels_on);
         if (state.display_settings.menu_style == app::MenuStyle::ChannelGuide) {
             channels = app::build_channels(state.playlists, media_info.map());
             playlist_playback.set_channels(&channels);
@@ -732,14 +766,6 @@ int main(int /* argc */, char* /* argv */[]) {
     state.settings_menu = &settings_menu;
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // Task 17: service clients for the Media Browser (the screens and
-    // their dispatcher live in MediaBrowserHost, constructed below).
-    // Radarr / Sonarr / TMDB / Prowlarr / qBittorrent, in that order, with
-    // the mock fallbacks for a box without keys — see
-    // media_browser/mb_services.h for the key chains and path prefixes.
-    media_browser::MbServiceClients mb_clients =
-        media_browser::make_service_clients();
-
     // Trickle-limit bootstrap: converge qBit's alt-limit rates and clear a
     // crash-stranded cap. Best-effort, gated on the provisioning marker.
     media_browser::bootstrap_qbit_alt_limits(*mb_clients.qbit,
@@ -1624,6 +1650,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // dispatch above: rebuild the channels for it (List: none) before
         // anything below reads guide_style(). An enum compare per frame.
         sync_menu_style();
+#ifdef MEDIA_BROWSER_ENABLED
+        if (channels_mb_unlocked != state.media_browser_unlocked) {
+            channels_mb_unlocked = state.media_browser_unlocked;
+            rebuild_channels();
+        }
+#endif
 
         // Update player state (polls GStreamer pipeline state)
         player.update_state();
@@ -1687,6 +1719,9 @@ int main(int /* argc */, char* /* argv */[]) {
             // trimmed items' lengths and could tune — and save as the last
             // channel — the wrong one. A failed read lifts it too.
             auto_tune.media_info_read = media_info.first_read_finished();
+#ifdef MEDIA_BROWSER_ENABLED
+            auto_tune.movie_library_read = !state.media_browser_unlocked || movie_library.first_load_finished();
+#endif
             // Not under Settings (its game browser, Controller Setup wizard
             // and pairing screen included), the Wi-Fi keyboard or the Media
             // Browser: the video comes back once they close.
@@ -1708,8 +1743,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 orphan.intro_complete = state.intro_complete;
                 orphan.on_main_screen = on_main_screen;
                 orphan.video_active = state.video_active;
-                orphan.indexes_set = state.current_playlist_index >= 0 &&
-                                     state.current_item_index >= 0;
+                orphan.indexes_set = state.current_playlist_item() != nullptr;
                 orphan.playing = playlist_transport.is_playing();
                 orphan.switch_pending =
                     playlist_playback.switch_pending() || state.is_switching_playlist;
@@ -1734,7 +1768,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // playing" — re-tuning there would stop every item boundary.
             auto_tune.video_active =
                 state.video_active ||
-                (state.current_playlist_index >= 0 && state.current_item_index >= 0);
+                (state.current_playlist_item() != nullptr);
             // After a tune's load runs, switch_pending() is false but the
             // stream is not up until is_switching_playlist clears.
             auto_tune.switch_pending =
@@ -1897,8 +1931,8 @@ int main(int /* argc */, char* /* argv */[]) {
             guide_now_utc = playlist_transport.wall_now_utc();
             guide_offset_s = guide_clock.offset(guide_now_utc, zone_offset);
             guide_source_aspect = playing_display_aspect();
-            if (state.video_active && !playlist_playback.switch_pending() &&
-                state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+            if (state.video_active && !playlist_playback.switch_pending() && state.current_playlist_item()) {
+                guide_playing.retained_item = state.loaded_movie ? &state.loaded_movie->item : nullptr;
                 guide_playing.playlist = state.current_playlist_index;
                 guide_playing.item = state.current_item_index;
                 guide_playing.position_s = state.get_position();
@@ -2602,6 +2636,9 @@ int main(int /* argc */, char* /* argv */[]) {
         // map can bring video lengths (the first read after boot, a new
         // upload, the back-fill): in Channel Guide style the channels are
         // rebuilt from it — the boot build had only trimmed items' lengths.
+#ifdef MEDIA_BROWSER_ENABLED
+        if (movie_library.poll(state.media_browser_vpn_healthy)) rebuild_channels();
+#endif
         if (media_info.poll() && playlist_playback.guide_style()) {
             rebuild_channels();
         }
@@ -2779,12 +2816,15 @@ int main(int /* argc */, char* /* argv */[]) {
                             // is re-anchored, never interrupted — unless its
                             // playlist is gone (then controller.stop() +
                             // stop_to_menu).
+                            auto fresh_playlists = app::split_for_ui_with_master_shuffle(
+                                PlaylistLoader::filter_for_platform(
+                                    PlaylistLoader::load_playlists(playlist_directory), state.platform_profile));
+                            std::vector<app::Playlist> current_movie_rows;
+                            for (const auto& row : state.playlists)
+                                if (app::is_movie_playlist(row)) current_movie_rows.push_back(row);
+                            app::merge_movie_playlists(fresh_playlists.video, std::move(current_movie_rows));
                             app::apply_reloaded_playlists(
-                                state,
-                                app::split_for_ui_with_master_shuffle(
-                                    PlaylistLoader::filter_for_platform(
-                                        PlaylistLoader::load_playlists(playlist_directory),
-                                        state.platform_profile)),
+                                state, std::move(fresh_playlists),
                                 reload_snap,
                                 [&controller]() { controller.stop(); });
 
@@ -3064,6 +3104,9 @@ int main(int /* argc */, char* /* argv */[]) {
                      "the last crop change may be lost");
         }
 #ifdef MEDIA_BROWSER_ENABLED
+        if (!movie_library.flush_until(persist_deadline)) {
+            LOG_WARN("Shutdown: movie_library.json write did not finish in time");
+        }
         if (!watch_store.flush_until(persist_deadline)) {
             LOG_WARN("Shutdown: watch history write did not finish in time — "
                      "resume falls back to the last checkpoint on disk");

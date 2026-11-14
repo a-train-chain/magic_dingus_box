@@ -79,6 +79,7 @@ struct GuidePlaying {
     int item = -1;            // index into that playlist's items
     double position_s = 0;    // the player's position in the FILE
     double duration_s = 0;    // the file's duration (0 = unknown)
+    const app::PlaylistItem* retained_item = nullptr;  // loaded movie survives a library refresh
 };
 
 struct GuideViewInput {
@@ -319,14 +320,14 @@ struct PlayingSpan {
 inline std::optional<PlayingSpan> playing_span(const GuideViewInput& in,
                                                const app::Channel& ch) {
     const GuidePlaying& pp = in.playing;
-    if (pp.playlist < 0 || pp.item < 0) return std::nullopt;
+    if (!pp.retained_item && (pp.playlist < 0 || pp.item < 0)) return std::nullopt;
     PlayingSpan s;
     s.at.playlist = pp.playlist;
     s.at.item = pp.item;
-    s.item = item_of(in, s.at);
+    s.item = pp.retained_item ? pp.retained_item : item_of(in, s.at);
     if (!s.item) return std::nullopt;
     for (const app::ScheduledItem& si : ch.items) {
-        if (si.playlist == pp.playlist && si.item == pp.item) {
+        if (!pp.retained_item && si.playlist == pp.playlist && si.item == pp.item) {
             s.length_s = si.length_s;
             break;
         }
@@ -497,7 +498,8 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
             // too (below). The grid stays the schedule.
             const auto span = on_tuned ? d::playing_span(in, ch) : std::nullopt;
             const bool plays_airing =
-                span && span->at.playlist == si.playlist && span->at.item == si.item;
+                span && !in.playing.retained_item &&
+                span->at.playlist == si.playlist && span->at.item == si.item;
             const auto playing = plays_airing ? std::nullopt : span;
             if (playing) {
                 const double started = in.now_utc - playing->played_s;

@@ -172,7 +172,8 @@ public:
     // guide_gave_up rows are NOT re-anchored — a reload can shift them —
     // and live until a channel proves it plays (kChannelPlaysS); only rows
     // past the new list's end are dropped. nullptr also forgets the tuned /
-    // given-up channels.
+    // given-up channels. A loaded movie survives ordinary rebuild/removal via
+    // AppState::loaded_movie; nullptr explicitly leaves it immediately.
     void set_channels(const std::vector<Channel>* channels);
     bool guide_style() const { return channels_ != nullptr; }
     // Tune `channel` live. The playlist switch above, unchanged — stop now,
@@ -275,7 +276,8 @@ public:
 
     // ── Who owns the pipeline ────────────────────────────────────────────
     // True while a main-menu playlist item owns the shared pipeline (not
-    // the intro, a switch, a game launch, or Media Browser playback). Also
+    // the intro, a switch, a game launch, or Media Browser playback). A retained
+    // movie still owns it when a refresh removed its row/item indexes. Also
     // read by main.cpp each frame for the overlay's Picture control
     // (app/overlay_nav.h, PictureFacts::owns_pipeline).
     bool owns_pipeline() const;
@@ -297,6 +299,7 @@ private:
         int target = -1;  // the selected_index SELECT was pressed on (a tune: the channel)
         std::chrono::steady_clock::time_point next_check{};
         int repolls = 0;  // 50 ms re-polls used so far
+        std::string identity;       // pending channel survives row renumbering
         bool tune = false;          // a Channel Guide tune, not a SELECT
         bool keep_overlay = false;  // tune(): leave the overlay as it is
     };

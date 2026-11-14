@@ -13,7 +13,7 @@ bool contains(const std::vector<int>& v, int x) {
 }  // namespace
 
 bool auto_tune_gates_open(const AutoTuneInput& in) {
-    return in.guide_style && in.intro_complete && in.media_info_read && in.on_main_screen &&
+    return in.guide_style && in.intro_complete && in.media_info_read && in.movie_library_read && in.on_main_screen &&
            !in.video_active &&
            !in.switch_pending && !in.loading_game && !in.post_game_pending &&
            in.now_utc >= in.wait_until_utc;

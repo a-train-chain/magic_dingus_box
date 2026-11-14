@@ -32,8 +32,7 @@ PlaylistPlayback::PlaylistPlayback(AppState& state, PlaylistTransport& transport
 // ── Failed-item handling (main playlist / Master Shuffle) ────────────────
 
 bool PlaylistPlayback::owns_pipeline() const {
-    bool owns = state_.current_playlist_index >= 0 &&
-                state_.current_item_index >= 0 &&
+    bool owns = state_.current_playlist_item() != nullptr &&
                 state_.intro_complete && !state_.showing_intro_video &&
                 !state_.is_switching_playlist && !state_.is_loading_game;
 #ifdef MEDIA_BROWSER_ENABLED
@@ -44,7 +43,7 @@ bool PlaylistPlayback::owns_pipeline() const {
 }
 
 bool PlaylistPlayback::channel_load_live() const {
-    bool live = state_.current_playlist_index >= 0 && state_.current_item_index >= 0 &&
+    bool live = state_.current_playlist_item() != nullptr &&
                 state_.intro_complete && !state_.showing_intro_video &&
                 !state_.is_loading_game;
 #ifdef MEDIA_BROWSER_ENABLED
@@ -373,7 +372,30 @@ std::string PlaylistPlayback::channel_identity(int c) const {
 
 void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     channels_ = channels;
+    // Reload can renumber a tune during its cooperative settle. Its target
+    // is the channel chosen at the press, independent of the new row order.
+    if (switch_pending() && pending_.tune && state_.is_switching_playlist &&
+        !state_.is_loading_game && !state_.showing_intro_video) {
+        int row = -1;
+        if (channels_) {
+            for (int c = 0; c < static_cast<int>(channels_->size()); ++c) {
+                if (channel_identity(c) == pending_.identity) { row = c; break; }
+            }
+        }
+        if (row < 0) {
+            pending_ = PendingSwitch{};
+            transport_.stop();
+            stop_to_menu(state_);
+        } else {
+            pending_.target = row;
+            state_.current_playlist_index = row;
+        }
+    }
     if (!guide_style()) {
+        if (state_.loaded_movie) {
+            transport_.stop();
+            stop_to_menu(state_);
+        }
         // List style: nothing is tuned, and nothing is owed a retry.
         state_.tuned_channel = -1;
         state_.guide_gave_up.clear();
@@ -390,10 +412,11 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     gave_up.erase(std::remove_if(gave_up.begin(), gave_up.end(),
                                  [this](int c) { return channel_at(c) == nullptr; }),
                   gave_up.end());
-    if (state_.tuned_channel < 0) return;
+    if (state_.tuned_channel < 0 && !state_.loaded_movie) return;
     // A reload renumbers the rows: re-find the tuned channel by the identity
     // it was tuned under rather than keep an index into the old list.
-    const std::string& id = state_.last_channel_id;
+    const std::string& id = state_.loaded_movie
+        ? state_.loaded_movie->channel_identity : state_.last_channel_id;
     int row = -1;
     for (int c = 0; c < static_cast<int>(channels_->size()); ++c) {
         if (channel_identity(c) == id) { row = c; break; }
@@ -416,6 +439,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     switch_start_generation_ = transport_.stream_generation();
     state_.playlist_switch_start_time = transport_.now();
     channel_load_at_.reset();  // the tune takes the pipeline over
+    state_.loaded_movie.reset();
     // Point at the channel's row before the stop, as SELECT does: it keeps
     // the indexes through the stop, and the pending switch's "re-pointed"
     // check covers a tune too. The on-air item replaces it at the load.
@@ -430,6 +454,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     pending_.next_check = transport_.now() + kSwitchSettle;
     pending_.repolls = 0;
     pending_.tune = true;
+    pending_.identity = channel_identity(channel);
     pending_.keep_overlay = keep_overlay;
 }
 
@@ -571,6 +596,7 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
 
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
               << " at " << oa.offset_s << "s" << std::endl;
+    state_.loaded_movie.reset();
     auto result = transport_.load_playlist_item_at(state_, pl, si.item,
                                                    playlist_directory_, oa.offset_s);
     if (!result) {
@@ -578,6 +604,8 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
         return false;
     }
+    if (is_movie_playlist(pl))
+        state_.loaded_movie = AppState::LoadedMovie{channel_identity(channel), pl.items[si.item]};
     // The start bound counts from HERE, the load's return (kChannelStartTimeout).
     channel_load_at_ = transport_.now();
     // Loaded is not playing: guide_gave_up waits for prove_channel().
@@ -843,7 +871,8 @@ void PlaylistPlayback::tick_pipeline_error() {
 void PlaylistPlayback::tick_auto_advance() {
     const bool owns_cut = guide_style() && loaded_airing_ &&
         !loaded_airing_->identity.empty() &&
-        loaded_airing_->identity == channel_identity(state_.tuned_channel);
+        (loaded_airing_->identity == channel_identity(state_.tuned_channel) ||
+         (state_.loaded_movie && loaded_airing_->identity == state_.loaded_movie->channel_identity));
     // Live programmes cut at the civil day boundary even if a keyframe seek
     // or pause has left the file position behind. A load records a new day
     // deadline and clears playback_started_, so this cannot fire twice.
@@ -865,27 +894,21 @@ void PlaylistPlayback::tick_auto_advance() {
     // A pending switch has stopped the old stream and already points the
     // indexes at the new playlist: there is no item to advance (and the old
     // code never ran this inside the switch's wait).
-    if (!switch_pending() && state_.video_active && state_.current_playlist_index >= 0 &&
-        state_.current_item_index >= 0) {
+    if (!switch_pending() && state_.video_active && state_.current_playlist_item()) {
         // Snapshot the (position, duration) pair so the whole advance
         // decision sees a consistent view rather than reading the
         // mutex-protected fields multiple times.
         app::AutoAdvanceInput adv;
         adv.position = state_.get_position();
         adv.duration = state_.get_duration();
-        if (state_.current_playlist_index < static_cast<int>(state_.playlists.size())) {
-            const auto& adv_pl = state_.playlists[state_.current_playlist_index];
-            if (state_.current_item_index < static_cast<int>(adv_pl.items.size())) {
-                adv.item_end = adv_pl.items[state_.current_item_index].end;
-            }
-        }
+        adv.item_end = state_.current_playlist_item()->end;
         if (owns_cut && guide_item_end_position_ > 0) {
             adv.item_end = adv.item_end > 0 ? std::min(adv.item_end, guide_item_end_position_)
                                           : guide_item_end_position_;
         }
         adv.playback_started = state_.playback_started_;
         adv.master_shuffle = state_.master_shuffle_active;
-        adv.current_item = state_.current_item_index;
+        adv.current_item = state_.loaded_movie ? 0 : state_.current_item_index;
         adv.last_advanced_item = state_.last_advanced_item_index;
 
         switch (app::decide_auto_advance(adv)) {

@@ -240,23 +240,6 @@ double Controller::get_volume() const {
 
 namespace {
 
-// The PlaylistItem currently playing, or nullptr if the indices do not point at
-// one. Both indices are free-running ints that are legitimately -1 between
-// items and during a playlist switch, so every access needs the same bounds
-// check used further down in this file rather than trusting them.
-const PlaylistItem* current_item(const AppState& state) {
-    if (state.current_playlist_index < 0 ||
-        state.current_playlist_index >= static_cast<int>(state.playlists.size())) {
-        return nullptr;
-    }
-    const auto& pl = state.playlists[state.current_playlist_index];
-    if (state.current_item_index < 0 ||
-        state.current_item_index >= static_cast<int>(pl.items.size())) {
-        return nullptr;
-    }
-    return &pl.items[state.current_item_index];
-}
-
 // The resolved path of a local video item whose file does not exist, or
 // nullopt (file present, or not a file-backed video item). The same
 // resolution + existence check load_file_with_resolution makes, done BEFORE
@@ -358,7 +341,7 @@ void Controller::update_state(AppState& state) {
     // auto-advance uses (see auto_advance.h), so "ended" means one thing.
     double effective_duration = cur_duration;
     {
-        const PlaylistItem* cur = current_item(state);
+        const PlaylistItem* cur = state.current_playlist_item();
         if (cur) effective_duration = effective_end(cur_duration, cur->end);
     }
     if (state.video_active && effective_duration > 0.0) {
@@ -384,7 +367,7 @@ void Controller::update_state(AppState& state) {
     if (was_active && !state.video_active && !video_ended) {
         // Only reset if we don't have a valid playlist index set
         // This prevents resetting during playlist switches
-        if (state.current_playlist_index < 0) {
+        if (state.current_playlist_index < 0 && !state.loaded_movie) {
             state.current_item_index = -1;
             // Clear the published now-playing info too, so the phone
             // remote doesn't keep showing a track that has stopped.
@@ -473,6 +456,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         return utils::Result<>::fail(error);
     }
 
+    state.loaded_movie.reset();
     // Publish "what is playing" for StatusWriter -> kiosk_status.json ->
     // the phone remote. These AppState fields were declared and
     // serialized but never assigned anywhere, so remote.js's

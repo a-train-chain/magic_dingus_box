@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 
 #include "app/app_state.h"
 #include "media_browser/health/vpn_health_monitor.h"
@@ -239,6 +240,46 @@ MbServiceClients make_service_clients() {
     return make_service_clients(
         [](const char* name) -> const char* { return std::getenv(name); },
         utils::kServicesEnvPath);
+}
+
+app::MovieLibraryStore::Fetch make_movie_library_fetch(RadarrClient& radarr) {
+    return [&radarr]() -> std::optional<std::vector<app::LibraryMovie>> {
+        auto movies = radarr.get_library_checked();
+        if (!movies) return std::nullopt;
+        return app::to_library_movies(*movies, [&radarr](const std::string& path) {
+            return radarr.resolve_host_path(path);
+        });
+    };
+}
+
+bool movie_drive_ready(const std::string& host_library_prefix, const std::string& mountinfo_path) {
+    // mountinfo escapes whitespace and backslash as octal; do not split the
+    // decoded mountpoint on spaces. lexical normalization performs no stat.
+    const auto library = std::filesystem::path(host_library_prefix).lexically_normal();
+    if (!library.is_absolute()) return false;
+    std::ifstream file(mountinfo_path);
+    std::string line;
+    while (std::getline(file, line)) {
+        std::istringstream fields(line);
+        std::string id, parent, device, root, encoded;
+        if (!(fields >> id >> parent >> device >> root >> encoded)) continue;
+        std::string decoded;
+        for (size_t i = 0; i < encoded.size(); ++i) {
+            if (encoded[i] == '\\' && i + 3 < encoded.size() &&
+                encoded[i+1] >= '0' && encoded[i+1] <= '7' &&
+                encoded[i+2] >= '0' && encoded[i+2] <= '7' &&
+                encoded[i+3] >= '0' && encoded[i+3] <= '7') {
+                decoded += static_cast<char>((encoded[i+1]-'0')*64 +
+                    (encoded[i+2]-'0')*8 + encoded[i+3]-'0');
+                i += 3;
+            } else decoded += encoded[i];
+        }
+        const auto mount = std::filesystem::path(decoded).lexically_normal();
+        if (!mount.is_absolute() || mount == "/") continue;
+        const auto relative = library.lexically_relative(mount);
+        if (!relative.empty() && *relative.begin() != "..") return true;
+    }
+    return false;
 }
 
 void bootstrap_qbit_alt_limits(QbittorrentClient& qbit,

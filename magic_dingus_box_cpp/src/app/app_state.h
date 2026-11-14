@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <optional>
 #include <sstream>
 #include <vector>
 #include <deque>
@@ -244,6 +245,21 @@ struct AppState {
 
     double original_volume;  // Stream level when the current video started (intro fade-out ramps from it)
     std::string current_file;
+    // Immutable facts of the movie actually loaded, independent of library rows.
+    // Cleared on stop/handover/new load; refresh may remove its coordinates.
+    struct LoadedMovie {
+        std::string channel_identity;
+        PlaylistItem item;
+    };
+    std::optional<LoadedMovie> loaded_movie;
+    const PlaylistItem* current_playlist_item() const {
+        if (loaded_movie) return &loaded_movie->item;
+        if (current_playlist_index < 0 ||
+            current_playlist_index >= static_cast<int>(playlists.size())) return nullptr;
+        const auto& items = playlists[current_playlist_index].items;
+        return current_item_index >= 0 && current_item_index < static_cast<int>(items.size())
+            ? &items[current_item_index] : nullptr;
+    }
     int current_playlist_index;  // Index of playlist currently playing (-1 if none)
     int current_item_index;  // Index of item currently playing (-1 if none)
     int last_advanced_item_index;  // Last item index we advanced from (to prevent multiple advances)

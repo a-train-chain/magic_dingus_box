@@ -31,6 +31,7 @@ void MovieLibraryStore::submit() {
 void MovieLibraryStore::start() {
     if (started_) return;
     started_ = true;
+    drive_check_outstanding_ = true;
     {
         std::lock_guard<std::mutex> lk(mu_);
         read_requested_ = true;
@@ -39,6 +40,7 @@ void MovieLibraryStore::start() {
 }
 
 void MovieLibraryStore::request_drive_check() {
+    drive_check_outstanding_ = true;
     {
         std::lock_guard<std::mutex> lk(mu_);
         drive_check_requested_ = true;
@@ -52,6 +54,11 @@ bool MovieLibraryStore::poll(bool tunnel_healthy) {
         std::lock_guard<std::mutex> lk(mu_);
         if (read_finished_) first_load_finished_ = true;
         next.swap(result_);
+        if (drive_check_finished_) {
+            last_drive_check_finished_ = drive_check_finished_;
+            drive_check_finished_.reset();
+            drive_check_outstanding_ = false;
+        }
         if (attempt_finished_) {
             last_attempt_finished_ = attempt_finished_;
             attempt_finished_.reset();
@@ -61,11 +68,16 @@ bool MovieLibraryStore::poll(bool tunnel_healthy) {
     if (tunnel_healthy && !fetch_outstanding_ &&
         (!last_attempt_finished_ || clock_() - *last_attempt_finished_ >= kRefreshInterval)) {
         fetch_outstanding_ = true;
+        drive_check_outstanding_ = true;
         {
             std::lock_guard<std::mutex> lk(mu_);
             fetch_requested_ = true;
         }
         submit();
+    }
+    if (first_load_finished_ && !drive_check_outstanding_ &&
+        (!last_drive_check_finished_ || clock_() - *last_drive_check_finished_ >= kRefreshInterval)) {
+        request_drive_check();
     }
     if (!next || (next->size() == movies_.size() &&
                   std::equal(next->begin(), next->end(), movies_.begin(), same_movie))) return false;
@@ -111,6 +123,7 @@ bool MovieLibraryStore::run_job() {
     if (std::this_thread::get_id() == owner_thread_) {
         std::lock_guard<std::mutex> lk(mu_);
         if (read) read_finished_ = true;
+        drive_check_finished_ = clock_();
         if (fetch) attempt_finished_ = clock_();
         return false;
     }
@@ -134,12 +147,10 @@ bool MovieLibraryStore::run_job() {
         read_finished_ = true; // missing/corrupt/throwing reads also finish boot
     }
 
-    bool fetched_list = false;
     if (fetch) {
         try {
             if (auto fetched = fetch_()) {
                 full_list_ = std::move(*fetched);
-                fetched_list = true;
                 bool written = false;
                 try {
                     written = sink_(path_, serialize_movie_library(full_list_));
@@ -156,12 +167,19 @@ bool MovieLibraryStore::run_job() {
             ok = false; // nullopt/exception retain the last full list and snapshot
         }
     }
-    if (fetched_list || drive_check) {
+    // A failed HTTP attempt still revalidates cached local media. The full
+    // list and durable snapshot survive; only authoritative availability
+    // checks can remove films from the published presentation.
+    if (fetch || drive_check) {
         try {
             publish_existing();
         } catch (...) {
             ok = false; // I/O failure is not evidence that the drive is absent
         }
+    }
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        drive_check_finished_ = clock_();
     }
     if (fetch) {
         const auto finished = clock_();
