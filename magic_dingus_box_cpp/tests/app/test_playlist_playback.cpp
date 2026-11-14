@@ -2718,3 +2718,62 @@ TEST_CASE("manually constructed channels without identity retain playlist persis
     g.pb.set_channels(&g.channels);
     CHECK(g.s.tuned_channel == 1);
 }
+
+TEST_CASE("a playing channel keeps both live cut limits when a reload renumbers its row",
+          "[playlist_playback][guide][cut_reload]") {
+    for (bool movie : {false, true}) {
+        for (bool clock_cut : {false, true}) {
+            DYNAMIC_SECTION("movie=" << movie << ", clock_cut=" << clock_cut) {
+                Guide g;
+                g.s.playlists[1].items.resize(1);
+                g.s.playlists[1].items[0].start = 10;
+                g.s.playlists[1].items[0].end = 100010;
+                if (movie) g.s.playlists[1].path = "movies:mix";
+                g.channels = app::build_channels(g.s.playlists, guide_lengths());
+                g.pb.set_channels(&g.channels);
+                const double close = kW0 + (movie ? 21 : 24) * 3600;
+                const double cut_position = 10 + (movie ? 19 : 24) * 3600;
+                g.t.wall = close - 30;
+                g.pb.tune(1, false);
+                run_frames(g.pb, g.t, kSettled);
+                REQUIRE(g.t.offsets.size() == 1);
+                g.playing();
+
+                app::Playlist news;
+                news.title = "News";
+                news.path = "/p/news.yaml";
+                news.items = {video_item("n")};
+                g.s.playlists.insert(g.s.playlists.begin() + 1, news);
+                g.s.current_playlist_index = 2;  // the reload keeps the existing stream
+                // Rebuild in place, as main does. The playing channel moves 01 -> 02.
+                g.channels = app::build_channels(g.s.playlists, guide_lengths());
+                g.pb.set_channels(&g.channels);
+                REQUIRE(g.s.tuned_channel == 2);
+                const auto calls_before_cut = g.t.calls.size();
+                g.s.update_playback_state(cut_position - 8, 100010);
+                g.t.wall = close - 10;
+                g.pb.tick_auto_advance();
+                CHECK(g.t.calls.size() == calls_before_cut);
+
+                if (clock_cut) {  // wall deadline, while the decoder is still eight seconds behind
+                    g.t.wall = close;
+                } else {  // file-position cut just before the clock reaches the boundary
+                    g.t.wall = close - 0.4;
+                    g.s.update_playback_state(cut_position - 0.4, 100010);
+                }
+                g.pb.tick_auto_advance();
+                REQUIRE(g.t.calls.size() == calls_before_cut + 1);
+                if (movie) {
+                    CHECK(g.t.last() == "stop");
+                    CHECK(g.s.current_playlist_index == -1);
+                } else {
+                    CHECK(g.t.last() == "load_at Cartoons 0");
+                    CHECK(g.t.last_offset() == 0);
+                    CHECK(g.s.current_playlist_index == 2);
+                }
+                g.pb.tick_auto_advance();
+                CHECK(g.t.calls.size() == calls_before_cut + 1);  // exactly one cut
+            }
+        }
+    }
+}

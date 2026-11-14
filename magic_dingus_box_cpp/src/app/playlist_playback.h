@@ -349,6 +349,9 @@ private:
     struct ChannelAiring {
         int channel = -1;
         LoadedAiring airing;
+        // Cut limits belong to this playing channel across row renumbering.
+        // Keep the original row/item coordinates above for schedule revalidation.
+        std::string identity;
     };
     std::optional<ChannelAiring> loaded_airing_;
     // The airing a stall last reloaded (on_channel_stall): ONE free reload

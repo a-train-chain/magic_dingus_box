@@ -567,7 +567,7 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     airing.starts_at = oa.starts_at;
     airing.ends_at = oa.ends_at;
     airing.utc_offset_s = transport_.utc_offset_s(transport_.wall_now_utc());
-    loaded_airing_ = ChannelAiring{channel, airing};
+    loaded_airing_ = ChannelAiring{channel, airing, channel_identity(channel)};
 
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
               << " at " << oa.offset_s << "s" << std::endl;
@@ -841,13 +841,15 @@ void PlaylistPlayback::tick_pipeline_error() {
 }
 
 void PlaylistPlayback::tick_auto_advance() {
+    const bool owns_cut = guide_style() && loaded_airing_ &&
+        !loaded_airing_->identity.empty() &&
+        loaded_airing_->identity == channel_identity(state_.tuned_channel);
     // Live programmes cut at the civil day boundary even if a keyframe seek
     // or pause has left the file position behind. A load records a new day
     // deadline and clears playback_started_, so this cannot fire twice.
     // Pick Ahead must bypass this live-only rule when it is wired in.
-    if (guide_style() && owns_pipeline() && state_.video_active &&
-        state_.playback_started_ && loaded_airing_ &&
-        loaded_airing_->channel == state_.tuned_channel &&
+    if (owns_cut && owns_pipeline() && state_.video_active &&
+        state_.playback_started_ &&
         guide_day_ends_at_ > 0 && transport_.wall_now_utc() >= guide_day_ends_at_) {
         rejoin_schedule();
         return;
@@ -877,8 +879,7 @@ void PlaylistPlayback::tick_auto_advance() {
                 adv.item_end = adv_pl.items[state_.current_item_index].end;
             }
         }
-        if (guide_style() && loaded_airing_ &&
-            loaded_airing_->channel == state_.tuned_channel && guide_item_end_position_ > 0) {
+        if (owns_cut && guide_item_end_position_ > 0) {
             adv.item_end = adv.item_end > 0 ? std::min(adv.item_end, guide_item_end_position_)
                                           : guide_item_end_position_;
         }
