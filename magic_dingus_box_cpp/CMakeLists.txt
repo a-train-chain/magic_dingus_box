@@ -294,6 +294,7 @@ if(BUILD_KIOSK)
             src/media_browser/library/library_db.cpp
             src/media_browser/library/watch_store.cpp
             src/media_browser/channels/movie_library.cpp
+            src/media_browser/channels/movie_library_store.cpp
             src/media_browser/channels/movie_channels.cpp
             # The one libcurl transport every MB HTTP call goes through
             # (dual-listed: also in MEDIA_BROWSER_SOURCES for the tests).
@@ -517,6 +518,9 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/library/library_db.cpp
         src/media_browser/library/watch_store.cpp
         src/media_browser/channels/movie_library.cpp
+        src/media_browser/channels/movie_library_store.cpp
+        # Snapshot durable-write sink; the kiosk gets this from APP_SOURCES.
+        src/app/media_info.cpp
         src/media_browser/channels/movie_channels.cpp
         src/media_browser/tmdb_client.cpp
         src/media_browser/torrent/torrent_session.cpp
@@ -568,6 +572,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_smoke.cpp
         tests/media_browser/test_movie_drive.cpp
         tests/media_browser/test_movie_library.cpp
+        tests/media_browser/test_movie_library_store.cpp
         tests/media_browser/test_movie_channels.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_watch_store.cpp
