@@ -2862,3 +2862,70 @@ TEST_CASE("a movie refresh reanchors a pending tune by identity before its load"
     CHECK(g.s.tuned_channel == 3); REQUIRE(g.s.loaded_movie);
     CHECK(g.s.loaded_movie->channel_identity == "movies:mix");
 }
+
+TEST_CASE("row movement keeps the ahead guard when a film ends before its wall slot", "[playlist_playback][airing_reanchor]") {
+    for (bool movie : {false, true}) {
+        DYNAMIC_SECTION("movie=" << movie) {
+            Guide g;
+            auto& source = g.s.playlists[1];
+            source.items.resize(2);
+            source.items[0].end = 120; source.items[1].end = 120;
+            source.items[0].movie_tmdb_id = movie ? 11 : 0;
+            source.items[1].movie_tmdb_id = movie ? 22 : 0;
+            if (movie) source.path = "movies:mix";
+            const double start = kW0 + (movie ? 2 * 3600 : 0);
+            g.t.wall = start + 10;
+            g.channels = app::build_channels(g.s.playlists, guide_lengths());
+            g.pb.set_channels(&g.channels); g.pb.tune(1, false);
+            run_frames(g.pb, g.t, kSettled); g.playing();
+            REQUIRE(g.s.current_playlist_item());
+            const std::string ended = g.s.current_playlist_item()->title;
+            const std::string next = ended == "a" ? "b" : "a";
+            const auto snap = app::snapshot_for_reload(g.s, -1);
+            app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+            app::Playlist added; added.title = "News"; added.path = "/p/news.yaml";
+            fresh.video.insert(fresh.video.begin() + 1, added);
+            const auto calls = g.t.calls.size();
+            app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+            g.channels = app::build_channels(g.s.playlists, guide_lengths());
+            g.pb.set_channels(&g.channels);
+            REQUIRE(g.s.tuned_channel == 2); CHECK(g.t.calls.size() == calls);
+            SECTION("early EOF") { g.t.wall = start + 100; }
+            SECTION("seek to end") { g.t.wall = start + 20; }
+            g.s.update_playback_state(120, 120);
+            g.pb.tick_auto_advance();
+            REQUIRE(g.t.calls.size() == calls + 1);
+            REQUIRE(g.s.current_playlist_item());
+            CHECK(g.s.current_playlist_item()->title == next);
+            CHECK(g.t.last_offset() == 0);
+        }
+    }
+}
+
+TEST_CASE("reanchoring never treats a replacement movie at the same coordinates as the ended film", "[playlist_playback][airing_reanchor]") {
+    Guide g;
+    auto& source = g.s.playlists[1]; source.path = "movies:mix";
+    source.items.resize(2);
+    source.items[0].end = 120; source.items[1].end = 120;
+    source.items[0].movie_tmdb_id = 11; source.items[1].movie_tmdb_id = 22;
+    const double start = kW0 + 2 * 3600;
+    g.t.wall = start + 10;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    const int old_item = g.s.current_item_index;
+    const auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+    fresh.video[1].items[old_item].movie_tmdb_id = 999;
+    fresh.video[1].items[old_item].title = "Replacement";
+    app::Playlist added; added.path = "/p/news.yaml";
+    fresh.video.insert(fresh.video.begin() + 1, added);
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    g.t.wall = start + 100;
+    g.s.update_playback_state(120, 120); g.pb.tick_auto_advance();
+    REQUIRE(g.s.current_playlist_item());
+    CHECK(g.s.current_playlist_item()->movie_tmdb_id == 999);
+    CHECK(g.t.last_offset() == Approx(100));
+}

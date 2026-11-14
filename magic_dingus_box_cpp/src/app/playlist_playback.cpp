@@ -370,6 +370,33 @@ std::string PlaylistPlayback::channel_identity(int c) const {
         ? playlist_identity(state_.playlists[c]) : std::string{};
 }
 
+void PlaylistPlayback::reanchor_airing(std::optional<ChannelAiring>& held) {
+    if (!held) return;
+    held->channel = -1;
+    held->airing.index = -1;  // absent/replaced media must not validate by stale coordinates
+    if (!channels_) return;
+    for (int row = 0; row < static_cast<int>(channels_->size()); ++row) {
+        if (channel_identity(row) != held->identity) continue;
+        held->channel = row;
+        const auto& items = (*channels_)[row].items;
+        for (int index = 0; index < static_cast<int>(items.size()); ++index) {
+            const auto& scheduled = items[index];
+            if (scheduled.playlist < 0 || scheduled.playlist >= static_cast<int>(state_.playlists.size())) continue;
+            const auto& source = state_.playlists[scheduled.playlist];
+            if (playlist_identity(source) != held->source_identity || scheduled.item < 0 ||
+                scheduled.item >= static_cast<int>(source.items.size())) continue;
+            const auto& item = source.items[scheduled.item];
+            if (item.path != held->source_path || item.movie_tmdb_id != held->source_tmdb_id ||
+                item.start != held->source_start) continue;
+            held->airing.index = index;
+            held->airing.item.playlist = scheduled.playlist;
+            held->airing.item.item = scheduled.item;
+            return;
+        }
+        return;
+    }
+}
+
 void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     channels_ = channels;
     // Reload can renumber a tune during its cooperative settle. Its target
@@ -406,6 +433,10 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         stall_reloaded_.reset();
         return;
     }
+    // Remap only coordinates. boundary_join still revalidates the original
+    // start/end against the new schedule, so a re-phase invalidates its guard.
+    reanchor_airing(loaded_airing_);
+    reanchor_airing(stall_reloaded_);
     // Given-up rows stay until a channel proves it plays; only rows the new
     // list no longer has are dropped.
     auto& gave_up = state_.guide_gave_up;
@@ -592,7 +623,9 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     airing.starts_at = oa.starts_at;
     airing.ends_at = oa.ends_at;
     airing.utc_offset_s = transport_.utc_offset_s(transport_.wall_now_utc());
-    loaded_airing_ = ChannelAiring{channel, airing, channel_identity(channel)};
+    loaded_airing_ = ChannelAiring{channel, airing, channel_identity(channel),
+        playlist_identity(pl), pl.items[si.item].path, pl.items[si.item].movie_tmdb_id,
+        pl.items[si.item].start};
 
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
               << " at " << oa.offset_s << "s" << std::endl;

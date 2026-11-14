@@ -346,16 +346,21 @@ private:
     // The airing the last channel load loaded, and on which channel: the
     // next boundary on that channel never rejoins it (boundary_join). Kept
     // across set_channels; boundary_join itself drops the guard for that
-    // one boundary when a rebuild made it stale — the channel renumbered
-    // (channel or scheduled item no longer match) or re-phased (its cycle
-    // changed, so the item no longer airs at that time: join it live).
+    // one boundary when a rebuild changed the media or re-phased its slot.
+    // Row renumbering alone remaps by channel/source/media identity; the
+    // original airing timestamps and cut deadlines stay unchanged.
     struct ChannelAiring {
         int channel = -1;
         LoadedAiring airing;
-        // Cut limits belong to this playing channel across row renumbering.
-        // Keep the original row/item coordinates above for schedule revalidation.
         std::string identity;
+        // Stable media facts distinguish row movement from a different film
+        // taking over the same numeric source/slot coordinates.
+        std::string source_identity;
+        std::string source_path;
+        int source_tmdb_id = 0;
+        double source_start = 0;
     };
+    void reanchor_airing(std::optional<ChannelAiring>& held);
     std::optional<ChannelAiring> loaded_airing_;
     // The airing a stall last reloaded (on_channel_stall): ONE free reload
     // per airing. Any later stall on it — right after the reload or minutes
