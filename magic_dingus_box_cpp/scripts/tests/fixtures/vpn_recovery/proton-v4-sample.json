@@ -1,0 +1,86 @@
+{
+  "version": 4,
+  "timestamp": 1793528514,
+  "servers": [
+    {
+      "vpn": "wireguard",
+      "country": "Canada",
+      "city": "Montreal",
+      "server_name": "CA#1210",
+      "hostname": "node-ca-59.protonvpn.net",
+      "wgpubkey": "uUM9J8bziO0yZfsdYoruEfP3m6YuSu+Mek9W/J8mT1Y=",
+      "stream": true,
+      "port_forward": true,
+      "ips": [
+        "84.20.16.29"
+      ]
+    },
+    {
+      "vpn": "wireguard",
+      "country": "Canada",
+      "city": "Montreal",
+      "server_name": "CA#1241",
+      "hostname": "node-ca-60.protonvpn.net",
+      "wgpubkey": "TiJHg8s/NAuWWqLWFEPWu1ARGMmeH4v2qmtUH4zZmC4=",
+      "stream": true,
+      "port_forward": true,
+      "ips": [
+        "84.20.16.1"
+      ]
+    },
+    {
+      "vpn": "wireguard",
+      "country": "United States",
+      "city": "Ashburn",
+      "server_name": "US-VA#1",
+      "hostname": "node-us-119.protonvpn.net",
+      "wgpubkey": "zAIZj//t14xuriUMSlWk4/J2jox6I/JMzHL1Y3D/WUE=",
+      "stream": true,
+      "port_forward": true,
+      "ips": [
+        "185.156.46.33",
+        "2a02:6ea0:e20d:2101::10"
+      ]
+    },
+    {
+      "vpn": "wireguard",
+      "country": "United States",
+      "city": "Ashburn",
+      "server_name": "US-VA#145",
+      "hostname": "node-us-390.protonvpn.net",
+      "wgpubkey": "GCg0NQPfHBU9w41/Dnlexlp4oDgfQHTGzLrg/UXozXU=",
+      "stream": true,
+      "port_forward": true,
+      "ips": [
+        "89.222.100.65",
+        "2a02:6ea0:e20d:6062::10"
+      ]
+    },
+    {
+      "vpn": "wireguard",
+      "country": "Netherlands",
+      "city": "Amsterdam",
+      "server_name": "NL#316",
+      "hostname": "node-nl-209.protonvpn.net",
+      "wgpubkey": "YgGdHIXeCQgBc4nXKJ4vct8S0fPqBpTgk4I8gh3uMEg=",
+      "stream": true,
+      "port_forward": true,
+      "ips": [
+        "185.107.44.110"
+      ]
+    },
+    {
+      "vpn": "wireguard",
+      "country": "Netherlands",
+      "city": "Amsterdam",
+      "server_name": "NL#412",
+      "hostname": "node-nl-168.protonvpn.net",
+      "wgpubkey": "s2Eo2xDw/yvvLjltF8VJT84k+T1K1+veCEE9uKC6gjo=",
+      "stream": true,
+      "port_forward": true,
+      "ips": [
+        "212.92.104.225"
+      ]
+    }
+  ]
+}
