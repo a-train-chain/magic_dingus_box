@@ -1,5 +1,10 @@
 # Movie Channels, Daily Lineups and Pick-Ahead Implementation Plan
 
+Status: approved to proceed by the owner, 2026-11-13, with manually selected
+movies allowed to finish past 1:00 AM. Use Sol 6.1 for implementation and
+task review where possible; reserve Astra for Task 4 and whole-branch review
+or similarly difficult work. This supersedes the earlier Opus/Sonnet routing.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Downloaded Media Browser movies become live Channel Guide channels sorted by type, every channel gets a new lineup each day, and a Pick Ahead mode lets the viewer start a later programme now.
@@ -23,7 +28,7 @@
 - Library refresh: background worker at start-up once the tunnel is healthy, then every **15 minutes**; snapshot `data/movie_library.json`, atomic write on a worker, loaded at start-up.
 - The snapshot is private: excluded from deploy/OTA rsyncs, deleted by golden-image prep and on first boot (the handling `media_info.json` gets).
 - Daily lineups change at **4:00 AM local**; movie channels' day runs **6:00 AM → 1:00 AM**; **1:00–6:00 AM** movie channels are off the air, rows read `OFF THE AIR · BACK AT 6:00 AM`.
-- Playlist channels: written order, rotated to a date-seeded start. Movie channels, Master Shuffle and Movie Mix: fully shuffled, reshuffled every pass (seed = channel identity + date + pass). Hand-written Fisher–Yates over `std::mt19937` (identical on Mac and Pi). An item running at a boundary is cut there.
+- Playlist channels: written order, rotated to a date-seeded start. Movie channels, Master Shuffle and Movie Mix: fully shuffled, reshuffled every pass (seed = channel identity + date + pass). Hand-written Fisher–Yates over `std::mt19937` (identical on Mac and Pi). A live item running at a boundary is cut there. Pick Ahead programmes play whole, including a manually selected movie running past 1:00 AM; it then parks on 00 if still off air.
 - Downloads quiet mode while a movie-channel movie plays (`platform::service_quiet_mode`), released **120 s** after the last movie stops; never lift a pause the Media Browser or the owner made.
 - Framing: a full-screen movie is edge to edge (no 4:3 pillarbox, no bezel), whole picture by default; per-film fill stored under key `movie:<tmdb_id>` in `media_info.json`, default whole. In the guide window a film shows whole.
 - Settings → Display **Guide Mode: Live / Pick Ahead** (default Live), shown only in Channel Guide style; pick-ahead reaches **24 hours** ahead; eyebrow **ON DEMAND**.
@@ -32,7 +37,7 @@
 - No file I/O, `stat` of the movie drive or Radarr call on the render loop (WatchdogSec=10). Decisions in pure, Mac-tested units; kiosk-only files (`main.cpp`, `controller*.cpp`, `gst_renderer.cpp`, `renderer_*.cpp`, `settings_input.cpp`, `settings_menu.cpp`, `playback_screen.cpp`) only gather facts and paint; syntax-check them with the stub script `/private/tmp/claude-501/-Users-alexanderchaney-Documents----Projects----MDB-magic-dingus-box-/9afc55bb-ec80-43a5-ad2f-1c63b16e6337/scratchpad/stubs8/check_main.sh` (CI `kiosk-build` is the real compile).
 - New `.cpp` files go in BOTH the kiosk and the test source lists of `magic_dingus_box_cpp/CMakeLists.txt`; Media Browser files only in the `MEDIA_BROWSER_ENABLED` lists and `test_media_browser_unit`.
 - C++ suites with Media Browser ON and OFF. The Mac has ~3 GB free: one build directory at a time, under the scratchpad, deleted when the task ends.
-- Commit with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; never push.
+- Commit freely; never push or open PRs without owner approval. Attribution must reflect the models actually used; do not add the previous Claude trailer to GPT-authored changes.
 
 ## Review Focus
 

@@ -7,6 +7,11 @@ the Media Browser. Owner decisions are marked **(owner)**; calls made on
 the owner's behalf are marked **(Claude's call)** — the owner may overturn
 any of them.
 
+Owner clarification, 2026-11-13: a movie manually started through Pick
+Ahead finishes even if it runs past 1:00 AM. The overnight cutoff applies
+to live movie-channel playback; after the selected movie ends, park on
+channel 00 if its channel is still off air.
+
 ## Why
 
 The Channel Guide turns playlists into live channels. The owner wants the
@@ -136,7 +141,9 @@ guide and start something now. **(owner)**
 - **Overnight download window ("off the air").** From **1:00 AM to
   6:00 AM** local time movie channels are off the air: their rows read
   OFF THE AIR · BACK AT 6:00 AM, they cannot be tuned, and a movie still
-  playing at 1:00 AM ends there. A box on a movie channel at 1:00 AM moves
+  playing live at 1:00 AM ends there. A manually selected Pick Ahead movie
+  finishes before this handover (owner clarification above). A box on a
+  live movie channel at 1:00 AM moves
   to channel 00 (Master Shuffle) — without changing the remembered last
   channel — and returns to that movie channel at 6:00 AM if the viewer has
   not chosen another channel since. Downloads therefore always get a
@@ -183,8 +190,9 @@ guide and start something now. **(owner)**
 - Shuffles use the same hand-written Fisher–Yates over `std::mt19937` the
   Master Shuffle uses (identical on the Mac and the Pi).
 - Each day's lineup starts at that day's 4:00 AM (movie channels: 6:00 AM,
-  after the off-air window); an item still running at the boundary is cut
-  there (as TV schedules do). Time-zone changes move the boundary with the
+  after the off-air window); a live item still running at the boundary is
+  cut there (as TV schedules do). Pick Ahead programmes play whole.
+  Time-zone changes move the boundary with the
   clock.
 - List style keeps playing playlists in their written order.
 
