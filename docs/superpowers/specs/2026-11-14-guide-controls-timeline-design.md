@@ -1,6 +1,8 @@
 # Guide controls and timeline refinement
 
-Status: proposed for owner review. Follows the completed Movie Channels work.
+Status: approved by the owner on 2026-11-14, with authorization to write the plan
+and carry implementation through review/testing without another approval stop.
+Follows the completed Movie Channels work.
 
 ## Intent
 
