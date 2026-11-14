@@ -171,6 +171,9 @@ public:
     std::string last_error_on_this_thread() const { return thread_error_slot(); }
 
 protected:
+    // Worker-side durability boundary. Default performs checked POSIX fsync;
+    // injectable like HTTP so storage failures can be exercised without a Pi.
+    virtual bool sync_owned_record(const std::string& path, bool parent_directory);
     // err_mtx_ is a LEAF mutex: set_error never touches cookie_mtx_, so
     // the call sites that already hold cookie_mtx_ nest it safely.
     void set_error(std::string msg) {
@@ -194,6 +197,7 @@ protected:
     Config cfg_;
 
 private:
+    bool write_owned_record(const std::string& path, const std::string& contents);
     std::recursive_mutex quiet_mtx_;  // owned journal + alt read/toggle transaction
     std::mutex  cookie_mtx_;
     std::string sid_cookie_;     // contents of "Set-Cookie: SID=..."

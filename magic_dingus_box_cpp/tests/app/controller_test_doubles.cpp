@@ -26,9 +26,11 @@ int count(const std::string& name) {
     return static_cast<int>(std::count(e.begin(), e.end(), name));
 }
 
-bool FakeVideoPlayer::load_file(const std::string& path, double start, double, bool) {
+bool FakeVideoPlayer::load_file(const std::string& path, double start, double end, bool) {
     events().push_back("load_file " + std::filesystem::path(path).filename().string());
+    last_path = path;
     last_start = start;
+    last_end = end;
     ++generation;
     if (fail_paths.count(path)) return false;
     playing = false;

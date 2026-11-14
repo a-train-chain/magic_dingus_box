@@ -808,9 +808,10 @@ TEST_CASE("movie media key stays with the actual loaded film across refresh", "[
     r.state.current_item_index = -1;
     CHECK(r.controller.current_media_key() == "movie:603");
 
-    SECTION("a missing replacement preserves the old stream and its key") {
+    SECTION("an invalid relative movie path preserves the old stream and its key") {
         auto absent = r.video("absent", false);
         absent.movie_tmdb_id = 605;
+        absent.path = "relative-movie.mkv";
         r.state.playlists[pl].items = {absent};
         CHECK_FALSE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
         CHECK(r.controller.current_media_key() == "movie:603");
@@ -830,6 +831,31 @@ TEST_CASE("movie media key stays with the actual loaded film across refresh", "[
         REQUIRE(r.controller.load_file_with_resolution(r.state.playlists[pl].items[0].path, ""));
         CHECK(r.controller.current_media_key().empty());
     }
+}
+
+TEST_CASE("movie load consumes the published absolute path without a filesystem preflight or settle", "[controller][movie_direct][final_fix]") {
+    Rig r;
+    const int pl = r.add_playlist("MOVIE MIX", 1, {0});
+    auto& item = r.state.playlists[pl].items[0];
+    item.movie_tmdb_id = 603; item.start = 12; item.end = 7200;
+    // The worker saw this file earlier. A removed file must reach the player,
+    // whose async error is handled by PlaylistPlayback, without any stat here.
+    r.playing(pl, 0);
+    REQUIRE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, "", {}, 34));
+    CHECK(r.last_loaded() == "MOVIE MIX0.mp4");
+    CHECK(r.player.last_start == 46); CHECK(r.player.last_end == 7200);
+    CHECK(r.player.last_path == item.path);
+    CHECK(r.controller.current_media_key() == "movie:603");
+    CHECK(count("settle") == 0);
+    CHECK(count("play") == 1);
+    ControllerAdapter transport(r.controller, r.player);
+    const std::string directory;
+    app::PlaylistPlayback playback(r.state, transport, directory);
+    int revalidations = 0; playback.set_movie_failure_hook([&] { ++revalidations; });
+    r.player.error = true;
+    playback.tick_pipeline_error();
+    CHECK(revalidations == 1);
+    CHECK_FALSE(r.state.current_playlist_item());
 }
 
 }  // namespace

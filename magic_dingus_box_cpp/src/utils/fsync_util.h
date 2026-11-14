@@ -17,14 +17,14 @@
 //   write tmp  →  fsync_file(tmp)  →  rename(tmp, final)  →
 //   fsync_parent_dir(final)
 //
-// Both helpers are best-effort: callers on rare-write paths treat a
-// false return as a warning, never a save failure — the atomic rename
-// alone already equals the old behavior.
+// Both helpers report failure. Settings/profile callers historically warn
+// and keep the atomic rename; ownership journals must fail closed instead:
+// no external mutation until both file and directory synchronization succeed.
 //
 // NOT for hot paths. fsync on an SD card costs tens of milliseconds and
 // real flash wear; StatusWriter (5 writes/second, forever) must never
 // call these. Reserve them for operator-action saves: settings,
-// controller profiles.
+// controller profiles, and worker-side ownership journals.
 
 #include <fcntl.h>
 #include <unistd.h>

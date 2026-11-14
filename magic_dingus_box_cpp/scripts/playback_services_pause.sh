@@ -118,6 +118,62 @@ if [ "$lock_rc" != "0" ]; then
     exit 1
 fi
 
+# Checked durable journal operations, only while holding the compose lock.
+# The fixed .tmp paths are already covered by delivery/clone privacy filters.
+# An empty durable checkpoint precedes deletion, so a failed directory sync
+# cannot resurrect authority for effects that were already restored.
+journal() {
+    python3 - "$1" "$2" <<'PY'
+import os, sys
+from pathlib import Path
+operation, name = sys.argv[1:]
+path = Path(name)
+if operation == 'publish':
+    temporary = Path(name + '.tmp')
+    os.chmod(temporary, 0o600)
+    with temporary.open('rb') as stream:
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+elif operation == 'sync':
+    try:
+        with path.open('rb') as stream:
+            os.fsync(stream.fileno())
+    except FileNotFoundError:
+        pass  # still fence a previous deletion below
+elif operation == 'remove':
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+else:
+    raise ValueError(operation)
+fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
+# A failed inspect is NOT proof of deletion (daemon/transport outage). Only
+# a successful complete container listing can confirm absence. Unknown or
+# malformed observations keep the exact owned name available for retry.
+observe_container() {
+    OBSERVED=$(docker inspect -f '{{.State.Running}} {{.State.Paused}}' "$1" 2>/dev/null)
+    if [ "$?" = 0 ]; then
+        case "$OBSERVED" in 'true false'|'true true'|'false false') return 0 ;; esac
+        return 1
+    fi
+    local names name
+    names=$(docker ps -a --format '{{.Names}}' 2>/dev/null) || return 1
+    while IFS= read -r name; do
+        [ "$name" = "$1" ] && return 1
+    done <<< "$names"
+    OBSERVED=absent
+}
+
+umask 077
+
 # A kiosk claim is idempotent; the kiosk's startup unpause retires its own
 # old claim. OTA runs while the kiosk is alive, so it gets a process lease
 # (PID + birth time). Never release a live updater's claim at kiosk startup,
@@ -150,7 +206,7 @@ if [ ${#OWNERS[@]} -gt 0 ]; then
 else
     : > "$CLAIMS_FILE.tmp" || exit 1
 fi
-mv "$CLAIMS_FILE.tmp" "$CLAIMS_FILE" || exit 1
+journal publish "$CLAIMS_FILE" || exit 1
 if [ "$ACTION" = unpause ] && [ ${#OWNERS[@]} -gt 0 ]; then
     # Another owner still needs the pause; it owns the same original set.
     date -u +%Y-%m-%dT%H:%M:%SZ > "$PAUSE_MARKER" 2>/dev/null || true
@@ -165,7 +221,7 @@ if [ -f "$PLAYBACK_OWNED_FILE" ]; then
     while IFS= read -r c; do
         case "$c" in
             mdb_radarr|mdb_sonarr|mdb_prowlarr|mdb_byparr)
-                if docker inspect "$c" >/dev/null 2>&1; then EXISTING+=("$c"); fi ;;
+                EXISTING+=("$c") ;;
         esac
     done < "$PLAYBACK_OWNED_FILE"
 fi
@@ -173,8 +229,8 @@ fi
 if [ "$ACTION" = "pause" ]; then
     RUNNING=()
     for c in "${CONTAINERS[@]}"; do
-        state=$(docker inspect -f '{{.State.Running}} {{.State.Paused}}' "$c" 2>/dev/null)
-        if [ "$state" = "true false" ]; then
+        observe_container "$c" || exit 1
+        if [ "$OBSERVED" = "true false" ]; then
             RUNNING+=("$c")
             found=false
             for owned in "${EXISTING[@]:-}"; do [ "$owned" = "$c" ] && found=true; done
@@ -185,7 +241,7 @@ if [ "$ACTION" = "pause" ]; then
         # Record before stop so a crash cannot strand services; inability to
         # persist ownership means no stop, never an unowned start later.
         if ! printf '%s\n' "${EXISTING[@]}" > "$PLAYBACK_OWNED_FILE.tmp" ||
-           ! mv "$PLAYBACK_OWNED_FILE.tmp" "$PLAYBACK_OWNED_FILE"; then
+           ! journal publish "$PLAYBACK_OWNED_FILE"; then
             rm -f "$PLAYBACK_OWNED_FILE.tmp"
             exit 1
         fi
@@ -195,63 +251,68 @@ if [ "$ACTION" = "pause" ]; then
     fi
     if [ ${#EXISTING[@]} -eq 0 ]; then rm -f "$PAUSE_MARKER"; fi
 else
-    if [ ${#EXISTING[@]} -eq 0 ]; then
-        rm -f "$PAUSE_MARKER" "$PLAYBACK_OWNED_FILE" "$CLAIMS_FILE"
-        exit 0
-    fi
-    # Bring containers back up. Container could be in any of three
-    # states when we're called:
-    #   - stopped (new path): need `docker start`
-    #   - paused  (legacy path / from older sessions): need `docker unpause`
-    #   - running (idempotent re-entry): both are benign no-ops
-    # Try both in parallel; verify each is actually running afterwards.
-    docker unpause "${EXISTING[@]}" >/dev/null 2>&1 || true
-    docker start  "${EXISTING[@]}" >/dev/null 2>&1 || true
-    failed=()
+    # Fence any previously interrupted update before touching Docker. The
+    # exact record remains retry authority even after this owner's release.
+    journal sync "$PLAYBACK_OWNED_FILE" || exit 1
+    PRESENT=()
     for c in "${EXISTING[@]}"; do
-        if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != "true" ]; then
-            failed+=("$c")
-        fi
+        observe_container "$c" || exit 1
+        [ "$OBSERVED" = absent ] || PRESENT+=("$c")
     done
-    if [ ${#failed[@]} -gt 0 ]; then
-        # Plain `docker start` joins the netns pinned in HostConfig at
-        # CREATE time: network_mode "service:gluetun" resolves to
-        # Gluetun's CONTAINER ID (verified on hardware), so if Gluetun
-        # was RECREATED while these were paused, start tries to join a
-        # dead container and fails. Only compose re-resolves against the
-        # current Gluetun — `up -d` recreates exactly the stale ones.
-        # (Compose service name = container name minus the mdb_ prefix.)
-        if [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
-            services=()
-            for c in "${failed[@]}"; do services+=("${c#mdb_}"); done
-            echo "[playback-services] plain start failed for ${failed[*]} — compose up -d fallback (Gluetun recreated mid-pause?)"
-            docker compose -f "${COMPOSE_DIR}/docker-compose.yml" \
-                up -d "${services[@]}" >/dev/null 2>&1 || true
-        fi
-        for c in "${failed[@]}"; do
-            if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != "true" ]; then
-                echo "[playback-services] WARN: failed to bring $c back up" >&2
-            fi
-        done
+    if [ ${#PRESENT[@]} -gt 0 ]; then
+        docker unpause "${PRESENT[@]}" >/dev/null 2>&1 || true
+        docker start "${PRESENT[@]}" >/dev/null 2>&1 || true
     fi
-    # Marker comes up AFTER the start attempts — removed unconditionally:
-    # if a container failed to restart, showing its raw exited state is
-    # correct (a down container with no playback active IS alarming).
-    # Retain failed owned services for a later recovery attempt.
+    failed=()
+    for c in "${PRESENT[@]}"; do
+        if observe_container "$c"; then
+            case "$OBSERVED" in
+                'true false'|absent) ;;
+                *) failed+=("$c") ;;
+            esac
+        fi
+        # An uncertain observation is retained by final verification below;
+        # it is not permission to recreate a container through compose.
+    done
+    if [ ${#failed[@]} -gt 0 ] && [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
+        # Re-resolve the netns when Gluetun was recreated mid-pause. Only
+        # confirmed present, nonrunning owned services enter this fallback.
+        services=()
+        for c in "${failed[@]}"; do services+=("${c#mdb_}"); done
+        echo "[playback-services] plain start failed for ${failed[*]} — compose up -d fallback (Gluetun recreated mid-pause?)"
+        docker compose -f "${COMPOSE_DIR}/docker-compose.yml" \
+            up -d "${services[@]}" >/dev/null 2>&1 || true
+    fi
     remaining=()
     for c in "${EXISTING[@]}"; do
-        if docker inspect "$c" >/dev/null 2>&1 &&
-           [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != true ]; then
+        if ! observe_container "$c"; then
             remaining+=("$c")
+        else
+            case "$OBSERVED" in
+                'true false'|absent) ;;
+                *) remaining+=("$c") ;;
+            esac
         fi
     done
-    if [ ${#remaining[@]} -eq 0 ]; then
-        rm -f "$PLAYBACK_OWNED_FILE" "$PAUSE_MARKER" "$CLAIMS_FILE"
-    else
-        printf '%s\n' "${remaining[@]}" > "$PLAYBACK_OWNED_FILE.tmp" &&
-            mv "$PLAYBACK_OWNED_FILE.tmp" "$PLAYBACK_OWNED_FILE"
+    if [ ${#remaining[@]} -gt 0 ]; then
+        for c in "${remaining[@]}"; do
+            echo "[playback-services] WARN: failed to bring $c back up or verify its state" >&2
+        done
+        printf '%s\n' "${remaining[@]}" > "$PLAYBACK_OWNED_FILE.tmp" || exit 1
+        journal publish "$PLAYBACK_OWNED_FILE" || exit 1
         rm -f "$PAUSE_MARKER"
         recovery_failed=1
+    else
+        # Durably retire restored names before unlinking. If any fence fails,
+        # return failure; retry sees either the old exact names or the empty
+        # checkpoint, never an invented all-services recovery permission.
+        if [ -f "$PLAYBACK_OWNED_FILE" ]; then
+            : > "$PLAYBACK_OWNED_FILE.tmp" || exit 1
+            journal publish "$PLAYBACK_OWNED_FILE" || exit 1
+        fi
+        journal remove "$PLAYBACK_OWNED_FILE" || exit 1
+        journal remove "$CLAIMS_FILE" || exit 1
+        rm -f "$PAUSE_MARKER"
     fi
 fi
 

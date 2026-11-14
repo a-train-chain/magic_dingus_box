@@ -3190,6 +3190,7 @@ TEST_CASE("the end tolerance before one AM cannot lose the overnight return", "[
     g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
     g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
     const auto calls = g.t.calls.size();
+    CHECK(g.pb.live_cutoff_utc() == close);
     g.s.update_playback_state(19 * 3600 - 0.4, 100000); g.t.wall = close - 0.4;
     g.pb.tick_auto_advance(); nothing_playing_rule(g);
     CHECK(g.t.calls.size() == calls); CHECK(g.s.loaded_movie); CHECK_FALSE(g.pb.switch_pending());
@@ -3297,6 +3298,7 @@ TEST_CASE("a selected movie survives live cuts and timezone reload until its own
     auto selected = app::on_air(g.channels[2], g.t.wall, 0); REQUIRE(selected);
     g.pb.play_on_demand(2, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
     const auto loads = g.t.offsets.size();
+    CHECK(g.pb.live_cutoff_utc() == 0);
     g.s.update_playback_state(19 * 3600, 100000); g.t.wall = close - 0.3;
     g.pb.tick_auto_advance(); CHECK(g.t.offsets.size() == loads); CHECK(g.s.on_demand);
     g.t.wall = close + 10; g.pb.tick_auto_advance();
@@ -3472,4 +3474,22 @@ TEST_CASE("explicit playback exits release a selected regular programme", "[play
     SECTION("game handover clear releases ownership") { app::clear_now_playing(g.s); }
     CHECK_FALSE(g.s.loaded_on_demand);
     CHECK_FALSE(g.s.on_demand);
+}
+
+TEST_CASE("a next-day selected movie failing after close parks instead of playing its future successor", "[playlist_playback][on_demand][movie_failure][final_fix]") {
+    Guide g; g.s.playlists[1].path = "movies:comedy";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 30;
+    const auto selected = app::on_air(g.channels[1], kW0 + 26 * 3600, 0); REQUIRE(selected);
+    REQUIRE(app::airing_after(g.channels[1], *selected, 0));
+    int revalidations = 0; g.pb.set_movie_failure_hook([&] { ++revalidations; });
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.wall = close + 1800; g.t.error = true;
+    g.pb.tick_pipeline_error();
+    CHECK(revalidations == 1);
+    CHECK_FALSE(g.s.on_demand); CHECK_FALSE(g.s.loaded_movie);
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK(g.pb.failure_budget() == 10);
 }

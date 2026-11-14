@@ -100,6 +100,11 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
     if (movie && d != Decision::None && movie_failure_hook_) movie_failure_hook_();
     if (movie && d == Decision::Advance && guide_style()) {
         const int channel = state_.tuned_channel;
+        // A selected future film may finish/fail after today's close. Only
+        // that chosen film has permission to run overnight, never its next
+        // scheduled programme. Parking keeps the normal return identity and
+        // gives 00 its own failure budget.
+        if (park_off_air(channel)) return;
         const Channel* ch = channel_at(channel);
         const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
         std::optional<OnAir> next;

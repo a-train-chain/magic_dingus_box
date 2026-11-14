@@ -1017,3 +1017,18 @@ TEST_CASE("Pick Ahead future programme clocks preserve injected DST offsets", "[
     const auto v = ui::layout_channel_guide(in);
     CHECK(v.panel.start_hm == "3:14");
 }
+
+TEST_CASE("retained live film panel ends at closing while selected film keeps whole duration", "[channel_guide_view][final_fix]") {
+    Fixture f; f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+    app::PlaylistItem held; held.title = "Midnight film"; held.end = 7200; held.movie_tmdb_id = 42;
+    for (bool selected : {false, true}) {
+        auto in = f.in(); in.now_utc = E + 86400 + 1800; in.tuned = 1; in.cursor.row = 1;
+        in.on_demand = selected; in.playing.retained_item = &held;
+        in.playing.position_s = 1800; in.playing.duration_s = 7200;
+        in.playing.live_cutoff_utc = E + 86400 + 3600;
+        const auto view = ui::layout_channel_guide(in);
+        CHECK(view.panel.start_hm == "12:00");
+        CHECK(view.panel.end_hm == (selected ? "2:00" : "1:00"));
+        CHECK(view.panel.progress == (selected ? 0.25 : 0.5));
+    }
+}

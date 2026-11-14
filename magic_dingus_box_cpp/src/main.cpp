@@ -1959,7 +1959,10 @@ int main(int /* argc */, char* /* argv */[]) {
                 guide_playing.item = state.current_item_index;
                 guide_playing.position_s = state.get_position();
                 guide_playing.duration_s = state.get_duration();
+                if (state.loaded_movie)
+                    guide_playing.live_cutoff_utc = playlist_playback.live_cutoff_utc();
             }
+            guide_inputs.add(static_cast<uint64_t>(guide_playing.live_cutoff_utc));
             guide_inputs.add(static_cast<uint64_t>(state.display_settings.mode));
             guide_inputs.add(channels_generation);
             guide_inputs.add(static_cast<uint64_t>(state.on_demand));

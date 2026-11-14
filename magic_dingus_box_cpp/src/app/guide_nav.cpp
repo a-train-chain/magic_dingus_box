@@ -216,6 +216,13 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
                 break;
             }
             GuidePress press = guide_press(s.guide_cursor, tuned, f.cursor_row_tunable);
+            // Explicit on-now selection leaves a chosen future programme.
+            // A normal live Close, Picture press, or an off-air chosen film
+            // keeps its existing route.
+            if (press == GuidePress::Close && s.on_demand && f.cursor_row_tunable &&
+                cursor.pick_at && picked != f.row_airings.end() &&
+                picked->starts_at <= f.now_utc && f.now_utc < picked->ends_at)
+                press = GuidePress::Tune;
             // Nothing playing or loading (a failed item's dark window): the
             // tuned row's press retries the channel instead of closing a
             // guide that cannot close.

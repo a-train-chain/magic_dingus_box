@@ -446,10 +446,14 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
     const auto& item = playlist.items[item_index];
 
-    // A missing file is refused before anything is torn down: the stream
+    // Ordinary playlists refuse a missing file before anything is torn down:
+    // the stream
     // that is playing keeps playing (and keeps its now-playing info), and
     // no stop() + 200 ms settle is paid for an item that cannot load.
-    if (const auto missing = missing_video_file(item, playlist_directory)) {
+    const bool movie = item.movie_tmdb_id > 0;
+    if (movie && (item.source_type != "local" || item.path.empty() || item.path.front() != '/'))
+        return utils::Result<>::fail("Movie requires a worker-published absolute local path");
+    if (const auto missing = movie ? std::nullopt : missing_video_file(item, playlist_directory)) {
         std::string error = "Failed to load playlist item: " + item.path +
                             " (Video file does not exist: " + *missing + ")";
         std::cerr << "Error: " << error << std::endl;
@@ -483,13 +487,22 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         return utils::Result<>::ok();
     }
 
-    // Capture the identity being loaded, never mutable playlist coordinates:
-    // a later refresh can replace/remove the row while this film still plays.
-    const int movie_tmdb_id = item.movie_tmdb_id;
-    auto result = load_item_media(state, item, playlist_directory, progress_callback,
-                                  start_offset_s);
-    if (result && movie_tmdb_id > 0) current_media_key_ = movie_media_key(movie_tmdb_id);
-    return result;
+    if (movie) {
+        // MovieLibraryStore already resolved and validated this absolute path
+        // on its worker. Never stat/resolve/canonicalize the removable drive
+        // here: an unplugged/stalled disk must reach the asynchronous player
+        // error path, whose failure hook asks that worker to revalidate.
+        current_media_key_.clear();
+        if (!player_) return utils::Result<>::fail("Player not initialized");
+        stop();
+        if (!player_->load_file(item.path, item.start + start_offset_s, item.end, false))
+            return utils::Result<>::fail("Failed to load movie: " + item.path);
+        player_->set_volume(current_system_volume_);
+        current_media_key_ = movie_media_key(item.movie_tmdb_id);
+        play();
+        return utils::Result<>::ok();
+    }
+    return load_item_media(state, item, playlist_directory, progress_callback, start_offset_s);
 }
 
 void Controller::load_next_item(AppState& state, const std::string& playlist_directory) {

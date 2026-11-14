@@ -1132,3 +1132,14 @@ TEST_CASE("directional input defaults preserve legacy event velocity and cannot 
     const platform::InputEvent repeat{};
     CHECK_FALSE(repeat.rotary_encoder);
 }
+
+TEST_CASE("selecting on now from the tuned on-demand row explicitly tunes live", "[guide_nav][pick_ahead][final_fix]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.on_demand = true;
+    s.guide_cursor.row = 1;
+    auto f = pick_facts(s);
+    CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == -1);
+    REQUIRE(s.guide_cursor.pick_at == 900);
+    const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
+    CHECK(cmd.tune == 1); CHECK_FALSE(cmd.on_demand);
+    CHECK_FALSE(s.guide_cursor.pick_at); CHECK_FALSE(s.guide_opened_by_viewer);
+}

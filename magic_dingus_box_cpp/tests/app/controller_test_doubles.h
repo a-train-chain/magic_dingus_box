@@ -43,6 +43,8 @@ public:
     std::set<std::string> fail_paths;
     // The `start` the last load_file() was given.
     double last_start = 0.0;
+    double last_end = 0.0;
+    std::string last_path;
 
     bool initialize(const std::string&) override { return true; }
     bool load_file(const std::string& path, double start, double, bool) override;

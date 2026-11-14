@@ -80,6 +80,7 @@ struct GuidePlaying {
     double position_s = 0;    // the player's position in the FILE
     double duration_s = 0;    // the file's duration (0 = unknown)
     const app::PlaylistItem* retained_item = nullptr;  // loaded movie survives a library refresh
+    double live_cutoff_utc = 0;  // the loaded live programme's enforced civil close
 };
 
 struct GuideViewInput {
@@ -496,12 +497,15 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
         const app::Channel& ch = channels[pc];
         const auto describe_playing = [&](const d::PlayingSpan& playing) {
             const double started = in.now_utc - playing.played_s;
-            const double ends = started + playing.length_s;
+            double ends = started + playing.length_s;
+            if (!in.on_demand && in.playing.live_cutoff_utc > 0)
+                ends = std::min(ends, in.playing.live_cutoff_utc);
             p.item_title = playing.item->title;
             p.artist = crt ? "" : playing.item->artist;
             p.start_hm = d::hm(local_at(started));
             p.end_hm = d::hm(local_at(ends));
-            p.progress = std::clamp(playing.played_s / playing.length_s, 0.0, 1.0);
+            const double shown_length = ends - started;
+            p.progress = shown_length > 0 ? std::clamp(playing.played_s / shown_length, 0.0, 1.0) : 1.0;
             // Next: what the channel joins when it ends — never the same
             // item again (the boundary's rule, app::boundary_join).
             auto nx = app::join_point(ch, ends, in.utc_offset_s, in.utc_offset_at);

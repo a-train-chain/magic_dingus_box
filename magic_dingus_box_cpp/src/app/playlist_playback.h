@@ -212,6 +212,9 @@ public:
     // channel). The overlay stays as it is — as it is when the load runs,
     // so a guide the viewer opens during the wait stays open.
     void on_channel_step(int delta);
+    // Active load's civil cut, retained across library refresh. Zero for a
+    // chosen whole programme; the guide uses the same deadline as playback.
+    double live_cutoff_utc() const { return state_.on_demand ? 0.0 : guide_day_ends_at_; }
     // The channel a tune() (or channel up/down) will load, from its stop
     // until the load runs; nullopt otherwise (no switch pending, or a List
     // SELECT's). tuned_channel only changes at the load, ~200 ms after the
