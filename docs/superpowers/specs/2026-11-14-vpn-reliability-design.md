@@ -1,6 +1,7 @@
 # VPN and port-forwarding reliability
 
-Date: 2026-11-14. Status: proposed; awaiting owner approval.
+Date: 2026-11-14. Status: approved for planning, implementation, review and
+brief controlled recovery tests on magicpi5 by the owner's “Approve and build”.
 
 ## Intent and evidence
 
@@ -47,7 +48,7 @@ The current code has five relevant gaps:
   routing and credential complexity; it is outside this change.
 
 The agent recommends the second approach based on the owner's reliability
-goal. The owner has not yet approved the overall design. The owner confirmed
+goal. The owner approved the overall design and execution. The owner confirmed
 the country policy on 2026-11-14: try another Canadian server first, then
 fall back to the United States, with the VPN firewall active throughout.
 No other country is allowed unless the owner changes that preference.
@@ -264,6 +265,6 @@ probe fallback hostname are left to the builder, subject to the contracts above.
 
 Builder review: Astra reviewed the recovery/control/locking design and found
 no remaining blocking planning questions after the operator-intent clarification.
-Owner country preference is confirmed; overall design approval remains pending. Sol 6.1 is the
+Owner country preference and overall design/execution approval are confirmed. Sol 6.1 is the
 intended implementation model for most tasks; reserve Astra for the most
 difficult recovery/concurrency work and final integration review.
