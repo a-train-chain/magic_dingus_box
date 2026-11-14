@@ -178,6 +178,8 @@ public:
     void set_channels(const std::vector<Channel>* channels);
     void set_movie_failure_hook(std::function<void()> hook) { movie_failure_hook_ = std::move(hook); }
     bool guide_style() const { return channels_ != nullptr; }
+    // Pure schedule eligibility for auto-tune, including movie off-air gaps.
+    bool channel_on_air(int channel) const;
     // Tune `channel` live. The playlist switch above, unchanged — stop now,
     // then the settle / re-poll wait per frame, then the load — except that
     // the load joins whatever is on air when it RUNS (on_air at
@@ -363,6 +365,7 @@ private:
         double source_start = 0;
     };
     void reanchor_airing(std::optional<ChannelAiring>& held);
+    void exclude_failed_channel();
     std::optional<ChannelAiring> loaded_airing_;
     // The airing a stall last reloaded (on_channel_stall): ONE free reload
     // per airing. Any later stall on it — right after the reload or minutes

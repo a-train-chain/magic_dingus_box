@@ -196,15 +196,15 @@ TEST_CASE("deferred batch: Ready with no movie session adds",
           mb::DeferredBatchAction::Add);
 }
 
-TEST_CASE("deferred batch: an active FullPause session requeues for its leave()",
+TEST_CASE("deferred batch: an active FullPause keeps its worker regating without a leave callback",
           "[service_gate][deferred]") {
     CHECK(mb::decide_deferred_batch(mb::GateResult::TimedOut, true, true) ==
-          mb::DeferredBatchAction::Requeue);
+          mb::DeferredBatchAction::Regate);
     CHECK(mb::decide_deferred_batch(mb::GateResult::TimedOut, true, false) ==
-          mb::DeferredBatchAction::Requeue);
+          mb::DeferredBatchAction::Regate);
     // Radarr answered, but a FullPause is (about to be) stopping it.
     CHECK(mb::decide_deferred_batch(mb::GateResult::Ready, true, true) ==
-          mb::DeferredBatchAction::Requeue);
+          mb::DeferredBatchAction::Regate);
 }
 
 TEST_CASE("deferred batch: a session that came and went during the gate re-gates",
@@ -221,4 +221,59 @@ TEST_CASE("deferred batch: a genuine timeout drops; cancel abandons",
           mb::DeferredBatchAction::Abandon);
     CHECK(mb::decide_deferred_batch(mb::GateResult::Cancelled, true, true) ==
           mb::DeferredBatchAction::Abandon);
+}
+
+TEST_CASE("deferred gate survives a channel or game claim acquired during service startup", "[service_gate][deferred]") {
+    FakeTime ft;
+    auto h = hooks_on(ft);
+    bool held = false;
+    int pings = 0;
+    h.paused = [&] { return held; };
+    const auto start = ft.t;
+    h.sleep = [&](std::chrono::milliseconds d) {
+        ft.t += d;
+        if (ft.t - start >= 20s) held = false;
+    };
+    bool first_ready = false;
+    SECTION("claim while the service is still starting") {}
+    SECTION("claim during a response that would otherwise be Ready") { first_ready = true; }
+    int idle_waits = 0;
+    h.wait_quiet_idle = [&](std::chrono::milliseconds) { ++idle_waits; return true; };
+    h.ping = [&] {
+        CHECK_FALSE(held);
+        if (++pings == 1) { held = true; return first_ready; }
+        return true;
+    };
+    mb::ServiceGateTiming timing; timing.deadline = 5s;
+    CHECK(mb::wait_for_service(h, timing) == mb::GateResult::Ready);
+    CHECK(pings == 2);
+    CHECK(idle_waits == 2);  // resume settles again before polling restarts
+    CHECK(ft.t - start >= 20s);
+    CHECK(mb::decide_deferred_batch(mb::GateResult::TimedOut, true, false) == mb::DeferredBatchAction::Regate);
+}
+
+TEST_CASE("an ownership pause during a gate gives restart its own deadline after release", "[service_gate][deferred]") {
+    FakeTime ft; auto h = hooks_on(ft);
+    const auto start = ft.t;
+    bool held = false;
+    h.paused = [&] { return held; };
+    h.ping = [&] { CHECK_FALSE(held); held = ft.t == start; return false; };
+    h.sleep = [&](std::chrono::milliseconds d) { ft.t += d; if (ft.t - start >= 20s) held = false; };
+    mb::ServiceGateTiming timing; timing.deadline = 5s;
+    CHECK(mb::wait_for_service(h, timing) == mb::GateResult::TimedOut);
+    CHECK(ft.t - start >= 25s);
+    CHECK(ft.t - start <= 26s);
+}
+
+TEST_CASE("cancellation remains prompt while a later owner holds the deferred gate", "[service_gate][deferred]") {
+    FakeTime ft; auto h = hooks_on(ft);
+    const auto start = ft.t;
+    bool held = false;
+    int pings = 0;
+    h.paused = [&] { return held; };
+    h.ping = [&] { ++pings; held = true; return false; };
+    h.cancelled = [&] { return ft.t - start >= 3s; };
+    CHECK(mb::wait_for_service(h) == mb::GateResult::Cancelled);
+    CHECK(ft.t - start <= 3250ms);
+    CHECK(pings == 1);
 }

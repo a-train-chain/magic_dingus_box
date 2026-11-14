@@ -321,9 +321,9 @@ private:
     // FullPause session lifecycle as the deferred worker sees it. enter()
     // bumps the counter and raises the flag for a FullPause session;
     // leave() lowers the flag BEFORE start_deferred_adds() takes the
-    // mutex, and the worker reads both under that mutex — so a batch it
-    // requeues because a session is active is always restarted by that
-    // session's leave() (see decide_deferred_batch in service_gate.h).
+    // mutex, and the worker reads both under that mutex. Any active owner
+    // keeps the batch and worker alive; the aggregate gate resumes on
+    // release without depending on a later PlaybackScreen::leave().
     std::atomic<bool> full_pause_session_active_{false};
     std::atomic<std::uint64_t> full_pause_sessions_started_{0};
 

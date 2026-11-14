@@ -2144,7 +2144,8 @@ void nothing_playing_rule(Guide& g) {
     in.last_channel = id.empty()                    ? -1
                       : id == app::kShuffleChannelId ? 0
                                                      : app::find_playlist_by_identity(g.s.playlists, id);
-    for (const auto& ch : g.channels) in.tunable.push_back(!ch.items.empty());
+    for (int row = 0; row < static_cast<int>(g.channels.size()); ++row)
+        in.tunable.push_back(g.pb.channel_on_air(row));
     in.gave_up = g.s.guide_gave_up;
     if (const auto c = app::decide_auto_tune(in)) g.pb.tune(*c, /*keep_overlay=*/false);
 }
@@ -2979,14 +2980,57 @@ TEST_CASE("a failed movie channel remains given up by identity when refresh renu
     CHECK(g.s.guide_gave_up == std::vector<int>{1});
 }
 
-TEST_CASE("a failed last movie waits for off air instead of retuning the failed slot", "[playlist_playback][movie_failure]") {
+TEST_CASE("a failed last movie promptly falls back without retuning its failed identity", "[playlist_playback][movie_failure]") {
     Guide g; g.s.playlists[1].path = "movies:mix";
     for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
     g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
     const double close = kW0 + 21 * 3600;
-    g.t.wall = close - 10; g.pb.tune(1, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.wall = close - 90; g.pb.tune(1, false); run_frames(g.pb, g.t, kSettled); g.playing();
     const auto loads = g.t.offsets.size();
     g.t.error = true; g.pb.tick_pipeline_error();
     CHECK(g.t.offsets.size() == loads); CHECK_FALSE(g.s.loaded_movie); CHECK_FALSE(g.s.video_active);
-    CHECK(g.s.guide_wait_until_utc == Approx(close));
+    CHECK(g.s.guide_wait_until_utc == 0);
+    CHECK(g.s.tuned_channel == -1);
+    CHECK(g.s.last_channel_id == "movies:mix");
+    CHECK(g.s.guide_gave_up == std::vector<int>{1});
+    g.t.error = false;
+    SECTION("another channel plays promptly") {
+        nothing_playing_rule(g); run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 2); CHECK(g.t.offsets.size() == loads + 1);
+    }
+    SECTION("00 is available when no other channel is") {
+        for (std::size_t row = 2; row < g.channels.size(); ++row) g.channels[row].items.clear();
+        nothing_playing_rule(g); run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 0); CHECK(g.t.offsets.size() == loads + 1);
+    }
+    SECTION("no playable fallback remains stopped boundedly") {
+        for (std::size_t row = 0; row < g.channels.size(); ++row)
+            if (row != 1) g.channels[row].items.clear();
+        for (int frame = 0; frame < 60; ++frame) nothing_playing_rule(g);
+        CHECK(g.s.tuned_channel == -1); CHECK(g.t.offsets.size() == loads);
+        CHECK_FALSE(g.pb.switch_pending());
+    }
+    SECTION("refresh cannot make the same failed identity eligible again") {
+        std::swap(g.s.playlists[1], g.s.playlists[2]);
+        g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        nothing_playing_rule(g); run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel != 2); CHECK(g.t.offsets.size() == loads + 1);
+    }
+}
+
+TEST_CASE("failed-film fallback does not spin on other off-air movie channels", "[playlist_playback][movie_failure]") {
+    Guide g;
+    g.s.playlists[1].path = "movies:mix"; g.s.playlists[2].path = "movies:kids";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.s.playlists[2].items[0].movie_tmdb_id = 99;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 21 * 3600 - 90;
+    g.pb.tune(1, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.error = true; g.pb.tick_pipeline_error();
+    const auto loads = g.t.offsets.size(); const auto calls = g.t.calls.size();
+    g.t.error = false; g.t.wall = kW0 + 21 * 3600;
+    guide_frames(g, std::chrono::seconds(5), true);
+    CHECK(g.s.tuned_channel == -1); CHECK_FALSE(g.pb.switch_pending());
+    CHECK(g.t.offsets.size() == loads); CHECK(g.t.calls.size() == calls);
 }

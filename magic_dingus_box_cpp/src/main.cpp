@@ -1756,7 +1756,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     });
                 auto_tune.tunable.assign(channels.size(), false);
                 for (size_t c = 0; c < channels.size(); ++c) {
-                    auto_tune.tunable[c] = !channels[c].items.empty();
+                    auto_tune.tunable[c] = playlist_playback.channel_on_air(static_cast<int>(c));
                 }
                 auto_tune.gave_up = state.guide_gave_up;
                 if (const auto channel = app::decide_auto_tune(auto_tune)) {

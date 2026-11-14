@@ -2,7 +2,7 @@
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include <filesystem>
 #include <fstream>
-#include <unistd.h>
+#include <random>
 
 namespace {
 struct OwnedQbit : media_browser::QbittorrentClient {
@@ -22,9 +22,16 @@ struct OwnedQbit : media_browser::QbittorrentClient {
     }
 };
 struct Marker {
-    std::string path = "/private/tmp/mdb-quiet-test-" + std::to_string(getpid());
-    Marker() { std::filesystem::remove(path); }
-    ~Marker() { std::filesystem::remove(path); std::filesystem::remove(path + ".tmp"); }
+    std::filesystem::path directory;
+    std::string path;
+    Marker() {
+        do {
+            directory = std::filesystem::temp_directory_path() /
+                ("mdb-quiet-" + std::to_string(std::random_device{}()));
+        } while (!std::filesystem::create_directory(directory));
+        path = (directory / "ownership").string();
+    }
+    ~Marker() { std::error_code ec; std::filesystem::remove_all(directory, ec); }
 };
 }
 TEST_CASE("quiet full pause restores only torrents that were running", "[qbit][quiet_ownership]") {

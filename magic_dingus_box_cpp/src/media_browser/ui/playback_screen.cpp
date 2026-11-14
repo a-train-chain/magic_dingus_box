@@ -371,9 +371,9 @@ void PlaybackScreen::leave() {
     // resume was queued, so the gate's quiet-idle wait covers it. Never
     // blocks: the worker waits on the gate, not this thread.
     // Lower the session flag FIRST: start_deferred_adds() then takes the
-    // worker mutex, so a worker that requeued its batch because this
-    // session was active is restarted here (it also runs with nothing new
-    // queued this session — the queue may hold such a requeued batch).
+    // worker mutex, so a surviving worker sees this release before taking
+    // its next batch. start_deferred_adds() also starts a worker when new
+    // additions were queued and none is running.
     full_pause_session_active_.store(false, std::memory_order_release);
     start_deferred_adds();
     session_full_pause_ = false;
@@ -1196,7 +1196,7 @@ void PlaybackScreen::start_deferred_adds() {
         std::lock_guard<std::mutex> lk(deferred_add_mtx_);
         for (auto& d : session_deferred_adds_) {
             const int id = d.tmdb_id;
-            // A batch requeued by the worker may already hold this film.
+            // A batch retained by the waiting worker may already hold this film.
             const bool dup = std::any_of(
                 deferred_add_queue_.begin(), deferred_add_queue_.end(),
                 [id](const DeferredAdd& q) { return q.tmdb_id == id; });
@@ -1246,22 +1246,16 @@ void PlaybackScreen::run_deferred_adds() {
     // empty. The gate is re-run per round so items queued by a LATER
     // session (which stopped Radarr again) also wait for it to come back.
     for (;;) {
-        // Another claimant (channel grace or game) can retain FullPause
-        // after this screen leaves. Do not ping/add against its stopped
-        // service, and do not spend the service-start deadline on its claim.
-        while (quiet_ && quiet_->effective_full_pause()) {
-            if (shutting_down_.load(std::memory_order_acquire)) return;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
         const std::uint64_t sessions_at_gate_start =
             full_pause_sessions_started_.load(std::memory_order_acquire);
         ServiceGateHooks hooks;
         if (quiet_ != nullptr) {
             // quiet_ is owned by main.cpp and outlives this screen.
             hooks.wait_quiet_idle = [q = quiet_](std::chrono::milliseconds d) {
-                return q->wait_until_idle_for(d) && !q->effective_full_pause();
+                return q->wait_until_idle_for(d);
             };
         }
+        hooks.paused = [this] { return quiet_ && quiet_->effective_full_pause(); };
         hooks.ping = [this] { return (!quiet_ || !quiet_->effective_full_pause()) && radarr_.get_status().has_value(); };
         hooks.cancelled = [this] {
             return shutting_down_.load(std::memory_order_acquire);
@@ -1272,8 +1266,8 @@ void PlaybackScreen::run_deferred_adds() {
         DeferredBatchAction action = DeferredBatchAction::Abandon;
         {
             std::lock_guard<std::mutex> lk(deferred_add_mtx_);
-            // Read under the mutex — leave() lowers the flag before taking
-            // it, so a Requeue here is always seen by that leave().
+            // A claim may begin after the gate returned. Retain the batch
+            // and worker; channel/game releases have no leave() callback.
             const bool active =
                 full_pause_session_active_.load(std::memory_order_acquire) ||
                 (quiet_ && quiet_->effective_full_pause());
@@ -1286,22 +1280,13 @@ void PlaybackScreen::run_deferred_adds() {
                 deferred_add_running_ = false;
                 return;
             }
-            if (action == DeferredBatchAction::Requeue) {
-                // The next movie stopped Radarr again: keep the batch
-                // queued; that session's leave() restarts this worker.
-                spdlog::info("[playback] deferred quick-add: {} item(s) "
-                             "requeued — another movie paused the services",
-                             deferred_add_queue_.size());
-                deferred_add_running_ = false;
-                return;
-            }
             if (action != DeferredBatchAction::Regate) {
                 batch.swap(deferred_add_queue_);
             }
         }
         if (action == DeferredBatchAction::Regate) {
-            spdlog::info("[playback] deferred quick-add: a movie paused the "
-                         "services during the gate — waiting again");
+            spdlog::info("[playback] deferred quick-add: services were claimed "
+                         "during the gate — waiting again");
             continue;
         }
         for (std::size_t i = 0; i < batch.size(); ++i) {

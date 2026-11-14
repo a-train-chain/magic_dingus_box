@@ -77,6 +77,18 @@ int PlaylistPlayback::failure_budget() const {
         size, state_.master_shuffle_active);
 }
 
+void PlaylistPlayback::exclude_failed_channel() {
+    const int channel = state_.tuned_channel;
+    auto& gave_up = state_.guide_gave_up;
+    if (channel >= 0 && std::find(gave_up.begin(), gave_up.end(), channel) == gave_up.end())
+        gave_up.push_back(channel);
+    const auto id = channel_identity(channel);
+    if (!id.empty() && std::find(gave_up_identities_.begin(), gave_up_identities_.end(), id) == gave_up_identities_.end())
+        gave_up_identities_.push_back(id);
+    state_.tuned_channel = -1;
+    state_.guide_wait_until_utc = 0.0;
+}
+
 void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d,
                                           const char* why) {
     using Decision = video::PlaybackErrorPolicy::Decision;
@@ -111,11 +123,10 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
             load_on_air(channel, *next, true);
         } else {
             stop_to_menu(state_);
-            // A failure before the final slot closes must not immediately
-            // retune that same failed film while waiting for off air.
-            state_.guide_wait_until_utc = ch
-                ? std::min(guide_item_ends_at_, transport_.wall_now_utc() + guide_item_length_)
-                : 0.0;
+            // No later movie exists tonight: let the same-frame auto-tune
+            // choose another live channel/00. Exclude this stable identity
+            // so it cannot immediately retune the failed final airing.
+            exclude_failed_channel();
         }
         return;
     }
@@ -161,17 +172,7 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
             // Re-tuning the channel that just failed repeatedly would loop:
             // note it, and leave nothing tuned for the nothing-playing rule
             // to move on from.
-            auto& gave_up = state_.guide_gave_up;
-            if (state_.tuned_channel >= 0 &&
-                std::find(gave_up.begin(), gave_up.end(), state_.tuned_channel) ==
-                    gave_up.end()) {
-                gave_up.push_back(state_.tuned_channel);
-            }
-            const auto id = channel_identity(state_.tuned_channel);
-            if (!id.empty() && std::find(gave_up_identities_.begin(), gave_up_identities_.end(), id) == gave_up_identities_.end())
-                gave_up_identities_.push_back(id);
-            state_.tuned_channel = -1;
-            state_.guide_wait_until_utc = 0.0;
+            exclude_failed_channel();
         }
     }
 }
@@ -398,6 +399,14 @@ void PlaylistPlayback::on_prev() {
 const Channel* PlaylistPlayback::channel_at(int c) const {
     if (!channels_ || c < 0 || c >= static_cast<int>(channels_->size())) return nullptr;
     return &(*channels_)[c];
+}
+
+bool PlaylistPlayback::channel_on_air(int channel) const {
+    const auto* ch = channel_at(channel);
+    if (!ch) return false;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    return join_point(*ch, now, offset(now), offset).has_value();
 }
 
 std::string PlaylistPlayback::channel_identity(int c) const {
