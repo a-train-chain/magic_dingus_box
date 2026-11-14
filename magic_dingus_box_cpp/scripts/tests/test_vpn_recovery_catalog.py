@@ -279,6 +279,17 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(select_candidate(candidates, {}, ['Canada'], [], NOW), a)
         self.assertIsNone(select_candidate(candidates, [], [], [], NOW))
 
+    def test_distinct_history_retains_newest_256_without_input_mutation(self):
+        history=[{'hostname':f'node-ca-{i}.protonvpn.net',
+                  'endpoint_ip':f'84.20.{i//256}.{i%256}',
+                  'failed_at':NOW-300+i} for i in range(300)]
+        original=copy.deepcopy(history)
+        # Scramble order so a tail slice cannot masquerade as newest retention.
+        actual=bounded_history(list(reversed(history)),NOW)
+        self.assertEqual(len(actual),256)
+        self.assertEqual(actual,history[44:])
+        self.assertEqual(history,original)
+
     def test_static_fetch_has_parent_deadline_for_blocked_dns(self):
         # Exercise a real local child blocked before any network work. This is
         # the same failure boundary as a libc resolver that ignores socket timeouts.

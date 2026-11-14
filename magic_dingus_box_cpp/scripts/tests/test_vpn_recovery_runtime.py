@@ -276,6 +276,43 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(args[:5],['docker','exec',GEN['container_id'],'timeout','3'])
             self.assertIn('--timeout=1',args)
             self.assertLessEqual(kwargs['timeout'],1.3)
+    def test_host_probe_uses_bounded_python_child_with_verified_tls_and_fallback(self):
+        from vpn_recovery.runtime import SystemAdapters
+        import subprocess
+        calls=[]
+        def runner(args,**kwargs):
+            calls.append((args,kwargs))
+            # Reject an undeclared host wget/curl dependency. Only the existing
+            # Python interpreter is available on this clean target fixture.
+            if args[0] != sys.executable:
+                raise FileNotFoundError('host tool absent')
+            code=1 if 'https://one.one.one.one/cdn-cgi/trace' in args else 0
+            return subprocess.CompletedProcess(args,code,'','')
+        a=SystemAdapters(self.paths,runner)
+        self.assertTrue(a._traffic(GEN,time.monotonic()+3,host=True))
+        self.assertEqual(len(calls),2)
+        for args,kwargs in calls:
+            self.assertEqual(args[0],sys.executable)
+            self.assertLessEqual(kwargs['timeout'],1.3)
+            self.assertNotIn('CERT_NONE',args[2])
+            self.assertNotIn('unverified',args[2])
+
+    def test_blocked_host_dns_child_is_killed_and_reaped(self):
+        from vpn_recovery.runtime import SystemAdapters
+        import subprocess
+        from unittest.mock import patch
+        original=subprocess.Popen;children=[]
+        def blocked(*args,**kwargs):
+            child=original([sys.executable,'-c','import time;time.sleep(60)'],**kwargs)
+            children.append(child);return child
+        a=SystemAdapters(self.paths)
+        started=time.monotonic()
+        with patch('subprocess.Popen',blocked):
+            self.assertFalse(a._traffic(GEN,started+.08,host=True))
+        self.assertLess(time.monotonic()-started,.5)
+        self.assertTrue(children)
+        self.assertTrue(all(child.poll() is not None for child in children))
+
     def test_load_attestation_requires_new_generation_and_positive_evidence(self):
         self.c.loaded=None
         self.tick(0);self.tick(120);self.finish();self.tick(130)

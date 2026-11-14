@@ -156,6 +156,8 @@ class CLITests(unittest.TestCase):
         (self.paths.services/'.env').write_text('VPN_SERVICE_PROVIDER=custom\n')
         self.assertEqual(self.call('supported')[0],1)
         (self.paths.services/'.env').write_text('VPN_TYPE=invalid\n')
-        self.assertEqual(self.call('supported')[0],2)
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(self.call('supported')[0],2)
+        self.assertEqual(errors.getvalue().strip(),'[vpn-recovery] operation unavailable')
 
 if __name__=='__main__':unittest.main()

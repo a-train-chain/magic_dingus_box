@@ -17,6 +17,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import time
 
 from .common import atomic_json, bounded_lock, load_config
@@ -26,6 +27,29 @@ from .port_sync import PortSynchronizer, QbitClient
 from .intent import (read_json, read_intent, may_recover, adopt_running, set_intent,
                      settings_revision, boot_id, process_start, owns_stop)
 from .policy import decide, finite
+
+
+# Host WAN classification uses the already-required interpreter, not an
+# undeclared wget/curl package. Parent subprocess timeout also bounds libc DNS;
+# HTTPSConnection retains certificate/hostname verification and no redirects.
+_HOST_TRAFFIC_SCRIPT = r'''
+import http.client, sys
+from urllib.parse import urlsplit
+try:
+    url = urlsplit(sys.argv[1])
+    connection = http.client.HTTPSConnection(url.hostname, timeout=1)
+    connection.request('GET', url.path)
+    response = connection.getresponse()
+    if response.status != (200 if url.path == '/cdn-cgi/trace' else 204):
+        raise ValueError()
+    body = response.read(16385)
+    if len(body) > 16384:
+        raise ValueError()
+    connection.close()
+    sys.stdout.write(body.decode('utf-8'))
+except Exception:
+    sys.exit(1)
+'''
 
 
 def utc(wall):
@@ -145,7 +169,9 @@ class SystemAdapters:
         for url, marker in [('https://one.one.one.one/cdn-cgi/trace','ip='),
                             ('https://www.google.com/generate_204', None)]:
             try:
-                out = self.run(prefix+['wget','-qO-','--tries=1','--timeout=1',url],deadline,1.3)
+                command = ([sys.executable,'-c',_HOST_TRAFFIC_SCRIPT,url] if host else
+                           prefix+['wget','-qO-','--tries=1','--timeout=1',url])
+                out = self.run(command,deadline,1.3)
                 if marker is None or any(line.startswith(marker) for line in out.splitlines()):
                     return True
             except Exception:
