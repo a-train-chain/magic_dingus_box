@@ -64,3 +64,18 @@ setup() {
     done
     grep -q '/run/lock/mdb-compose.lock' "$CPP_DIR/scripts/clear_radarr_cooldowns.py"
 }
+
+@test "native helper revalidates between restart and up" {
+    export MDB_COMPOSE_LOCK_HELD=1
+    local checks="$BATS_TEST_TMPDIR/checks" calls="$BATS_TEST_TMPDIR/calls"
+    native_check() {
+        echo check >> "$checks"
+        [ "$(wc -l < "$checks" | tr -d ' ')" -lt 2 ]
+    }
+    timeout() { shift 3; "$@"; }
+    docker() { echo "$*" >> "$calls"; }
+    PAUSE_MARKER="$BATS_TEST_TMPDIR/no-pause"
+    run cascade_dependents
+    [ -s "$checks" ]
+    ! grep -q ' up -d ' "$calls"
+}

@@ -66,6 +66,21 @@ class FakeQbit:
 
 
 class PortSyncTests(unittest.TestCase):
+    def test_intent_changes_while_preferences_read_blocks_subsequent_post(self):
+        control,qbit=FakeControl(),FakeQbit()
+        allowed=[True]
+        qbit.on_request=lambda *_: allowed.__setitem__(0,False)
+        result=port_sync.PortSynchronizer(self.paths,control,qbit).sync(precondition=lambda:allowed[0])
+        self.assertEqual(result['status'],'deferred')
+        self.assertFalse(any(c[0]=='POST' for c in qbit.calls))
+
+    def test_under_lock_intent_precondition_blocks_write(self):
+        control, qbit = FakeControl(), FakeQbit()
+        sync = port_sync.PortSynchronizer(self.paths, control, qbit)
+        result = sync.sync(precondition=lambda: False)
+        self.assertEqual(result['status'], 'deferred')
+        self.assertFalse(any(call[0] == 'POST' for call in qbit.calls))
+
     def setUp(self):
         self.assertIsNotNone(port_sync, 'verified port synchronizer is not implemented')
         self.temp = tempfile.TemporaryDirectory()

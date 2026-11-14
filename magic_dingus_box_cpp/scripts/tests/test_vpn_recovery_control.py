@@ -58,6 +58,20 @@ class ControlTests(unittest.TestCase):
         self.cid = 'a'*64
         self.keyfile = self.paths.services/'config/gluetun/auth/recovery.key'
 
+    def test_endpoint_override_is_public_ip_only_and_deadline_bounded(self):
+        import time
+        payload = {'provider': {'server_selection': {'hostnames': ['node-ca-59.protonvpn.net'],
+                   'wireguard': {'endpoint_ip': '84.20.16.29'}}}}
+        self.client.put('/v1/vpn/settings', payload, self.cid, deadline=time.monotonic()+1)
+        self.assertTrue(all(call[1]['timeout'] <= 1 for call in self.runner.calls))
+        for bad in ['127.0.0.1', '0.0.0.0', 'bad']:
+            payload['provider']['server_selection']['wireguard']['endpoint_ip'] = bad
+            with self.assertRaises(ControlError):
+                self.client.put('/v1/vpn/settings', payload, self.cid)
+        payload['provider']['server_selection']['wireguard'] = {'private_key': 'never'}
+        with self.assertRaises(ControlError):
+            self.client.put('/v1/vpn/settings', payload, self.cid)
+
     def test_public_reads_private_mutations(self):
         import tomllib
         roles = tomllib.loads(self.keyfile.with_name('config.toml').read_text())['roles']

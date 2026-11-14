@@ -181,7 +181,7 @@ class PortSynchronizer:
         if after != generation or new_port != port:
             raise _Changed('VPN generation or port changed')
 
-    def _operate(self, result, deadline, mutate, expected_generation=None):
+    def _operate(self, result, deadline, mutate, expected_generation=None, precondition=None):
         try:
             generation, port = self._vpn(deadline)
         except _Changed:
@@ -203,6 +203,8 @@ class PortSynchronizer:
             # Re-read under lock immediately before writing. A late qBit read
             # may belong to a tunnel whose forwarding lease has already moved.
             self._check(generation, port, deadline)
+            if precondition is not None and precondition() is not True:
+                raise _Deferred()
             status, _ = self.qbit.request('POST', '/api/v2/app/setPreferences', wanted,
                                           timeout=self._remaining(deadline))
             if type(status) is not int or not 200 <= status < 300:
@@ -215,7 +217,7 @@ class PortSynchronizer:
         self._remaining(deadline)
         result['status'] = 'synced' if prefs == wanted else 'changed'
 
-    def _run(self, mutate, expected_generation=None, deadline=None):
+    def _run(self, mutate, expected_generation=None, deadline=None, precondition=None):
         result = self._result()
         own_deadline = time.monotonic()+(self.sync_timeout_s if mutate else self.observe_timeout_s)
         deadline = own_deadline if deadline is None else min(own_deadline, deadline)
@@ -227,7 +229,9 @@ class PortSynchronizer:
                                                         min(LOCK_TIMEOUT_S, self._remaining(deadline))))
                     except (OSError, TimeoutError):
                         raise _Deferred() from None
-                    self._operate(result, deadline, True, expected_generation)
+                    if precondition is not None and precondition() is not True:
+                        raise _Deferred()
+                    self._operate(result, deadline, True, expected_generation, precondition)
             else:
                 self._operate(result, deadline, False)
         except _Deferred:
@@ -239,9 +243,9 @@ class PortSynchronizer:
         result['checked_at'] = datetime.now(timezone.utc).isoformat()
         return result
 
-    def sync(self, expected_generation=None, *, deadline=None) -> dict:
+    def sync(self, expected_generation=None, *, deadline=None, precondition=None) -> dict:
         """A caller monotonic deadline can further shorten the total budget."""
-        return self._run(True, expected_generation, deadline)
+        return self._run(True, expected_generation, deadline, precondition)
 
     def observe(self, *, deadline=None) -> dict:
         """Bounded reads only; reports VPN evidence even if qBit login fails."""

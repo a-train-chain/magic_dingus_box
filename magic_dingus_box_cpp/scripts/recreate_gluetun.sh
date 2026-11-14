@@ -34,7 +34,7 @@ POLL_S="${POLL_S:-5}"
 say() { echo "[vpn-country] $*"; }
 
 # Same bounded lock helper as gluetun_cascade_restart.sh: 0 = held,
-# 1 = timed out (proceed without it, the pre-lock behavior), 2 = unusable.
+# 1 = timed out, 2 = unusable. Either defers; never mutate unlocked.
 compose_lock() {
     command -v flock >/dev/null 2>&1 || return 2
     if [ ! -e "$MDB_COMPOSE_LOCK" ]; then
@@ -51,12 +51,34 @@ if [ ! -f "${COMPOSE_DIR}/docker-compose.yml" ] || [ ! -f "${COMPOSE_DIR}/.env" 
     exit 1
 fi
 
+# Wrap the complete operation, including its health wait, in durable
+# maintenance inhibition. The command itself still owns the compose lock.
+source_dir="${VPN_RECOVERY_SOURCE_DIR:-$(cd -- "$(dirname -- "$0")" && pwd)}"
+recovery="$source_dir/vpn_recoveryctl.py"
+if [ ! -f "$recovery" ] && [ -z "${VPN_RECOVERY_SOURCE_DIR:-}" ]; then
+    recovery=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/vpn_recoveryctl.py
+fi
+if [ -f "$recovery" ] && [ -z "${MDB_VPN_INHIBIT_TOKEN:-}" ]; then
+    # Adoption only succeeds for an existing running managed installation.
+    python3 "$recovery" --base "$(dirname -- "$COMPOSE_DIR")" --services "$COMPOSE_DIR" intent adopt-running || true
+    exec python3 "$recovery" --base "$(dirname -- "$COMPOSE_DIR")" --services "$COMPOSE_DIR" run-inhibited \
+        --reason country-change --timeout 360 -- bash "$0" "$@"
+fi
+
 country=$(sed -n 's/^VPN_COUNTRIES=//p' "${COMPOSE_DIR}/.env" | tail -1 | tr -d '"')
 say "Reconnecting the VPN${country:+ to a server in ${country}}…"
 
 rc=0
 compose_lock 120 || rc=$?
-[ "$rc" = "1" ] && say "compose lock busy for 120s — continuing anyway"
+if [ "$rc" != 0 ]; then
+    say "Compose lock unavailable — VPN change deferred."
+    exit 1
+fi
+if [ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ] && ! python3 "$recovery" --base "$(dirname -- "$COMPOSE_DIR")" --services "$COMPOSE_DIR" check-operation; then
+    compose_unlock
+    say "VPN remains stopped or maintenance changed; operator start required. Country applies on next start."
+    exit 3
+fi
 docker compose -f "${COMPOSE_DIR}/docker-compose.yml" up -d --no-deps gluetun 2>&1
 up_rc=$?
 [ "$rc" = "0" ] && compose_unlock

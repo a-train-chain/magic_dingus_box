@@ -4,6 +4,7 @@ The host's Python runs inside the inspected network namespace only. Port
 8000 remains unpublished. Secrets and payloads travel over stdin, not argv.
 """
 import json
+import ipaddress
 import os
 import re
 import secrets
@@ -185,15 +186,15 @@ class ControlClient:
         return result
 
     def put(self, path, payload, container_id, *,
-            precondition: Optional[Callable[[], bool]] = None) -> Union[dict, str]:
+            precondition: Optional[Callable[[], bool]] = None, deadline=None) -> Union[dict, str]:
         """Partial settings/status PUT; reject false/raising precondition safely.
 
         The callback runs immediately before transport with the compose lock
         held. It must be bounded, read-only, and return exactly True to proceed.
         """
         try:
-            with bounded_lock(self.paths.compose_lock, LOCK_TIMEOUT_S):
-                result = self._request('PUT', path, payload, container_id, precondition)
+            with bounded_lock(self.paths.compose_lock, min(LOCK_TIMEOUT_S, max(0, deadline-time.monotonic())) if deadline else LOCK_TIMEOUT_S):
+                result = self._request('PUT', path, payload, container_id, precondition, deadline=deadline)
                 if not isinstance(result, (dict, str)):
                     raise ControlError('invalid control response')
                 return result
@@ -215,12 +216,18 @@ class ControlClient:
             selection = payload['provider']['server_selection']
             valid = (set(payload) == {'provider'} and set(payload['provider']) == {'server_selection'}
                      and isinstance(selection, dict) and bool(selection)
-                     and not (selection.keys() - {'countries', 'hostnames'})
+                     and not (selection.keys() - {'countries', 'hostnames', 'wireguard'})
                      and all(isinstance(values, list) and len(values) <= 100
                              and all(isinstance(v, str) and 0 < len(v) <= 253
                                      and re.fullmatch(r"[A-Za-z0-9 .'-]+", v) for v in values)
-                             for values in selection.values()))
-        except (KeyError, TypeError):
+                             for name, values in selection.items() if name != 'wireguard'))
+            if 'wireguard' in selection:
+                wireguard = selection['wireguard']
+                valid = (valid and isinstance(wireguard, dict) and set(wireguard) == {'endpoint_ip'}
+                         and isinstance(wireguard['endpoint_ip'], str)
+                         and '%' not in wireguard['endpoint_ip']
+                         and ipaddress.ip_address(wireguard['endpoint_ip']).is_global)
+        except (KeyError, TypeError, ValueError):
             valid = False
         if not valid:
             raise ControlError('invalid partial VPN settings mutation')

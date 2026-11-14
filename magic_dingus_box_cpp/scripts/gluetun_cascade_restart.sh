@@ -74,6 +74,8 @@ PAUSED_CONTAINERS=(mdb_radarr mdb_sonarr mdb_prowlarr mdb_byparr)
 # Returns 0 = held, 1 = timed out, 2 = no flock / lock file unusable.
 MDB_COMPOSE_LOCK="${MDB_COMPOSE_LOCK:-/run/lock/mdb-compose.lock}"
 compose_lock() {
+    # Native Python caller already holds mdb-compose.lock; never nest flock.
+    [ "${MDB_COMPOSE_LOCK_HELD:-0}" = 1 ] && return 0
     command -v flock >/dev/null 2>&1 || return 2
     if [ ! -e "$MDB_COMPOSE_LOCK" ]; then
         (umask 000; : >> "$MDB_COMPOSE_LOCK") 2>/dev/null
@@ -82,7 +84,10 @@ compose_lock() {
     exec 9<"$MDB_COMPOSE_LOCK" || return 2
     flock -w "$1" 9 || return 1
 }
-compose_unlock() { flock -u 9 2>/dev/null; exec 9<&-; }
+compose_unlock() {
+    [ "${MDB_COMPOSE_LOCK_HELD:-0}" = 1 ] && return 0
+    flock -u 9 2>/dev/null; exec 9<&-
+}
 
 log() { echo "[gluetun-cascade] $*"; }
 
@@ -168,7 +173,35 @@ vpn_unhealthy_cause() {
     if vpn_tunnel_passes_traffic; then echo portfwd; else echo tunnel; fi
 }
 
+# Native caller owns compose lock. Recheck durable intent/settings/container
+# before EVERY later mutation, including the second half of a relink.
+native_check() {
+    [ "${MDB_COMPOSE_LOCK_HELD:-0}" != 1 ] && return 0
+    [ -n "${VPN_RECOVERY_CTL:-}" ] || return 1
+    python3 "$VPN_RECOVERY_CTL" --base "$(dirname -- "$COMPOSE_DIR")" \
+        --services "$COMPOSE_DIR" --state "$VPN_RECOVERY_STATE" \
+        --runtime "$VPN_RECOVERY_RUNTIME" check-fence
+}
+
 local_compose() {
+    if [ "${MDB_COMPOSE_LOCK_HELD:-0}" = 1 ]; then
+        native_check || return 1
+        # A pause may arrive after restart but before up: recompute eligible
+        # services on EACH mutation, and never issue compose without a target.
+        local arg targets=() has_service=0
+        for arg in "$@"; do
+            case "$arg" in
+                radarr|sonarr|prowlarr|byparr)
+                    [ -f "$PAUSE_MARKER" ] && continue
+                    has_service=1 ;;
+                qbittorrent) has_service=1 ;;
+            esac
+            targets+=("$arg")
+        done
+        [ "$has_service" = 1 ] || return 0
+        timeout --signal=TERM --kill-after=2 20 docker compose -f "${COMPOSE_DIR}/docker-compose.yml" "${targets[@]}"
+        return $?
+    fi
     docker compose -f "${COMPOSE_DIR}/docker-compose.yml" "$@"
 }
 
@@ -255,6 +288,8 @@ converge_dependents() {
                 ;;
             restart)
                 log "converge: ${c} unhealthy for $((now - since))s — restarting it"
+                native_check || return 1
+                if [ -f "$PAUSE_MARKER" ] && [ "$svc" != qbittorrent ]; then continue; fi
                 docker restart "$c" >/dev/null 2>&1 || log "converge: restart of ${c} FAILED"
                 rm -f "${CASCADE_STATE_DIR}/unhealthy_since.${svc}"
                 ;;
@@ -336,6 +371,7 @@ cascade_dependents() {
         # restarts the kiosk (systemd), whose startup safety runs
         # unpause and clears the marker within seconds.
         log "playback pause marker present — re-linking qbittorrent only, enforcing stop of ${PAUSED_CONTAINERS[*]}"
+        native_check || return 1
         docker stop -t 2 "${PAUSED_CONTAINERS[@]}" >/dev/null 2>&1 || true
     fi
     log "cascading dependents: ${targets[*]}"
@@ -377,6 +413,24 @@ main() {
     if ! [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
         log "no compose file at ${COMPOSE_DIR} — exiting (services not provisioned)"
         exit 0
+    fi
+
+    # Installed launcher has no adjacent package; the deployed source tree is
+    # the sole module copy. A broken native package must not fall back to a
+    # competing restart watcher. Unsupported provider/type retains legacy flow.
+    local source_dir recovery rc=0
+    source_dir="${VPN_RECOVERY_SOURCE_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
+    recovery="$source_dir/vpn_recoveryctl.py"
+    if [ ! -f "$recovery" ] && [ -z "${VPN_RECOVERY_SOURCE_DIR:-}" ]; then
+        recovery=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/vpn_recoveryctl.py
+    fi
+    if [ -f "$recovery" ]; then
+        python3 "$recovery" --base "$(dirname -- "$COMPOSE_DIR")" --services "$COMPOSE_DIR" supported || rc=$?
+        case "$rc" in
+            0) exec python3 "$recovery" --base "$(dirname -- "$COMPOSE_DIR")" --services "$COMPOSE_DIR" run ;;
+            1) ;;  # explicitly unsupported configuration
+            *) log "VPN policy unavailable; refusing parallel legacy recovery"; return 1 ;;
+        esac
     fi
 
     log "watching docker events for mdb_gluetun start + health_status..."

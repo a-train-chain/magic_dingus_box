@@ -31,9 +31,18 @@ COMPOSE="$CPP_DIR/services/docker-compose.yml"
     grep -q 'image: qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027' "$COMPOSE"
 }
 
-@test "gluetun's healthcheck still requires the forwarded port once one was seen" {
-    # The backstop if a gluetun release ever loses the port for good again.
-    grep -q '/tmp/.pf_seen' "$COMPOSE"
+@test "native Proton startup uses traffic and unsupported modes keep forwarding latch" {
+    run python3 -c "
+import yaml
+check=yaml.safe_load(open('$COMPOSE'))['services']['gluetun']['healthcheck']['test'][1]
+assert 'VPN_SERVICE_PROVIDER' in check and '= protonvpn' in check
+assert 'VPN_TYPE' in check and '= wireguard' in check
+assert 'VPN_PORT_FORWARDING' in check and '= on' in check
+assert 'https://one.one.one.one/cdn-cgi/trace' in check
+assert 'https://www.google.com/generate_204' in check
+assert '/tmp/.pf_seen' in check
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
 @test "WireGuard keepalive is on, as a Go duration (Proton configs ask for 25)" {

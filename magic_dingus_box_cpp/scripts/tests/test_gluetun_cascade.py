@@ -130,6 +130,16 @@ class StubDockerTestCase(unittest.TestCase):
 
 
 class CascadeStartEventTests(StubDockerTestCase):
+    def test_native_launcher_execs_single_controller_and_no_old_watcher(self):
+        (self.compose_dir / '.env').write_text('VPN_PORT_FORWARDING=on\n')
+        stub = Path(self._tmp.name) / 'bin' / 'python3'
+        stub.write_text('#!/bin/bash\ncase "$*" in *supported) exit 0 ;; *run) echo native-controller; exit 0 ;; esac\nexit 9\n')
+        stub.chmod(0o755)
+        result = self.run_script(CASCADE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('native-controller', result.stdout)
+        self.assertFalse(any(line.startswith('events') for line in self.log_lines()))
+
     def test_no_marker_full_cascade(self):
         result = self.run_script(CASCADE)
         self.assertEqual(result.returncode, 0, result.stderr)
