@@ -23,8 +23,8 @@ struct InputDeviceTraits {
 };
 
 // True for a joystick/gamepad: it has a stick or a hat, and it is NOT a
-// touchpad, digitizer or motion sensor. Mirrors the kernel joydev blacklist,
-// so the kiosk opens exactly the devices that also get a /dev/input/js node.
+// touchpad, digitizer or motion sensor. Mirrors the kernel joydev blacklist;
+// classification does not require a legacy /dev/input/js alias to exist.
 // Modern pads split themselves into several input devices — a DualSense has
 // a gamepad, a "Motion Sensors" device and a "Touchpad" device, and both of
 // the extra ones report ABS_X — so "has ABS_X" alone is not enough.
@@ -48,7 +48,14 @@ struct SysfsInputInfo {
     std::vector<uint16_t> key_codes;   // ascending EV_KEY codes
     std::vector<uint16_t> abs_codes;   // ascending EV_ABS codes (incl. hats)
     bool accelerometer = false;
+    // All classification bitmaps were present and well-formed. Missing
+    // exclusions must not turn an auxiliary node into a game controller.
+    bool capabilities_valid = false;
 };
+
+// Apply the same classification to sysfs facts as to an open evdev handle.
+// Incomplete/malformed capability reads are never accepted as a joystick.
+bool is_joystick_device(const SysfsInputInfo& info);
 
 // Read <class_input_dir>/<node>/device/... nullopt when the node is gone.
 // Fields that cannot be read stay at their zero values.

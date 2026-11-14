@@ -8,11 +8,10 @@
 #include "retroarch/controller_mapping.h"
 #include "retroarch/controller_profile.h"
 
-// Task 7: detect_connected_controllers() itself reads /dev/input and
-// /sys/class/input, so it has no meaningful behavior to test on macOS (see
-// controller_detector.cpp). resolve_port_mappings() is the pure part of the
-// launcher's per-port wiring -- it consumes a DetectedPad list rather than
-// scanning for one -- so it IS fully testable here with a synthetic list.
+// resolve_port_mappings() is the pure part of the launcher's per-port
+// wiring: it consumes a DetectedPad list rather than scanning for one.
+// The actual event/sysfs inventory is tested in test_controller_detector.cpp;
+// these synthetic lists isolate mapping precedence and player semantics.
 // These tests exist to pin the three behaviors the task brief calls out as
 // "must not regress": no-pads falls back to today's single-mapping path,
 // one-pad mirrors P1 exactly, and two-or-more pads resolve independently.
