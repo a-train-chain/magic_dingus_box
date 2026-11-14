@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import json
 import os
 import signal
+import shutil
+import tempfile
 import subprocess
 import sys
 import time
@@ -47,15 +49,69 @@ def controller_fence_allowed(paths):
     return actual.get('running') is True and Controller.container_key(actual)==ctx.get('container')
 
 
+def begin_owner(paths, token, reason, timeout, owner_pid):
+    if not 0<timeout<=86400: raise ValueError('invalid owner timeout')
+    actual=SystemAdapters(paths).current(time.monotonic()+2)
+    generation={k:actual.get(k) for k in ('container_id','started_at','pid')} if actual.get('running') else None
+    state=inhibit(paths,token,owner_pid,reason,generation=generation,ttl_s=min(86400,timeout+60))
+    return {'MDB_VPN_INHIBIT_TOKEN':token,'MDB_VPN_INTENT_REVISION':state['revision'],
+            'MDB_VPN_SETTINGS_REVISION':settings_revision(paths)}
+
+
+def privileged_owner(paths, operation, token, reason, timeout, *, launcher=None):
+    """Short privileged state bridge; the updater and its child stay unprivileged.
+
+    Owner is the calling wrapper PID, not this transient sudo helper. Only the
+    public revision envelope crosses stdout. Sudo never executes the OTA argv.
+    """
+    launcher=Path(launcher) if launcher is not None else Path(__file__).resolve().parent.parent/'vpn_recoveryctl.py'
+    argv=['sudo','-n',sys.executable,'-B',str(launcher),'--base',str(paths.base),
+          '--services',str(paths.services),'--state',str(paths.state),'--runtime',str(paths.runtime),
+          '--compose-lock',str(paths.compose_lock),'maintenance-owner',operation,
+          '--token',token,'--owner-pid',str(os.getpid()),'--reason',reason,'--timeout',str(timeout)]
+    result=subprocess.run(argv,capture_output=True,text=True,check=False,cwd=str(launcher.parent),
+                          timeout=90 if operation=='activate' else 8)
+    if result.returncode: raise RuntimeError('privileged maintenance unavailable')
+    if operation!='begin': return {}
+    envelope=json.loads(result.stdout)
+    required={'MDB_VPN_INHIBIT_TOKEN','MDB_VPN_INTENT_REVISION','MDB_VPN_SETTINGS_REVISION'}
+    if (not isinstance(envelope,dict) or set(envelope)!=required or envelope.get('MDB_VPN_INHIBIT_TOKEN')!=token
+            or any(not isinstance(v,str) or len(v)>128 for v in envelope.values())):
+        raise ValueError('invalid maintenance envelope')
+    return envelope
+
+
+def owner_snapshot():
+    """Private code-only lifetime copy, outside the tree an OTA may replace."""
+    scratch=tempfile.TemporaryDirectory(prefix='mdb-vpn-owner-',dir='/tmp')
+    try:
+        root=Path(scratch.name)
+        package=root/'vpn_recovery';package.mkdir(mode=0o700)
+        for source in Path(__file__).resolve().parent.glob('*.py'):
+            shutil.copyfile(source,package/source.name)
+        launcher=root/'vpn_recoveryctl.py'
+        shutil.copyfile(Path(__file__).resolve().parent.parent/'vpn_recoveryctl.py',launcher)
+        return scratch,launcher
+    except BaseException:
+        scratch.cleanup();raise
+
+
 def run_inhibited(paths, command, reason, timeout):
     if not command or not 0<timeout<=86400:
         raise ValueError('invalid bounded command')
     token=uuid.uuid4().hex
-    actual=SystemAdapters(paths).current(time.monotonic()+2)
-    generation={k:actual.get(k) for k in ('container_id','started_at','pid')} if actual.get('running') else None
-    state=inhibit(paths,token,os.getpid(),reason,generation=generation,ttl_s=min(86400,timeout+60))
-    env={**os.environ,'MDB_VPN_INHIBIT_TOKEN':token,'MDB_VPN_INTENT_REVISION':state['revision'],
-         'MDB_VPN_SETTINGS_REVISION':settings_revision(paths)}
+    privileged=False
+    scratch=None;helper=None
+    try:
+        envelope=begin_owner(paths,token,reason,timeout,os.getpid())
+    except PermissionError:
+        if os.geteuid()==0: raise
+        privileged=True
+        scratch,helper=owner_snapshot()
+        try: envelope=privileged_owner(paths,'begin',token,reason,timeout,launcher=helper)
+        except BaseException:
+            scratch.cleanup();raise
+    env={**os.environ,**envelope}
     process=None
     old_handlers={}
     def interrupted(signum, _frame):
@@ -82,12 +138,19 @@ def run_inhibited(paths, command, reason, timeout):
         return 130
     finally:
         for sig,handler in old_handlers.items():signal.signal(sig,handler)
-        release_inhibit(paths,token)
-        # Auth activation deferred by this very maintenance owner runs once
-        # after release. A rollback without the package never reactivates it.
-        if reason in ('ota','setup') and (paths.base/'magic_dingus_box_cpp/scripts/vpn_recoveryctl.py').is_file():
-            try: activate(paths)
-            except Exception: print('[vpn-recovery] credential activation deferred',file=sys.stderr)
+        try:
+            if privileged: privileged_owner(paths,'end',token,reason,timeout,launcher=helper)
+            else: release_inhibit(paths,token)
+            # Auth activation deferred by this maintenance owner runs once
+            # after release; a pre-package rollback never reactivates it.
+            if reason in ('ota','setup') and (paths.base/'magic_dingus_box_cpp/scripts/vpn_recoveryctl.py').is_file():
+                try:
+                    if privileged: privileged_owner(paths,'activate',token,reason,timeout,launcher=helper)
+                    else: activate(paths)
+                except Exception: print('[vpn-recovery] credential activation deferred',file=sys.stderr)
+        finally:
+            if scratch is not None: scratch.cleanup()
+
 
 
 def parser():
@@ -103,6 +166,9 @@ def parser():
     intent=sub.add_parser('intent');intent.add_argument('operation',choices=['enable','stop','adopt-running']);intent.add_argument('--reason',default='operator');intent.add_argument('--if-idle',action='store_true')
     inh=sub.add_parser('inhibit');inh.add_argument('operation',choices=['begin','end']);inh.add_argument('token')
     inh.add_argument('--owner-pid',type=int);inh.add_argument('--reason',default='maintenance')
+    owner=sub.add_parser('maintenance-owner');owner.add_argument('operation',choices=['begin','end','activate'])
+    owner.add_argument('--token',required=True);owner.add_argument('--owner-pid',type=int,required=True)
+    owner.add_argument('--reason',default='ota');owner.add_argument('--timeout',type=float,default=1800)
     wrapped=sub.add_parser('run-inhibited');wrapped.add_argument('--reason',default='maintenance')
     wrapped.add_argument('--timeout',type=float,default=1800);wrapped.add_argument('argv',nargs=argparse.REMAINDER)
     return p
@@ -112,6 +178,12 @@ def main(argv=None):
     args=parser().parse_args(argv)
     paths=Paths(base=args.base,services=args.services,state=args.state,runtime=args.runtime,compose_lock=args.compose_lock)
     try:
+        if args.command=='maintenance-owner':
+            if os.geteuid()!=0: return 3
+            if args.operation=='begin': print(json.dumps(begin_owner(paths,args.token,args.reason,args.timeout,args.owner_pid),sort_keys=True))
+            elif args.operation=='end': release_inhibit(paths,args.token)
+            else: return activate(paths)
+            return 0
         if args.command=='migration-needed': return 0 if migration_needed(paths,Path(__file__).resolve().parent.parent) else 1
         if args.command=='record-start':
             # Shell's read-open fd9 shares the same open-file description.

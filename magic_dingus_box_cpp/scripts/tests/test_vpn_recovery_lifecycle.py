@@ -22,11 +22,96 @@ class LifecycleTests(unittest.TestCase):
         self.paths.services.mkdir(); (self.paths.services/'.env').write_text('VPN_PORT_FORWARDING=on\nVPN_COUNTRIES=Canada\n')
         (self.paths.services/'docker-compose.yml').touch(); self.paths.compose_lock.touch()
         self.calls = []
-        patched=patch("vpn_recovery.lifecycle.current", return_value={})
+        from vpn_recovery.lifecycle import wait_healthy
+        self.real_wait=wait_healthy
+        self.gen={'running':True,'container_id':'a'*64,'pid':42,'started_at':'x','tunnel_ifindex':2}
+        for name,value in [('wait_healthy',self.gen),('generation',self.gen)]:
+            mocked=patch('vpn_recovery.lifecycle.'+name,return_value=value)
+            mocked.start();self.addCleanup(mocked.stop)
+        marker=patch('vpn_recovery.lifecycle.PLAYBACK_PAUSE_MARKER',root/'pause')
+        marker.start();self.addCleanup(marker.stop)
+        patched=patch("vpn_recovery.lifecycle.current", return_value=self.gen)
         self.current=patched.start(); self.addCleanup(patched.stop)
     def command(self, argv, **kw):
         self.calls.append(argv)
         return type('Result', (), {'returncode':0, 'stdout':'', 'stderr':''})()
+    def test_delayed_health_releases_compose_and_overlapping_stop_stays_stopped(self):
+        import fcntl
+        import vpn_recovery.lifecycle as lifecycle
+        self.assertTrue(hasattr(lifecycle,'wait_healthy'),'staged health wait is absent')
+        gen={'running':True,'container_id':'a'*64,'pid':42,'started_at':'x','tunnel_ifindex':2}
+        self.current.return_value=gen
+        def wait(paths,container,deadline,**kwargs):
+            with paths.compose_lock.open('rb') as fd:
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            self.assertEqual(manage(paths,'stop',runner=self.command),0)
+            return gen
+        with patch('vpn_recovery.lifecycle.wait_healthy',side_effect=wait),patch('vpn_recovery.lifecycle.generation',return_value=gen):
+            self.assertNotEqual(manage(self.paths,'start',runner=self.command),0)
+        self.assertFalse(read_intent(self.paths)['enabled'])
+        self.assertFalse(read_intent(self.paths)['inhibits'])
+        ups=[c for c in self.calls if c[:3]==['docker','compose','up']]
+        self.assertEqual(ups,[['docker','compose','up','-d','--no-deps','gluetun']])
+
+    def test_staged_start_has_no_implicit_health_wait_in_dependent_up(self):
+        import vpn_recovery.lifecycle as lifecycle
+        self.assertTrue(hasattr(lifecycle,'wait_healthy'),'staged health wait is absent')
+        gen={'running':True,'container_id':'a'*64,'pid':42,'started_at':'x','tunnel_ifindex':2}
+        self.current.return_value=gen
+        with patch('vpn_recovery.lifecycle.wait_healthy',return_value=gen),patch('vpn_recovery.lifecycle.generation',return_value=gen):
+            self.assertEqual(manage(self.paths,'start',runner=self.command),0)
+        self.assertEqual(self.calls[0],['docker','compose','up','-d','--no-deps','gluetun'])
+        self.assertEqual(self.calls[1][:5],['docker','compose','up','-d','--no-deps'])
+        self.assertIn('qbittorrent',self.calls[1][5:])
+        self.assertNotIn('gluetun',self.calls[1][5:])
+
+    def test_changed_generation_after_health_prevents_dependent_up(self):
+        self.current.return_value=self.gen
+        with patch('vpn_recovery.lifecycle.generation',return_value={**self.gen,'tunnel_ifindex':3}):
+            self.assertEqual(manage(self.paths,'start',runner=self.command),3)
+        self.assertEqual(self.calls,[['docker','compose','up','-d','--no-deps','gluetun']])
+
+    def test_settings_change_during_unlocked_wait_prevents_dependent_up(self):
+        def wait(*args,**kwargs):
+            (self.paths.services/'.env').write_text('VPN_COUNTRIES=United States\n')
+            return self.gen
+        with patch('vpn_recovery.lifecycle.wait_healthy',side_effect=wait):
+            self.assertEqual(manage(self.paths,'start',runner=self.command),3)
+        self.assertEqual(self.calls,[['docker','compose','up','-d','--no-deps','gluetun']])
+
+    def test_final_generation_fence_runs_under_reacquired_compose_lock(self):
+        import fcntl
+        def observe(*args):
+            with self.paths.compose_lock.open('rb') as fd:
+                with self.assertRaises(BlockingIOError): fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            return self.gen
+        with patch('vpn_recovery.lifecycle.generation',side_effect=observe):
+            self.assertEqual(manage(self.paths,'start',runner=self.command),0)
+        self.assertEqual(self.calls[-1][:5],['docker','compose','up','-d','--no-deps'])
+
+    def test_health_timeout_releases_owner_without_dependent_up(self):
+        with patch('vpn_recovery.lifecycle.wait_healthy',return_value=None):
+            self.assertEqual(manage(self.paths,'start',runner=self.command),1)
+        self.assertFalse(read_intent(self.paths)['inhibits'])
+        self.assertEqual(self.calls,[['docker','compose','up','-d','--no-deps','gluetun']])
+
+    def test_real_health_poll_is_read_only_unlocked_and_returns_fenced_generation(self):
+        import fcntl
+        import time
+        import subprocess
+        count=[]
+        def inspect(argv,**kwargs):
+            with self.paths.compose_lock.open('rb') as fd:
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            self.assertEqual(argv[:4],['docker','inspect','--format','{{.State.Health.Status}}'])
+            self.assertLessEqual(kwargs['timeout'],3)
+            count.append(True)
+            return subprocess.CompletedProcess(argv,0,'starting' if len(count)==1 else 'healthy','')
+        expected=tuple(self.gen[k] for k in ('container_id','pid','started_at'))
+        with patch('vpn_recovery.lifecycle.time.sleep'):
+            self.assertEqual(self.real_wait(self.paths,expected,time.monotonic()+5,runner=inspect),self.gen)
+        self.assertEqual(len(count),2)
+
     def test_stop_records_intent_before_lock_and_never_resurrects(self):
         set_intent(self.paths, True, 'running')
         self.paths.compose_lock.unlink()
@@ -44,7 +129,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(manage(self.paths, 'stop', runner=run), 0)
         self.assertFalse(read_intent(self.paths)['enabled'])
         self.assertFalse(read_intent(self.paths)['inhibits'])
-        self.assertEqual([x[-1] for x in self.calls], ['-d','down','-d','down'])
+        self.assertEqual([x[-1] for x in self.calls], ['gluetun','byparr','down','gluetun','byparr','down'])
     def run_result(self):
         return type('Result', (), {'returncode':0, 'stdout':'', 'stderr':''})()
     def test_stop_during_restart_prevents_up(self):

@@ -30,7 +30,13 @@ EOF
     cat > "$T/bin/docker" <<'EOF'
 #!/bin/bash
 if [[ "$1" == inspect ]]; then
-    printf '%064d 42 2026-11-14T00:00:00Z %s false running\n' 0 "$STUB_RUNNING"
+    case "$*" in
+        *Health.Status*) echo healthy ;;
+        *OOMKilled*) printf '%064d 42 2026-11-14T00:00:00Z %s false running\n' 0 "$STUB_RUNNING" ;;
+        *) printf '%064d 42 2026-11-14T00:00:00Z %s\n' 0 "$STUB_RUNNING" ;;
+    esac
+elif [[ "$*" == *'ip -o link show dev tun0'* ]]; then
+    echo '2: tun0: <UP>'
 else
     echo "docker $*" >> "$CALLS"
 fi

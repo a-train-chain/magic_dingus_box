@@ -10,7 +10,7 @@ import subprocess
 import time
 import uuid
 from .common import atomic_json, bounded_lock, load_config
-from .control import ensure_control_credentials, ControlClient
+from .control import ensure_control_credentials, ControlClient, ControlError
 from .intent import (adopt_running, inhibit, read_intent, read_json,
                      release_inhibit, set_intent, settings_revision)
 
@@ -27,9 +27,9 @@ def provision(paths):
     paths.runtime.mkdir(parents=True,exist_ok=True)
 
 
-def current(paths):
+def current(paths, deadline=None):
     from .runtime import SystemAdapters
-    return SystemAdapters(paths).current(time.monotonic()+2)
+    return SystemAdapters(paths).current(min(time.monotonic()+2,deadline) if deadline is not None else time.monotonic()+2)
 
 
 def fingerprint(scripts):
@@ -76,44 +76,96 @@ def record_catalog_submission(paths, actual, *, snapshot=None, now=None):
     except (OSError,ValueError,TypeError): return False
 
 
+PLAYBACK_PAUSE_MARKER=Path('/tmp/mdb_playback_services_paused')
+DEPENDENTS=('radarr','sonarr','prowlarr','qbittorrent','byparr')
+
+
+def container_key(item):
+    return tuple(item.get(k) for k in ('container_id','pid','started_at'))
+
+
+def generation(paths, deadline):
+    return ControlClient(paths).observe_generation(deadline=deadline)
+
+
+def wait_healthy(paths, container, deadline, *, runner=subprocess.run, allowed=lambda: True):
+    """Observe only, outside compose. Health belongs to this exact start."""
+    while time.monotonic()<deadline and allowed():
+        try:
+            observed=current(paths,deadline)
+            if observed.get('running') is not True or container_key(observed)!=container: return None
+            remaining=min(3,deadline-time.monotonic())
+            if remaining<=0: return None
+            result=runner(['docker','inspect','--format','{{.State.Health.Status}}',container[0]],
+                          capture_output=True,text=True,timeout=remaining,check=False)
+            if result.returncode==0 and result.stdout.strip()=='healthy':
+                selected=generation(paths,min(deadline,time.monotonic()+3))
+                if container_key(selected)==container: return selected
+                return None
+        except (OSError,TimeoutError,subprocess.SubprocessError,ControlError): return None
+        remaining=deadline-time.monotonic()
+        if remaining<=0: return None
+        time.sleep(min(1,remaining))
+    return None
+
+
 def manage(paths, action, *, runner=subprocess.run, actual=None):
     if action not in ('start', 'stop', 'restart', 'reload-auth'):
         raise ValueError('unknown stack operation')
     configured=(paths.services/'.env').is_file() and (paths.services/'docker-compose.yml').is_file()
     if action != 'stop' and not configured: return 3
-    # Stop is published BEFORE waiting for compose. Later starts are fenced.
     if action == 'stop': set_intent(paths, False, 'operator stop')
     elif action in ('start', 'restart'):
         if read_intent(paths).get('inhibits'): return 3
         set_intent(paths, True, 'operator '+action)
-    actual=current(paths) if actual is None else actual
-    generation={k:actual.get(k) for k in ('container_id','pid','started_at')} if actual.get('running') else None
+    deadline=time.monotonic()+270
+    actual=current(paths,deadline) if actual is None else actual
+    prior={k:actual.get(k) for k in ('container_id','pid','started_at')} if actual.get('running') else None
     token=uuid.uuid4().hex
-    state=inhibit(paths, token, os.getpid(), action, generation=generation, ttl_s=360)
+    state=inhibit(paths,token,os.getpid(),action,generation=prior,ttl_s=360)
     settings=settings_revision(paths)
+    allowed=lambda: _allowed(paths,token,state['revision'],settings)
+    def lock_wait():
+        remaining=deadline-time.monotonic()
+        if remaining<=0: raise TimeoutError('management deadline')
+        return min(30,remaining)
+    def execute(command, cap=30, *, submit=False, before=None):
+        if action!='stop' and not allowed(): return 3
+        remaining=min(cap,deadline-time.monotonic())
+        if remaining<=0: return 124
+        if submit: record_catalog_submission(paths,before or {})
+        return runner(command,cwd=str(paths.services),timeout=remaining,check=False).returncode
     try:
-        with bounded_lock(paths.compose_lock, 30):
-            if action != 'stop' and not _allowed(paths,token,state['revision'],settings): return 3
+        # Phase one has no Compose dependency/health wait. An explicit stop can
+        # take this same lock while the later read-only health phase is pending.
+        with bounded_lock(paths.compose_lock,lock_wait()):
+            if action!='stop' and not allowed(): return 3
             if action=='reload-auth':
-                observed=current(paths)
-                identity=lambda item: tuple(item.get(k) for k in ('container_id','pid','started_at'))
-                if observed.get('running') is not True or identity(observed)!=identity(actual): return 3
-            commands=[]
-            if action in ('stop','restart'): commands.append(['docker','compose','down'])
-            if action in ('start','restart'): commands.append(['docker','compose','up','-d'])
-            if action == 'reload-auth': commands.append(['docker','restart','mdb_gluetun'])
-            deadline=time.monotonic()+270
-            for command in commands:
-                if action != 'stop' and not _allowed(paths,token,state['revision'],settings): return 3
-                remaining=deadline-time.monotonic()
-                if remaining<=0: return 124
-                if command[-1]=='-d' or action=='reload-auth':
-                    record_catalog_submission(paths,actual)
-                result=runner(command,cwd=str(paths.services),timeout=remaining,check=False)
-                if result.returncode: return result.returncode
-        return 0
-    except (OSError, TimeoutError, subprocess.SubprocessError):
-        return 2
+                observed=current(paths,deadline)
+                if observed.get('running') is not True or container_key(observed)!=container_key(actual): return 3
+                return execute(['docker','restart','mdb_gluetun'],20,submit=True,before=observed)
+            if action in ('stop','restart'):
+                rc=execute(['docker','compose','down'],60)
+                if rc or action=='stop': return rc
+            before=current(paths,deadline)
+            rc=execute(['docker','compose','up','-d','--no-deps','gluetun'],30,submit=True,before=before)
+            if rc: return rc
+            started=current(paths,deadline)
+            if (started.get('running') is not True or not isinstance(started.get('container_id'),str)
+                    or not started['container_id'] or type(started.get('pid')) is not int or started['pid']<=0
+                    or not isinstance(started.get('started_at'),str) or not started['started_at']): return 2
+            expected=container_key(started)
+        selected=wait_healthy(paths,expected,deadline,runner=runner,allowed=allowed)
+        if not selected: return 3 if not allowed() else 1
+        # Reacquire and fence ALL evidence after the unlocked wait. --no-deps
+        # is required here too, so health changing cannot start a hidden wait.
+        with bounded_lock(paths.compose_lock,lock_wait()):
+            if not allowed(): return 3
+            if generation(paths,min(deadline,time.monotonic()+3))!=selected: return 3
+            if not allowed(): return 3
+            targets=['qbittorrent'] if PLAYBACK_PAUSE_MARKER.exists() else list(DEPENDENTS)
+            return execute(['docker','compose','up','-d','--no-deps',*targets],30)
+    except (OSError,TimeoutError,subprocess.SubprocessError,ControlError): return 2
     finally:
         release_inhibit(paths,token)
 
