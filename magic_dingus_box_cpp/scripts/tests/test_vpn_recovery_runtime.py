@@ -469,6 +469,69 @@ class RuntimeTests(unittest.TestCase):
         self.tick(1)
         self.assertFalse(read_intent(self.paths)['enabled'])
 
+    def test_unknown_final_fence_preserves_catalog_for_later_lease_recovery(self):
+        from types import SimpleNamespace
+        from vpn_recovery.runtime import SystemAdapters
+        self.c.last_load_identity=self.a.catalog.identity
+        self.c.last_load_wall=self.a.wall()
+        self.a.observation.update(port=1234,qbit_synced=True)
+        self.assertTrue(self.tick(0)['ready'])
+
+        adapter=SystemAdapters(self.paths)
+        adapter.mono=lambda:10
+        adapter.current=lambda *_:dict(running=True,configured=True,unit_active=True,
+                                      **self.c.container_key(GEN))
+        adapter._events=lambda *_:None
+        adapter._dependents=lambda *_:{'dependents_ok':True}
+        adapter.ports=SimpleNamespace(observe=lambda **_:dict(generation=GEN,forwarded_port=1234,
+                                                            status='synced',qbit_port=1234))
+        adapter.traffic=dict(traffic=True,traffic_at=0,traffic_generation=GEN)
+        def unavailable(**_):
+            raise TimeoutError('final generation fence temporarily unavailable')
+        adapter.control=SimpleNamespace(observe_generation=unavailable)
+        adapter.run=lambda *_:'-A OUTPUT -d 84.20.16.29/32 -o eth0 -p udp --dport 51820 -j ACCEPT'
+        invalidated=adapter.observe(deadline=19,traffic_due=False)
+        self.assertIsNone(invalidated['generation'])
+        original_observe=self.a.observe
+        self.a.observe=lambda **_:copy.deepcopy(invalidated)
+        status=self.tick(10)
+        self.assertFalse(status['ready'])
+        self.assertFalse(status['traffic_verified'])
+        self.assertFalse(status['qbit_synced'])
+        self.assertIsNone(status['forwarded_port'])
+        self.assertIsNotNone(self.c.loaded)
+        self.assertEqual(self.c.loaded.identity,self.a.catalog.identity)
+
+        self.a.observe=original_observe
+        self.assertTrue(self.tick(20)['ready'])
+        self.assertEqual(self.c.loaded.identity,self.a.catalog.identity)
+        self.a.observation['port']=0
+        self.tick(30)
+        self.assertFalse(self.a.calls)
+        self.tick(119)
+        self.assertFalse(self.a.calls)
+        self.tick(120);self.finish()
+        puts=[c[1]['provider']['server_selection'] for c in self.a.calls if c[0]=='put']
+        self.assertEqual(len(puts),1)
+        self.assertEqual(puts[0]['hostnames'],['node-ca-60.protonvpn.net'])
+        self.assertFalse(any(c[0]=='restart_container' for c in self.a.calls))
+
+    def test_catalog_attestation_cannot_cross_confirmed_container_start(self):
+        newer={**GEN,'started_at':'2026-11-14T00:01:00Z','pid':43}
+        for tunnel_available in [True,False]:
+            with self.subTest(tunnel_available=tunnel_available):
+                self.c.loaded=self.a.catalog
+                self.c.loaded_container=self.c.container_key(GEN)
+                self.c.last_load_identity=self.a.catalog.identity
+                self.c.last_load_wall=self.a.wall()
+                self.a.observation.update(generation=newer if tunnel_available else None,
+                    **self.c.container_key(newer),traffic=None,port=None,qbit_synced=False)
+                status=self.tick(10)
+                self.assertIsNone(self.c.loaded)
+                self.assertIsNone(status['catalog']['loaded'])
+                self.assertFalse(status['ready'])
+                self.assertFalse(any(c[0]=='put' for c in self.a.calls))
+
     def test_unique_public_endpoint_only(self):
         rule='-A OUTPUT -d 84.20.16.29/32 -o eth0 -p udp -m udp --dport 51820 -j ACCEPT\n'
         self.assertEqual(parse_endpoint(rule),'84.20.16.29')

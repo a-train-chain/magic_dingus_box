@@ -500,7 +500,16 @@ class Controller:
         o['allowed'] = may_recover(self.paths,actual) and config_current
         self._complete(o)
         generation=o.get('generation'); container=self.container_key(generation)
-        if self.loaded_container!=container:self.loaded=None
+        # Health can be unknown while a previously attested catalog remains
+        # loaded in the same container. Only affirmative container-start
+        # evidence invalidates that snapshot; missing tun0/fence data does not.
+        observed_container = self.container_key(generation or o)
+        if (observed_container and isinstance(observed_container['container_id'], str)
+                and re.fullmatch('[a-f0-9]{64}', observed_container['container_id'])
+                and type(observed_container['pid']) is int and observed_container['pid'] > 0
+                and isinstance(observed_container['started_at'], str) and observed_container['started_at']):
+            if self.loaded_container != observed_container:
+                self.loaded = None
         if self.load_pending and finite(self.last_load_wall) and wall-self.last_load_wall>180:
             self.load_pending=None
             (self.paths.state/'load-pending.json').unlink(missing_ok=True)
