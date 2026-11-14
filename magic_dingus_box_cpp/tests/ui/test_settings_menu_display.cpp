@@ -1,6 +1,7 @@
 // Settings -> Display: the Menu Style row (List / Channel Guide).
 
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 
 #include "app/app_state.h"
 #include "ui/settings_menu.h"
@@ -32,4 +33,30 @@ TEST_CASE("Display menu: Menu Style sits right after Mode and flips on select",
     CHECK(state.display_settings.menu_style == app::MenuStyle::List);
     CHECK(ui_test::fake_settings_saves() == 2);
     CHECK(sm.get_submenu_items()[1].label == "Menu Style: List");
+}
+
+TEST_CASE("Guide Mode is available only in Channel Guide and each toggle saves", "[settings_menu][display]") {
+    ui_test::fake_reset();
+    app::AppState state{};
+    SettingsMenuManager sm{&state};
+    sm.enter_submenu(MenuSection::DISPLAY);
+    const auto guide_row = [&]() {
+        const auto& rows = sm.get_submenu_items();
+        return std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+            return row.section == MenuSection::TOGGLE_GUIDE_MODE;
+        });
+    };
+    CHECK(guide_row() == sm.get_submenu_items().end());
+    sm.get_submenu_items()[1].action(); // Menu Style -> Channel Guide
+    auto row = guide_row(); REQUIRE(row != sm.get_submenu_items().end());
+    CHECK(row->label == "Guide Mode: Live");
+    row->action();
+    CHECK(state.display_settings.guide_mode == app::GuideMode::PickAhead);
+    CHECK(guide_row()->label == "Guide Mode: Pick Ahead");
+    CHECK(ui_test::fake_settings_saves() == 2);
+    guide_row()->action();
+    CHECK(state.display_settings.guide_mode == app::GuideMode::Live);
+    CHECK(ui_test::fake_settings_saves() == 3);
+    sm.get_submenu_items()[1].action(); // Menu Style -> List
+    CHECK(guide_row() == sm.get_submenu_items().end());
 }

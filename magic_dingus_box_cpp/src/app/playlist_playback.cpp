@@ -92,6 +92,7 @@ void PlaylistPlayback::exclude_failed_channel() {
 void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d,
                                           const char* why) {
     using Decision = video::PlaybackErrorPolicy::Decision;
+    if (d != Decision::None) state_.on_demand = false;
     // Counted (or handed on): a channel load's bound must not count it again.
     channel_load_at_.reset();
     const auto* failed = state_.current_playlist_item();
@@ -458,7 +459,8 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
                 if (channel_identity(c) == pending_.identity) { row = c; break; }
             }
         }
-        if (row < 0) {
+        reanchor_airing(pending_.selected);
+        if (row < 0 || (pending_.selected && pending_.selected->airing.index < 0)) {
             pending_ = PendingSwitch{};
             transport_.stop();
             stop_to_menu(state_);
@@ -468,6 +470,8 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         }
     }
     if (!guide_style()) {
+        state_.on_demand = false;
+        state_.off_air_return_after_utc = 0;
         if (state_.loaded_movie) {
             transport_.stop();
             stop_to_menu(state_);
@@ -516,6 +520,28 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     state_.tuned_channel = row;
 }
 
+void PlaylistPlayback::play_on_demand(int channel, const OnAir& oa) {
+    const auto* ch = channel_at(channel);
+    if (!ch || oa.index < 0 || oa.index >= static_cast<int>(ch->items.size())) return;
+    const auto& si = ch->items[oa.index];
+    if (si.playlist < 1 || si.playlist >= static_cast<int>(state_.playlists.size())) return;
+    const auto& pl = state_.playlists[si.playlist];
+    if (si.item < 0 || si.item >= static_cast<int>(pl.items.size())) return;
+    const auto& item = pl.items[si.item];
+    const ChannelAiring selected{channel,
+        LoadedAiring{oa.index, si, oa.starts_at, oa.ends_at, std::nullopt},
+        channel_identity(channel), playlist_identity(pl), item.path, item.movie_tmdb_id, item.start};
+    // A rejected re-entrant press must not replace the pending selection.
+    if (switch_pending() || state_.is_switching_playlist || state_.showing_intro_video ||
+        transport_.now() < timeout_settle_until_) return;
+    tune(channel, false);
+    if (switch_pending()) {
+        pending_.selected = selected;
+        state_.off_air_return_id.clear();
+        state_.off_air_return_after_utc = 0;
+    }
+}
+
 void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     const Channel* ch = channel_at(channel);  // nullptr in List style
     if (!ch || ch->items.empty()) return;     // nothing to join
@@ -532,6 +558,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     state_.playlist_switch_start_time = transport_.now();
     channel_load_at_.reset();  // the tune takes the pipeline over
     state_.loaded_movie.reset();
+    state_.on_demand = false;
     // Point at the channel's row before the stop, as SELECT does: it keeps
     // the indexes through the stop, and the pending switch's "re-pointed"
     // check covers a tune too. The on-air item replaces it at the load.
@@ -578,7 +605,10 @@ void PlaylistPlayback::land_on_channel(int channel) {
     state_.tuned_channel = channel;
     if (channel != 0 || state_.off_air_return_id.empty())
         state_.last_channel_id = channel_identity(channel);
-    if (channel != 0) state_.off_air_return_id.clear();
+    if (channel != 0) {
+        state_.off_air_return_id.clear();
+        state_.off_air_return_after_utc = 0;
+    }
 }
 
 void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
@@ -636,20 +666,89 @@ bool PlaylistPlayback::park_off_air(int channel) {
     const double now = transport_.wall_now_utc();
     const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
     if (!ch || !back_on_air_at(*ch, now, offset(now), offset)) return false;
-    if (state_.off_air_return_id.empty()) state_.off_air_return_id = channel_identity(channel);
+    park_on_mix(channel_identity(channel));
+    return true;
+}
+
+bool PlaylistPlayback::park_on_mix(const std::string& return_id, double not_before) {
+    if (state_.off_air_return_id.empty()) state_.off_air_return_id = return_id;
+    state_.off_air_return_after_utc = not_before;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
     const auto* mix = channel_at(0);
     const auto live = mix ? join_point(*mix, now, offset(now), offset) : std::nullopt;
     transport_.stop();
     if (live) {
-        // Parking changes channel just like finish_tune: the outgoing
-        // movie's failures must not consume 00's own retry budget.
         if (state_.tuned_channel != 0) error_policy_ = video::PlaybackErrorPolicy{};
         load_on_air(0, *live, /*keep_overlay=*/true);
     } else {
+        state_.on_demand = false;
         land_on_channel(0);
         stop_to_menu(state_);
     }
-    return true;
+    return live.has_value();
+}
+
+void PlaylistPlayback::finish_on_demand() {
+    prove_channel();
+    state_.on_demand = false;
+    const int channel = state_.tuned_channel;
+    const auto* ch = channel_at(channel);
+    if (park_off_air(channel)) return;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    auto live = ch ? on_air(*ch, now, offset(now), offset) : std::nullopt;
+    const auto watched = [&](const ScheduledItem& si) {
+        if (!loaded_airing_ || si.playlist < 1 || si.playlist >= static_cast<int>(state_.playlists.size()))
+            return false;
+        const auto& pl = state_.playlists[si.playlist];
+        if (si.item < 0 || si.item >= static_cast<int>(pl.items.size())) return false;
+        const auto& item = pl.items[si.item];
+        const auto& held = *loaded_airing_;
+        return playlist_identity(pl) == held.source_identity && item.path == held.source_path &&
+            item.movie_tmdb_id == held.source_tmdb_id && item.start == held.source_start;
+    };
+    const auto distinct = [&](const Channel& schedule, std::optional<OnAir> candidate) {
+        return skip_matching_programmes(schedule, candidate, watched, offset(now), offset);
+    };
+    const bool watched_live = live && watched(ch->items[live->index]);
+    const auto candidate = watched_live ? airing_after(*ch, *live, offset(live->ends_at), offset)
+        : (ch ? join_point(*ch, now, offset(now), offset) : std::nullopt);
+    const auto next = ch ? distinct(*ch, candidate) : std::nullopt;
+    if (next) {
+        auto oa = *next;
+        if (watched_live) oa.offset_s = 0;
+        load_on_air(channel, oa, true);
+    } else if (state_.loaded_movie) {
+        // Movie sources never enter 00's mix, so its candidate is distinct.
+        // A final/sole film parks promptly for the rest of this broadcast
+        // day. A removed movie row also gets a playable 00 fallback.
+        if (!park_on_mix(state_.loaded_movie->channel_identity,
+                         live && (watched_live || candidate) ? live->day_ends_at : 0)) {
+            // No playable 00 exists: do not let auto-tune immediately return
+            // to the exhausted film while its row is technically on air.
+            state_.tuned_channel = channel;
+            exclude_failed_channel();
+            state_.off_air_return_id.clear();
+            state_.off_air_return_after_utc = 0;
+        }
+    } else {
+        // Exhaustion is not a decoder failure, but it uses the same stable
+        // exclusion so the nothing-playing rule cannot immediately replay.
+        exclude_failed_channel();
+        const auto* mix = channel_at(0);
+        const auto fallback = mix ? distinct(*mix, join_point(*mix, now, offset(now), offset)) : std::nullopt;
+        if (fallback) {
+            load_on_air(0, *fallback, true);
+        } else {
+            if (mix) {
+                state_.tuned_channel = 0;
+                exclude_failed_channel();
+            }
+            transport_.stop();
+            stop_to_menu(state_);
+        }
+    }
 }
 
 void PlaylistPlayback::rejoin_schedule(bool programme_ended) {
@@ -689,7 +788,8 @@ void PlaylistPlayback::rejoin_schedule(bool programme_ended) {
     load_on_air(channel, *oa, /*keep_overlay=*/true);
 }
 
-bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay) {
+bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand) {
+    state_.on_demand = on_demand;
     timezone_reload_pending_ = false;  // this load uses the current zone rules
     land_on_channel(channel);
     channel_progress_ = {};
@@ -713,8 +813,8 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     state_.current_item_index = si.item;
     guide_item_ends_at_ = oa.ends_at;
     guide_item_length_ = si.length_s;
-    guide_item_end_position_ = pl.items[si.item].start + (oa.ends_at - oa.starts_at);
-    guide_day_ends_at_ = oa.day_ends_at;
+    guide_item_end_position_ = on_demand ? 0 : pl.items[si.item].start + (oa.ends_at - oa.starts_at);
+    guide_day_ends_at_ = on_demand ? 0 : oa.day_ends_at;
     LoadedAiring airing;
     airing.index = oa.index;
     airing.item = si;
@@ -815,7 +915,14 @@ void PlaylistPlayback::advance_pending_switch() {
     const PendingSwitch done = pending_;
     pending_ = PendingSwitch{};
     if (done.tune) {
-        finish_tune(done.target, done.keep_overlay);
+        if (done.selected) {
+            if (done.target != state_.tuned_channel) error_policy_ = video::PlaybackErrorPolicy{};
+            const auto& a = done.selected->airing;
+            load_on_air(done.target, OnAir{a.index, 0, a.starts_at, a.ends_at, 0},
+                        done.keep_overlay, /*on_demand=*/true);
+        } else {
+            finish_tune(done.target, done.keep_overlay);
+        }
     } else {
         finish_switch(done.target);
     }
@@ -1004,19 +1111,19 @@ void PlaylistPlayback::tick_pipeline_error() {
 }
 
 void PlaylistPlayback::tick_auto_advance() {
-    if (timezone_reload_pending_ && guide_style() && loaded_airing_ && owns_pipeline()) {
+    if (!state_.on_demand && timezone_reload_pending_ && guide_style() && loaded_airing_ && owns_pipeline()) {
         timezone_reload_pending_ = false;
         rejoin_schedule(/*programme_ended=*/false);
         return;
     }
-    const bool owns_cut = guide_style() && loaded_airing_ &&
+    const bool owns_cut = !state_.on_demand && guide_style() && loaded_airing_ &&
         !loaded_airing_->identity.empty() &&
         (loaded_airing_->identity == channel_identity(state_.tuned_channel) ||
          (state_.loaded_movie && loaded_airing_->identity == state_.loaded_movie->channel_identity));
     // Live programmes cut at the civil day boundary even if a keyframe seek
     // or pause has left the file position behind. A load records a new day
     // deadline and clears playback_started_, so this cannot fire twice.
-    // Pick Ahead must bypass this live-only rule when it is wired in.
+    // Whole selected programmes bypass both this deadline and the file cut.
     if (owns_cut && owns_pipeline() && state_.video_active &&
         state_.playback_started_ &&
         guide_day_ends_at_ > 0 && transport_.wall_now_utc() >= guide_day_ends_at_) {
@@ -1065,7 +1172,8 @@ void PlaylistPlayback::tick_auto_advance() {
                 if (guide_style()) {
                     // Live: whatever is on the tuned channel now, at its
                     // scheduled offset — drift is corrected here.
-                    rejoin_schedule();
+                    if (state_.on_demand) finish_on_demand();
+                    else rejoin_schedule();
                 } else if (state_.master_shuffle_active) {
                     // Saves the current item to the shuffle history first
                     // (virtual row excluded — see on_next()).
@@ -1161,7 +1269,7 @@ void PlaylistPlayback::tick_stall_watchdog(double now_sec) {
 
 bool PlaylistPlayback::stall_is_channels() const {
     const Channel* ch = channel_at(state_.tuned_channel);
-    return ch && !ch->items.empty() && channel_progress_.loaded && owns_pipeline();
+    return !state_.on_demand && ch && !ch->items.empty() && channel_progress_.loaded && owns_pipeline();
 }
 
 void PlaylistPlayback::on_channel_stall(const std::string& pipeline_note) {

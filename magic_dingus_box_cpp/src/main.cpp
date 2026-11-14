@@ -722,7 +722,10 @@ int main(int /* argc */, char* /* argv */[]) {
         if (movie_channels_on)
             movies = app::build_movie_playlists(movie_library.movies(), state.platform_profile.movie_channel_codecs);
 #endif
-        if (!movie_channels_on) state.off_air_return_id.clear();
+        if (!movie_channels_on) {
+            state.off_air_return_id.clear();
+            state.off_air_return_after_utc = 0;
+        }
         app::merge_movie_playlists(rows.video, std::move(movies));
         app::apply_reloaded_playlists(state, std::move(rows), snap,
             [&controller] { controller.stop(); }, movie_channels_on);
@@ -1752,7 +1755,8 @@ int main(int /* argc */, char* /* argv */[]) {
                         return app::find_playlist_by_identity(state.playlists, id);
                     });
                 if (const auto target = app::off_air_return_row(
-                        state, row, playlist_playback.channel_on_air(row), auto_tune.switch_pending)) {
+                        state, row, playlist_playback.channel_on_air(row), auto_tune.switch_pending,
+                        playlist_transport.wall_now_utc())) {
                     playlist_playback.tune(*target, /*keep_overlay=*/true);
                     auto_tune.switch_pending =
                         playlist_playback.switch_pending() || state.is_switching_playlist;
@@ -1933,6 +1937,7 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             guide_inputs.add(static_cast<uint64_t>(state.display_settings.mode));
             guide_inputs.add(channels_generation);
+            guide_inputs.add(static_cast<uint64_t>(state.on_demand));
             guide_inputs.add(static_cast<uint64_t>(state.playlists.size()));
             guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(guide_tuned)));
             guide_inputs.add(static_cast<uint64_t>(state.guide_cursor.row));
@@ -2194,6 +2199,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 guide_in.cursor = state.guide_cursor;
                 guide_in.picture_available = state.picture_control_available;
                 guide_in.picture_crop = state.picture_crop;
+                guide_in.on_demand = state.on_demand;
                 guide_in.source_aspect = guide_source_aspect;
                 guide_in.now_utc = guide_now_utc;
                 guide_in.utc_offset_s = guide_offset_s;

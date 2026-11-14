@@ -29,6 +29,8 @@ enum class MenuStyle {
     ChannelGuide
 };
 
+enum class GuideMode { Live, PickAhead };
+
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
 // ALSA `amixer numid=3` method — see app/audio_router.h. Sink names are
 // resolved at runtime against the sinks that actually exist on this board
@@ -306,8 +308,10 @@ public:
     // Channel Guide: the channel last tuned, as a playlist_identity() string
     // ("shuffle" = channel 00, "" = none). Persisted as playback.last_channel.
     std::string last_channel_id;
-    // Overnight parking destination; transient, never persisted.
+    bool on_demand = false;  // selected whole programme; render-thread only
+    // Overnight parking destination and early-EOF return suppression; transient.
     std::string off_air_return_id;
+    double off_air_return_after_utc = 0;
     // Channel Guide, written by PlaylistPlayback (render thread only):
     // tuned_channel: the channel (= UI row) on screen, or waiting for its
     //   next item after a failed one; -1 = none. 00 stays 00 while the
@@ -510,6 +514,7 @@ public:
     // Display settings for CRT effects and display mode
     struct DisplaySettings {
         DisplayMode mode = DisplayMode::CRT_NATIVE;
+        GuideMode guide_mode = GuideMode::Live;
         MenuStyle menu_style = MenuStyle::List;  // display.menu_style
         int bezel_index = 0;  // Index into bezels array (0 = procedural/none)
         

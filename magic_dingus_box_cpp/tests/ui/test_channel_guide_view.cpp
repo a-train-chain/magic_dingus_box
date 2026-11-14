@@ -887,3 +887,58 @@ TEST_CASE("off-air row shows the next six AM in its own zone and fits CRT", "[ch
         CHECK(v.grid.rows[1].off_air_text == "OFF THE AIR · BACK AT 6:00 AM");
     }
 }
+
+TEST_CASE("on-demand eyebrow belongs only to the tuned panel", "[channel_guide_view]") {
+    Fixture f;
+    for (bool crt : {false, true}) {
+        auto in = f.in(crt); in.on_demand = true;
+        CHECK(ui::layout_channel_guide(in).panel.eyebrow == "ON DEMAND");
+        in.cursor.row = 2;
+        CHECK(ui::layout_channel_guide(in).panel.eyebrow == "ON CH 02 NOW");
+    }
+}
+
+TEST_CASE("a selected movie panel follows its picture through the overnight gap", "[channel_guide_view][on_demand]") {
+    Fixture f; f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+    app::PlaylistItem retained; retained.title = "Chosen film"; retained.artist = "Director";
+    retained.start = 60; retained.end = 7260;
+    for (bool crt : {false, true}) {
+        auto in = f.in(crt); in.now_utc = E + 86400 + 2 * 3600;
+        in.on_demand = true; in.tuned = 1; in.cursor.row = 1;
+        in.playing.retained_item = &retained; in.playing.position_s = 3660; in.playing.duration_s = 8000;
+        auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.eyebrow == "ON DEMAND"); CHECK(v.panel.item_title == "Chosen film");
+        CHECK(v.panel.progress == 0.5); CHECK(v.panel.start_hm == "1:00"); CHECK(v.panel.end_hm == "3:00");
+        CHECK(v.grid.rows[1].off_air); CHECK(v.grid.rows[1].cells.empty());
+        in.cursor.row = 2; v = ui::layout_channel_guide(in);
+        CHECK(v.panel.eyebrow == "ON CH 02 NOW"); CHECK(v.panel.item_title != "Chosen film");
+        CHECK(v.panel.bottom == ui::GuideBottom::PressToWatch);
+    }
+}
+
+TEST_CASE("on-demand NEXT does not promise an adjacent repeat or an exhausted programme", "[channel_guide_view][on_demand]") {
+    Fixture f;
+    SECTION("adjacent repeat across shuffled passes") {
+        f.channels[0].order = app::LineupOrder::Shuffle;
+        const auto airings = app::lineup(f.channels[0], E, E + 86400, 0);
+        auto seam = airings.end();
+        for (auto it = airings.begin(); it + 1 != airings.end(); ++it)
+            if (it->index == (it + 1)->index) { seam = it; break; }
+        REQUIRE(seam != airings.end());
+        const auto watched = f.channels[0].items[seam->index];
+        auto in = f.in(); in.on_demand = true; in.now_utc = seam->starts_at + 5;
+        in.playing.playlist = watched.playlist; in.playing.item = watched.item;
+        in.playing.position_s = 590; in.playing.duration_s = 600;
+        const auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.item_title == f.playlists[0].items[watched.item].title);
+        REQUIRE(v.panel.show_next);
+        CHECK(v.panel.next_title != v.panel.item_title);
+    }
+    SECTION("one scheduled item has no distinct NEXT") {
+        f.channels[1].items.resize(1); f.channels[1].total_s = 600;
+        auto in = f.in(); in.tuned = 1; in.cursor.row = 1; in.on_demand = true;
+        in.playing.playlist = 1; in.playing.item = 0; in.playing.position_s = 590; in.playing.duration_s = 600;
+        const auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.item_title == "Show 1-0"); CHECK(v.panel.next_title.empty()); CHECK_FALSE(v.panel.show_next);
+    }
+}

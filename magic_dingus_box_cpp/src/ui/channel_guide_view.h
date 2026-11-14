@@ -83,6 +83,7 @@ struct GuidePlaying {
 };
 
 struct GuideViewInput {
+    bool on_demand = false;
     bool crt = false;
     const std::vector<app::Channel>* channels = nullptr;
     const std::vector<app::Playlist>* playlists = nullptr;
@@ -470,14 +471,49 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     const bool on_tuned = tuned_valid && pc == in.tuned;
     GuidePanel& p = v.panel;
     p.ch_text = pc == 0 ? "MIX" : d::two_digits(pc);
-    p.eyebrow = on_tuned ? "NOW PLAYING" : "ON CH " + d::two_digits(pc) + " NOW";
+    p.eyebrow = on_tuned ? (in.on_demand ? "ON DEMAND" : "NOW PLAYING") : "ON CH " + d::two_digits(pc) + " NOW";
     p.eyebrow_tone = on_tuned ? GuideTone::Green : GuideTone::Gold;
     p.clock_hm = d::hm(local);
     p.clock_ap = d::clock_of(local).ap;
     p.playlist_title = d::playlist_title(in, pc);
     if (pc >= 0 && pc < n_channels && !channels[pc].items.empty()) {
         const app::Channel& ch = channels[pc];
-        if (auto on = app::on_air(ch, in.now_utc, in.utc_offset_s, in.utc_offset_at)) {
+        const auto describe_playing = [&](const d::PlayingSpan& playing) {
+            const double started = in.now_utc - playing.played_s;
+            const double ends = started + playing.length_s;
+            p.item_title = playing.item->title;
+            p.artist = crt ? "" : playing.item->artist;
+            p.start_hm = d::hm(local_at(started));
+            p.end_hm = d::hm(local_at(ends));
+            p.progress = std::clamp(playing.played_s / playing.length_s, 0.0, 1.0);
+            // Next: what the channel joins when it ends — never the same
+            // item again (the boundary's rule, app::boundary_join).
+            auto nx = app::join_point(ch, ends, in.utc_offset_s, in.utc_offset_at);
+            const auto watched = [&](const app::ScheduledItem& si) {
+                if (!in.playing.retained_item)
+                    return si.playlist == playing.at.playlist && si.item == playing.at.item;
+                const auto* item = d::item_of(in, si);
+                return item && item->path == playing.item->path &&
+                    item->movie_tmdb_id == playing.item->movie_tmdb_id && item->start == playing.item->start;
+            };
+            if (in.on_demand) {
+                nx = app::skip_matching_programmes(ch, nx, watched, in.utc_offset_s, in.utc_offset_at);
+            } else if (nx && nx->index >= 0 &&
+                       ch.items[nx->index].playlist == playing.at.playlist &&
+                       ch.items[nx->index].item == playing.at.item) {
+                nx = app::airing_after(ch, *nx, in.utc_offset_s, in.utc_offset_at);
+            }
+            if (nx) {
+                p.next_hm = d::hm(local_at(ends));
+                p.next_title = d::title_of(in, ch.items[nx->index]);
+            }
+        };
+        const auto selected = on_tuned && in.on_demand ? d::playing_span(in, ch) : std::nullopt;
+        if (selected) {
+            // The picture owns this panel, including when the real schedule
+            // has closed overnight. Rows below always keep the live schedule.
+            describe_playing(*selected);
+        } else if (auto on = app::on_air(ch, in.now_utc, in.utc_offset_s, in.utc_offset_at)) {
             // The airing described from the schedule: the on-air one — or,
             // in its last kMinJoinLeftS, the next one when that is what the
             // tuned channel plays (a boundary or a tune loads it then, from
@@ -510,26 +546,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 span->at.playlist == si.playlist && span->at.item == si.item;
             const auto playing = plays_airing ? std::nullopt : span;
             if (playing) {
-                const double started = in.now_utc - playing->played_s;
-                const double ends = started + playing->length_s;
-                p.item_title = playing->item->title;
-                p.artist = crt ? "" : playing->item->artist;
-                p.start_hm = d::hm(local_at(started));
-                p.end_hm = d::hm(local_at(ends));
-                p.progress = std::clamp(playing->played_s / playing->length_s, 0.0, 1.0);
-                // Next: what the channel joins when it ends — never the same
-                // item again (the boundary's rule, app::boundary_join).
-                if (auto nx = app::join_point(ch, ends, in.utc_offset_s, in.utc_offset_at)) {
-                    const app::ScheduledItem* ns = &ch.items[nx->index];
-                    if (ns->playlist == playing->at.playlist && ns->item == playing->at.item) {
-                        const auto after = app::airing_after(ch, *nx, in.utc_offset_s, in.utc_offset_at);
-                        ns = after ? &ch.items[after->index] : nullptr;
-                    }
-                    if (ns) {
-                        p.next_hm = d::hm(local_at(ends));
-                        p.next_title = d::title_of(in, *ns);
-                    }
-                }
+                describe_playing(*playing);
             } else {
                 const auto* it = d::item_of(in, si);
                 p.item_title = it ? it->title : "";

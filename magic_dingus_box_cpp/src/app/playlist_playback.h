@@ -185,7 +185,10 @@ public:
     // tzset/invalidate hook. Rephase once at the next owned live frame;
     // a pending tune already reads the new rules when its load runs.
     // Task9 selected whole programmes must defer/bypass this live rule.
-    void on_timezone_reload() { timezone_reload_pending_ = true; }
+    void on_timezone_reload() {
+        timezone_reload_pending_ = true;
+        state_.off_air_return_after_utc = 0;  // old zone deadline cannot delay a new-zone return
+    }
     // Tune `channel` live. The playlist switch above, unchanged — stop now,
     // then the settle / re-poll wait per frame, then the load — except that
     // the load joins whatever is on air when it RUNS (on_air at
@@ -200,6 +203,9 @@ public:
     // Dropped (like SELECT) in List style, for a channel with no schedule,
     // during the intro, and while a switch is pending or in flight.
     void tune(int channel, bool keep_overlay);
+    // Select a whole programme, including tomorrow's lineup. Captures media
+    // identity now; settle/reloads may remap it or cancel, never replace it.
+    void play_on_demand(int channel, const OnAir& airing);
     // Channel up (+1) / down (-1): the next channel with a schedule,
     // wrapping (from nothing tuned, up starts at 00 and down at the last
     // channel). The overlay stays as it is — as it is when the load runs,
@@ -302,6 +308,18 @@ private:
     const std::string& playlist_directory_;
     const std::vector<Channel>* channels_ = nullptr;
 
+    struct ChannelAiring {
+        int channel = -1;
+        LoadedAiring airing;
+        std::string identity;
+        // Stable media facts distinguish row movement from a different film
+        // taking over the same numeric source/slot coordinates.
+        std::string source_identity;
+        std::string source_path;
+        int source_tmdb_id = 0;
+        double source_start = 0;
+    };
+
     // A mid-playback switch between its stop() and its load.
     enum class SwitchPhase { Idle, Settling, Polling };
     struct PendingSwitch {
@@ -312,6 +330,7 @@ private:
         std::string identity;       // pending channel survives row renumbering
         bool tune = false;          // a Channel Guide tune, not a SELECT
         bool keep_overlay = false;  // tune(): leave the overlay as it is
+        std::optional<ChannelAiring> selected;  // whole programme, anchored by media identity
     };
     PendingSwitch pending_;
     // The player's stream generation when the switching flag was raised.
@@ -343,11 +362,13 @@ private:
     // True if the channel is in its overnight gap; load 00 immediately,
     // preserving both the remembered movie identity and overlay state.
     bool park_off_air(int channel);
+    bool park_on_mix(const std::string& return_id, double not_before = 0);
+    void finish_on_demand();
     // tuned_channel + last_channel_id, set when a tune's load runs.
     void land_on_channel(int channel);
     // Load channel `channel`'s scheduled item `oa` at its offset; true when
     // the load returned OK.
-    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay);
+    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand = false);
     bool timezone_reload_pending_ = false;
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
     // the channel picks up again from there — but no later than its length
@@ -363,17 +384,6 @@ private:
     // one boundary when a rebuild changed the media or re-phased its slot.
     // Row renumbering alone remaps by channel/source/media identity; the
     // original airing timestamps and cut deadlines stay unchanged.
-    struct ChannelAiring {
-        int channel = -1;
-        LoadedAiring airing;
-        std::string identity;
-        // Stable media facts distinguish row movement from a different film
-        // taking over the same numeric source/slot coordinates.
-        std::string source_identity;
-        std::string source_path;
-        int source_tmdb_id = 0;
-        double source_start = 0;
-    };
     void reanchor_airing(std::optional<ChannelAiring>& held);
     void exclude_failed_channel();
     std::optional<ChannelAiring> loaded_airing_;

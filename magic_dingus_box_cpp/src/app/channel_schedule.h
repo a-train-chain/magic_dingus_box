@@ -107,6 +107,23 @@ inline constexpr double kMinJoinLeftS = 2.0;
 std::optional<OnAir> airing_after(const Channel& channel, const OnAir& a,
                                     int utc_offset_s, const UtcOffsetAt& utc_offset_at = {});
 
+// Skip a programme already watched, including a repeat across shuffled
+// passes. At most one complete following pass; exhausted channels return
+// no candidate. Playback and the on-demand panel share this bounded rule.
+template <typename Matches>
+std::optional<OnAir> skip_matching_programmes(const Channel& channel,
+                                               std::optional<OnAir> candidate,
+                                               Matches matches, int utc_offset_s,
+                                               const UtcOffsetAt& utc_offset_at = {}) {
+    for (size_t n = 0; candidate && n <= channel.items.size(); ++n) {
+        if (!matches(channel.items[candidate->index])) return candidate;
+        const int offset = utc_offset_at ? utc_offset_at(candidate->ends_at) : utc_offset_s;
+        candidate = airing_after(channel, *candidate, offset, utc_offset_at);
+        if (candidate) candidate->offset_s = 0;
+    }
+    return std::nullopt;
+}
+
 // What a tune joins on `channel` at `now_utc`: the on-air item at its
 // scheduled offset, or — with under kMinJoinLeftS of it left — the item after
 // it, from its start. nullopt: nothing is scheduled. The ONE join rule: the

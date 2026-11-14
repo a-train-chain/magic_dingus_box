@@ -543,3 +543,32 @@ TEST_CASE("settings: a reload with nothing outstanding leaves the restored "
     CHECK_FALSE(SettingsPersistence::save_pending());
     CHECK(sb.read(sb.file) == restored);
 }
+
+TEST_CASE("settings: Guide Mode survives saves and unknown values return Live", "[settings]") {
+    SettingsSandbox sb;
+    AppState s;
+    REQUIRE(s.display_settings.guide_mode == app::GuideMode::Live);
+    s.display_settings.guide_mode = app::GuideMode::PickAhead;
+    SettingsPersistence::save_settings(s); REQUIRE(saved_to_disk());
+    AppState loaded; SettingsPersistence::load_settings(loaded);
+    CHECK(sb.read(sb.file).find("pick_ahead") != std::string::npos);
+    CHECK(loaded.display_settings.guide_mode == app::GuideMode::PickAhead);
+    sb.write(R"({"display":{"guide_mode":"unrecognized"}})");
+    SettingsPersistence::load_settings(loaded);
+    CHECK(loaded.display_settings.guide_mode == app::GuideMode::Live);
+    s.display_settings.guide_mode = app::GuideMode::Live;
+    SettingsPersistence::save_settings(s); REQUIRE(saved_to_disk());
+    SettingsPersistence::load_settings(loaded);
+    CHECK(loaded.display_settings.guide_mode == app::GuideMode::Live);
+}
+
+TEST_CASE("settings: non-string Guide Modes use Live without rejecting other settings", "[settings]") {
+    SettingsSandbox sb;
+    for (const std::string raw : {"null", "true", "42", "[]", "{}"}) {
+        sb.write("{\"display\":{\"guide_mode\":" + raw + ",\"menu_style\":\"channel_guide\"}}");
+        AppState s; s.display_settings.guide_mode = app::GuideMode::PickAhead;
+        REQUIRE(SettingsPersistence::load_settings(s));
+        CHECK(s.display_settings.guide_mode == app::GuideMode::Live);
+        CHECK(s.display_settings.menu_style == app::MenuStyle::ChannelGuide);
+    }
+}
