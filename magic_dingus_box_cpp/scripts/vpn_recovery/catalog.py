@@ -53,7 +53,13 @@ class FetchResponse:
 
 
 def _finite(value):
-    return type(value) in (int, float) and math.isfinite(value)
+    """Reject nonnumeric JSON and integers too large for finite time arithmetic."""
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _json(raw):

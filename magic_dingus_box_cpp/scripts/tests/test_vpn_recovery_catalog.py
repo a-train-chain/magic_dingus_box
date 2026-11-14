@@ -187,6 +187,34 @@ class CatalogTests(unittest.TestCase):
         (self.paths.state/'catalog.json').write_text('{"next_due": 999999999999999999}')
         self.assertEqual(self.store.refresh(NOW)['status'], 'updated')
 
+    def test_oversized_schedule_timestamps_do_not_strand_refresh(self):
+        self.paths.state.mkdir()
+        for field in ('checked_at', 'next_due'):
+            for value in (10**400, -(10**400)):
+                with self.subTest(field=field, value=value):
+                    state = {'version': 1, 'checked_at': NOW,
+                             'next_due': NOW+100, 'downloaded_identity': 'a'*64}
+                    state[field] = value
+                    (self.paths.state/'catalog.json').write_text(json.dumps(state))
+                    self.assertIn(self.store.refresh(NOW)['status'], ('updated', 'not_modified'))
+
+    def test_oversized_history_timestamps_are_discarded(self):
+        valid = {'hostname': 'node-ca-59.protonvpn.net',
+                 'endpoint_ip': '84.20.16.29', 'failed_at': NOW-10}
+        bad = [dict(valid, failed_at=value) for value in (10**400, -(10**400))]
+        self.assertEqual(bounded_history([valid, *bad], NOW), [valid])
+
+    def test_invalid_json_clock_values_are_rejected_safely(self):
+        before = self.file.read_bytes()
+        for value in (None, True, False, '0', {}, [], 10**400, -(10**400)):
+            with self.subTest(value=value):
+                self.assertEqual(self.store.refresh(value), {'status': 'failed', 'reason': 'invalid_clock'})
+                self.assertEqual(bounded_history([], value), [])
+                with self.assertRaises(ValueError):
+                    validate_catalog(self.provider, value)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.file.read_bytes(), before)
+
     def test_nested_corrupt_state_and_catalog_fail_safely(self):
         self.paths.state.mkdir()
         (self.paths.state/'catalog.json').write_text('['*2000+'0'+']'*2000)
