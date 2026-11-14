@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without cabinet art, preserve the whole picture by default, and remember
   a per-film fill choice. The guide window always shows the whole picture.
 
+### Changed
+- **One press to watch in Pick Ahead.** Tap the knob / Select to watch the
+  highlighted channel. Hold for 500 ms to browse programmes without tuning
+  on release; from full-screen playback, a tap opens the guide and a hold
+  opens Pick Ahead on the tuned channel when eligible. Phone/pad arrows
+  still enter and browse directly, and Back returns to channel rows.
+- **A short, shared guide timeline.** Modern TV keeps a 20-minute window
+  and CRT keeps 15 minutes, including while browsing long films. The window
+  pans with five-minute ticks; films clip at its edges with continuation
+  chevrons, keeping playlist clips readable. The 1–6 AM movie-channel gap
+  is labeled OFF AIR with its return time where space allows, and the last
+  film's NEXT points to the next morning's film. Live films still stop at
+  1 AM; manually chosen programmes finish whole.
+
 ### Fixed
 - **Playback quiet mode preserves pause ownership.** Movie channels hold
   the same quiet-mode claim as Movies and games, with a 120-second grace
