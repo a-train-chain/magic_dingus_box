@@ -136,6 +136,8 @@ struct GuideCell {
     bool show_text = false, show_artist = false;
     bool ring = false;  // the cursor row's picked cell, or on-now outside a row
     GuideTone tone = GuideTone::Fg;
+    bool off_air = false;  // an untunable closure interval, painting only
+    bool continues_before = false, continues_after = false;
     bool bold = false;  // the on-now cell
 };
 
@@ -191,9 +193,9 @@ namespace guide_detail {
 
 constexpr double kMonoAdvanceEm = 0.602;          // DejaVu Sans Mono's advance, per px
 constexpr double kCharAdvance = kMonoAdvanceEm * 14.0;  // ... at 14 px
+constexpr int kContinuationW = 10;           // reserved at each clipped edge
 constexpr int kCellPadX = 10;                  // per side
 constexpr int kMinTextW = 30, kMinArtistW = 64;
-constexpr const char* kArrow = "\xE2\x97\x82 ";    // "◂ "
 constexpr const char* kEllipsis = "\xE2\x80\xA6";  // "…"
 
 inline std::size_t utf8_len(const std::string& s) {
@@ -228,7 +230,7 @@ inline std::string fit(const std::string& s, int chars) {
 // title fits to "…" alone, which reads as a stray dash on the TV: such a
 // cell shows no text.
 inline bool has_text_chars(std::string_view s) {
-    constexpr std::string_view kArrowGlyph = "\xE2\x97\x82";  // "◂" (kArrow without its space)
+    constexpr std::string_view kArrowGlyph = "\xE2\x97\x82";  // "◂"
     if (s.substr(0, kArrowGlyph.size()) == kArrowGlyph) s.remove_prefix(kArrowGlyph.size());
     while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
     return !s.empty() && s != std::string_view(kEllipsis);
@@ -370,7 +372,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     v.grid.column_w = crt ? 132 : 196;
     v.grid.rect = GuideRect{crt ? 24 : 40, crt ? 206 : 352, grid_w,
                             v.grid.header_h + app::kGuideVisibleRows * v.grid.row_h};
-    double window_s = crt ? 900.0 : 1200.0;
+    const double window_s = crt ? 900.0 : 1200.0;
     const int col3 = v.grid.column_w + 3;
 
     // Time: local = utc + offset; the window starts on a 5-minute floor.
@@ -390,17 +392,17 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
         if (a && a->starts_at == *in.cursor.pick_at) future_pick = a;
     }
     if (future_pick) {
-        // A future feature-length film must fit whole at either canvas.
-        // Live/on-now keeps the exact original 15/20-minute presentation.
-        window_s = std::max(window_s, future_pick->ends_at - future_pick->starts_at);
-        win_start = std::max(win_start, future_pick->ends_at - window_s);
+        // Pan to the programme's local five-minute floor; every row keeps
+        // the same short scale, even for a feature-length film.
+        const double start = future_pick->starts_at;
+        win_start = std::floor(local_at(start) / 300.0) * 300.0 - offset_at(start);
     }
     const double pps = (grid_w - col3) / window_s;
     const double win_end = win_start + window_s;
     auto xpos = [&](double utc) { return col3 + (utc - win_start) * pps; };
 
     v.grid.date_label = d::date_label(future_pick ? local_at(win_start) : local);
-    const double tick_s = future_pick ? std::max(300.0, std::ceil(window_s / 4.0 / 300.0) * 300.0) : 300.0;
+    constexpr double tick_s = 300.0;
     for (int k = 0; k * tick_s < window_s; ++k) {
         GuideTick t;
         t.x = static_cast<int>(std::lround(xpos(win_start + k * tick_s)));
@@ -448,6 +450,29 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
         if (row.no_schedule || row.off_air) {
             row.name_tone = GuideTone::Dim;
         } else {
+            // Closures are painting facts, never programmes or tune targets.
+            const auto add_gap = [&](double from) {
+                const auto back = app::back_on_air_at(ch, from, in.utc_offset_s, in.utc_offset_at);
+                if (!back) return;
+                const double s = std::max(from, win_start);
+                const double e = std::min(*back, win_end);
+                if (e <= s) return;
+                GuideCell c;
+                c.x = static_cast<int>(std::lround(xpos(s)));
+                c.w = static_cast<int>(std::lround(xpos(e))) - c.x - 3;
+                if (c.w < 1) return;
+                c.off_air = true;
+                c.tone = GuideTone::Dim;
+                const std::string copy = "OFF AIR · BACK AT " + d::hm(local_at(*back)) + " " +
+                                         d::clock_of(local_at(*back)).ap;
+                const int chars = d::chars_for_width(c.w);
+                c.label = d::utf8_len(copy) <= static_cast<std::size_t>(chars) ? copy : "OFF AIR";
+                c.show_text = chars >= static_cast<int>(d::utf8_len(c.label));
+                row.cells.push_back(std::move(c));
+            };
+            // A different row's selected programme can pan into this row's
+            // closure, with no preceding airing visible in the viewport.
+            add_gap(win_start);
             for (const app::OnAir& a : app::lineup(ch, win_start, win_end, in.utc_offset_s, in.utc_offset_at)) {
                 if (a.index < 0 || a.index >= static_cast<int>(ch.items.size())) continue;
                 const app::ScheduledItem& si = ch.items[a.index];
@@ -458,15 +483,18 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 GuideCell c;
                 c.x = left;
                 c.w = right - left - 3;
-                if (c.w < 1) continue;
-                const bool began_before = a.starts_at < win_start;
+                if (c.w < 1) {
+                    add_gap(a.ends_at);
+                    continue;
+                }
+                c.continues_before = a.starts_at < win_start;
+                c.continues_after = a.ends_at > win_end;
+                const int marker_w = d::kContinuationW * (c.continues_before + c.continues_after);
                 const bool now_cell = in.now_utc >= a.starts_at && in.now_utc < a.ends_at;
                 c.show_text = c.w >= d::kMinTextW;
                 c.show_artist = !crt && c.w >= d::kMinArtistW;
-                const int chars = d::chars_for_width(c.w);
-                c.label = d::fit((began_before ? std::string(d::kArrow) : std::string()) +
-                                     d::title_of(in, si),
-                                 chars);
+                const int chars = d::chars_for_width(c.w - marker_w);
+                c.label = d::fit(d::title_of(in, si), chars);
                 if (!crt) {
                     const auto* it = d::item_of(in, si);
                     c.artist = d::fit(it ? it->artist : "", chars);
@@ -478,6 +506,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 c.ring = row.cursor_bar && (future_pick ? a.starts_at == future_pick->starts_at : now_cell);
                 c.tone = now_cell && is_tuned ? GuideTone::Green : GuideTone::Fg;
                 row.cells.push_back(std::move(c));
+                add_gap(a.ends_at);
             }
         }
         v.grid.rows.push_back(std::move(row));
@@ -495,6 +524,14 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
     p.playlist_title = d::playlist_title(in, pc);
     if (pc >= 0 && pc < n_channels && !channels[pc].items.empty()) {
         const app::Channel& ch = channels[pc];
+        const auto at_next_opening = [&](double utc) -> std::optional<app::OnAir> {
+            const auto back = app::back_on_air_at(ch, utc, in.utc_offset_s, in.utc_offset_at);
+            return back ? app::on_air(ch, *back, in.utc_offset_s, in.utc_offset_at) : std::nullopt;
+        };
+        const auto next_airing = [&](const app::OnAir& a) {
+            const auto nx = app::airing_after(ch, a, in.utc_offset_s, in.utc_offset_at);
+            return nx ? nx : at_next_opening(a.ends_at);
+        };
         const auto describe_playing = [&](const d::PlayingSpan& playing) {
             const double started = in.now_utc - playing.played_s;
             double ends = started + playing.length_s;
@@ -509,6 +546,8 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
             // Next: what the channel joins when it ends — never the same
             // item again (the boundary's rule, app::boundary_join).
             auto nx = app::join_point(ch, ends, in.utc_offset_s, in.utc_offset_at);
+            const bool ends_off_air = !nx;
+            if (!nx) nx = at_next_opening(ends);
             const auto watched = [&](const app::ScheduledItem& si) {
                 if (!in.playing.retained_item)
                     return si.playlist == playing.at.playlist && si.item == playing.at.item;
@@ -524,7 +563,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 nx = app::airing_after(ch, *nx, in.utc_offset_s, in.utc_offset_at);
             }
             if (nx) {
-                p.next_hm = d::hm(local_at(ends));
+                p.next_hm = d::hm(local_at(ends_off_air ? nx->starts_at : ends));
                 p.next_title = d::title_of(in, ch.items[nx->index]);
             }
         };
@@ -538,7 +577,7 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
             p.artist = !crt && item ? item->artist : "";
             p.start_hm = d::hm(local_at(a.starts_at));
             p.end_hm = d::hm(local_at(a.ends_at));
-            if (const auto nx = app::airing_after(ch, a, in.utc_offset_s, in.utc_offset_at)) {
+            if (const auto nx = next_airing(a)) {
                 p.next_hm = d::hm(local_at(nx->starts_at));
                 p.next_title = d::title_of(in, ch.items[nx->index]);
             }
@@ -610,8 +649,8 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
                 }
                 p.start_hm = d::hm(local_at(starts));
                 p.end_hm = d::hm(local_at(ends));
-                if (const auto nx = app::airing_after(ch, *a, in.utc_offset_s, in.utc_offset_at)) {
-                    p.next_hm = d::hm(local_at(ends));
+                if (const auto nx = next_airing(*a)) {
+                    p.next_hm = d::hm(local_at(nx->starts_at > a->ends_at ? nx->starts_at : ends));
                     p.next_title = d::title_of(in, ch.items[nx->index]);
                 }
             }
@@ -652,7 +691,14 @@ inline GuideView layout_channel_guide(const GuideViewInput& in) {
 
     v.hints.push_back({"TURN", in.pick_ahead && in.cursor.pick_at ? "programmes" : "channels"});
     v.hints.push_back({"PRESS", "watch"});
-    if (!crt) v.hints.push_back({"PRESS", "on green to hide guide"});
+    if (in.pick_ahead) {
+        // HOLD is useful on channel rows; once browsing, BACK returns to
+        // them. Three compact hints keep clear of the logo on CRT too.
+        v.hints.push_back(in.cursor.pick_at ? GuideHint{"BACK", "channels"}
+                                              : GuideHint{"HOLD", "pick ahead"});
+    } else if (!crt) {
+        v.hints.push_back({"PRESS", "on green to hide guide"});
+    }
     return v;
 }
 

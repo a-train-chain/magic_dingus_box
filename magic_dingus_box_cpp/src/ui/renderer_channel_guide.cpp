@@ -521,9 +521,22 @@ void Renderer::GuidePainter::grid() {
             const float cw = static_cast<float>(c.w);
             fill(cx, ry, cw, rh, t_.bg_lift);
             if (c.ring) frame(cx, ry, cw, rh, 2.0f, t_.accent);
-            if (!c.show_text) continue;
             const Color& ink = tone(c.tone);
-            const float tx = cx + m_.cell_pad;
+            // Small edge chevrons remain visible even when no title fits.
+            // The view reserves their space before fitting either text line.
+            const float chevron_w = std::min(3.0f, (cw - 2.0f) / 4.0f);
+            const float cy = ry + rh / 2.0f;
+            const auto chevron = [&](float tip, float inner) {
+                r_.draw_line(inner, cy - 3.0f, tip, cy, 1.0f, ink, alpha_);
+                r_.draw_line(tip, cy, inner, cy + 3.0f, 1.0f, ink, alpha_);
+            };
+            if (chevron_w > 0.0f && c.continues_before)
+                chevron(cx + 2.0f, cx + 2.0f + chevron_w);
+            if (chevron_w > 0.0f && c.continues_after)
+                chevron(cx + cw - 2.0f, cx + cw - 2.0f - chevron_w);
+            if (!c.show_text) continue;
+            const float tx = cx + m_.cell_pad +
+                             (c.continues_before ? guide_detail::kContinuationW : 0);
             float b1 = baseline_in(ry, rh, gp::kBody, false);
             if (c.show_artist && !c.artist.empty()) {
                 // Title over artist, the pair centred in the cell. Both at the

@@ -92,7 +92,7 @@ TEST_CASE("TV geometry, ticks, now line and cells", "[guide_view][channel_guide_
     CHECK(v.grid.date_label == "THU JAN 1");
 }
 
-TEST_CASE("a programme that began before the window starts with an arrow", "[guide_view][channel_guide_view]") {
+TEST_CASE("a programme that began before the window has a separate continuation marker", "[guide_view][channel_guide_view]") {
     Fixture f;
     f.channels[1].items.clear();
     f.channels[1].items.push_back(ScheduledItem{1, 0, 8 * 3600.0 + 5 * 60});  // ends 8:05
@@ -101,7 +101,8 @@ TEST_CASE("a programme that began before the window starts with an arrow", "[gui
     auto v = ui::layout_channel_guide(f.in());
     auto& c = v.grid.rows[1].cells;
     REQUIRE(!c.empty());
-    CHECK(c[0].label.rfind("\xE2\x97\x82 ", 0) == 0);
+    CHECK(c[0].continues_before);
+    CHECK(c[0].label == "Show 1-1");
     CHECK(c[0].x == 199);
 }
 
@@ -129,7 +130,7 @@ TEST_CASE("narrow cells drop text then artist", "[guide_view][channel_guide_view
 TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_view][channel_guide_view]") {
     // Just over the 30 px text threshold a label truncates to "…" alone,
     // which reads as a stray dash on the TV (Pi 5 test, 2026-11-13); with the
-    // began-before arrow, "◂…" / "◂ …". A label keeps its text only when at
+    // reserved continuation marker. A label keeps its text only when at
     // least one character of the title fits.
     Fixture f;
     const double base = 8 * 3600.0 + 10 * 60;  // the window starts here
@@ -138,7 +139,7 @@ TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_
                            ScheduledItem{1, 2, 76}, ScheduledItem{1, 3, 600}};
     f.channels[1].total_s = base + 62 + 76 + 600;
     // 02-04: a programme that began 30 s before the window, its cell 40, 48
-    // and 56 px wide (2, 3, 4 chars with the arrow).
+    // and 56 px wide (1, 2, 3 chars after reserving the marker).
     const double lens[] = {76, 90, 104};
     for (int n = 2; n <= 4; ++n) {
         const double l = lens[n - 2];
@@ -155,16 +156,16 @@ TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_
     CHECK(r1[1].w == 40);
     CHECK(r1[1].label == "S\xE2\x80\xA6");  // "S…": a letter of the title
     CHECK(r1[1].show_text);
-    const char* arrow_labels[] = {"\xE2\x97\x82\xE2\x80\xA6", "\xE2\x97\x82 \xE2\x80\xA6",
-                                  "\xE2\x97\x82 S\xE2\x80\xA6"};
+    const char* labels[] = {"…", "S…", "Sh…"};
     const int widths[] = {40, 48, 56};
     for (int n = 2; n <= 4; ++n) {
         const auto& c = v.grid.rows[n].cells;
         REQUIRE_FALSE(c.empty());
         INFO("channel " << n);
         CHECK(c[0].w == widths[n - 2]);
-        CHECK(c[0].label == arrow_labels[n - 2]);
-        CHECK(c[0].show_text == (n == 4));
+        CHECK(c[0].continues_before);
+        CHECK(c[0].label == labels[n - 2]);
+        CHECK(c[0].show_text == (n >= 3));
     }
 }
 
@@ -960,10 +961,10 @@ TEST_CASE("selected regular panel uses retained title and trim after source repl
 }
 
 
-TEST_CASE("Pick Ahead rings and fully reveals a programme six hours ahead", "[channel_guide_view][pick_ahead]") {
+TEST_CASE("Pick Ahead rings a programme six hours ahead on the fixed timeline", "[channel_guide_view][pick_ahead]") {
     Fixture f;
     for (bool crt : {false, true}) {
-        for (double length : {600.0, 7200.0}) {
+        for (double length : {600.0, 10800.0}) {
             INFO("CRT " << crt << " length " << length);
             auto in = f.in(crt); in.pick_ahead = true;
             in.cursor.row = 1; in.tuned = 1;
@@ -983,6 +984,8 @@ TEST_CASE("Pick Ahead rings and fully reveals a programme six hours ahead", "[ch
                 CHECK(c.x + c.w <= v.grid.rect.w);
                 CHECK(c.label.find("Show 1-1") != std::string::npos);
                 CHECK(c.label.find("◂") == std::string::npos);
+                CHECK_FALSE(c.continues_before);
+                CHECK(c.continues_after == (length > 600));
             }
             CHECK(rings == 1);
             CHECK(v.panel.item_title == "Show 1-1");
@@ -990,7 +993,15 @@ TEST_CASE("Pick Ahead rings and fully reveals a programme six hours ahead", "[ch
             CHECK(v.panel.eyebrow == "ON DEMAND");
             CHECK(v.panel.bottom == ui::GuideBottom::PressToWatch);
             CHECK(v.grid.now_x < v.grid.column_w);
-            CHECK(v.grid.ticks.size() <= 4);
+            CHECK(v.grid.ticks.size() == (crt ? 3 : 4));
+            CHECK(v.grid.ticks[0].label == "2:10 PM");
+            CHECK(v.grid.ticks[1].label == "2:15");
+            CHECK(v.grid.ticks[1].x - v.grid.ticks[0].x == (crt ? 152 : 170));
+            // Neighbouring ten-minute playlist clips retain their live scale.
+            CHECK(v.grid.rows[2].cells[0].w == (crt ? 302 : 338));
+            in.cursor.pick_at.reset();
+            const auto live = ui::layout_channel_guide(in);
+            CHECK(live.grid.ticks[0].label == "8:10 AM");
             for (size_t n = 1; n < v.grid.ticks.size(); ++n)
                 CHECK(v.grid.ticks[n].x - v.grid.ticks[n-1].x >= 90);
         }
@@ -1016,6 +1027,8 @@ TEST_CASE("Pick Ahead future programme clocks preserve injected DST offsets", "[
     in.utc_offset_at = [](double t) { return t >= kNow + 3 * 3600 ? 3600 : 0; };
     const auto v = ui::layout_channel_guide(in);
     CHECK(v.panel.start_hm == "3:14");
+    CHECK(v.grid.ticks[0].label == "3:10 PM");
+    CHECK(v.grid.ticks[1].label == "3:15");
 }
 
 TEST_CASE("retained live film panel ends at closing while selected film keeps whole duration", "[channel_guide_view][final_fix]") {
@@ -1030,5 +1043,138 @@ TEST_CASE("retained live film panel ends at closing while selected film keeps wh
         CHECK(view.panel.start_hm == "12:00");
         CHECK(view.panel.end_hm == (selected ? "2:00" : "1:00"));
         CHECK(view.panel.progress == (selected ? 0.25 : 0.5));
+    }
+}
+
+
+TEST_CASE("movie closure fills the visible gap without closing playlist rows", "[channel_guide_view][timeline_refine]") {
+    Fixture f;
+    f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+    for (bool crt : {false, true}) {
+        for (int minute : {50, 55}) {
+            auto in = f.in(crt); in.cursor.row = 1;
+            in.now_utc = E + 86400 + 50 * 60 + (minute - 50) * 60;
+            const auto v = ui::layout_channel_guide(in);
+            const auto& cells = v.grid.rows[1].cells;
+            REQUIRE_FALSE(cells.empty());
+            const auto& gap = cells.back();
+            // At 12:50 CRT leaves five minutes; at 12:55 TV/CRT leave 15/10.
+            const bool full = !crt || minute == 55;
+            CHECK(gap.label == (full ? "OFF AIR · BACK AT 6:00 AM" : "OFF AIR"));
+            CHECK(gap.off_air);
+            CHECK(gap.tone == ui::GuideTone::Dim);
+            CHECK_FALSE(gap.ring); CHECK_FALSE(gap.bold); CHECK_FALSE(gap.show_artist);
+            CHECK(gap.x + gap.w == v.grid.rect.w - 3);
+            CHECK(gap.show_text);
+            for (const auto& c : v.grid.rows[2].cells)
+                CHECK(c.label.find("OFF AIR") == std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("last live and future movie panel forecasts the actual next morning film", "[channel_guide_view][timeline_refine]") {
+    Fixture f;
+    auto& ch = f.channels[1]; ch.day_start_h = 6; ch.on_air_h = 19;
+    ch.identity = "fixture3";
+    ch.items = {{1, 0, 100000}, {1, 1, 100000}, {1, 2, 100000}};
+    ch.total_s = 300000;
+    for (bool crt : {false, true}) {
+        for (bool future : {false, true}) {
+            for (int zone : {0, 1, 2}) {
+                INFO("CRT " << crt << " future " << future << " zone " << zone);
+                auto in = f.in(crt); in.cursor.row = 1;
+                // Jan 1's final film crosses midnight; Jan 2 rotates to item 2.
+                in.now_utc = E + 86400 + 50 * 60;
+                if (future) {
+                    // Browse from the previous broadcast day into Jan 1's 6 AM slot.
+                    in.now_utc = E + 30 * 60;
+                    in.cursor.pick_at = E + 6 * 3600; in.pick_ahead = true;
+                }
+                if (zone == 1) {
+                    in.utc_offset_s = -8 * 3600; in.now_utc += 8 * 3600;
+                    if (future) *in.cursor.pick_at += 8 * 3600;
+                } else if (zone == 2) {
+                    in.utc_offset_at = [](double utc) { return utc < E + 86400 + 2 * 3600 ? 0 : 3600; };
+                }
+                const auto v = ui::layout_channel_guide(in);
+                CHECK(v.panel.end_hm == "1:00");
+                CHECK(v.panel.next_hm == "6:00");
+                CHECK(v.panel.next_title == "Show 1-2");
+                CHECK(v.panel.show_next == !crt);
+            }
+        }
+    }
+}
+
+
+TEST_CASE("Pick Ahead footer names the current row or programme actions and clears logo", "[channel_guide_view][timeline_refine]") {
+    Fixture f;
+    for (bool crt : {false, true}) {
+        for (bool programmes : {false, true}) {
+            auto in = f.in(crt); in.pick_ahead = true;
+            if (programmes) in.cursor.pick_at = E + 8 * 3600 + 20 * 60;
+            const auto v = ui::layout_channel_guide(in);
+            REQUIRE(v.hints.size() == 3);
+            CHECK(v.hints[0].label == (programmes ? "programmes" : "channels"));
+            CHECK(v.hints[1].key == "PRESS"); CHECK(v.hints[1].label == "watch");
+            CHECK(v.hints[2].key == (programmes ? "BACK" : "HOLD"));
+            CHECK(v.hints[2].label == (programmes ? "channels" : "pick ahead"));
+            // Match the existing painter's mono advances/icon/key/label gaps.
+            double right = v.grid.rect.x;
+            for (const auto& h : v.hints) {
+                right += 22 + h.key.size() * 13 * 0.602 + h.key.size() - 1 + 7;
+                right += h.label.size() * 13 * 0.602;
+                CHECK(right + 12 <= v.logo.x);
+                right += 24;
+            }
+        }
+    }
+}
+
+
+TEST_CASE("continuation markers describe either clipped edge even without title room", "[channel_guide_view][timeline_refine]") {
+    Fixture f;
+    const double base = 8 * 3600 + 10 * 60;
+    for (int n = 1; n <= 4; ++n) {
+        const double starts = n == 2 || n == 4 ? base + 300 : base - 300;
+        const double length = n == 1 || n == 4 ? 600 : 3600;
+        f.channels[n].items = {{n, 0, starts}, {n, 1, length}, {n, 2, 3600}};
+        f.channels[n].total_s = starts + length + 3600;
+    }
+    for (bool crt : {false, true}) {
+        auto in = f.in(crt);
+        const auto v = ui::layout_channel_guide(in);
+        for (int n = 1; n <= 4; ++n) {
+            const auto& cells = v.grid.rows[n].cells;
+            // The programme under test starts after item 0 (its long prelude).
+            const auto& c = cells[n == 2 || n == 4 ? 1 : 0];
+            CHECK(c.continues_before == (n == 1 || n == 3));
+            CHECK(c.continues_after == (n == 2 || n == 3));
+            CHECK_FALSE(c.off_air);
+            CHECK(c.label.find("◂") == std::string::npos);
+            // Markers reserve ten pixels at each clipped edge before fitting.
+            const int markers = (n == 1 || n == 3) + (n == 2 || n == 3);
+            CHECK(ui::guide_detail::utf8_len(c.label) * 14 * 0.602 <= c.w - 20 - 10 * markers);
+        }
+        // A tiny clipped tail still advertises continuation while hiding text.
+        f.channels[1].items = {{1, 0, base - 300}, {1, 1, 330}, {1, 2, 3600}};
+        f.channels[1].total_s = base + 30 + 3600;
+        const auto narrow = ui::layout_channel_guide(in);
+        REQUIRE_FALSE(narrow.grid.rows[1].cells.empty());
+        const auto& c = narrow.grid.rows[1].cells[0];
+        CHECK(c.continues_before); CHECK_FALSE(c.continues_after);
+        CHECK_FALSE(c.show_text);
+        const double right_start = base + (crt ? 900 : 1200) - 30;
+        f.channels[2].items = {{2, 0, right_start}, {2, 1, 600}, {2, 2, 3600}};
+        f.channels[2].total_s = right_start + 4200;
+        const auto right_view = ui::layout_channel_guide(in);
+        const auto& right = right_view.grid.rows[2].cells.back();
+        CHECK_FALSE(right.continues_before); CHECK(right.continues_after);
+        CHECK_FALSE(right.show_text);
+        f.channels[2].items = {{2, 0, base + 300}, {2, 1, 3600}, {2, 2, 3600}};
+        f.channels[2].total_s = base + 7500;
+        // Restore the left-only case for the second canvas.
+        f.channels[1].items = {{1, 0, base - 300}, {1, 1, 600}, {1, 2, 3600}};
+        f.channels[1].total_s = base + 300 + 3600;
     }
 }
