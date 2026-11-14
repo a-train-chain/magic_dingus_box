@@ -44,7 +44,9 @@ GuideCursor guide_clamp(GuideCursor c, int rows, bool picture_available) {
         c.row = 0;
         if (rows <= 0 || !picture_available) c.on_picture = false;
     }
+    const int previous_row = c.row;
     c.row = std::max(0, std::min(c.row, rows - 1));
+    if (c.row != previous_row || c.on_picture || rows <= 0) c.pick_at.reset();
 
     // Keep the cursor row on screen, and the window inside the list.
     if (c.row >= c.scroll + kGuideVisibleRows) c.scroll = c.row - kGuideVisibleRows + 1;
@@ -55,6 +57,7 @@ GuideCursor guide_clamp(GuideCursor c, int rows, bool picture_available) {
 }
 
 GuideCursor guide_follow(GuideCursor c, int channel, int rows) {
+    c.pick_at.reset();
     c.row = channel;
     c.on_picture = false;
     return guide_clamp(c, rows, false);
@@ -129,12 +132,62 @@ bool LastChannelWatch::changed(const AppState& s) {
 
 GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts& f) {
     GuideCommand cmd;
+    auto& cursor = s.guide_cursor;
+    if (!f.pick_ahead || !f.on_screen || !f.cursor_row_tunable || cursor.on_picture)
+        cursor.pick_at.reset();
+    // row_airings is already in chronological order. Ignore expired entries
+    // and starts at/after the exclusive 24-hour horizon, even for stale facts.
+    const auto first = std::find_if(f.row_airings.begin(), f.row_airings.end(), [&](const OnAir& a) {
+        return a.starts_at <= f.now_utc && a.ends_at > f.now_utc;
+    });
+    const auto limit = std::find_if(f.row_airings.begin(), f.row_airings.end(), [&](const OnAir& a) {
+        return a.starts_at >= f.now_utc + 24 * 3600;
+    });
+    auto picked = f.row_airings.end();
+    if (cursor.pick_at && first != f.row_airings.end()) {
+        picked = std::find_if(first, limit, [&](const OnAir& a) { return a.starts_at == *cursor.pick_at; });
+        if (picked == limit) picked = first;  // elapsed or changed schedule: on now
+        cursor.pick_at = picked->starts_at;
+    } else if (cursor.pick_at) {
+        cursor.pick_at.reset();
+    }
+    const auto enter_row = [&] {
+        if (!f.pick_ahead || !f.cursor_row_tunable || cursor.on_picture ||
+            first == f.row_airings.end() || viewer_tune_waiting(s, f)) return false;
+        cursor.pick_at = first->starts_at;
+        own(s);
+        return true;
+    };
     switch (e) {
+        case GuideEvent::Back:
+            if (f.pick_ahead && f.on_screen && cursor.pick_at && !viewer_tune_waiting(s, f)) {
+                cursor.pick_at.reset();
+                own(s);
+                cmd.consumed = true;
+            }
+            break;
+        case GuideEvent::Horizontal:
+            if (!f.pick_ahead || !f.on_screen || viewer_tune_waiting(s, f)) break;
+            if (!cursor.pick_at) {
+                if (delta > 0) enter_row();
+                break;
+            }
+            [[fallthrough]];
         case GuideEvent::Rotate:
             if (!f.on_screen) break;  // hidden: main.cpp seeks
             // A viewer's Tune is loading: the cursor stays on its row and the
             // guide is not taken back — the tune still closes it.
             if (viewer_tune_waiting(s, f)) break;
+            if (f.pick_ahead && cursor.pick_at && picked != f.row_airings.end()) {
+                if (delta < 0) {
+                    if (picked == first) cursor.pick_at.reset();
+                    else cursor.pick_at = std::prev(picked)->starts_at;
+                } else if (delta > 0 && std::next(picked) != limit) {
+                    cursor.pick_at = std::next(picked)->starts_at;
+                }
+                own(s);
+                break;
+            }
             s.guide_cursor = guide_rotate(
                 s.guide_cursor, delta, f.rows,
                 s.picture_control_available || s.guide_cursor.on_picture);
@@ -152,6 +205,16 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
                 s.guide_cursor = guide_open(tuned, f.rows);
                 break;
             }
+            if (f.pick_ahead && !cursor.pick_at && enter_row()) break;
+            if (f.pick_ahead && cursor.pick_at && picked != f.row_airings.end() &&
+                picked->starts_at > f.now_utc) {
+                cmd.on_demand = *picked;
+                s.guide_opened_by_viewer = false;
+                s.off_air_return_id.clear();
+                s.off_air_return_after_utc = 0;
+                cursor.pick_at.reset();
+                break;
+            }
             GuidePress press = guide_press(s.guide_cursor, tuned, f.cursor_row_tunable);
             // Nothing playing or loading (a failed item's dark window): the
             // tuned row's press retries the channel instead of closing a
@@ -162,6 +225,7 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
             }
             switch (press) {
                 case GuidePress::Tune:
+                    cursor.pick_at.reset();
                     s.off_air_return_id.clear();
                     s.off_air_return_after_utc = 0;
                     // The viewer's tune closes the guide when its load runs
@@ -170,6 +234,7 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
                     cmd.tune = s.guide_cursor.row;
                     break;
                 case GuidePress::Close:
+                    cursor.pick_at.reset();
                     s.guide_opened_by_viewer = false;
                     s.ui_visible_when_playing = false;
                     // Today's fade-out (the List's same-playlist toggle), only
@@ -196,6 +261,7 @@ GuideCommand guide_input(AppState& s, GuideEvent e, int delta, const GuideFacts&
         }
 
         case GuideEvent::ChannelStep:
+            cursor.pick_at.reset();
             s.off_air_return_id.clear();
             s.off_air_return_after_utc = 0;
             if (!f.on_screen) break;
@@ -223,6 +289,7 @@ void guide_frame(AppState& s, const GuideFrameFacts& f) {
     if (!f.pending_tune || *f.pending_tune != s.guide_viewer_tune) s.guide_viewer_tune = -1;
 
     const bool on_screen = f.guide_style && guide_visible(s);
+    if (!on_screen || !f.pick_ahead || !f.cursor_row_tunable) s.guide_cursor.pick_at.reset();
     if (s.guide_appeared.rose(on_screen) && !s.guide_opened_by_viewer) {
         s.guide_cursor = guide_open(f.pending_tune.value_or(s.tuned_channel), f.rows);
     }

@@ -958,3 +958,62 @@ TEST_CASE("selected regular panel uses retained title and trim after source repl
     CHECK(std::fabs(v.panel.progress - 0.18644) < 0.0001);
     CHECK(v.panel.start_hm == "8:12"); CHECK(v.panel.end_hm == "8:22");
 }
+
+
+TEST_CASE("Pick Ahead rings and fully reveals a programme six hours ahead", "[channel_guide_view][pick_ahead]") {
+    Fixture f;
+    for (bool crt : {false, true}) {
+        for (double length : {600.0, 7200.0}) {
+            INFO("CRT " << crt << " length " << length);
+            auto in = f.in(crt); in.pick_ahead = true;
+            in.cursor.row = 1; in.tuned = 1;
+            in.cursor.pick_at = kNow + 6 * 3600;
+            auto& ch = f.channels[1]; ch.identity = "view5"; ch.items.clear();
+            // A single programme before the chosen one fixes the expected UTC start.
+            ch.items = {{1, 0, kNow + 6 * 3600 - E}, {1, 1, length}, {1, 2, 600}, {1, 3, 600}};
+            ch.total_s = kNow + 6 * 3600 - E + length + 1200;
+            // Existing on-demand playback must not override a future picked panel.
+            in.on_demand = true; in.playing = {1, 0, 200, 1000};
+            const auto v = ui::layout_channel_guide(in);
+            int rings = 0;
+            for (const auto& row : v.grid.rows) for (const auto& c : row.cells) {
+                if (!c.ring) continue;
+                ++rings;
+                CHECK(c.x >= v.grid.column_w + 3);
+                CHECK(c.x + c.w <= v.grid.rect.w);
+                CHECK(c.label.find("Show 1-1") != std::string::npos);
+                CHECK(c.label.find("◂") == std::string::npos);
+            }
+            CHECK(rings == 1);
+            CHECK(v.panel.item_title == "Show 1-1");
+            CHECK(v.panel.start_hm == "2:14");
+            CHECK(v.panel.eyebrow == "ON DEMAND");
+            CHECK(v.panel.bottom == ui::GuideBottom::PressToWatch);
+            CHECK(v.grid.now_x < v.grid.column_w);
+            CHECK(v.grid.ticks.size() <= 4);
+            for (size_t n = 1; n < v.grid.ticks.size(); ++n)
+                CHECK(v.grid.ticks[n].x - v.grid.ticks[n-1].x >= 90);
+        }
+    }
+}
+
+TEST_CASE("a picked airing that has started uses the live window and actual panel", "[channel_guide_view][pick_ahead]") {
+    Fixture f;
+    auto in = f.in(); in.pick_ahead = true; in.cursor.pick_at = E + 8 * 3600 + 10 * 60;
+    const auto v = ui::layout_channel_guide(in);
+    CHECK(v.grid.ticks[0].label == "8:10 AM");
+    CHECK(v.grid.rows[0].cells[0].ring);
+    CHECK(v.panel.eyebrow == "NOW PLAYING");
+}
+
+TEST_CASE("Pick Ahead future programme clocks preserve injected DST offsets", "[channel_guide_view][pick_ahead]") {
+    Fixture f;
+    auto in = f.in(); in.pick_ahead = true; in.cursor.row = 1;
+    in.cursor.pick_at = kNow + 6 * 3600;
+    auto& ch = f.channels[1]; ch.identity = "view5";
+    ch.items = {{1, 0, kNow + 6 * 3600 - E}, {1, 1, 600}, {1, 2, 600}, {1, 3, 600}};
+    ch.total_s = kNow + 6 * 3600 - E + 1800;
+    in.utc_offset_at = [](double t) { return t >= kNow + 3 * 3600 ? 3600 : 0; };
+    const auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.start_hm == "3:14");
+}

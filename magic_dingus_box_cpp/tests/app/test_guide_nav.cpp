@@ -16,6 +16,7 @@
 #include "app/app_state.h"
 #include "app/guide_nav.h"
 #include "app/playback_reset.h"
+#include "platform/input_manager.h"
 
 namespace {
 
@@ -290,7 +291,7 @@ app::GuideCommand input(app::AppState& s, app::GuideEvent e, int delta = 0,
     return app::guide_input(s, e, delta, facts(s, 8, pending, tunable));
 }
 
-bool no_calls(const app::GuideCommand& c) { return c.tune == -1 && !c.toggle_picture; }
+bool no_calls(const app::GuideCommand& c) { return c.tune == -1 && !c.toggle_picture && !c.on_demand; }
 
 app::GuideFrameFacts frame_facts(std::optional<int> pending = std::nullopt,
                                  bool may_stay = false, int rows = 8) {
@@ -992,4 +993,142 @@ TEST_CASE("viewer channel choices cancel overnight return but closing 00 keeps i
         CHECK(s.off_air_return_id == "movies:comedy");
         CHECK(s.off_air_return_after_utc == 123456);
     }
+}
+
+
+namespace {
+app::GuideFacts pick_facts(const app::AppState& s) {
+    auto f = facts(s);
+    f.pick_ahead = true;
+    f.now_utc = 1000;
+    f.row_airings = {{0, 100, 900, 1500, 90000}, {1, 0, 1500, 2100, 90000},
+                     {2, 0, 2100, 2700, 90000}, {3, 0, 87000, 87600, 90000},
+                     {4, 0, 87400, 88000, 90000}};
+    return f;
+}
+}
+
+TEST_CASE("Pick Ahead enters a tunable row before selecting its on-now programme", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s, 1); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 2;
+    auto f = pick_facts(s);
+    const auto enter = app::guide_input(s, app::GuideEvent::Select, 0, f);
+    CHECK(enter.tune == -1); CHECK_FALSE(enter.on_demand);
+    CHECK(s.guide_cursor.pick_at == 900);
+    CHECK(s.guide_opened_by_viewer);
+    CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == 2);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+    CHECK_FALSE(s.guide_opened_by_viewer);
+}
+
+TEST_CASE("Pick Ahead horizontal enters only right and steps programmes with a 24 hour clamp", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.guide_cursor.row = 1;
+    auto f = pick_facts(s);
+    app::guide_input(s, app::GuideEvent::Horizontal, -1, f);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+    app::guide_input(s, app::GuideEvent::Horizontal, 1, f);
+    CHECK(s.guide_cursor.pick_at == 900);
+    app::guide_input(s, app::GuideEvent::Horizontal, 7, f);
+    CHECK(s.guide_cursor.pick_at == 1500);
+    app::guide_input(s, app::GuideEvent::Rotate, 1, f);
+    CHECK(s.guide_cursor.pick_at == 2100); CHECK(s.guide_cursor.row == 1);
+    app::guide_input(s, app::GuideEvent::Rotate, 1, f);
+    CHECK(s.guide_cursor.pick_at == 87000);
+    app::guide_input(s, app::GuideEvent::Horizontal, 1, f);
+    CHECK(s.guide_cursor.pick_at == 87000);  // 87400 is exactly now+24h
+}
+
+TEST_CASE("Pick Ahead turning backwards before on-now leaves the row", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.guide_cursor.row = 1;
+    auto f = pick_facts(s); s.guide_cursor.pick_at = 1500;
+    app::guide_input(s, app::GuideEvent::Rotate, -1, f);
+    CHECK(s.guide_cursor.pick_at == 900);
+    app::guide_input(s, app::GuideEvent::Rotate, -1, f);
+    CHECK_FALSE(s.guide_cursor.pick_at); CHECK(s.guide_cursor.row == 1);
+    app::guide_input(s, app::GuideEvent::Rotate, 1, f);
+    CHECK(s.guide_cursor.row == 2);
+}
+
+TEST_CASE("Pick Ahead selects a future programme and gives its tune ownership", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500; s.guide_opened_by_viewer = true;
+    s.off_air_return_id = "movies:mix"; s.off_air_return_after_utc = 90000;
+    auto f = pick_facts(s);
+    const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
+    REQUIRE(cmd.on_demand); CHECK(cmd.on_demand->starts_at == 1500); CHECK(cmd.on_demand->index == 1);
+    CHECK(cmd.tune == -1); CHECK_FALSE(s.guide_opened_by_viewer); CHECK_FALSE(s.guide_cursor.pick_at);
+    CHECK(s.off_air_return_id.empty()); CHECK(s.off_air_return_after_utc == 0);
+}
+
+TEST_CASE("a picked programme becoming on-now uses ordinary tune and close rules", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    auto f = pick_facts(s); f.now_utc = 1600; f.row_airings.erase(f.row_airings.begin());
+    const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
+    CHECK_FALSE(cmd.on_demand); CHECK(cmd.tune == -1); CHECK_FALSE(s.ui_visible_when_playing);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("Pick Ahead Back consumes a row exit but Live ignores horizontal and Back", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    auto f = pick_facts(s);
+    CHECK(app::guide_input(s, app::GuideEvent::Back, 0, f).consumed);
+    CHECK_FALSE(s.guide_cursor.pick_at); CHECK(s.ui_visible_when_playing);
+    CHECK_FALSE(app::guide_input(s, app::GuideEvent::Back, 0, f).consumed);
+    f.pick_ahead = false;
+    CHECK_FALSE(app::guide_input(s, app::GuideEvent::Horizontal, 1, f).consumed);
+    CHECK_FALSE(s.guide_cursor.pick_at); CHECK(s.guide_cursor.row == 1);
+    CHECK_FALSE(app::guide_input(s, app::GuideEvent::Back, 0, f).consumed);
+}
+
+TEST_CASE("Pick Ahead clears a selection on close, mode exit, row closure and channel step", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.display_settings.guide_mode = app::GuideMode::PickAhead;
+    app::guide_frame(s, frame_facts());
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    auto f = frame_facts(); f.pick_ahead = true; f.cursor_row_tunable = true;
+    SECTION("mode changes") { f.pick_ahead = false; app::guide_frame(s, f); }
+    SECTION("row goes off air") { f.cursor_row_tunable = false; app::guide_frame(s, f); }
+    SECTION("guide closes") { s.ui_visible_when_playing = false; app::guide_frame(s, f); }
+    SECTION("style changes") { f.guide_style = false; app::guide_frame(s, f); }
+    SECTION("channel step") { auto i = pick_facts(s); i.pending_tune = 2; app::guide_input(s, app::GuideEvent::ChannelStep, 1, i); }
+    CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("a still-playing selected programme can close its off-air row", "[guide_nav][pick_ahead][off_air]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.on_demand = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    auto f = pick_facts(s); f.cursor_row_tunable = false; f.row_airings.clear();
+    CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == -1);
+    CHECK_FALSE(s.ui_visible_when_playing); CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("Pick Ahead never enters off-air rows or steals a waiting viewer tune", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.guide_cursor.row = 2;
+    auto f = pick_facts(s);
+    SECTION("off air") { f.cursor_row_tunable = false; f.row_airings.clear(); }
+    SECTION("waiting tune") { s.guide_viewer_tune = 2; f.pending_tune = 2; }
+    app::guide_input(s, app::GuideEvent::Horizontal, 1, f);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("Pick Ahead routing distinguishes directional input from physical encoder", "[guide_nav][pick_ahead]") {
+    CHECK(app::guide_rotation_event(true, false) == app::GuideEvent::Horizontal);
+    CHECK(app::guide_rotation_event(true, true) == app::GuideEvent::Rotate);
+    CHECK(app::guide_rotation_event(false, false) == app::GuideEvent::Rotate);
+    CHECK(app::guide_rotation_event(false, true) == app::GuideEvent::Rotate);
+}
+
+
+TEST_CASE("directional input defaults preserve legacy event velocity and cannot inherit encoder origin", "[guide_nav][pick_ahead]") {
+    const platform::InputEvent direction{platform::InputAction::ROTATE, 1, true, 1};
+    CHECK_FALSE(direction.rotary_encoder);
+    CHECK(direction.velocity == 1.0f);
+    CHECK(app::guide_rotation_event(true, direction.rotary_encoder) == app::GuideEvent::Horizontal);
+    auto encoder = direction; encoder.rotary_encoder = true;
+    const auto copied_encoder = encoder;
+    CHECK(app::guide_rotation_event(true, copied_encoder.rotary_encoder) == app::GuideEvent::Rotate);
+    const platform::InputEvent repeat{};
+    CHECK_FALSE(repeat.rotary_encoder);
 }

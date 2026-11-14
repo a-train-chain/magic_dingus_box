@@ -1443,24 +1443,41 @@ int main(int /* argc */, char* /* argv */[]) {
         // it hands back. `on_screen` is app::guide_visible when the event
         // arrived — for NEXT/PREV, before the step ran.
         auto apply_guide_input = [&state, &playlist_playback, &playlist_transport,
-                                  &channels](app::GuideEvent event, int delta,
+                                  &channels, &zone_offset](app::GuideEvent event, int delta,
                                              bool on_screen) {
             app::GuideFacts f;
             f.on_screen = on_screen;
+            f.pick_ahead = state.display_settings.guide_mode == app::GuideMode::PickAhead;
+            f.now_utc = playlist_transport.wall_now_utc();
             f.rows = static_cast<int>(channels.size());
             f.pending_tune = playlist_playback.pending_tune();
             const int row = state.guide_cursor.row;
             f.cursor_row_tunable =
                 playlist_playback.channel_on_air(row);
+            if (f.pick_ahead && on_screen && f.cursor_row_tunable &&
+                row >= 0 && row < f.rows) {
+                f.row_airings = app::lineup(channels[row], f.now_utc, f.now_utc + 24 * 3600,
+                                           zone_offset(f.now_utc), zone_offset);
+            }
             f.owns_pipeline = playlist_playback.owns_pipeline();
             f.now = std::chrono::steady_clock::now();
             const app::GuideCommand cmd = app::guide_input(state, event, delta, f);
+            if (cmd.on_demand) {
+                playlist_playback.play_on_demand(row, *cmd.on_demand);
+                app::guide_tune_taken(state, row, playlist_playback.pending_tune() == row);
+            }
             if (cmd.tune >= 0) {
                 playlist_playback.tune(cmd.tune, /*keep_overlay=*/false);
                 app::guide_tune_taken(state, cmd.tune,
                                       playlist_playback.pending_tune() == cmd.tune);
             }
             if (cmd.toggle_picture) playlist_transport.toggle_picture_crop();
+            return cmd.consumed;
+        };
+        settings_input.guide_back = [&state, &playlist_playback, apply_guide_input] {
+            if (!playlist_playback.guide_style() || !app::guide_visible(state) ||
+                state.display_settings.guide_mode != app::GuideMode::PickAhead) return false;
+            return apply_guide_input(app::GuideEvent::Back, 0, true);
         };
 
         for (const auto& ev : input_events) {
@@ -1501,7 +1518,12 @@ int main(int /* argc */, char* /* argv */[]) {
                         // Channel Guide open: the cursor (one channel row per
                         // turn; up from 00 onto the Picture control). Hidden:
                         // the seek below, as in the List style.
-                        apply_guide_input(app::GuideEvent::Rotate, ev.delta, true);
+                        const auto event = ev.action == InputAction::ROTATE
+                            ? app::guide_rotation_event(
+                                state.display_settings.guide_mode == app::GuideMode::PickAhead,
+                                ev.rotary_encoder)
+                            : app::GuideEvent::Rotate;
+                        apply_guide_input(event, ev.delta, true);
                     } else if (!guide_style && ui_available && !state.playlists.empty()) {
                         // Only allow navigation when UI is available
                         // One row per turn, clamped at both ends; from the
@@ -1877,6 +1899,9 @@ int main(int /* argc */, char* /* argv */[]) {
             // List style: cursor and focus untouched. No allocation.
             app::GuideFrameFacts guide_frame_facts;
             guide_frame_facts.guide_style = playlist_playback.guide_style();
+            guide_frame_facts.pick_ahead = state.display_settings.guide_mode == app::GuideMode::PickAhead;
+            guide_frame_facts.cursor_row_tunable = !state.guide_cursor.pick_at ||
+                playlist_playback.channel_on_air(state.guide_cursor.row);
             guide_frame_facts.rows = static_cast<int>(channels.size());
             guide_frame_facts.pending_tune = playlist_playback.pending_tune();
             guide_frame_facts.picture_may_stay = app::picture_focus_may_stay(picture);
@@ -1938,6 +1963,10 @@ int main(int /* argc */, char* /* argv */[]) {
             guide_inputs.add(static_cast<uint64_t>(state.display_settings.mode));
             guide_inputs.add(channels_generation);
             guide_inputs.add(static_cast<uint64_t>(state.on_demand));
+            guide_inputs.add(static_cast<uint64_t>(state.display_settings.guide_mode));
+            guide_inputs.add(static_cast<uint64_t>(state.guide_cursor.pick_at.has_value()));
+            guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(
+                state.guide_cursor.pick_at.value_or(0) * 1000)));
             guide_inputs.add(static_cast<uint64_t>(state.playlists.size()));
             guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(guide_tuned)));
             guide_inputs.add(static_cast<uint64_t>(state.guide_cursor.row));
@@ -2200,6 +2229,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 guide_in.picture_available = state.picture_control_available;
                 guide_in.picture_crop = state.picture_crop;
                 guide_in.on_demand = state.on_demand;
+                guide_in.pick_ahead = state.display_settings.guide_mode == app::GuideMode::PickAhead;
                 guide_in.source_aspect = guide_source_aspect;
                 guide_in.now_utc = guide_now_utc;
                 guide_in.utc_offset_s = guide_offset_s;

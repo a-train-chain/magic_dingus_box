@@ -31,6 +31,9 @@ struct InputEvent {
     // encoder switch, default false for all other sources.
     bool is_from_rotary = false;
 #endif
+    // Physical EV_REL/REL_X rotation; directional X events/repeats stay false.
+    // Appended so legacy aggregate initializers retain their existing meaning.
+    bool rotary_encoder = false;
 };
 
 // One raw, unmapped evdev event from a joystick, surfaced only while

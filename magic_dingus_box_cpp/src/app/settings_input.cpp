@@ -66,6 +66,8 @@ bool handle_menu_button(SettingsInputContext& ctx, MenuButtonHold& menu_hold,
                     if (!in_mb) {
                         const bool already_open =
                             settings_menu.is_active() || settings_menu.is_opening();
+                        if (!already_open && !settings_menu.is_closing() && !ctx.keyboard.is_active() &&
+                            ctx.guide_back && ctx.guide_back()) break;
                         const bool ui_available =
                             !state.video_active || state.ui_visible_when_playing;
                         if (already_open || ui_available) {

@@ -541,7 +541,7 @@ void Renderer::GuidePainter::grid() {
     }
 
     // Now line: 2 px red down every row, a 10 x 6 marker in the header.
-    if (!g.rows.empty()) {
+    if (!g.rows.empty() && g.now_x >= g.column_w && g.now_x + 2 <= g.rect.w) {
         const float nx = gx + g.now_x;
         const float rows_h = static_cast<float>(g.rows.size()) * g.row_h - 3.0f;
         fill(nx, gy + g.header_h, 2.0f, rows_h, t_.highlight2);

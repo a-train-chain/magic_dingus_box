@@ -944,6 +944,7 @@ std::vector<InputEvent> InputManager::poll() {
 
                     if (std::abs(rotary_accumulator_) >= THRESHOLD) {
                         input_ev.action = InputAction::ROTATE;
+                        input_ev.rotary_encoder = true;
                         // Clockwise (positive) = down/next (positive delta)
                         // Counterclockwise (negative) = up/previous (negative delta)
                         input_ev.delta = (rotary_accumulator_ > 0) ? 1 : -1;

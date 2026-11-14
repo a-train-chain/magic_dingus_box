@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "app_state.h"
+#include "channel_airing.h"
 #include "media_info.h"
 
 namespace app {
@@ -74,13 +75,7 @@ inline constexpr double kMinScheduledItemS = 3.0;
 std::vector<Channel> build_channels(const std::vector<Playlist>& ui_playlists,
                                     const MediaInfoMap& info);
 
-struct OnAir {
-    int index = 0;         // index into Channel::items
-    double offset_s = 0;   // seconds into that item
-    double starts_at = 0;  // UTC seconds the item started
-    double ends_at = 0;    // UTC seconds the item ends (possibly cut)
-    double day_ends_at = 0;  // civil broadcast close: live playback cuts even if it lags
-};
+
 
 // A permutation of Channel::items indexes. Portable FNV-1a seed + mt19937
 // Fisher-Yates; Rotate holds the written succession for every pass that day.
