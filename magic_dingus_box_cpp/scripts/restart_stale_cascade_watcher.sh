@@ -50,6 +50,29 @@ if [[ "$(systemctl is-active "$UNIT" 2>/dev/null)" != "active" ]]; then
     exit 0
 fi
 
+# Native Python modules execute from the deployed tree. Their content can
+# change without touching the installed wrapper's mtime. The running owner
+# records what it loaded; a missing record upgrades a legacy watcher once.
+SOURCE_DIR="${MAGIC_VPN_RECOVERY_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+CTL="$SOURCE_DIR/vpn_recoveryctl.py"
+RUNNING="${MAGIC_VPN_RECOVERY_FINGERPRINT:-/run/mdb-vpn-recovery/running-fingerprint.json}"
+if [[ -f "$CTL" && -d "$SOURCE_DIR/vpn_recovery" ]]; then
+    wanted=$(python3 "$CTL" fingerprint 2>/dev/null) || exit 0
+    loaded=$(python3 - "$RUNNING" <<'PYTHON'
+import json,sys
+try: print(json.load(open(sys.argv[1])).get('fingerprint',''))
+except (OSError,ValueError): print('')
+PYTHON
+)
+    if [[ "$wanted" != "$loaded" ]]; then
+        log "recovery package changed; restarting ${UNIT}"
+        systemctl try-restart --no-block "$UNIT" 2>/dev/null || log "WARNING: watcher restart deferred"
+    else
+        log "${UNIT} already runs the installed recovery package"
+    fi
+    exit 0
+fi
+
 # When did the running process start? `--timestamp=unix` (systemd >= 248;
 # Trixie ships 257) prints "@<epoch>"; older systemd falls back to parsing
 # the human-readable form with GNU date.

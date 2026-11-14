@@ -79,6 +79,9 @@ if [ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ] && ! python3 "$recovery" --base "$(dirnam
     say "VPN remains stopped or maintenance changed; operator start required. Country applies on next start."
     exit 3
 fi
+if [ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ]; then
+    python3 "$recovery" --base "$(dirname -- "$COMPOSE_DIR")" --services "$COMPOSE_DIR" record-start || { compose_unlock; exit 3; }
+fi
 docker compose -f "${COMPOSE_DIR}/docker-compose.yml" up -d --no-deps gluetun 2>&1
 up_rc=$?
 [ "$rc" = "0" ] && compose_unlock

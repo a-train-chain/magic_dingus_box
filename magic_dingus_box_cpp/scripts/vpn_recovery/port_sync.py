@@ -48,7 +48,13 @@ try:
         jar.load(ignore_discard=True, ignore_expires=True)
         # curl's Netscape format writes session expiry as 0; Python treats it
         # as Unix epoch unless translated to its in-memory session marker.
-        for cookie in jar:
+        for cookie in list(jar):
+            # urllib canonicalizes a single-label request host to .local.
+            # Translate only this exact host-only curl domain; no wider trust.
+            if cookie.domain == 'localhost' and not cookie.domain_specified:
+                jar.clear(cookie.domain, cookie.path, cookie.name)
+                cookie.domain = 'localhost.local'
+                jar.set_cookie(cookie)
             if cookie.expires == 0:
                 cookie.expires, cookie.discard = None, True
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), urllib.request.HTTPCookieProcessor(jar))

@@ -16,6 +16,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICES_DIR="${SERVICES_DIR:-/opt/magic_dingus_box/services}"
+# Explicit provisioning authorizes a start; the wrapper owns inhibition for
+# the complete mutation/API sequence and releases it even after child failure.
+if [[ -f "$SCRIPT_DIR/vpn_recoveryctl.py" && -z "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
+    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" intent enable --if-idle --reason setup
+    exec python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" run-inhibited \
+        --reason setup --timeout 3600 -- bash "$0" "$@"
+fi
+
 # Single-flight. Two concurrent runs (a double-submitted Content Manager
 # setup, or one racing first_boot.sh) rewrite .env, recreate the same
 # containers and set the qBit password against each other. The web admin
@@ -149,7 +159,7 @@ EOF
     echo "=== Step 0 complete ==="
 fi
 
-SERVICES_DIR="/opt/magic_dingus_box/services"
+SERVICES_DIR="${SERVICES_DIR:-/opt/magic_dingus_box/services}"
 STORAGE_ROOT="${STORAGE_ROOT:-/mnt/ssd}"
 ENV_FILE="${SERVICES_DIR}/.env"
 
@@ -365,14 +375,16 @@ MDB_COMPOSE_LOCK="${MDB_COMPOSE_LOCK:-/run/lock/mdb-compose.lock}"
 PAUSE_MARKER=/tmp/mdb_playback_services_paused
 compose_lock() {
     command -v flock >/dev/null 2>&1 || return 2
-    if [ ! -e "$MDB_COMPOSE_LOCK" ]; then
-        (umask 000; : >> "$MDB_COMPOSE_LOCK") 2>/dev/null
-    fi
     [ -r "$MDB_COMPOSE_LOCK" ] || return 2
     exec 9<"$MDB_COMPOSE_LOCK" || return 2
     flock -w "$1" 9 || return 1
 }
 compose_unlock() { flock -u 9 2>/dev/null; exec 9<&-; }
+
+# Only installers provision the shared inode. All mutation clients read-open it.
+if [[ -f "$SCRIPT_DIR/vpn_recoveryctl.py" ]]; then
+    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" provision
+fi
 
 # Gluetun's control-server access file, before the first gluetun start:
 # keeps the forwarded-port and exit-IP routes this stack reads public on
@@ -401,7 +413,11 @@ echo "Starting Docker stack..."
 # creating, instead of racing them.
 _lock_rc=0
 compose_lock 120 || _lock_rc=$?
-[ "${_lock_rc}" = "1" ] && echo "  compose lock busy for 120s — starting the stack anyway"
+[ "${_lock_rc}" = "0" ] || { echo "ERROR: compose lock unavailable; setup deferred"; exit 1; }
+if [[ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
+    export MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)"
+    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" check-operation || { compose_unlock; exit 3; }
+fi
 # Marker checked inside the lock. Provisioning needs every container
 # running, so the pause is NOT honored here: say so, so a slow movie after
 # a Reconfigure has an explanation in the setup log. The kiosk's unpause at
@@ -412,6 +428,9 @@ if [ -f "${PAUSE_MARKER}" ]; then
     echo "        playback had stopped them to free memory."
 fi
 _compose_rc=0
+if [[ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
+    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" record-start || { compose_unlock; exit 3; }
+fi
 docker compose up -d --remove-orphans || _compose_rc=$?
 [ "${_lock_rc}" = "0" ] && compose_unlock
 if [ "${_compose_rc}" -ne 0 ]; then
@@ -2097,7 +2116,11 @@ if inj: print(",".join(inj))
         # unlocked so other actors are not stalled for up to 60 s.
         _lock_rc=0
         compose_lock 120 || _lock_rc=$?
-        [ "${_lock_rc}" = "1" ] && echo "  compose lock busy for 120s — restarting Radarr anyway"
+        [ "${_lock_rc}" = "0" ] || { echo "ERROR: compose lock unavailable; Radarr repair deferred"; exit 1; }
+        if [[ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
+            export MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)"
+            python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" check-operation || { compose_unlock; exit 3; }
+        fi
         _restart_rc=0
         docker restart mdb_radarr >/dev/null || _restart_rc=$?
         [ "${_lock_rc}" = "0" ] && compose_unlock

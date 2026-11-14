@@ -349,6 +349,11 @@ class QbitClientTests(unittest.TestCase):
         self.assertEqual(client.request('GET', '/api/v2/app/preferences')[0], 200)
         self.assertEqual(len(requests), before+1)  # no duplicate login
         self.assertEqual(requests[-1][2], 'SID=shell-session-cookie')
+        cookie_file.write_text('# Netscape HTTP Cookie File\n#HttpOnly_localhost\tFALSE\t/\tFALSE\t0\tSID\tshell-session-cookie\n')
+        client = port_sync.QbitClient(self.env.parent/'missing-env', cookie_file=cookie_file,
+                                      base_url='http://localhost:'+str(server.server_port))
+        self.assertEqual(client.request('GET', '/api/v2/app/preferences')[0], 200)
+        self.assertEqual(requests[-1][2], 'SID=shell-session-cookie')
         with self.assertRaisesRegex(Exception, '^qBit route not allowed$'):
             client.request('GET', '/api/v2/denied')
 

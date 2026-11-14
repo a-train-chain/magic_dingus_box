@@ -510,6 +510,20 @@ class Controller:
                 and isinstance(observed_container['started_at'], str) and observed_container['started_at']):
             if self.loaded_container != observed_container:
                 self.loaded = None
+        # Supported lifecycle commands can load a catalog without restarting
+        # this polling owner. Consume their real submitted-start journal with
+        # exactly the same new-container/disk/INFO attestation as own restarts.
+        external_load=read_json(self.paths.state/'load-pending.json',9*1024*1024)
+        try:
+            submitted=external_load['submitted_wall']
+            if finite(submitted) and 0<=wall-submitted<=180 and submitted>getattr(self,'external_load_wall',0):
+                snapshot=validate_catalog(external_load['provider'],wall)
+                self.load_pending={'snapshot':snapshot,'old_container':external_load['old_container']}
+                self.external_load_wall=submitted
+                if submitted>=self.last_load_wall:
+                    self.last_load_identity=snapshot.identity;self.last_load_wall=submitted
+                    self.state['last_restart']=now-(wall-submitted)
+        except (KeyError,ValueError,TypeError): pass
         if self.load_pending and finite(self.last_load_wall) and wall-self.last_load_wall>180:
             self.load_pending=None
             (self.paths.state/'load-pending.json').unlink(missing_ok=True)

@@ -146,6 +146,24 @@ def set_intent(paths, enabled, reason):
         return _save(paths, s)
 
 
+def enable_if_idle(paths, reason):
+    """Explicit setup start, refused while another maintenance owner exists."""
+    with intent_lock(paths):
+        state=read_intent(paths)
+        for owner in state.get('inhibits',{}).values():
+            if not isinstance(owner,dict): continue
+            expires=owner.get('expires_at')
+            live=(type(expires) in (int,float) and time.time()<expires<=time.time()+86400
+                  and owner.get('boot_id')==boot_id() and owner.get('owner_start') is not None
+                  and process_start(owner.get('owner_pid'))==owner['owner_start'])
+            if live: return False
+        # Explicit setup authorizes a fresh start after dead-owner cleanup.
+        # This never runs from the automatic controller or release operation.
+        state.update(enabled=True,reason=str(reason)[:80],inhibits={})
+        _save(paths,state)
+        return True
+
+
 def inhibit(paths, token, owner_pid, reason, generation=None, ttl_s=3600):
     if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', token):
         raise ValueError('invalid inhibit token')

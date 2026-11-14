@@ -83,6 +83,26 @@ class RuntimeTests(unittest.TestCase):
         return self.c.tick()
     def finish(self):
         if self.c.pending: self.c.pending.result(timeout=2)
+    def test_managed_recreation_after_recent_load_can_attest_then_recover(self):
+        import vpn_recovery.lifecycle as lifecycle
+        self.assertTrue(hasattr(lifecycle,'record_catalog_submission'),'managed catalog submission is absent')
+        self.c.last_load_identity=self.a.catalog.identity
+        self.c.last_load_wall=self.a.wall()
+        self.tick(0)
+        # Real lifecycle publication of the immutable file immediately before
+        # Docker submission. No old loaded attestation is copied.
+        with bounded_lock(self.paths.compose_lock,0):
+            lifecycle.record_catalog_submission(self.paths,GEN,snapshot=self.a.catalog,now=self.a.wall())
+        replacement={**GEN,'pid':43,'started_at':'2026-11-14T01:00:00Z'}
+        self.a.observation.update(generation=replacement,port=1234,qbit_synced=True)
+        self.tick(10)
+        self.assertIsNotNone(self.c.loaded)
+        self.assertEqual(self.c.loaded_container,self.c.container_key(replacement))
+        self.a.observation.update(port=0,qbit_synced=False)
+        self.tick(20);self.tick(110);self.finish()
+        self.assertTrue(any(call[0]=='put' for call in self.a.calls),self.a.calls)
+        self.assertFalse(any(call[0]=='restart_container' for call in self.a.calls))
+
     def test_lost_events_recover_with_current_state_and_soft_tunnel_does_not_relink(self):
         self.tick(0); self.tick(120); self.finish()
         self.assertEqual(self.a.calls[0][0], 'put')

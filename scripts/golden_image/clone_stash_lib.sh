@@ -370,3 +370,21 @@ mdb_restore_secrets() {
     mdb_log "[1/4] Secret stash at ${dir} securely removed"
     return 0
 }
+
+# Snapshot before the managed unit's stop records stopped intent. The watcher
+# is quiesced by the caller; later the generic manifest pass removes this same
+# original. Restore retains the source's exact enabled/stopped decision.
+mdb_clone_vpn_snapshot() {
+    local state="$1" stash="$2"
+    [[ -f "$state/intent.json" ]] || return 0
+    mdb_stash_copy "$state/intent.json" "$stash" || return 1
+    sync
+    mdb_stash_matches "$state/intent.json" "$stash"
+}
+mdb_clone_vpn_restore_snapshot() {
+    local state="$1" stash="$2" saved
+    saved="$stash/$(mdb_stash_key "$state/intent.json")"
+    [[ -f "$saved" ]] || return 0
+    cp -p "$saved" "$state/intent.json" || return 1
+    mdb_stash_matches "$state/intent.json" "$stash"
+}

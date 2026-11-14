@@ -46,6 +46,7 @@ def lock_path(temp_data_dir, monkeypatch):
     path = temp_data_dir / "mdb-compose.lock"
     monkeypatch.setattr(admin_media_browser_ops, "COMPOSE_LOCK_PATH", path)
     monkeypatch.setattr(admin_media_browser_ops, "COMPOSE_LOCK_WAIT_S", 1.0)
+    path.touch()
     return path
 
 
@@ -102,7 +103,7 @@ class TestResetComposeLock:
         assert "compose_down" in steps
         assert "compose_lock_unavailable" not in steps
 
-    def test_busy_lock_times_out_and_reset_still_runs(
+    def test_busy_lock_defers_reset_without_mutations(
             self, client, unlocked_mb, lock_path, recorded_runs):
         holder = os.open(lock_path, os.O_RDONLY | os.O_CREAT, 0o666)
         try:
@@ -110,14 +111,10 @@ class TestResetComposeLock:
             resp = _reset(client)
         finally:
             os.close(holder)
-        assert resp.status_code == 200, resp.get_json()
-        steps = resp.get_json()["data"]["steps"]
-        # Bounded wait, then proceed without the lock — never a deadlock.
-        assert "compose_lock_unavailable" in steps
-        assert "compose_down" in steps
-        assert steps.index("compose_lock_unavailable") < steps.index("compose_down")
+        assert resp.status_code == 409, resp.get_json()
+        assert not any("compose" in c or "find" in c for c, _ in recorded_runs)
 
-    def test_file_wipes_run_after_the_lock_is_released(
+    def test_file_wipes_run_under_the_shared_lock(
             self, client, unlocked_mb, lock_path, recorded_runs, temp_data_dir):
         services = _services_dir(temp_data_dir)
         (services / "config" / "radarr").mkdir(parents=True, exist_ok=True)
@@ -126,15 +123,13 @@ class TestResetComposeLock:
         assert resp.status_code == 200, resp.get_json()
         wipes = [(c, free) for c, free in recorded_runs if "find" in c]
         assert wipes, recorded_runs
-        assert all(free for _, free in wipes)
+        assert all(not free for _, free in wipes)
 
-    def test_unusable_lock_path_proceeds_without_it(
+    def test_unusable_lock_path_defers_without_mutations(
             self, client, unlocked_mb, monkeypatch, recorded_runs,
             temp_data_dir):
         monkeypatch.setattr(admin_media_browser_ops, "COMPOSE_LOCK_PATH",
                             temp_data_dir / "no" / "such" / "dir" / "x.lock")
         resp = _reset(client)
-        assert resp.status_code == 200, resp.get_json()
-        steps = resp.get_json()["data"]["steps"]
-        assert "compose_lock_unavailable" in steps
-        assert "compose_down" in steps
+        assert resp.status_code == 409, resp.get_json()
+        assert not any("compose" in c or "find" in c for c, _ in recorded_runs)
