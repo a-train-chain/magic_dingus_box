@@ -169,11 +169,13 @@ void GstRenderer::set_viewport_size(uint32_t width, uint32_t height) {
     height_ = height;
 }
 
-void GstRenderer::set_picture(IRect target_fb, bool crop, IRect opening_fb) {
+void GstRenderer::set_picture(IRect target_fb, bool crop, IRect opening_fb,
+                              double target_aspect) {
     picture_mode_ = true;
     picture_target_ = target_fb;
     picture_crop_ = crop;
     picture_opening_ = opening_fb;
+    picture_target_aspect_ = target_aspect;
 }
 
 std::optional<double> GstRenderer::source_display_aspect() const {
@@ -550,7 +552,7 @@ void GstRenderer::apply_picture_placement() {
     const auto gl_y = [fb_h](const IRect& r) { return fb_h - r.y - r.h; };
 
     const Placement p = place_picture(
-        source_display_aspect().value_or(0.0), picture_target_, 4.0 / 3.0,
+        source_display_aspect().value_or(0.0), picture_target_, picture_target_aspect_,
         picture_opening_, picture_crop_);
 
     // Fit leaves bars inside the target. Clear them: this is the frame's

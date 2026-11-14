@@ -481,8 +481,13 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         return utils::Result<>::ok();
     }
 
-    return load_item_media(state, item, playlist_directory, progress_callback,
-                           start_offset_s);
+    // Capture the identity being loaded, never mutable playlist coordinates:
+    // a later refresh can replace/remove the row while this film still plays.
+    const int movie_tmdb_id = item.movie_tmdb_id;
+    auto result = load_item_media(state, item, playlist_directory, progress_callback,
+                                  start_offset_s);
+    if (result && movie_tmdb_id > 0) current_media_key_ = movie_media_key(movie_tmdb_id);
+    return result;
 }
 
 void Controller::load_next_item(AppState& state, const std::string& playlist_directory) {

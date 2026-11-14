@@ -328,3 +328,33 @@ TEST_CASE("AppState holds the overlay cursor", "[overlay_nav]") {
     CHECK_FALSE(fresh.picture_control_available);
     CHECK(fresh.picture_crop);
 }
+
+TEST_CASE("a movie Picture control compares its shape to the output", "[overlay_nav]") {
+    auto f = playing_wide();
+    f.is_movie = true;
+    f.output_aspect = 16.0/9;
+    CHECK_FALSE(app::picture_control_visible(f));
+    CHECK_FALSE(app::picture_focus_may_stay(f));
+    f.aspect = 4.0/3;
+    CHECK(app::picture_control_visible(f));
+    CHECK(app::picture_focus_may_stay(f));
+    f.output_aspect = 4.0/3;
+    CHECK_FALSE(app::picture_control_visible(f));
+    CHECK_FALSE(app::picture_focus_may_stay(f));
+    f.aspect = 2.39;
+    CHECK(app::picture_control_visible(f));
+    f.video_active = false;
+    f.aspect.reset();
+    CHECK_FALSE(app::picture_control_visible(f));
+    CHECK(app::picture_focus_may_stay(f));
+    f.has_key = false;
+    CHECK_FALSE(app::picture_focus_may_stay(f));
+    f = playing_wide();
+    f.is_movie = true;
+    f.aspect = 2.39;
+    f.owns_pipeline = false;
+    CHECK_FALSE(app::picture_control_visible(f));
+    f.owns_pipeline = true;
+    f.overlay_visible = false;
+    CHECK_FALSE(app::picture_control_visible(f));
+}

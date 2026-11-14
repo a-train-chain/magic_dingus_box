@@ -154,3 +154,41 @@ TEST_CASE("placement helpers", "[video][picture_placement]") {
     CHECK(video::four_by_three_rect(1000, 1000) == video::IRect{0, 125, 1000, 750});  // letterbox
     CHECK(video::scale_image_rect(MDB, 1920, 1080, 1280, 720) == video::IRect{189, 32, 899, 656});
 }
+
+TEST_CASE("movies show whole in the guide and follow their preference full screen", "[picture_placement]") {
+    for (double aspect : {4.0/3, 16.0/9, 2.39, 0.0}) {
+        for (bool stored : {false, true}) {
+            CHECK_FALSE(video::picture_crop_for(true, true, stored, aspect));
+            CHECK(video::picture_crop_for(true, false, stored, aspect) == stored);
+        }
+    }
+    CHECK(video::picture_crop_for(false, true, false, 4.0/3));
+    CHECK_FALSE(video::picture_crop_for(false, false, false, 16.0/9));
+    CHECK(video::picture_crop_for(false, false, true, 16.0/9));
+}
+
+TEST_CASE("movie fill is offered only when its shape differs from the output", "[picture_placement]") {
+    CHECK(video::movie_fill_offered(2.39, 16.0/9));
+    CHECK_FALSE(video::movie_fill_offered(1.78, 16.0/9));
+    CHECK(video::movie_fill_offered(4.0/3, 16.0/9));
+    CHECK_FALSE(video::movie_fill_offered(4.0/3, 4.0/3));
+    CHECK_FALSE(video::movie_fill_offered(1.3599, 4.0/3));
+    CHECK(video::movie_fill_offered(1.3605, 4.0/3));
+    CHECK_FALSE(video::movie_fill_offered(0.0, 16.0/9));
+    CHECK_FALSE(video::movie_fill_offered(2.39, 0.0));
+    CHECK_FALSE(video::movie_fill_offered(std::numeric_limits<double>::infinity(), 16.0/9));
+    CHECK_FALSE(video::movie_fill_offered(2.39, std::numeric_limits<double>::quiet_NaN()));
+}
+
+TEST_CASE("whole and fill films use the whole widescreen output", "[picture_placement]") {
+    const video::IRect output{0, 0, 1920, 1080};
+    const auto whole = video::place_picture(2.39, output, 16.0/9, output, false);
+    CHECK(whole.viewport == video::IRect{0, 138, 1920, 803});
+    CHECK(whole.tex.u0 == Approx(0)); CHECK(whole.tex.u1 == Approx(1));
+    const auto fill = video::place_picture(2.39, output, 16.0/9, output, true);
+    CHECK(fill.viewport == output);
+    CHECK(fill.tex.u0 == Approx(0.1280799628));
+    CHECK(fill.tex.u1 == Approx(0.8719200372));
+    CHECK(video::place_picture(4.0/3, output, 16.0/9, output, false).viewport ==
+          video::IRect{240, 0, 1440, 1080});
+}

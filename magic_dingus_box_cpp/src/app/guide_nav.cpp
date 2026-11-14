@@ -110,6 +110,15 @@ bool guide_painted(const AppState& s) {
     return s.is_fading && !s.fade_target_ui_visible;
 }
 
+bool movie_full_screen(const AppState& s) {
+    if (s.display_settings.menu_style != MenuStyle::ChannelGuide) return false;
+#ifdef MEDIA_BROWSER_ENABLED
+    if (s.current_screen == AppScreen::MediaBrowser) return false;
+#endif
+    const auto* item = s.current_playlist_item();
+    return item && item->movie_tmdb_id > 0 && !guide_painted(s);
+}
+
 bool LastChannelWatch::changed(const AppState& s) {
     if (s.tuned_channel == seen_tuned) return false;
     seen_tuned = s.tuned_channel;

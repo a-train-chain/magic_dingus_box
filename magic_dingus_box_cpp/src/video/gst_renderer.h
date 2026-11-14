@@ -41,15 +41,16 @@ public:
     // This invalidates current GL resources and triggers lazy re-init on next render
     void reset_gl();
     
-    // Playlist and intro video ("picture mode"): render_quad draws through
-    // place_picture into target_fb — the 4:3 area, in framebuffer px with
-    // a TOP-LEFT origin, shown at a 4:3 display aspect. crop covers the
+    // Playlist, channel film and intro video ("picture mode"): render_quad
+    // draws through place_picture into target_fb, in framebuffer px with a
+    // TOP-LEFT origin, shown at target_aspect (4:3 by default). crop covers the
     // target; otherwise the whole frame fits inside opening_fb (the
     // bezel's window, or target_fb without one). Black inside the target
     // where the picture does not reach; nothing is drawn outside it. The
     // render inset and aspect-preserve settings are ignored until
     // clear_picture().
-    void set_picture(IRect target_fb, bool crop, IRect opening_fb);
+    void set_picture(IRect target_fb, bool crop, IRect opening_fb,
+                     double target_aspect = 4.0 / 3.0);
 
     // Leave picture mode: back to the Media Browser paths below
     // (aspect-preserve and its render inset), unchanged.
@@ -146,6 +147,7 @@ private:
     // Picture mode (set_picture / clear_picture).
     bool picture_mode_ = false;
     bool picture_crop_ = true;
+    double picture_target_aspect_ = 4.0 / 3.0;
     IRect picture_target_{0, 0, 0, 0};
     IRect picture_opening_{0, 0, 0, 0};
     // The sampled region the quad VBO currently holds; its texture

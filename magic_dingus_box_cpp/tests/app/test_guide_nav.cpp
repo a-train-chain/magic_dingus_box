@@ -907,3 +907,51 @@ TEST_CASE("entering guide style with a List playlist playing tunes its channel l
     }
 #endif
 }
+
+TEST_CASE("only a full-screen guide film uses the whole output", "[guide_nav]") {
+    app::AppState s;
+    s.display_settings.menu_style = app::MenuStyle::ChannelGuide;
+    s.playlists.resize(2);
+    s.playlists[1].items.resize(1);
+    s.playlists[1].items[0].movie_tmdb_id = 603;
+    put_playing(s);
+    CHECK(app::movie_full_screen(s));
+
+    SECTION("List style keeps existing framing") {
+        s.display_settings.menu_style = app::MenuStyle::List;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+    SECTION("the guide and its fade keep the movie in the window") {
+        s.ui_visible_when_playing = true;
+        CHECK_FALSE(app::movie_full_screen(s));
+        s.ui_visible_when_playing = false;
+        s.is_fading = true;
+        s.fade_target_ui_visible = false;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+    SECTION("an ordinary playlist item keeps existing framing") {
+        s.playlists[1].items[0].movie_tmdb_id = 0;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+    SECTION("no playing item is safe") {
+        s.current_playlist_index = -1;
+        s.current_item_index = -1;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+    SECTION("the retained actual film wins over replacement rows and invalid coordinates") {
+        s.loaded_movie = app::AppState::LoadedMovie{"movies:mix", s.playlists[1].items[0]};
+        s.playlists[1].items[0].movie_tmdb_id = 0;
+        CHECK(app::movie_full_screen(s));
+        s.current_playlist_index = -1;
+        s.current_item_index = -1;
+        CHECK(app::movie_full_screen(s));
+        s.ui_visible_when_playing = true;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+#ifdef MEDIA_BROWSER_ENABLED
+    SECTION("the Media Browser owns its own framing") {
+        s.current_screen = app::AppScreen::MediaBrowser;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+#endif
+}

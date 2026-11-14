@@ -57,6 +57,10 @@ void set_overlay_cursor(AppState& state, const OverlayCursor& c);
 // ── Is the control there? ────────────────────────────────────────────────
 // What main.cpp knows about the playing video, once per frame.
 struct PictureFacts {
+    // Actual loaded item (including a retained film after refresh), and the
+    // output's display aspect: 4:3 in CRT Native, framebuffer aspect otherwise.
+    bool is_movie = false;
+    double output_aspect = 4.0 / 3.0;
     // A main-menu playlist item owns the shared pipeline
     // (PlaylistPlayback::owns_pipeline): not the intro, a game, a playlist
     // switch or the Media Browser.
@@ -75,16 +79,17 @@ struct PictureFacts {
 };
 
 // The cursor may stay on the control: the item still owns the pipeline and
-// is not known to be 4:3. Deliberately blind to video_active and to an
+// is not known to match its target shape (4:3 for playlist videos, the
+// output for films). Deliberately blind to video_active and to an
 // unknown aspect: loading the next item (auto-advance, NEXT/PREV) resets
 // the player and video_active drops for the frames until the new stream
 // prerolls, and the focus must ride through that. It returns to the last
-// row only when the NEW video turns out to have no control — known 4:3, a
+// row only when the NEW video turns out to have no control — a known match, a
 // failed load (no key), or the pipeline handed to something else.
 bool picture_focus_may_stay(const PictureFacts& f);
 
 // The control is drawn, and a turn may move onto it: the focus could stay,
-// a video is actually playing, its aspect is known and not 4:3, and the
+// a video is actually playing, its shape differs from the target, and the
 // overlay is up.
 bool picture_control_visible(const PictureFacts& f);
 

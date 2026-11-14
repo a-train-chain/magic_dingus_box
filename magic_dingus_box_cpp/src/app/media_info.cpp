@@ -92,14 +92,14 @@ std::string to_text(const Json::Value& root) {
     return Json::writeString(builder, root) + "\n";
 }
 
-// One crop edit, on the file's JSON: false is written, true (the default)
-// removes the field, and an entry left with nothing in it goes too. Fields
+// One crop edit, on the file's JSON: a nondefault value is written; the
+// default removes the field, and an entry left with nothing goes too. Fields
 // the kiosk does not know are never touched.
 void apply_edit(Json::Value& videos, const std::string& key, bool crop) {
-    if (!crop) {
+    if (crop != crop_default_for(key)) {
         Json::Value& entry = videos[key];
         if (!entry.isObject()) entry = Json::Value(Json::objectValue);
-        entry["crop"] = false;
+        entry["crop"] = crop;
         return;
     }
     if (!videos.isMember(key)) return;
@@ -111,8 +111,8 @@ void apply_edit(Json::Value& videos, const std::string& key, bool crop) {
 
 // The same edit on the kiosk's map.
 void apply_edit(MediaInfoMap& map, const std::string& key, bool crop) {
-    if (!crop) {
-        map[key].crop = false;
+    if (crop != crop_default_for(key)) {
+        map[key].crop = crop;
         return;
     }
     const auto it = map.find(key);
@@ -197,8 +197,8 @@ std::string serialize_media_info(const MediaInfoMap& map) {
         Json::Value entry(Json::objectValue);
         if (info.duration_s) entry["duration_s"] = *info.duration_s;
         if (info.display_aspect) entry["display_aspect"] = *info.display_aspect;
-        // Cropped is the default, so only `false` is ever written.
-        if (info.crop && !*info.crop) entry["crop"] = false;
+        // Omit the default: films store fill=true; playlist paths store false.
+        if (info.crop && *info.crop != crop_default_for(key)) entry["crop"] = *info.crop;
         videos[key] = entry;
     }
     return to_text(root);
@@ -220,9 +220,17 @@ std::string media_key_for(const std::string& resolved_path, const std::string& d
     return rel.generic_string();
 }
 
+std::string movie_media_key(int tmdb_id) {
+    return "movie:" + std::to_string(tmdb_id);
+}
+
+bool crop_default_for(const std::string& key) {
+    return key.rfind("movie:", 0) != 0;
+}
+
 bool crop_for(const MediaInfoMap& map, const std::string& key) {
     const auto it = map.find(key);
-    if (it == map.end() || !it->second.crop) return true;
+    if (it == map.end() || !it->second.crop) return crop_default_for(key);
     return *it->second.crop;
 }
 
@@ -455,7 +463,7 @@ bool MediaInfoStore::read_merge_write(const Edits& batch,
     Json::Value root;
     if (!parse_root(text, root)) {
         LOG_WARN("media_info: {} is not valid JSON of the expected shape — every "
-                 "video reads as cropped{}", path_,
+                 "video uses its framing default{}", path_,
                  may_write ? "; this write replaces it" : "");
         root = fresh_root();
     }

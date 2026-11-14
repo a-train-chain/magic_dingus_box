@@ -1840,9 +1840,9 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // The overlay's Picture (crop) control (app/overlay_nav.h), decided
         // after this frame's loads (auto-advance, NEXT/PREV) so it follows
-        // the video now playing. Shown while a playlist video whose display
-        // aspect is not 4:3 plays under the overlay — for a 4:3 video crop
-        // and whole frame draw the same picture. The aspect the web admin
+        // the video now playing. Playlist controls compare the source to
+        // 4:3; film controls compare to the output's display shape. The aspect
+        // the web admin
         // recorded wins; until it has one, the last decoded frame's (which
         // may still be the previous video's for the frames before the new
         // one's first). A cursor on the control stays through the load gap
@@ -1853,6 +1853,10 @@ int main(int /* argc */, char* /* argv */[]) {
         {
             const std::string& media_key = controller.current_media_key();
             app::PictureFacts picture;
+            const auto* playing_item = state.current_playlist_item();
+            picture.is_movie = playing_item && playing_item->movie_tmdb_id > 0;
+            picture.output_aspect = state.display_settings.mode == app::DisplayMode::CRT_NATIVE
+                ? 4.0 / 3.0 : mode.width / double(mode.height);
             picture.owns_pipeline = playlist_playback.owns_pipeline();
             picture.has_key = !media_key.empty();
             if (picture.has_key) {
@@ -2235,21 +2239,23 @@ int main(int /* argc */, char* /* argv */[]) {
             glClear(GL_COLOR_BUFFER_BIT);
         }
         
-        // Calculate 4:3 viewport for Modern TV mode
-        // This is used for both video and UI rendering
+        // Modern TV uses a 4:3 area for the playlist/guide UI and the whole
+        // output for a full-screen film. Video and UI share the content rect.
         bool use_letterbox = (state.display_settings.mode == app::DisplayMode::MODERN_TV);
+        const bool movie_full_screen_now = app::movie_full_screen(state);
 
         // Media Browser content is modern 16:9 (movie posters, movie
         // playback) — skip the 4:3 pillarbox viewport that wraps the
-        // main UI's 4:3 playlist videos. Both the per-screen layouts
+        // main UI's 4:3 playlist videos. Full-screen guide films also use
+        // the whole output, with no bezel. Both the per-screen layouts
         // and ad-hoc movie playback assume the full 1280x720 viewport.
         // Same gating idea as the bezel skip below (kept as a separate
         // flag so future tweaks to either don't have to touch the other).
 #ifdef MEDIA_BROWSER_ENABLED
-        bool letterbox_active = use_letterbox &&
+        bool letterbox_active = use_letterbox && !movie_full_screen_now &&
             state.current_screen != app::AppScreen::MediaBrowser;
 #else
-        bool letterbox_active = use_letterbox;
+        bool letterbox_active = use_letterbox && !movie_full_screen_now;
 #endif
         // The 4:3 content rect exists in TWO coordinate spaces and they
         // are no longer the same thing:
@@ -2322,15 +2328,15 @@ int main(int /* argc */, char* /* argv */[]) {
         // their existing draw order and are unaffected by CRT effects.
         bool scene_fbo_used = ui_renderer.begin_scene_fbo(state);
 
-        // Render video. It draws only its own rect (in Modern TV the 4:3
-        // area, never the whole framebuffer), so the bars are whatever the
+        // Render video. It draws only its own rect (the whole output for
+        // full-screen films, otherwise the 4:3 area), so bars are whatever the
         // clear above left there — and that clear runs on every frame once
         // the intro is complete.
         // This handles both intro video and regular video playback
         if (should_render_video) {
             // Playlist and intro video draw through the picture placement
-            // into the 4:3 area: `content` is exactly that outside the
-            // Media Browser — the centred 4:3 rect in Modern TV, the whole
+            // into `content`: the whole output for full-screen guide films,
+            // otherwise the centred 4:3 rect in Modern TV or the whole
             // framebuffer (shown as 4:3) in CRT Native. The Media Browser
             // keeps its own aspect-preserve + inset paths below.
 #ifdef MEDIA_BROWSER_ENABLED
@@ -2355,23 +2361,19 @@ int main(int /* argc */, char* /* argv */[]) {
                             app::kBezelImageWidth, app::kBezelImageHeight, fb_w, fb_h),
                         content);
                 }
-                // The playing video's own setting (app/media_info.h):
-                // cropped unless the operator chose to see it whole. The
-                // intro, and anything without a key, is cropped. A source
-                // known to be 4:3 is always cropped (video::picture_crop):
-                // no control is offered for one, so a stored "not cropped"
-                // could never be undone. Its aspect is the one placement
-                // uses — the frame being drawn — else the store's
-                // (playing_display_aspect).
-                const bool crop = video::picture_crop(
+                // Films follow their own preference full screen, and show
+                // whole while the guide window is painted (fade included).
+                // Resolve the actual retained film, not refreshed row indexes.
+                const auto* playing_item = state.current_playlist_item();
+                const bool is_movie = playing_item && playing_item->movie_tmdb_id > 0;
+                const bool crop = video::picture_crop_for(
+                    is_movie, guide_frame_view != nullptr,
                     media_info.crop_for(controller.current_media_key()),
                     playing_display_aspect());
-                // Channel Guide painted (on screen, or fading out): the same
-                // picture, crop setting and all, inside the guide's 4:3 video
-                // window — the view's window on the logical canvas mapped to
-                // framebuffer px (ui::guide_rect_to_fb; non-uniform in CRT
-                // Native). No bezel opening inside the window: fit uses the
-                // window. The whole picture once the guide is gone.
+                // Full-screen Modern TV films use the output's display shape;
+                // guide windows and CRT Native retain their 4:3 display shape.
+                const double target_aspect = movie_full_screen_now && use_letterbox
+                    ? content.w / double(content.h) : 4.0 / 3.0;
                 video::IRect picture_target = content;
                 if (guide_frame_view != nullptr) {
                     const ui::GuideRect w = ui::guide_rect_to_fb(
@@ -2380,7 +2382,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     picture_target = video::IRect{w.x, w.y, w.w, w.h};
                     opening = picture_target;
                 }
-                gst_renderer.set_picture(picture_target, crop, opening);
+                gst_renderer.set_picture(picture_target, crop, opening, target_aspect);
             } else {
                 gst_renderer.clear_picture();
             }

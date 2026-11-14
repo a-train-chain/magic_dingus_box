@@ -793,4 +793,43 @@ TEST_CASE("current_media_key names the loaded video inside the data directory",
     CHECK(r.controller.current_media_key().empty());
 }
 
+
+TEST_CASE("movie media key stays with the actual loaded film across refresh", "[controller][media_info]") {
+    Rig r;
+    const int pl = r.add_playlist("MOVIE MIX", 1);
+    r.state.playlists[pl].items[0].movie_tmdb_id = 603;
+    r.playing(pl, 0);
+    REQUIRE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
+    CHECK(r.controller.current_media_key() == "movie:603");
+    r.state.loaded_movie = app::AppState::LoadedMovie{"movies:mix", r.state.playlists[pl].items[0]};
+    r.state.playlists[pl].items[0].movie_tmdb_id = 604;
+    CHECK(r.controller.current_media_key() == "movie:603");
+    r.state.current_playlist_index = -1;
+    r.state.current_item_index = -1;
+    CHECK(r.controller.current_media_key() == "movie:603");
+
+    SECTION("a missing replacement preserves the old stream and its key") {
+        auto absent = r.video("absent", false);
+        absent.movie_tmdb_id = 605;
+        r.state.playlists[pl].items = {absent};
+        CHECK_FALSE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
+        CHECK(r.controller.current_media_key() == "movie:603");
+    }
+    SECTION("a player load failure clears the film key") {
+        r.player.fail_paths.insert(r.state.playlists[pl].items[0].path);
+        CHECK_FALSE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
+        CHECK(r.controller.current_media_key().empty());
+    }
+    SECTION("a successful nonmovie load resumes ordinary path keys") {
+        r.controller.set_media_data_dir(r.dir.string());
+        r.state.playlists[pl].items[0].movie_tmdb_id = 0;
+        REQUIRE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
+        CHECK(r.controller.current_media_key() == "MOVIE MIX0.mp4");
+    }
+    SECTION("a direct Media Browser load clears the film key") {
+        REQUIRE(r.controller.load_file_with_resolution(r.state.playlists[pl].items[0].path, ""));
+        CHECK(r.controller.current_media_key().empty());
+    }
+}
+
 }  // namespace

@@ -9,11 +9,13 @@
 //                               "display_aspect": 1.7778,
 //                               "crop": false}}}
 //
-// Keys are paths relative to the data directory, with `/` separators. Every
+// Keys are paths relative to the data directory, with `/` separators, or
+// movie:<tmdb_id> for a film independent of its library path. Every
 // field is optional: the web admin writes duration_s and display_aspect when
-// it saves a video, and `crop` exists only as `false` — absent means the
-// default, cropped. A missing, empty or corrupt file means "every video is
-// cropped"; it never blocks playback or the menu. Fields and top-level keys
+// it saves a video, and `crop` is stored only when it differs from the key
+// default: whole for movies, cropped for playlist paths. A missing, empty
+// or corrupt file uses those defaults; it never blocks playback or the menu.
+// Fields and top-level keys
 // the kiosk does not know are kept when it writes (it merges into the JSON it
 // read, it never rebuilds the file from its own struct).
 //
@@ -70,7 +72,13 @@ std::string serialize_media_info(const MediaInfoMap& map);
 std::string media_key_for(const std::string& resolved_path,
                           const std::string& data_dir);
 
-// The video's crop setting: true (cropped) unless its entry says false.
+// Films use a stable identity rather than a library path.
+std::string movie_media_key(int tmdb_id);
+
+// Films default to whole; playlist paths (and no key) default to cropped.
+bool crop_default_for(const std::string& key);
+
+// The explicit crop preference, else the key's default.
 bool crop_for(const MediaInfoMap& map, const std::string& key);
 
 // The kiosk's copy of media_info.json.
@@ -159,8 +167,9 @@ public:
     bool first_read_finished() const { return first_read_finished_; }
 
     // The operator's choice for one video. The map changes now; the write
-    // is queued. crop == true removes the entry's crop field (and the entry
-    // when nothing else is left in it). An empty key is ignored.
+    // is queued. The key's default removes its crop field (and the entry
+    // when nothing else is left in it); any override is stored explicitly.
+    // An empty key is ignored.
     void set_crop(const std::string& key, bool crop);
 
     // Blocks until every edit made so far is on disk (true), or until

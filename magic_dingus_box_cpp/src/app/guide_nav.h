@@ -124,6 +124,10 @@ bool guide_visible(const AppState& s);
 // the Media Browser.
 bool guide_painted(const AppState& s);
 
+// A guide film outside its picture window uses the whole output. The
+// retained actual film wins over coordinates changed by a library refresh.
+bool movie_full_screen(const AppState& s);
+
 // Saving the channel last tuned (AppState::last_channel_id, persisted as
 // playback.last_channel) when it changes. The id is compared only on a
 // frame where tuned_channel moved — a tune's load ran, or a rebuild
