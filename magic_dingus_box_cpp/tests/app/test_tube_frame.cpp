@@ -8,6 +8,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <type_traits>
 #include "tube/tube_inputs.h"
 using namespace tube;
 using Catch::Approx;
@@ -245,4 +248,190 @@ TEST_CASE("tube frame: worn character controls keep gentle lows and independent 
     CHECK(tracking_moving(r, 1.14)); CHECK_FALSE(tracking_moving(r, 1.18));
     tube_character_frame(u, r, 2, .08, false);
     CHECK(u.flagOffset == 0); CHECK(u.purityAmount == 0); CHECK(u.trackingOffset == 0);
+}
+
+// ---- The per-frame entry point: tube_frame() --------------------------------
+
+namespace {
+
+Resolved look_resolved(Look look) {
+    TubeSetting s;
+    select_look(s, look);
+    return resolve(s);
+}
+
+// TubeUniforms is floats only, so two that hold the same values hold the same bytes.
+bool same_uniforms(const TubeUniforms& a, const TubeUniforms& b) {
+    static_assert(std::is_trivially_copyable_v<TubeUniforms>, "compared byte for byte");
+    return std::memcmp(&a, &b, sizeof(TubeUniforms)) == 0;
+}
+
+// A frame in the middle of a warm-up with the light rising: every step of
+// tube_frame() has something to change.
+FrameState warming_frame() {
+    FrameState state;
+    state.seconds = 4.25;
+    state.frame = 255;
+    state.tracking_elapsed = 1.5;
+    state.motion_amount = 1.0;
+    state.rising_light = 1.0;
+    state.ablLevel = 0.4f;
+    state.power = 0.9f;
+    state.degauss = 0.3f;
+    state.spot = 0.2f;
+    state.warmupGain = 0.5f;
+    return state;
+}
+
+}  // namespace
+
+TEST_CASE("tube frame: tube_frame is the same frame however often it runs from the same still", "[tube]") {
+    const auto r = look_resolved(Look::everything);
+    const auto still = tube_uniforms_for(r, kFrame1080);
+    REQUIRE(still.jitter > 0.0f);       // tube_signal_motion has something to take
+    REQUIRE(still.breathe > 0.0f);      // ...and FOCUS has light to soften with
+    REQUIRE(still.sharpness != 1.0f);   // ...through an active filter
+    const TubeUniforms before = still;
+    const FrameState state = warming_frame();
+    const auto first = tube_frame(still, r, state);
+    const auto second = tube_frame(still, r, state);
+    CHECK(same_uniforms(first, second));
+    CHECK(same_uniforms(still, before));   // the cached still is never touched
+}
+
+TEST_CASE("tube frame: tube_frame takes JITTER's share once, which is why it exists", "[tube]") {
+    const auto r = look_resolved(Look::everything);
+    const auto still = tube_uniforms_for(r, kFrame1080);
+    FrameState state = warming_frame();
+    state.warmupGain = 1.0f;
+    auto once = still;
+    tube_signal_motion(once, state.seconds, state.motion_amount, state.rising_light);
+    auto twice = once;
+    tube_signal_motion(twice, state.seconds, state.motion_amount, state.rising_light);
+    const auto frame = tube_frame(still, r, state);
+    CHECK(frame.jitter == once.jitter);
+    CHECK(frame.jitter != twice.jitter);
+    CHECK(frame.sharpness == once.sharpness);
+    CHECK(frame.sharpness != twice.sharpness);
+}
+
+TEST_CASE("tube frame: tube_frame is Sound Factory's frame, step for step", "[tube]") {
+    const auto r = with_row(with_row(look_resolved(Look::everything), Effect::rollBand, 60), Effect::flagging, 40);
+    const auto still = tube_uniforms_for(r, kFrame1080);
+    const FrameState state = warming_frame();
+    // TubeRenderer.mm encodeTubeInto: the frame's clock, the renderer's own
+    // fields, warm-up's softening, signal motion, then the character.
+    auto want = still;
+    tube_frame_phases(want, state.seconds, state.frame);
+    want.ablLevel = state.ablLevel;
+    want.power = state.power;
+    want.warmupGain = state.warmupGain;
+    want.sharpness *= 0.8f + 0.2f * state.warmupGain;
+    want.degauss = state.degauss;
+    tube_signal_motion(want, state.seconds, state.motion_amount, state.rising_light);
+    tube_character_frame(want, r, state.seconds, state.tracking_elapsed, true);
+    want.spot = state.spot;
+    CHECK(same_uniforms(tube_frame(still, r, state), want));
+}
+
+TEST_CASE("tube frame: tube_frame writes what only the renderer knows", "[tube]") {
+    const auto r = look_resolved(Look::everything);
+    const auto still = tube_uniforms_for(r, kFrame1080);
+    FrameState state = warming_frame();
+    state.rising_light = 0.0;   // FOCUS only softens with rising light: warm-up's softening alone
+    const auto u = tube_frame(still, r, state);
+    CHECK(u.ablLevel == state.ablLevel);
+    CHECK(u.power == state.power);
+    CHECK(u.degauss == state.degauss);
+    CHECK(u.spot == state.spot);
+    CHECK(u.warmupGain == state.warmupGain);
+    CHECK(u.sharpness == still.sharpness * (0.8f + 0.2f * state.warmupGain));
+    FrameState lit = state;
+    lit.warmupGain = 1.0f;
+    CHECK(tube_frame(still, r, lit).sharpness == still.sharpness);   // warmed up: no softening
+}
+
+TEST_CASE("tube frame: tube_frame's switches hold motion and character back", "[tube]") {
+    const auto r = with_row(look_resolved(Look::everything), Effect::rollBand, 60);
+    const auto still = tube_uniforms_for(r, kFrame1080);
+    FrameState state = warming_frame();
+    state.motion_enabled = false;
+    state.character_enabled = false;
+    const auto u = tube_frame(still, r, state);
+    CHECK(u.jitter == still.jitter);
+    CHECK(u.jitterBias == -0.5f);
+    CHECK(u.rollAmount == 0.0f);
+    state.character_enabled = true;
+    CHECK(tube_frame(still, r, state).rollAmount > 0.0f);
+}
+
+// ---- The long uptime: every phase stays continuous across its wrap ---------
+
+TEST_CASE("tube frame: hum's bar rolls on smoothly across its wrap", "[tube]") {
+    const double dt = 1.0 / 60.0, t0 = kHumPeriodSeconds * 1000 - 0.004;
+    TubeUniforms a{}, b{};
+    tube_frame_phases(a, t0, 0);
+    tube_frame_phases(b, t0 + dt, 1);
+    REQUIRE(b.humPhase < a.humPhase);   // the phase did wrap between the two frames
+    for (const TubeUniforms& u : {a, b}) {
+        CHECK(u.humPhase >= 0.0f);
+        CHECK(u.humPhase < 1.0f);
+    }
+    // What the shader draws, sin(2 pi phase), moves no further than one frame's advance.
+    const double step = std::abs(std::sin(detail::kTwoPi * b.humPhase) - std::sin(detail::kTwoPi * a.humPhase));
+    CHECK(step <= detail::kTwoPi * dt / kHumPeriodSeconds + 1e-5);
+}
+
+TEST_CASE("tube frame: degauss's two phases are 31 t and 27 t, after a month too", "[tube]") {
+    for (const double t : {0.37, 30.0 * 86400.0 + 0.37}) {
+        INFO(t);
+        TubeUniforms u{};
+        tube_frame_phases(u, t, 0);
+        CHECK(std::sin(u.degaussPhaseA) == Approx(std::sin(std::fmod(31.0 * t, detail::kTwoPi))).margin(1e-4));
+        CHECK(std::sin(u.degaussPhaseB) == Approx(std::sin(std::fmod(27.0 * t, detail::kTwoPi))).margin(1e-4));
+    }
+}
+
+TEST_CASE("tube frame: flicker's wave is the same sum after a month", "[tube]") {
+    for (const double t : {0.37, 30.0 * 86400.0}) {
+        INFO(t);
+        TubeUniforms u{};
+        tube_frame_phases(u, t, 0);
+        CHECK(u.flickerWave == Approx(0.6 * std::sin(37.7 * t) + 0.4 * std::sin(61.3 * t + 1.7)).margin(1e-4));
+    }
+}
+
+TEST_CASE("tube frame: the noise seed is fract(frame * 0.618) * 913", "[tube]") {
+    const std::uint64_t f = 12345;
+    TubeUniforms u{};
+    tube_frame_phases(u, 0.0, f);
+    const double x = static_cast<double>(f) * 0.618;
+    CHECK(u.noiseSeed == Approx((x - std::floor(x)) * 913.0).margin(1e-4));
+}
+
+TEST_CASE("tube frame: the character keeps moving, one frame at a time, after a month", "[tube]") {
+    auto r = resolve(TubeSetting{});
+    r = with_row(with_row(with_row(r, Effect::rollBand, 70), Effect::colorDrift, 70), Effect::flagging, 70);
+    const double t0 = 30.0 * 86400.0, dt = 1.0 / 60.0;
+    auto a = tube_uniforms_for(r, kFrame1080), b = a;
+    tube_character_frame(a, r, t0, 0.0, true);
+    tube_character_frame(b, r, t0 + dt, dt, true);
+
+    const double roll_period = 30.0 - 24.0 * r.effects[index_of(Effect::rollSpeed)] / 100.0;
+    double advance = static_cast<double>(b.rollPosition) - a.rollPosition;
+    if (advance < 0.0) advance += 1.0;
+    CHECK(advance == Approx(dt / roll_period).margin(1e-6));
+
+    // Loose: no faster than the shortest period each row can reach, at its largest swing.
+    const double px_per_mm = a.pxPerMm;
+    const double drift_most = 0.25 * px_per_mm * 3.0 * detail::kTwoPi / 6.0 * dt;
+    const double flag_most = 4.0 * px_per_mm * (0.8 + 0.2 * 2.0) * detail::kTwoPi / 2.0 * dt;
+    for (const TubeUniforms& u : {a, b}) {
+        CHECK(std::isfinite(u.driftOffset));
+        CHECK(std::isfinite(u.flagOffset));
+    }
+    CHECK(b.driftOffset != a.driftOffset);   // not frozen
+    CHECK(b.flagOffset != a.flagOffset);
+    CHECK(std::abs(b.driftOffset - a.driftOffset) <= drift_most);   // not jumped
+    CHECK(std::abs(b.flagOffset - a.flagOffset) <= flag_most);
 }

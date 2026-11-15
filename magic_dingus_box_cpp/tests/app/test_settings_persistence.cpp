@@ -705,6 +705,16 @@ TEST_CASE("settings: a file older than crt_engine takes the engine from the old 
     CHECK(off.display_settings.tube == tube::TubeSetting{});
 }
 
+TEST_CASE("settings: a valid crt_engine wins over an old flag that disagrees with it",
+          "[settings][tube]") {
+    SettingsSandbox sb;
+    sb.write(R"({"display": {"crt_engine": "classic", "enhanced_crt_enabled": true}})");
+    AppState s;
+    REQUIRE(SettingsPersistence::load_settings(s));
+    CHECK(s.display_settings.crt_engine == app::CrtEngine::Classic);
+    CHECK_FALSE(s.display_settings.enhanced_crt_enabled);   // the flag follows the engine
+}
+
 TEST_CASE("settings: an older kiosk after a rollback still sees Tube as enhanced",
           "[settings][tube]") {
     // A rolled-back kiosk knows only enhanced_crt_enabled. Tube must read

@@ -48,7 +48,8 @@ inline constexpr double kTubeDesignMarginMm = 1.5;
 inline constexpr int kTubeQuarterRes = 4;
 
 // The picture rectangle in output pixels: 1440 x 1080 at 1080p on a modern TV.
-// `crt_native` when the output already is a CRT.
+// `crt_native` when the output already is a CRT. Precondition: w > 0 && h > 0
+// (a millimetre is w / kTubeMmAcross pixels, and the shader divides by both).
 struct Picture {
     double w, h;
     bool crt_native;
@@ -56,6 +57,9 @@ struct Picture {
 
 // What the shader reads, Sound Factory's names. An aggregate: `TubeUniforms u{}`
 // is all zeros; tube_uniforms_for() gives the fields their neutral values.
+// NOT laid out for a GLSL uniform block (not std140: `tint` is three packed
+// floats, and nothing is padded to a vec4): upload it field by field, never hand
+// the struct to glBufferData as one block.
 struct TubeUniforms {
     float outW, outH;  // the picture, px
     float pxPerMm;     // picture px to a millimetre of the tube
@@ -273,6 +277,28 @@ inline TubeUniforms tube_uniforms_for(const Resolved& resolved, const Picture& p
 
 // ---- What one frame owns ---------------------------------------------------
 //
+// THE PER-FRAME CONTRACT.
+//   - tube_uniforms_for() gives the STILL uniforms: everything the setting and
+//     the picture decide. It bisects, so a renderer may cache it until either
+//     changes.
+//   - tube_frame() is the per-frame entry point: still uniforms + FrameState in,
+//     this frame's uniforms out. It never touches the still.
+//   - tube_frame_phases(), tube_signal_motion() and tube_character_frame() are
+//     its parts. Anyone calling them directly must apply them to a FRESH COPY of
+//     the still uniforms each frame, in that order (tube_frame's own order, which
+//     is Sound Factory's TubeRenderer). tube_signal_motion() must never run twice
+//     on the same uniforms: it scales them in place (JITTER loses its share again,
+//     SHARPNESS softens again), so a second run decays JITTER and drifts
+//     SHARPNESS a little every frame, with nothing logged. Sound Factory is safe
+//     only because it rebuilds the uniforms every frame.
+//   - tube_character_frame() needs uniforms that came from tube_uniforms_for():
+//     it divides by `outH` and scales by `pxPerMm`, both 0 in a `TubeUniforms{}`.
+//   - Only the renderer writes ablLevel, power, degauss, spot and warmupGain
+//     (through FrameState); the still holds their at-rest values.
+//   - Not here: Sound Factory zeroes glow, chromaBleed, abl and breathe when it
+//     has no quarter-resolution pass. That is what the renderer can draw, not
+//     what the frame is, so a renderer without that pass does it to the still.
+//
 // Ported from Sound Factory's panel/TubeInputs.h (tubeWarmupGain,
 // tubeSignalMotion, tubeCharacterStrength, tubeTracking*, tubeCharacterFrame,
 // tubeSettleFrames and their constants), commit 4ef74a6. What differs:
@@ -326,7 +352,8 @@ inline void tube_frame_phases(TubeUniforms& u, double seconds, std::uint64_t fra
     u.humPhase = detail::wrapped(seconds / kHumPeriodSeconds, 1.0);
     u.flickerWave = static_cast<float>(0.6 * std::sin(seconds * 37.7) + 0.4 * std::sin(seconds * 61.3 + 1.7));
     u.noiseSeed = static_cast<float>(std::fmod(f * 0.618, 1.0) * 913.0);
-    u.jitterSeed = static_cast<float>(frame % 1024u);
+    u.jitterSeed = static_cast<float>(frame % 1024u);  // repeats every 1024 frames (~17 s at 60 Hz) on purpose:
+                                                        // small and exact in a float; not an unbounded counter
     u.degaussPhaseA = detail::wrapped(seconds * 31.0, detail::kTwoPi);
     u.degaussPhaseB = detail::wrapped(seconds * 27.0, detail::kTwoPi);
 }
@@ -419,6 +446,41 @@ inline void tube_character_frame(TubeUniforms& u, const Resolved& resolved, doub
         u.purityG = static_cast<float>(0.5 + 0.5 * std::cos(hue - 2.094395102393195));
         u.purityB = static_cast<float>(0.5 + 0.5 * std::cos(hue + 2.094395102393195));
     }
+}
+
+// What the renderer alone knows about this frame.
+struct FrameState {
+    double seconds = 0.0;           // since kiosk start, double precision
+    std::uint64_t frame = 0;        // drawn-frame counter
+    double tracking_elapsed = 0.0;  // seconds since tracking's clock started
+    bool motion_enabled = true;     // false while powering off or a transition is open
+    bool character_enabled = true;  // as motion_enabled, and false too wherever the renderer gates the tube
+    double motion_amount = 1.0;     // tube_signal_motion's `amount`
+    double rising_light = 0.0;      // tube_signal_motion's `rising_light`
+    float ablLevel = 0.0f;          // measured average light, smoothed
+    float power = 1.0f;             // 0 off .. 1 on
+    float degauss = 0.0f;           // 1 .. 0 decaying
+    float spot = 0.0f;              // power-off dot
+    float warmupGain = 1.0f;        // warmup_gain(seconds since the tube started)
+};
+
+// ONE FRAME, from the still uniforms (tube_uniforms_for, cacheable) and what the
+// renderer knows. Sound Factory's TubeRenderer encodeTubeInto, step for step: the
+// clock's phases, the renderer's own fields, warm-up softening the picture
+// through the existing bandwidth filter, signal motion, then the character. The
+// still is copied, never changed, so this may run any number of times.
+inline TubeUniforms tube_frame(const TubeUniforms& still, const Resolved& resolved, const FrameState& state) noexcept {
+    TubeUniforms u = still;
+    tube_frame_phases(u, state.seconds, state.frame);
+    u.ablLevel = state.ablLevel;
+    u.power = state.power;
+    u.warmupGain = state.warmupGain;
+    if (u.warmupGain < 1.0f) u.sharpness *= 0.8f + 0.2f * u.warmupGain;
+    u.degauss = state.degauss;
+    if (state.motion_enabled) tube_signal_motion(u, state.seconds, state.motion_amount, state.rising_light);
+    tube_character_frame(u, resolved, state.seconds, state.tracking_elapsed, state.character_enabled);
+    u.spot = state.spot;
+    return u;
 }
 
 // What changes on screen with nothing else changing: the rows that move every

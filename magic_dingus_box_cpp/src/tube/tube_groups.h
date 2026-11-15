@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <string_view>
 
+#include "tube/tube_looks.h"
 #include "tube/tube_rows.h"
 
 namespace tube {
@@ -137,22 +138,26 @@ inline constexpr std::array<Group, 10> kGroups{{
                      Effect::purityPosition)},
 }};
 
-// One knob click moves a row by this much: the two whole-pixel sizes by 10, the rest by 5.
+// One knob click moves a row by this much: the two whole-pixel sizes by one
+// detent (kSizeRowStep, one pixel), the rest by 5.
 constexpr int row_step(Effect e) noexcept {
-    return (e == Effect::lineSize || e == Effect::maskSize) ? 10 : 5;
+    return (e == Effect::lineSize || e == Effect::maskSize) ? kSizeRowStep : 5;
 }
 
-// One step up or down (direction +1 / -1) onto the next multiple of the step
-// strictly past `value`, clamped to 0..100. Off-grid values (set from the web) snap.
+// One step up or down onto the next multiple of the step strictly past `value`,
+// clamped to kRowMin..kRowMax. Off-grid values (set from the web) snap. Only the
+// SIGN of `direction` is read, so a knob may hand over its raw delta: any
+// positive delta is one step up, any negative one step down, and 0 moves nothing
+// (the value comes back clamped into the range, otherwise unchanged).
 constexpr int step_row(Effect e, int value, int direction) noexcept {
     const int s = row_step(e);
-    int next;
+    int next = value;
     if (direction > 0) {
-        next = (value >= 0 ? value / s + 1 : 0) * s;
-    } else {
-        next = (value > 0 ? (value - 1) / s : -1) * s;
+        next = (value >= kRowMin ? value / s + 1 : 0) * s;
+    } else if (direction < 0) {
+        next = (value > kRowMin ? (value - 1) / s : -1) * s;
     }
-    return next < 0 ? 0 : (next > 100 ? 100 : next);
+    return next < kRowMin ? kRowMin : (next > kRowMax ? kRowMax : next);
 }
 
 }  // namespace tube

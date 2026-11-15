@@ -386,6 +386,23 @@ TEST_CASE("tube inputs: the flat picture's one scale leaves the design margin at
     CHECK(detail::flat_fit_for(k1080) == Approx(detail::flat_fit_for(Picture{960.0, 720.0, false})));
 }
 
+TEST_CASE("tube inputs: the flat fit agrees with a closed form worked without the header's bisection", "[tube]") {
+    // Straight edges: the scaled picture's corner sits inside the corner fillet
+    // (radius r), at distance r - hypot(r - a W, r - a H) inward, a = (1 - fit) / 2.
+    // That is the margin m when (r - a W)^2 + (r - a H)^2 = (r - m)^2, a quadratic in a:
+    //   (W^2 + H^2) a^2 - 2 r (W + H) a + 2 r^2 - (r - m)^2 = 0.
+    // The smaller root is the one with the corner inside the fillet (both legs positive).
+    const double w = 1440.0, h = 1080.0, px_per_mm = w / 196.608;
+    const double r = 5.0 * px_per_mm, m = 1.5 * px_per_mm;
+    const double qa = w * w + h * h, qb = -2.0 * r * (w + h), qc = 2.0 * r * r - (r - m) * (r - m);
+    const double a = (-qb - std::sqrt(qb * qb - 4.0 * qa * qc)) / (2.0 * qa);
+    REQUIRE(r - a * w > 0.0);
+    REQUIRE(r - a * h > 0.0);
+    const double fit = 1.0 - 2.0 * a;   // 0.97033 at 1440 x 1080
+    CHECK(fit == Approx(0.97033).margin(1e-5));
+    CHECK(tube_uniforms_for(resolve(TubeSetting{}), k1080).flatFit == Approx(fit).margin(1e-4));
+}
+
 TEST_CASE("tube inputs: hum retains subtle lows and a visible bounded upper range", "[tube]") {
     CHECK(hum_strength(0) == 0.0f);
     CHECK(hum_strength(10) * 0.25 == Approx(0.005));

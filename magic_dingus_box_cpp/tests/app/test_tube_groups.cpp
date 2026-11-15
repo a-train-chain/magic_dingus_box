@@ -39,3 +39,10 @@ TEST_CASE("tube groups: labels and steps", "[tube]") {
     REQUIRE(step_row(Effect::hum, 0, -1) == 0);
     REQUIRE(step_row(Effect::lineSize, 10, +1) == 20);
 }
+TEST_CASE("tube groups: a step reads only the direction's sign, and 0 moves nothing", "[tube]") {
+    REQUIRE(step_row(Effect::hum, 20, 0) == 20);    // a knob's raw zero delta
+    REQUIRE(step_row(Effect::hum, 120, 0) == 100);  // ...still lands inside the range
+    REQUIRE(step_row(Effect::hum, -5, 0) == 0);
+    REQUIRE(step_row(Effect::hum, 20, +7) == 25);   // one step, whatever the size of the delta
+    REQUIRE(step_row(Effect::hum, 20, -3) == 15);
+}

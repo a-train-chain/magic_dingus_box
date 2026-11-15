@@ -6,10 +6,16 @@
 // (so "moved back" is not "custom"), and picking a look clears everything moved.
 // resolve() turns the setting into the 44 concrete values plus the mask.
 //
+// For whoever ports Sound Factory's renderer, the names cross over: the box's
+// TubeSetting is Sound Factory's sparse CrtTube / DisplayCrt (a look plus the
+// moved rows); the box's Resolved is what Sound Factory's panel calls
+// TubeSetting (the 44 concrete values).
+//
 // Pure: standard library only, no I/O.
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -24,6 +30,9 @@ namespace tube {
 // nothing moved.
 struct TubeSetting {
     Look look = kLookDefault;
+    // `mask` and `rows`: write them through set_mask() / set_row(), or check a
+    // row with is_row_value() first. resolve() copies what it finds here with
+    // no range check.
     std::optional<Mask> mask;
     std::array<std::optional<int>, kEffectCount> rows{};
 
