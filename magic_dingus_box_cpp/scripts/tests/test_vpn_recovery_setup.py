@@ -30,11 +30,11 @@ class SetupTests(unittest.TestCase):
         for name in ('usermod','chown','timedatectl'): self.script(name,'#!/bin/sh\nexit 0\n')
         self.script('systemctl','#!/bin/sh\necho active\n')
         self.script('sudo','#!/bin/sh\n[ "$1" = chown ] && exit 0\nexec "$@"\n')
-        self.script('flock',f'''#!{sys.executable}
+        self.script('flock','''#!/usr/bin/env python3
 import fcntl,sys
 fd=int(sys.argv[-1]);fcntl.flock(fd,fcntl.LOCK_UN if '-u' in sys.argv else fcntl.LOCK_EX|fcntl.LOCK_NB)
 ''')
-        self.script('docker',f'''#!{sys.executable}
+        self.script('docker','''#!/usr/bin/env python3
 import json,os,sys,time
 from pathlib import Path
 r=Path(os.environ['TEST_ROOT']);a=sys.argv[1:]
