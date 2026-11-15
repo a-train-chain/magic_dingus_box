@@ -7,7 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **A crafted ROM folder name can no longer run code in the Content
+  Manager.** A system folder name is now shown as plain text in the
+  playlist editor, and uploads and package imports accept only plain
+  folder names (letters, numbers, `-` and `_`).
+- **Playlist start and end times can no longer smuggle text into a
+  playlist file.** Every save and import turns them into plain numbers.
+
 ### Added
+- **Channel Guide.** A second menu style (Settings → Display → Menu
+  Style → Channel Guide) turns every video playlist into a live TV
+  channel that runs on a schedule, plus channel 00, a Master Shuffle mix.
+  Tuning in joins whatever is already on, like broadcast TV; the yellow
+  and green buttons step through channels. The guide shows the tuned
+  channel in a picture window beside a channel grid; turn the knob to
+  move and press to tune. The box goes back to the last channel you
+  watched after power-on, a game, or Movies. List style is still the
+  default and is unchanged.
+- **The box follows your time zone.** Opening the Content Manager sets
+  the box's clock to your browser's time zone, so schedules and the
+  guide's clock match local time.
+- **Videos keep their shape, and you choose how they fill the screen.**
+  Uploads of any shape, including phone videos shot upright, are kept as
+  they are and stored at higher detail. Every video that isn't 4:3 gets a
+  **Crop** setting: on (the default) fills the screen by trimming the
+  sides, off shows the whole picture. Change it on the TV (turn the knob
+  past the last playlist to reach CROP) or on the video's row in the
+  Content Manager. Videos already on the box are measured once in the
+  background.
+- **Pair Bluetooth controllers from the TV.** Settings → Pair Wireless
+  Controller walks you through pairing a PlayStation 5 or 4, Xbox, Switch
+  Pro or 8BitDo pad using the knob and buttons. Those pads work in menus
+  and games straight away, wired or wireless, with no button setup, and
+  reconnect when you press their home button. Other pads go through
+  Controller Setup as before.
+- **Movies downloads recover from VPN trouble on their own.** The box
+  now checks the VPN connection itself. When the server stops carrying
+  traffic or loses its forwarded port, it moves to another server within
+  a couple of minutes, and to a second country only if you allow one
+  (Content Manager → Movies → Advanced; none by default). Box health now
+  shows whether the VPN is working right now, not just whether it has
+  dropped recently.
 - **Movie channels in the Channel Guide.** After Movies is unlocked,
   downloaded films form MOVIE MIX and genre channels, with at least three
   films per channel and up to eight channels. KIDS requires a G or PG
@@ -37,9 +78,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is labeled OFF AIR with its return time where space allows, and the last
   film's NEXT points to the next morning's film. Live films still stop at
   1 AM; manually chosen programmes finish whole.
-- The CRT tube's settings model (looks, effect rows, curves, saved engine choice and a Pi 5-only gate) landed with no visible change: nothing draws differently yet. The menu and Content Manager controls for it, and the file that carries live changes between them, are in place but stay hidden.
+- **Groundwork for a more realistic CRT look.** The settings for a new
+  CRT engine (preset looks, 44 adjustable effects and a Pi 5-only
+  switch) are now stored by the box. Nothing looks different yet: the
+  picture and the Settings menu are unchanged until the engine itself
+  ships.
 
 ### Fixed
+- **No more TV restarts while a big upload is copying.** Saving
+  settings, keeping watch history and typing from the phone no longer
+  wait on a busy SD card, which could make the TV app stop and restart
+  itself. A playlist with missing videos no longer freezes the screen
+  either.
+- **Content Manager saves keep working** after the page has been open
+  for an hour or the box has restarted or updated.
+- **Drag-and-drop uploads use your Quality, Framing and Normalize
+  choices**, like the Upload button.
+- **Saving a playlist no longer changes it.** A band called "Yes" stayed
+  "Yes" instead of turning into `true`, and fields the editor doesn't
+  show are kept.
+- **Typing from the phone no longer drops letters.**
+- **Games have sound every time.** A game could start before the TV's
+  sound was free and play silently (about one launch in four in
+  testing).
+- **Tilting a PlayStation 5 controller no longer scrolls the menu.**
+- **A Switch Pro controller paired over Bluetooth now works in games**,
+  and holding a stick in a menu keeps moving instead of stopping after
+  one step.
+- **A new box finishes its first start reliably.** Each setup step is
+  retried on up to three starts and never repeated once done, so an
+  interrupted first start can't leave the original box's data behind or
+  wipe anything you have added since.
 - **Playback quiet mode preserves pause ownership.** Movie channels hold
   the same quiet-mode claim as Movies and games, with a 120-second grace
   after the last channel film stops. Only kiosk-owned torrents, caps and
