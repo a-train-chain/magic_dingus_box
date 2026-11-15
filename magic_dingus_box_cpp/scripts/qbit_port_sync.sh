@@ -34,6 +34,15 @@
 # Sourceable for tests (tests/local/drive_guard_decision.bats): every
 # path below is env-overridable and main only runs when executed.
 
+QBIT_PORT_SYNC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# setup_services.sh and OTA refresh install this shell alone under
+# /usr/local/bin. The Python package stays in the deployed source tree;
+# never install another copy beside that service entry point.
+QBIT_PORT_SYNC_SOURCE_DIR="${QBIT_PORT_SYNC_SOURCE_DIR:-/opt/magic_dingus_box/magic_dingus_box_cpp/scripts}"
+if [ ! -f "${QBIT_PORT_SYNC_DIR}/vpn_recovery/port_sync.py" ] && \
+   [ -f "${QBIT_PORT_SYNC_SOURCE_DIR}/vpn_recovery/port_sync.py" ]; then
+    QBIT_PORT_SYNC_DIR="$QBIT_PORT_SYNC_SOURCE_DIR"
+fi
 ENV_FILE="${ENV_FILE:-/opt/magic_dingus_box/services/.env}"
 GLUETUN_API='http://localhost:8000/v1/portforward'
 QBIT_API="${QBIT_API:-http://localhost:8080}"
@@ -270,6 +279,13 @@ drive_guard_tick() {
     esac
 }
 
+# One verified Python operation in current trees. The legacy body below runs
+# only when both adjacent and deployed packages are absent (rollback trees).
+shared_port_sync() {
+    PYTHONPATH="${QBIT_PORT_SYNC_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m vpn_recovery.port_sync \
+        --env-file "$ENV_FILE" --cookie-file "$COOKIE" --qbit-api "$QBIT_API"
+}
+
 main() {
     if [ ! -f "${ENV_FILE}" ]; then
         echo "[qbit-port-sync] no .env at ${ENV_FILE}, skipping (services not provisioned)"
@@ -305,12 +321,17 @@ main() {
         "${QBIT_API}/api/v2/auth/login" 2>&1)
 
     if [ "${LOGIN_RESP}" != "Ok." ]; then
-        echo "[qbit-port-sync] qBit login failed (response: ${LOGIN_RESP:0:40}); skipping"
+        echo "[qbit-port-sync] qBit login failed; skipping"
         echo "                 likely qBit password drift — magic-dingus-sync-qbit-password should heal on next boot"
         exit 0
     fi
 
     drive_guard_tick
+
+    if [ -f "${QBIT_PORT_SYNC_DIR}/vpn_recovery/port_sync.py" ]; then
+        shared_port_sync
+        return
+    fi
 
     # Pull the forwarded port from Gluetun's control endpoint. We hit it
     # via `docker exec` because Gluetun's 8000 isn't host-published —

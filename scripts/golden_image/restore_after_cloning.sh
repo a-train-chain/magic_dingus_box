@@ -277,9 +277,26 @@ systemctl start docker.socket 2>/dev/null || true
 systemctl start docker.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: docker.service failed to start — the stack cannot come up without it"
 
+# Source intent was snapshotted before clone's unit stop. An explicitly
+# stopped source remains stopped; legacy sources without intent keep their
+# historical restore path.
+_vpn_should_start=true
+if [[ -f /var/lib/magic-dingus/vpn_recovery/intent.json ]]; then
+    python3 - /var/lib/magic-dingus/vpn_recovery/intent.json <<'PYTHON' || _vpn_should_start=false
+import json,sys
+try: enabled=json.load(open(sys.argv[1])).get('enabled') is True
+except (OSError,ValueError): enabled=False
+sys.exit(0 if enabled else 1)
+PYTHON
+fi
+if [[ "$_vpn_should_start" == true ]]; then
 systemctl reset-failed magic-dingus-services.service 2>/dev/null || true
 systemctl start magic-dingus-services.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-services.service failed to start (check docker logs)"
+else
+    log "[3/4] Media Browser remains explicitly stopped on the source"
+fi
+unset _vpn_should_start
 
 systemctl start magic-dingus-web.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-web.service failed to start"
@@ -289,6 +306,13 @@ systemctl start magic-dingus-web.service 2>&1 | sed 's/^/    /' || \
 if systemctl is-enabled magic-dingus-audio.service &>/dev/null; then
     systemctl start magic-dingus-audio.service 2>&1 | sed 's/^/    /' || \
         log "[3/4] WARN: magic-dingus-audio.service failed to start"
+fi
+
+# bluetoothd (stopped by prepare so the pairings stayed stashed), before the
+# kiosk so the owner's paired controllers reconnect straight away.
+if systemctl is-enabled bluetooth.service &>/dev/null; then
+    systemctl start bluetooth.service 2>&1 | sed 's/^/    /' || \
+        log "[3/4] WARN: bluetooth.service failed to start"
 fi
 
 systemctl start magic-dingus-box-cpp.service 2>&1 | sed 's/^/    /' || \

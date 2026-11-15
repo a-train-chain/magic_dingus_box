@@ -617,3 +617,50 @@ no_store_stragglers() {
 @test "destructive golden prep wipes movie records from runtime and stale build copies" {
     python3 "$BATS_TEST_DIRNAME/../lib/movie_privacy_checks.py" golden "$TESTS_REPO_ROOT"
 }
+
+@test "VPN source intent survives clone stop while auth history and policy leave artifact" {
+    state="$T/root/var/lib/magic-dingus/vpn_recovery"
+    auth="$T/root/opt/services/config/gluetun/auth"
+    policy="$T/root/opt/config/vpn_recovery.json"
+    mkdir -p "$state" "$auth" "$(dirname "$policy")"
+    printf '{"version":1,"enabled":true,"revision":"source","inhibits":{}}\n' > "$state/intent.json"
+    printf 'source-key\n' > "$auth/recovery.key"
+    printf '{"fallback_countries":["United States"]}\n' > "$policy"
+    printf 'history\n' > "$state/controller.json"
+    mdb_init_secret_stash "$MDB_SECRET_STASH_DIR"
+    run mdb_clone_vpn_snapshot "$state" "$MDB_SECRET_STASH_DIR"
+    [ "$status" -eq 0 ]
+    printf '{"enabled":false,"reason":"unit stop"}\n' > "$state/intent.json"
+    mdb_clone_vpn_restore_snapshot "$state" "$MDB_SECRET_STASH_DIR"
+    grep -q '"enabled":true' "$state/intent.json"
+    FILES=("$state/intent.json" "$state/controller.json" "$auth/recovery.key" "$policy")
+    for f in "${FILES[@]}"; do
+        cp "$f" "$f.orig"
+        mdb_stash_copy "$f" "$MDB_SECRET_STASH_DIR"
+        mdb_stash_matches "$f" "$MDB_SECRET_STASH_DIR"
+        mdb_shred_file "$f"
+        [ ! -f "$f" ]
+    done
+    mdb_copy_back_stash "$MDB_SECRET_STASH_DIR"
+    [ "$MDB_RESTORE_FAILED" -eq 0 ]
+    assert_all_restored
+}
+
+@test "known source VPN repair and deploy backups are stashed restored and artifact-checked" {
+    # Drive the manifest with the exact production backup globs. The generic
+    # snapshot/verify/remove/restore engine is also used by full live prepare.
+    patterns=$(sed -n '/^SECRET_PATHS=(/,/^)/p' "$GI_DIR/prepare_for_cloning.sh" | sed -n 's/^    "\(\/var\/backups\/mdb-vpn-[^"]*\)"$/\1/p')
+    [[ "$patterns" == *'/var/backups/mdb-vpn-recovery-*/**'* ]]
+    [[ "$patterns" == *'/var/backups/mdb-vpn-reliability-*/**'* ]]
+    mkdir -p "$T/root/var/backups/mdb-vpn-recovery-20261114" "$T/root/var/backups/mdb-vpn-reliability-fixture"
+    printf 'fixture-private-key\n' > "$T/root/var/backups/mdb-vpn-recovery-20261114/services.env"
+    printf 'original-policy\n' > "$T/root/var/backups/mdb-vpn-reliability-fixture/policy.json"
+    FILES=("$T/root/var/backups/mdb-vpn-recovery-20261114/services.env" "$T/root/var/backups/mdb-vpn-reliability-fixture/policy.json")
+    for f in "${FILES[@]}"; do cp "$f" "$f.orig"; done
+    fake_prepare
+    for f in "${FILES[@]}"; do [ ! -e "$f" ]; done
+    mdb_copy_back_stash "$MDB_SECRET_STASH_DIR"
+    [ "$MDB_RESTORE_FAILED" -eq 0 ]
+    assert_all_restored
+    grep -q 'for _vpn_backup in /var/backups/mdb-vpn-recovery-\* /var/backups/mdb-vpn-reliability-\*' "$GI_DIR/prepare_for_cloning.sh"
+}

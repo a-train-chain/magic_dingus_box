@@ -281,3 +281,43 @@ def test_first_setup_still_defaults_to_netherlands(box):
                     data={"config_text": PROTON_CONF, "provider": "protonvpn"})
     assert r.status_code == 200, r.get_json()
     assert "VPN_COUNTRIES=Netherlands" in box["env"].read_text()
+
+def test_fallback_policy_defaults_empty_and_is_explicit_per_box(box):
+    client=box['make_app']().test_client()
+    data=client.get('/admin/media-browser/vpn-country').get_json()['data']
+    assert data.get('fallback_countries') == []
+    response=client.post('/admin/media-browser/vpn-country',json={'country':'Canada','fallback_countries':['United States']})
+    assert response.status_code==200
+    policy=box['env'].parent.parent/'config/vpn_recovery.json'
+    assert json.loads(policy.read_text())=={'fallback_countries':['United States']}
+    assert client.get('/admin/media-browser/vpn-country').get_json()['data']['fallback_countries']==['United States']
+    assert 'VPN_COUNTRIES=Canada' in box['env'].read_text()
+    assert policy.stat().st_mode & 0o777 == 0o600
+
+
+def test_fallback_policy_rejects_unknown_duplicate_or_primary_country(box):
+    client=box['make_app']().test_client()
+    for fallback in (['Mars'],['Canada','Canada'],['Canada'],'United States'):
+        response=client.post('/admin/media-browser/vpn-country',json={'country':'Canada','fallback_countries':fallback})
+        assert response.status_code==400
+    assert 'VPN_COUNTRIES=Netherlands' in box['env'].read_text()
+
+def test_native_health_never_replaces_stale_snapshot_with_unfenced_port(box,tmp_path,monkeypatch):
+    import subprocess
+    import vpn_recovery_support
+    import admin_media_browser_ops
+    status=tmp_path/'status.json'
+    status.write_text(json.dumps({'checked_at':'2000-01-01T00:00:00+00:00','ready':True,'forwarded_port':4567,'qbit_synced':True}))
+    monkeypatch.setattr(vpn_recovery_support,'STATUS_PATH',status)
+    calls=[]
+    def command(argv,**kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv,0,stdout='[]',stderr='')
+    monkeypatch.setattr(admin_media_browser_ops.subprocess,'run',command)
+    client=box['make_app']().test_client()
+    data=client.get('/admin/media-browser/health-summary').get_json()['data']
+    assert data['vpn_recovery']['fresh'] is False
+    assert data['vpn_recovery']['ready'] is False
+    assert data['vpn_forwarded_port']==0
+    assert data['vpn_port_status']=='unavailable'
+    assert not any('docker' in cmd and 'exec' in cmd for cmd in calls)

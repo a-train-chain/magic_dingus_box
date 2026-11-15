@@ -21,6 +21,7 @@ from flask import request
 try:
     import timezone_apply
     import vpn_settings
+    from vpn_recovery_support import Maintenance, native, snapshot
     from admin_common import error_response, success_response
     from admin_vpn_config import (
         _detect_vpn_brand, _format_env_line, _parse_wireguard_config,
@@ -36,6 +37,7 @@ try:
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from . import timezone_apply
     from . import vpn_settings
+    from .vpn_recovery_support import Maintenance, native, snapshot
     from .admin_common import error_response, success_response
     from .admin_vpn_config import (
         _detect_vpn_brand, _format_env_line, _parse_wireguard_config,
@@ -577,6 +579,7 @@ def register(app, ctx) -> None:
             "services_running": services_running,
             "containers": containers,
             "vpn_country": vpn["vpn_country"],
+            "vpn_recovery": snapshot() if native(_read_env_file(SERVICES_ENV)) else None,
         })
 
     _mb_jobs_lock = threading.Lock()
@@ -706,74 +709,80 @@ def register(app, ctx) -> None:
         if (resp := _maintenance_precheck()):
             return resp
 
-        # Merge WG vars + sensible defaults into existing .env. An existing
-        # .env we cannot READ must abort the request: treating it as empty
-        # would rewrite it with only the WireGuard keys and destroy the qBit
-        # password + API keys (see _read_env_file).
         try:
-            env = _read_env_file(SERVICES_ENV)
-        except EnvFileReadError as e:
-            return error_response(
-                "env_read_failed",
-                f"{e}. Nothing was changed. The file's owner or permissions "
-                "need fixing before the VPN can be reconfigured.",
-                status=500,
-            )
-        env.update(wg)
+            with Maintenance(data_dir.parent / "scripts" / "vpn_recoveryctl.py", SERVICES_DIR.parent, reason="setup-settings") as maintenance:
+                # Merge WG vars + sensible defaults into existing .env. An existing
+                # .env we cannot READ must abort the request: treating it as empty
+                # would rewrite it with only the WireGuard keys and destroy the qBit
+                # password + API keys (see _read_env_file).
+                try:
+                    env = _read_env_file(SERVICES_ENV)
+                except EnvFileReadError as e:
+                    return error_response(
+                        "env_read_failed",
+                        f"{e}. Nothing was changed. The file's owner or permissions "
+                        "need fixing before the VPN can be reconfigured.",
+                        status=500,
+                    )
+                env.update(wg)
 
-        # Host-level defaults: fill only when absent, so a box that has been
-        # tuned by hand keeps its settings.
-        for key, value in {
-            "STORAGE_ROOT": "/mnt/ssd",
-            "PUID": "1000",
-            "PGID": "1000",
-            "TZ": _detect_timezone(),
-        }.items():
-            if not env.get(key):
-                env[key] = value
+                # Host-level defaults: fill only when absent, so a box that has been
+                # tuned by hand keeps its settings.
+                for key, value in {
+                    "STORAGE_ROOT": "/mnt/ssd",
+                    "PUID": "1000",
+                    "PGID": "1000",
+                    "TZ": _detect_timezone(),
+                }.items():
+                    if not env.get(key):
+                        env[key] = value
 
-        # VPN keys, by contrast, are applied AUTHORITATIVELY. They have to
-        # stay mutually consistent with the config that was just uploaded:
-        # a VPN_PORT_FORWARDING=on or a WIREGUARD_ENDPOINT_IP left over from
-        # a previous provider is precisely what stops gluetun from starting.
-        #
-        # Country: the form's value, else the one this box already uses (the
-        # Content Manager's VPN-country setting writes it — a Reconfigure
-        # with a fresh .conf must not silently move the box back to the
-        # Netherlands), else the historical default.
-        country = ((request.form.get("country") or "").strip()
-                   or (env.get("VPN_COUNTRIES") or "").strip()
-                   or vpn_settings.DEFAULT_COUNTRY)
-        env.update(_vpn_provider_env(provider, wg, country=country))
+                # VPN keys, by contrast, are applied AUTHORITATIVELY. They have to
+                # stay mutually consistent with the config that was just uploaded:
+                # a VPN_PORT_FORWARDING=on or a WIREGUARD_ENDPOINT_IP left over from
+                # a previous provider is precisely what stops gluetun from starting.
+                #
+                # Country: the form's value, else the one this box already uses (the
+                # Content Manager's VPN-country setting writes it — a Reconfigure
+                # with a fresh .conf must not silently move the box back to the
+                # Netherlands), else the historical default.
+                country = ((request.form.get("country") or "").strip()
+                           or (env.get("VPN_COUNTRIES") or "").strip()
+                           or vpn_settings.DEFAULT_COUNTRY)
+                env.update(_vpn_provider_env(provider, wg, country=country))
 
-        try:
-            _write_env_file(SERVICES_ENV, env)
-        except Exception as e:
-            return error_response(
-                "env_write_failed",
-                f"Could not write {SERVICES_ENV}: {e}",
-                status=500,
-            )
+                try:
+                    _write_env_file(SERVICES_ENV, env)
+                except Exception as e:
+                    return error_response(
+                        "env_write_failed",
+                        f"Could not write {SERVICES_ENV}: {e}",
+                        status=500,
+                    )
 
-        # Start the long-running setup script DETACHED, as root (it was
-        # `sudo -n setup_services.sh` before — same privilege, now in its own
-        # cgroup). Prune stale terminal-state entries first.
-        _prune_terminal_jobs(media_browser_jobs)
-        job_id, err = _launch_maintenance_job(
-            "mb-setup", [str(SETUP_SERVICES_SCRIPT)], as_root=True)
-        if err:
-            return err
-        media_browser_jobs[job_id] = _new_mb_job_view(time.time())
+                # Start the long-running setup script DETACHED, as root (it was
+                # `sudo -n setup_services.sh` before — same privilege, now in its own
+                # cgroup). Prune stale terminal-state entries first.
+                _prune_terminal_jobs(media_browser_jobs)
+                maintenance.release()
+                job_id, err = _launch_maintenance_job(
+                    "mb-setup", [str(SETUP_SERVICES_SCRIPT)], as_root=True)
+                if err:
+                    return err
+                media_browser_jobs[job_id] = _new_mb_job_view(time.time())
 
-        return success_response(
-            data={
-                "job_id": job_id,
-                "detected_provider": detected,
-                "provider": provider,
-                "port_forwarding": _vpn_supports_port_forwarding(provider),
-            },
-            message="Media Browser setup started",
-        )
+                return success_response(
+                    data={
+                        "job_id": job_id,
+                        "detected_provider": detected,
+                        "provider": provider,
+                        "port_forwarding": _vpn_supports_port_forwarding(provider),
+                    },
+                    message="Media Browser setup started",
+                )
+
+        except RuntimeError:
+            return error_response("maintenance_unavailable", "Services are busy; setup deferred before configuration changes", status=409)
 
     @app.post("/admin/media-browser/detect-provider")
     @require_csrf
@@ -943,4 +952,6 @@ def register(app, ctx) -> None:
     # Published for the route modules registered after this one
     ctx.SERVICES_DIR = SERVICES_DIR
     ctx.SERVICES_ENV = SERVICES_ENV
+    ctx.VPN_RECOVERY_CTL = data_dir.parent / "scripts" / "vpn_recoveryctl.py"
+    ctx._maintenance_precheck = _maintenance_precheck
     ctx._check_media_browser_gates = _check_media_browser_gates

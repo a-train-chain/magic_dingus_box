@@ -64,3 +64,30 @@ setup() {
     done
     grep -q '/run/lock/mdb-compose.lock' "$CPP_DIR/scripts/clear_radarr_cooldowns.py"
 }
+
+@test "native helper revalidates between restart and up" {
+    export MDB_COMPOSE_LOCK_HELD=1
+    local checks="$BATS_TEST_TMPDIR/checks" calls="$BATS_TEST_TMPDIR/calls"
+    native_check() {
+        echo check >> "$checks"
+        [ "$(wc -l < "$checks" | tr -d ' ')" -lt 2 ]
+    }
+    timeout() { shift 3; "$@"; }
+    docker() { echo "$*" >> "$calls"; }
+    PAUSE_MARKER="$BATS_TEST_TMPDIR/no-pause"
+    run cascade_dependents
+    [ -s "$checks" ]
+    ! grep -q ' up -d ' "$calls"
+}
+
+@test "native dependent starts cannot trigger Compose dependency health waits" {
+    export MDB_COMPOSE_LOCK_HELD=1
+    local calls="$BATS_TEST_TMPDIR/calls"
+    native_check() { return 0; }
+    timeout() { shift 3; "$@"; }
+    docker() { echo "$*" >> "$calls"; }
+    PAUSE_MARKER="$BATS_TEST_TMPDIR/no-pause"
+    cascade_dependents
+    grep -q ' up --no-deps -d radarr sonarr prowlarr qbittorrent byparr$' "$calls"
+    grep -q ' restart --no-deps radarr sonarr prowlarr qbittorrent byparr$' "$calls"
+}

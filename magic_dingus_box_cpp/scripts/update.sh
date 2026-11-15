@@ -2848,6 +2848,16 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
     return 0 2>/dev/null || true
 fi
 
+# Preserve enabled intent throughout OTA and rollback. This process is the
+# bounded owner; even a failed install releases without enabling a stopped box.
+case "${1:-}" in
+    install|rollback|recover)
+        _recovery="${INSTALL_DIR}/magic_dingus_box_cpp/scripts/vpn_recoveryctl.py"
+        if [[ "$SKIP_SYSTEMCTL" != true && -f "$_recovery" && -z "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
+            exec python3 "$_recovery" --base "$INSTALL_DIR" run-inhibited --reason ota --timeout 7200 -- bash "$0" "$@"
+        fi ;;
+esac
+
 case "${1:-}" in
     check)
         check_update

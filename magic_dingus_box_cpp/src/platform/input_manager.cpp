@@ -1,6 +1,8 @@
 #include "input_manager.h"
+#include "menu_stick_navigation.h"
 #include "udev_wake.h"
 #include "input_mapping.h"
+#include "input_device_info.h"
 #include "select_release_packet.h"
 
 #include <libevdev/libevdev.h>
@@ -43,6 +45,30 @@ static_assert(mc::kAbsHat0X == ABS_HAT0X && mc::kAbsHat0Y == ABS_HAT0Y,
 
 namespace platform {
 
+namespace {
+
+// The joystick decision for an open evdev handle. See is_joystick_device():
+// a DualSense's motion-sensor and touchpad devices both report ABS_X and
+// must not be opened as controllers (tilting the pad scrolled the menu).
+InputDeviceTraits joystick_traits(struct libevdev* dev) {
+    InputDeviceTraits t;
+    const bool has_abs = libevdev_has_event_type(dev, EV_ABS);
+    t.has_abs_x = has_abs && libevdev_has_event_code(dev, EV_ABS, ABS_X);
+    t.has_abs_hat0x = has_abs && libevdev_has_event_code(dev, EV_ABS, ABS_HAT0X);
+    t.has_btn_touch = libevdev_has_event_code(dev, EV_KEY, BTN_TOUCH);
+    t.has_btn_digi = libevdev_has_event_code(dev, EV_KEY, BTN_DIGI);
+    t.accelerometer = libevdev_has_property(dev, INPUT_PROP_ACCELEROMETER);
+    return t;
+}
+
+// "/dev/input/event5" -> "event5".
+std::string node_name(const std::string& path) {
+    const auto slash = path.rfind('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+}  // namespace
+
 struct InputManager::Device {
     SelectReleasePacket select_packet;
     uint64_t source_id = 0;
@@ -50,9 +76,11 @@ struct InputManager::Device {
     struct libevdev* dev;
     std::string name;
     std::string path;  // /dev/input/eventN — dedupes rescans
-    bool is_joystick;
-    bool is_keyboard;
-    bool is_rotary;
+    // Explicit defaults: the keyboard and rotary open paths only set their
+    // own flag, and resolve_overlay() reads is_joystick on every device.
+    bool is_joystick = false;
+    bool is_keyboard = false;
+    bool is_rotary = false;
     // True when this device reports ABS_X in a 0..255 range (centre 127)
     // rather than signed 16-bit -- and NOTHING MORE. Some cheap PS-style USB
     // pads (e.g. the DragonRise/Microntek 0079:0006 class) additionally put
@@ -70,6 +98,11 @@ struct InputManager::Device {
     // USB identity, used to key menu-nav overlays and device_caps() lookups.
     uint16_t vid = 0;
     uint16_t pid = 0;
+    // Kernel driver of the parent device ("playstation", "xpad", ...) and
+    // the bus (0x03 USB, 0x05 Bluetooth), from sysfs at open time. They pick
+    // the automatic layout for modern pads (retroarch/standard_layout.h).
+    std::string driver;
+    uint16_t bustype = 0;
     // Non-owning pointer into InputManager::overlays_, or nullptr when no
     // profile has been captured for this pad. MUST be re-resolved whenever
     // that map is replaced (set_menu_overlays does this) -- a stale pointer
@@ -85,6 +118,11 @@ struct InputManager::Device {
     // decorative. Any future code that reads `overlay` outside an
     // `is_joystick` branch must resolve it at those two open sites too.
     const MenuNavOverlay* overlay = nullptr;
+    // This pad's AUTOMATIC overlay (see InputManager::set_auto_overlay_fn),
+    // computed once on first resolve. `overlay` may point at it; the Device
+    // is heap-owned through a unique_ptr, so the address is stable.
+    std::optional<MenuNavOverlay> auto_overlay;
+    bool auto_overlay_resolved = false;
 
     // Per-ABS-code rest centre and proportional deadzone, cached from the
     // device's own reported min/max at open time (cache_axis_ranges).
@@ -106,6 +144,24 @@ struct InputManager::Device {
         const unsigned idx = code;   // explicit: keeps the compare unsigned/unsigned
         if (idx < ABS_CODE_COUNT && axis_norm[idx].valid) return axis_norm[idx];
         return AxisNorm{0, InputManager::AXIS_DEADZONE, false};
+    }
+
+    struct MenuStickAxis {
+        MenuStickNavigation navigation;
+        InputAction action = InputAction::NONE;
+    };
+    // Per-device, per-axis holds; independent from physical D-pad latches.
+    std::map<uint16_t, MenuStickAxis> menu_sticks;
+
+    int update_menu_stick(uint16_t code, int32_t value, InputAction action) {
+        const bool has_range = libevdev_get_abs_info(dev, code) != nullptr;
+        const int32_t minimum = has_range ? libevdev_get_abs_minimum(dev, code) : -32768;
+        const int32_t maximum = has_range ? libevdev_get_abs_maximum(dev, code) : 32767;
+        auto& stick = menu_sticks[code];
+        stick.action = action;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return stick.navigation.update(minimum, maximum, value, now);
     }
 
     // Populate axis_norm from libevdev's reported ranges.
@@ -163,11 +219,7 @@ struct InputManager::Device {
     }
 };
 
-InputManager::InputManager()
-    : last_rotate_dir_(0)
-    , last_rotate_time_(0.0)
-{
-}
+InputManager::InputManager() = default;
 
 InputManager::~InputManager() {
     cleanup();
@@ -255,9 +307,7 @@ bool InputManager::open_joystick_devices() {
 
 
         // Check if it's a joystick
-        if (libevdev_has_event_type(dev, EV_ABS) &&
-            (libevdev_has_event_code(dev, EV_ABS, ABS_X) ||
-             libevdev_has_event_code(dev, EV_ABS, ABS_HAT0X))) {
+        if (is_joystick_device(joystick_traits(dev))) {
             
             const char* dev_name = libevdev_get_name(dev);
             if (!dev_name) {
@@ -275,7 +325,11 @@ bool InputManager::open_joystick_devices() {
             device->is_joystick = true;
             device->vid = static_cast<uint16_t>(libevdev_get_id_vendor(dev));
             device->pid = static_cast<uint16_t>(libevdev_get_id_product(dev));
-            device->overlay = lookup_overlay(device->vid, device->pid);
+            device->bustype = static_cast<uint16_t>(libevdev_get_id_bustype(dev));
+            if (auto info = read_sysfs_input_info("/sys/class/input", node_name(path))) {
+                device->driver = info->driver;
+            }
+            device->overlay = resolve_overlay(*device);
             device->cache_axis_ranges();
             // Detect 8-bit-axis controllers (DragonRise-style): ABS_X
             // reported with min=0 means values are 0..255 with center 127,
@@ -404,9 +458,7 @@ void InputManager::reprobe_phone_remote() {
         }
         const char* dev_name = libevdev_get_name(dev);
         const bool is_phone = dev_name && std::string(dev_name) == kPhoneName;
-        const bool is_joystick = libevdev_has_event_type(dev, EV_ABS) &&
-            (libevdev_has_event_code(dev, EV_ABS, ABS_X) ||
-             libevdev_has_event_code(dev, EV_ABS, ABS_HAT0X));
+        const bool is_joystick = is_joystick_device(joystick_traits(dev));
         if (is_phone && is_joystick) {
             auto device = std::make_unique<Device>();
             device->fd = fd;
@@ -611,6 +663,8 @@ std::vector<InputEvent> InputManager::poll() {
                 select_cancellations_.push_back(device->source_id);
                 dpad_held_x_ = 0;
                 dpad_held_y_ = 0;
+                device->menu_sticks.clear();
+                device->dpad_x_8bit_last = device->dpad_y_8bit_last = 0;
                 rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                 continue;
             }
@@ -737,17 +791,23 @@ std::vector<InputEvent> InputManager::poll() {
                         // profile that claimed a d-pad code must not be able
                         // to take d-pad navigation away. Worst case for a bad
                         // overlay entry is that it's inert.
+                        //
+                        // A claim of InputAction::NONE SUPPRESSES the code: the
+                        // automatic layout uses it so a DualSense's Square
+                        // (BTN_WEST, which the built-in table reads as the N64
+                        // adapter's L = PREV) does nothing in the menus.
+                        bool claimed = false;
                         InputAction overlay_action = InputAction::NONE;
                         if (device->overlay) {
                             auto it = device->overlay->buttons.find(ev.code);
                             if (it != device->overlay->buttons.end()) {
                                 overlay_action = it->second;
+                                claimed = true;
                             }
                         }
                         input_ev.action =
-                            (overlay_action != InputAction::NONE)
-                                ? overlay_action
-                                : map_button_to_action(ev.code, input_ev.pressed);
+                            claimed ? overlay_action
+                                    : map_button_to_action(ev.code, input_ev.pressed);
                     }
                 }
             } else if (ev.type == EV_ABS && device->is_joystick) {
@@ -870,15 +930,9 @@ std::vector<InputEvent> InputManager::poll() {
                         dpad_held_x_ = 0;
                     }
                 } else if (ev.code == ABS_Y) {
-                    // Analog Stick Y for ROTATE_VERTICAL
-                    // Deadzone check (simple)
-                    if (ev.value < -16000) { // Up
-                         input_ev.action = InputAction::ROTATE_VERTICAL;
-                         input_ev.delta = -1;
-                    } else if (ev.value > 16000) { // Down
-                         input_ev.action = InputAction::ROTATE_VERTICAL;
-                         input_ev.delta = 1;
-                    }
+                    input_ev.delta = device->update_menu_stick(
+                        ev.code, ev.value, InputAction::ROTATE_VERTICAL);
+                    if (input_ev.delta != 0) input_ev.action = InputAction::ROTATE_VERTICAL;
                 // ADDITIVE MENU-NAV OVERLAY (axes). Reached ONLY for codes none
                 // of the branches above handled, and because these are
                 // `else if`s a code the overlay DOES claim never also reaches
@@ -917,17 +971,9 @@ std::vector<InputEvent> InputManager::poll() {
                 // learned to consult the overlay first.
                 } else if (device->overlay && device->overlay->nav_x_abs >= 0 &&
                            static_cast<int>(ev.code) == device->overlay->nav_x_abs) {
-                    // Same fire-on-change / hold-repeat logic the hardcoded
-                    // ABS_X path uses, on this pad's actual stick-X code, with
-                    // the deadzone scaled to the range this axis really
-                    // reports (a 0..255 axis rests at 127 and could never
-                    // cross a raw +/-5000 threshold in either direction).
-                    const Device::AxisNorm n = device->axis_threshold(ev.code);
-                    const int32_t deflection = ev.value - n.centre;
-                    input_ev.action = rotate_from_axis_value(deflection, n.deadzone);
-                    if (input_ev.action == InputAction::ROTATE) {
-                        input_ev.delta = (deflection > 0) ? 1 : (deflection < 0) ? -1 : 0;
-                    }
+                    input_ev.delta = device->update_menu_stick(
+                        ev.code, ev.value, InputAction::ROTATE);
+                    if (input_ev.delta != 0) input_ev.action = InputAction::ROTATE;
                 } else if (device->overlay && device->overlay->seek_abs >= 0 &&
                            static_cast<int>(ev.code) == device->overlay->seek_abs) {
                     // Same deadzone the hardcoded C-stick path uses, likewise
@@ -939,6 +985,10 @@ std::vector<InputEvent> InputManager::poll() {
                     } else if (deflection < -n.deadzone) {
                         input_ev.action = InputAction::SEEK_LEFT;
                     }
+                } else if (ev.code == ABS_X) {
+                    input_ev.delta = device->update_menu_stick(
+                        ev.code, ev.value, InputAction::ROTATE);
+                    if (input_ev.delta != 0) input_ev.action = InputAction::ROTATE;
                 } else {
                     // Regular axis movement
                     input_ev.action = map_axis_to_action(ev.code, ev.value);
@@ -1032,6 +1082,15 @@ std::vector<InputEvent> InputManager::poll() {
             devices_.end());   // ~Device closes fd + frees libevdev
     }
 
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    for (auto& device : devices_) {
+        if (raw_capture_ && device->is_joystick && device->name != PHONE_REMOTE_NAME) continue;
+        for (auto& entry : device->menu_sticks) {
+            const int delta = entry.second.navigation.poll(now_ms);
+            if (delta != 0) events.push_back({entry.second.action, delta, false});
+        }
+    }
     generate_dpad_repeats(events);
     return events;
 }
@@ -1085,48 +1144,8 @@ InputAction InputManager::map_button_to_action(uint16_t code, bool /*pressed*/) 
     return mapping::joystick_button_action(code);
 }
 
-// Extracted verbatim from map_axis_to_action's `axis == 0` branch so the
-// overlay path can reuse it for a pad whose stick-X is NOT ABS_X. Both
-// callers therefore share last_rotate_dir_/last_rotate_time_ and behave
-// identically; at most one of them runs for any given event.
-//
-// `deflection` is signed distance from the axis's rest centre and `deadzone`
-// the threshold in that same unit. The hardcoded ABS_X caller passes the raw
-// value with AXIS_DEADZONE, which is centre 0 / threshold 5000 -- literally
-// the constants this function used to hardcode, so that path is unchanged.
-// The overlay caller passes a centred value and a threshold scaled from the
-// device's reported min/max, which is what makes an unsigned-range axis work.
-InputAction InputManager::rotate_from_axis_value(int32_t deflection, int32_t deadzone) {
-    const int32_t value = deflection;
-
-    int dir = 0;
-    if (value > deadzone) {
-        dir = 1;
-    } else if (value < -deadzone) {
-        dir = -1;
-    }
-
-    if (dir != 0) {
-        auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (dir != last_rotate_dir_) {
-            // Direction changed - fire immediately
-            last_rotate_dir_ = dir;
-            last_rotate_time_ = now;
-            return InputAction::ROTATE;
-        } else if (now - last_rotate_time_ >= (1.0 / ROTATE_REPEAT_HZ)) {
-            // Same direction held - fire at repeat rate
-            last_rotate_time_ = now;
-            return InputAction::ROTATE;
-        }
-    }
-    if (dir == 0) {
-        last_rotate_dir_ = 0;
-    }
-    return InputAction::NONE;
-}
-
 InputAction InputManager::map_axis_to_action(uint8_t axis, int16_t value) {
-    // Axis 0 = X (left/right) -> ROTATE
+    // Menu-navigation axes are handled by the per-device stick state.
     // Axis 3 = C-stick horizontal -> NEXT/PREV
     // Axis 2 = C-stick vertical -> unused
 
@@ -1135,9 +1154,7 @@ InputAction InputManager::map_axis_to_action(uint8_t axis, int16_t value) {
     // which is what AXIS_DEADZONE is.
     const int32_t deadzone = AXIS_DEADZONE;  // ~15% of half-range
 
-    if (axis == 0) {
-        return rotate_from_axis_value(value, AXIS_DEADZONE);
-    } else if (axis == 3) {
+    if (axis == 3) {
         // C-stick horizontal
         if (value > deadzone) {
             return InputAction::SEEK_RIGHT;
@@ -1163,6 +1180,37 @@ const MenuNavOverlay* InputManager::lookup_overlay(uint16_t vid, uint16_t pid) c
     return it == overlays_.end() ? nullptr : &it->second;
 }
 
+const MenuNavOverlay* InputManager::resolve_overlay(Device& device) {
+    if (const MenuNavOverlay* captured = lookup_overlay(device.vid, device.pid)) {
+        return captured;
+    }
+    if (!device.is_joystick) return nullptr;
+    if (!device.auto_overlay_resolved) {
+        device.auto_overlay_resolved = true;
+        device.auto_overlay.reset();
+        if (auto_overlay_fn_) device.auto_overlay = auto_overlay_fn_(caps_of(device));
+        if (device.auto_overlay) {
+            std::cout << "  Automatic button layout for " << device.name
+                      << " (driver " << (device.driver.empty() ? "?" : device.driver)
+                      << ")" << std::endl;
+        }
+    }
+    return device.auto_overlay ? &*device.auto_overlay : nullptr;
+}
+
+void InputManager::set_auto_overlay_fn(AutoOverlayFn fn) {
+    for (auto& device : devices_) {
+        device->overlay = nullptr;
+        device->menu_sticks.clear();
+    }
+    auto_overlay_fn_ = std::move(fn);
+    for (auto& device : devices_) {
+        device->auto_overlay_resolved = false;
+        device->auto_overlay.reset();
+        device->overlay = resolve_overlay(*device);
+    }
+}
+
 void InputManager::set_menu_overlays(std::map<uint32_t, MenuNavOverlay> overlays) {
     // Drop every borrowed pointer BEFORE the old map dies. The assignment
     // below destroys the old map's nodes, so any Device still pointing into
@@ -1171,10 +1219,11 @@ void InputManager::set_menu_overlays(std::map<uint32_t, MenuNavOverlay> overlays
     // crash on the next button press.
     for (auto& device : devices_) {
         device->overlay = nullptr;
+        device->menu_sticks.clear();
     }
     overlays_ = std::move(overlays);
     for (auto& device : devices_) {
-        device->overlay = lookup_overlay(device->vid, device->pid);
+        device->overlay = resolve_overlay(*device);
     }
 }
 
@@ -1199,6 +1248,7 @@ void InputManager::set_raw_capture(bool enabled) {
     for (auto& device : devices_) {
         device->dpad_x_8bit_last = 0;
         device->dpad_y_8bit_last = 0;
+        device->menu_sticks.clear();
     }
 }
 
@@ -1208,37 +1258,43 @@ std::vector<RawInputEvent> InputManager::drain_raw_events() {
     return out;
 }
 
+retroarch::CaptureDeviceCaps InputManager::caps_of(const Device& device) {
+    retroarch::CaptureDeviceCaps caps;
+    caps.vid = device.vid;
+    caps.pid = device.pid;
+    caps.name = device.name;
+    caps.driver = device.driver;
+    caps.bustype = device.bustype;
+
+    // Gamepad/joystick buttons live in [BTN_MISC, KEY_MAX_of_that_block]
+    // = 0x100..0x2ff. Ascending by construction.
+    for (unsigned code = 0x100; code <= 0x2ff; ++code) {
+        if (libevdev_has_event_code(device.dev, EV_KEY, code)) {
+            caps.key_codes.push_back(static_cast<uint16_t>(code));
+        }
+    }
+    // Every ABS code including the hats (ABS_MAX == 0x3f). Ascending.
+    for (unsigned code = 0; code <= 0x3f; ++code) {
+        if (!libevdev_has_event_code(device.dev, EV_ABS, code)) continue;
+        retroarch::CaptureDeviceCaps::AxisRange range;
+        range.code = static_cast<uint16_t>(code);
+        range.min = libevdev_get_abs_minimum(device.dev, code);
+        range.max = libevdev_get_abs_maximum(device.dev, code);
+        // Current value = the axis's resting position right now, which is
+        // what CaptureSession needs to tell "deflected" from "at rest".
+        range.rest = libevdev_get_event_value(device.dev, EV_ABS, code);
+        caps.axes.push_back(range);
+    }
+    return caps;
+}
+
 std::optional<retroarch::CaptureDeviceCaps> InputManager::device_caps(uint16_t vid,
                                                                      uint16_t pid) {
     for (auto& device : devices_) {
         if (!device->is_joystick || device->vid != vid || device->pid != pid) {
             continue;
         }
-        retroarch::CaptureDeviceCaps caps;
-        caps.vid = vid;
-        caps.pid = pid;
-        caps.name = device->name;
-
-        // Gamepad/joystick buttons live in [BTN_MISC, KEY_MAX_of_that_block]
-        // = 0x100..0x2ff. Ascending by construction.
-        for (unsigned code = 0x100; code <= 0x2ff; ++code) {
-            if (libevdev_has_event_code(device->dev, EV_KEY, code)) {
-                caps.key_codes.push_back(static_cast<uint16_t>(code));
-            }
-        }
-        // Every ABS code including the hats (ABS_MAX == 0x3f). Ascending.
-        for (unsigned code = 0; code <= 0x3f; ++code) {
-            if (!libevdev_has_event_code(device->dev, EV_ABS, code)) continue;
-            retroarch::CaptureDeviceCaps::AxisRange range;
-            range.code = static_cast<uint16_t>(code);
-            range.min = libevdev_get_abs_minimum(device->dev, code);
-            range.max = libevdev_get_abs_maximum(device->dev, code);
-            // Current value = the axis's resting position right now, which is
-            // what CaptureSession needs to tell "deflected" from "at rest".
-            range.rest = libevdev_get_event_value(device->dev, EV_ABS, code);
-            caps.axes.push_back(range);
-        }
-        return caps;
+        return caps_of(*device);
     }
     // Not open (never was, or unplugged and dropped by poll()).
     return std::nullopt;

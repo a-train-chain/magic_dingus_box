@@ -120,6 +120,10 @@ set(PLATFORM_SOURCES
     src/platform/platform_profile.cpp
     src/platform/udev_wake.cpp
     src/platform/input_mapping.cpp
+    src/platform/input_device_info.cpp
+    src/platform/bt_pairing.cpp
+    # BlueZ session for pairing (sd-bus; kiosk-only, in no Mac target).
+    src/platform/bluez_worker.cpp
 )
 
 # Media Browser unlock sequence detector — compiled into the kiosk binary
@@ -237,6 +241,7 @@ set(RETROARCH_SOURCES
     src/retroarch/controller_profile.cpp
     src/retroarch/joydev_index.cpp
     src/retroarch/capture_session.cpp
+    src/retroarch/standard_layout.cpp
     src/retroarch/sink_suspension.cpp
 )
 
@@ -264,6 +269,10 @@ set(RETROARCH_TESTABLE_SOURCES
     src/retroarch/controller_profile.cpp
     src/retroarch/joydev_index.cpp
     src/retroarch/capture_session.cpp
+    src/retroarch/standard_layout.cpp
+    # controller_detector.cpp reads each pad's driver and capabilities
+    # from sysfs through it (automatic layouts for modern pads).
+    src/platform/input_device_info.cpp
     # PulseAudio -> RetroArch audio hand-over (pure; the launcher drives it).
     src/retroarch/sink_suspension.cpp
 )
@@ -827,6 +836,8 @@ if(UI_TEST_SOURCES)
         src/app/audio_router.cpp
         # channel_guide_view.h (header-only) walks app::on_air / lineup.
         src/app/channel_schedule.cpp
+        # controller_wizard.cpp's pairing steps drive the pairing flow.
+        src/platform/bt_pairing.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -937,6 +948,10 @@ if(PLATFORM_TEST_SOURCES)
         # Built-in button/key tables + phone-remote parity (parses the
         # web remote's uinput_writer.py).
         src/platform/input_mapping.cpp
+        # Joystick filter + sysfs input-node reader.
+        src/platform/input_device_info.cpp
+        # Bluetooth controller pairing flow (pure half).
+        src/platform/bt_pairing.cpp
         src/utils/subprocess.cpp
     )
     target_include_directories(test_platform_unit PRIVATE src)

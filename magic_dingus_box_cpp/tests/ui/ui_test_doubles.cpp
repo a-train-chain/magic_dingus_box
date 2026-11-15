@@ -74,7 +74,7 @@ struct platform::InputManager::Device {};
 
 namespace platform {
 
-InputManager::InputManager() : last_rotate_dir_(0), last_rotate_time_(0.0) {}
+InputManager::InputManager() = default;
 InputManager::~InputManager() = default;
 
 void InputManager::set_raw_capture(bool enabled) {

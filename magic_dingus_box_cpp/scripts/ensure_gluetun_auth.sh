@@ -16,10 +16,12 @@
 #   - the Content Manager health summary + setup check, check_vpn_required.sh
 #     and recreate_gluetun.sh (GET /v1/publicip/ip).
 #
-# The file opens exactly those read-only routes and nothing else. Every
+# The compatibility file below opens exactly those read-only routes. The
+# Python package also installs a per-box API-key role for VPN recovery
+# settings/status reads and mutations. No mutation is public. Every
 # other route (PUT /v1/vpn/status — "stop the VPN" — included) becomes
 # private immediately, even on v3.41.x: with a file present gluetun no
-# longer applies its built-in public role. Nothing here uses them. That
+# longer applies its built-in public role. That
 # matters because Byparr's headless browser shares this netns and loads
 # arbitrary indexer pages.
 #
@@ -81,6 +83,32 @@ fi
 if [[ "$PROVISION" != "true" && ! -f "${SERVICES_DIR}/.env" \
       && ! -d "${SERVICES_DIR}/config/gluetun" ]]; then
     log "Media Browser not provisioned; skipping"
+    exit 0
+fi
+
+# New trees share credential installation with the recovery adapter. A copied
+# standalone helper or rollback without the package keeps the legacy public
+# reads below. Installation never activates/restarts Gluetun.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/vpn_recovery/control.py" ]]; then
+    if ! python3 - "$SERVICES_DIR" "$SCRIPT_DIR" <<'PYTHON'
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[2])
+try:
+    from vpn_recovery.common import Paths
+    from vpn_recovery.control import ensure_control_credentials
+    services = Path(sys.argv[1])
+    changed = ensure_control_credentials(Paths(base=services.parent, services=services))
+except Exception:
+    # Never print an exception that might contain credential/settings content.
+    sys.exit(1)
+print('[gluetun-auth] control-server access file ' +
+      ('installed (takes effect at gluetun\'s next start)' if changed else 'up to date'))
+PYTHON
+    then
+        log "WARNING: protected control-server access installation failed; existing files retained"
+    fi
     exit 0
 fi
 

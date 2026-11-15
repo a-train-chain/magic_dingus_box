@@ -873,7 +873,12 @@ if [[ -d "$SERVICES_DIR" ]]; then
     # stall case.
     if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null \
        && systemctl is-active --quiet docker.service; then
+        if [[ -f "$CPP_DIR/scripts/vpn_recoveryctl.py" ]]; then
+            python3 "$CPP_DIR/scripts/vpn_recoveryctl.py" --base "$INSTALL_DIR" provision
+            python3 "$CPP_DIR/scripts/vpn_recoveryctl.py" --base "$INSTALL_DIR" lifecycle stop || return 1
+        else
         (cd "$SERVICES_DIR" && docker compose down 2>&1 | sed 's/^/    /' || true)
+        fi
         log "[6/7] Stopped Docker stack (was inherited from source image)"
     elif [[ -f "$SERVICES_DIR/docker-compose.yml" ]]; then
         log "[6/7] docker.service not active — skipping compose down (image carries no running stack)"
@@ -1015,6 +1020,13 @@ for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revo
         log "    wiped: ${f}"
     fi
 done
+# Recovery identity/history and desired fallback are per-box, like VPN keys.
+# prepare also removes them from the artifact; this covers older donor images.
+# (Not /run/mdb-vpn-recovery: tmpfs never reaches an image, and removing it
+# under a running watcher would orphan its single-instance controller.lock.)
+rm -rf /var/lib/magic-dingus/vpn_recovery
+rm -f "$INSTALL_DIR/config/vpn_recovery.json" "$INSTALL_DIR/config/vpn_recovery.json.lock"
+
 # The VPN tunnel event log (gluetun_cascade_restart.sh) is the SOURCE box's
 # drop history; a clone must not report it on its own Box health card.
 if [[ -f /var/lib/magic-dingus/vpn_events.log ]]; then
@@ -1172,6 +1184,27 @@ if [[ -d "$NM_DIR" ]]; then
     fi
 fi
 }
+
+# Step 6c-1b: Wipe inherited Bluetooth pairings.
+#
+# prepare_for_cloning.sh keeps /var/lib/bluetooth out of the image; this is
+# the on-unit safety net (a card read before its first boot, an aborted
+# prepare, an image from before the stash existed). The source box's
+# pairings are keyed by ITS adapter address, so they would never load here,
+# but they are the operator's controllers and their link keys. The new owner
+# pairs their own in Settings -> Pair Wireless Controller. A unit's own
+# adapter directory, if bluetoothd already made one, goes too; the restart
+# recreates it.
+if [[ -d /var/lib/bluetooth ]]; then
+    bt_count=$(find /var/lib/bluetooth -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
+    if [[ "$bt_count" -gt 0 ]]; then
+        find /var/lib/bluetooth -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+        systemctl try-restart --no-block bluetooth.service 2>/dev/null || true
+        log "[6/7] Wiped inherited Bluetooth pairing data ($bt_count adapter dir(s))"
+    else
+        log "[6/7] No Bluetooth pairings to wipe (already clean)"
+    fi
+fi
 
 # Step 6c-2: Wipe inherited system logs.
 #

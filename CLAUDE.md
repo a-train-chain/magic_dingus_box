@@ -178,7 +178,10 @@ sudo usermod -a -G video,input $USER
   - `drm_display` - DRM/KMS display init, mode setting, CRTC management
   - `gbm_context` - GBM surface for EGL
   - `egl_context` - OpenGL ES 3.0 context, swap chain
-  - `input_manager` - evdev event processing, joystick/keyboard mapping, rotary encoder support
+  - `input_manager` - evdev event processing, joystick/keyboard mapping, rotary encoder support. A pad with no captured profile gets an AUTOMATIC menu overlay (`set_auto_overlay_fn`, installed by main.cpp from `retroarch::standard_profile`); an overlay entry mapped to `InputAction::NONE` suppresses that code's built-in action
+  - `input_device_info` - which nodes are controllers (`is_joystick_device`: a stick or hat, and NOT a touchpad / digitizer / accelerometer — mirrors the kernel joydev blacklist; a DualSense's "Motion Sensors" and "Touchpad" devices both report ABS_X and used to be opened as pads, so tilting it scrolled the menu) + `read_sysfs_input_info` (driver, bus, capability bitmaps) for the launcher
+  - `bt_pairing` - Bluetooth controller pairing, pure half (Mac-tested): `PairingFlow` reads BlueZ snapshots/results and decides the next command — power on, discover, pick the strongest advertising GAMEPAD (class/icon/appearance, name only when nothing else is known; never phones/headsets), Remove a stale pairing first (a pad in pairing mode again has dropped its keys — e.g. re-paired to a PS5), stop discovery, Pair, Trust, Connect; one retry then FAILED. `BluetoothPort` is the seam
+  - `bluez_worker` - the kiosk's `BluetoothPort` (sd-bus, kiosk-only): one detached thread + system-bus connection per pairing session, snapshots via GetManagedObjects every 500 ms, Pair/Connect async, a NoInputNoOutput default agent (PIN "0000" for legacy pads) for the session only. **Never blocks the render thread**: `stop()` detaches instead of joining (a wedged bluetoothd must not outlast the 10 s watchdog); sync calls capped at 5 s. Needs a running bluetoothd (`scripts/setup_bluetooth.sh`, run by `setup_memory_tuning.sh` step 1h, enables it and unblocks the radio). Trixie's BlueZ D-Bus policy lets any local user call `org.bluez`, so the `bluetooth` group membership that script also adds is only a fallback for older policies
   - `gpio_manager` - GPIO access (power button, LEDs)
 - **`video/`** - Video playback (GStreamer backend)
   - `gst_player` - GStreamer pipeline management, playback control. GStreamer WARNING messages are logged at WARN with their source element, at most one per element per 5 s (`log_rate_limit.h`, cleared per load); `describe_state()` is a zero-timeout current/pending state read for the stall watchdog's log line
@@ -190,6 +193,7 @@ sudo usermod -a -G video,input $USER
   - `theme` - Color palette and layout constants
   - `font_manager` - stb_truetype font rasterization → GL textures
   - `settings_menu` - Settings UI state machine
+  - `controller_wizard` - Settings → Controller Setup (capture wizard) AND Settings → Pair Wireless Controller (same wizard, `open_for_pairing`; Green on PICK_DEVICE too). Pairing phases: PAIR_SEARCH (shows `PairingFlow`; BlueZ session runs only here) → PAIR_PRESS ("press any button on it"; other pads ignored when BlueZ's modalias gave the IDs) → DONE "Ready to play!" (saved/builtin profile) / AUTO_READY (automatic layout's lit-control test screen; Start on the pad or the knob finishes, Yellow maps by hand; nothing is saved) / PICK_STYLE (no automatic layout). A wired pad with an automatic layout and no saved profile also lands on AUTO_READY from PICK_DEVICE
   - `virtual_keyboard` - On-screen QWERTY keyboard
   - `qrcodegen` - QR code generation for WiFi setup
   - `picture_control_layout` - pure placement of the overlay's CROP checkbox in the now-playing block: left of the title, or on its own line above it when a long title would push it into the playlist half (both logical canvases). Unit-tested.
@@ -218,6 +222,7 @@ sudo usermod -a -G video,input $USER
   - `logical_controls` - the `LogicalControl` vocabulary (separate PS-style and N64-style sets) plus the wizard's per-style prompt order.
   - `joydev_index` - converts a raw evdev code + the device's capability lists into the RetroArch udev bind token (`"5"`, `"h0up"`, `"+2"`). The kiosk reads evdev codes; RetroArch configs want joystick indices — nothing else bridges the two.
   - `capture_session` - pure state machine behind the Controller Setup wizard: walks the per-style prompt list, decides when a press or stick deflection counts, rejects duplicates, supports skip/redo. No I/O.
+  - `standard_layout` - AUTOMATIC PS-style profile for modern pads, so PS4/PS5, Xbox, Switch Pro and 8BitDo (X-input or Switch mode) need no Controller Setup. They all have the DualShock's shape, so they use the PS-style semantic tables, matched by POSITION (bottom face button = Cross whatever it is labelled). Which evdev code sits at each position is fixed by the KERNEL DRIVER: `playstation`/`sony`/`nintendo` are positional (BTN_NORTH 0x133 = top), `xpad`/`xpadneo`/`microsoft`/VID 045e put Xbox X (left) on 0x133; Xbox triggers are axes (ABS_Z/RZ on xpad, ABS_BRAKE/GAS over BLE). `hid-generic` pads get NONE (report order says nothing about position). Also requires the full modern button set. Resolution everywhere: captured → builtin → automatic → legacy N64 (`resolve_mapping_for_pad(const DetectedPad&, ...)`). An axis-kind control in a RetroPad BUTTON slot is emitted as `input_playerN_<slot>_axis` (`ControllerMapping::btn_axes`, outside the frozen snapshot format) — that is how an Xbox trigger drives N64 Z
   - `controller_detector` - USB controller probing (vendor/product IDs → `ControllerType` enum). `detect_primary_controller()` returns the first recognized pad; `detect_connected_controllers()` returns one entry per `/dev/input/js*` in port order, which is what per-port resolution consumes. Split out of `retroarch_launcher` in v1.4.0.
   - `sink_suspension` - the PulseAudio → RetroArch audio hand-over: `SinkSuspension` suspends every sink before the fork and resumes them after the reap; `retry_resume_if_needed()` (post-game) and `resume_all_sinks()` (kiosk start-up) recover a resume that did not land. Pure, injected pactl runner, unit-tested. See Audio System.
 - **`debug/`** - `screenshot_capture`: `touch <data>/screenshot_request` and the next drawn frame (the full composite, read back before the swap) is written to `<data>/screenshots/<UTC>.bmp`, newest 10 kept. The directory is excluded from deploy/OTA rsyncs and scrubbed from golden images (personal content).
@@ -399,22 +404,14 @@ This guarantees correct compositing without X11/compositor overhead.
   `text_input.buffer` (the live TV keyboard — Wi-Fi password screen
   included) is blanked. Never add a file to the bundle without a redaction
   test; `FORBIDDEN_NAMES` refuses the known credential files outright.
-- **VPN tunnel line** (2026-10, Media Browser boxes only — the section is
-  absent without `services/.env`). The owner's tunnel dropped ~170 times
-  over 2026-10-03/04 and only a manual journal dig found it.
-  `gluetun_cascade_restart.sh` appends `<epoch> watch|unhealthy
-  <portfwd|tunnel>|healthy|restart` to `/var/lib/magic-dingus/vpn_events.log`
-  (root writes, 0644, 7 days / 2000 lines, Docker's event time, a failed
-  write never touches the watcher; `first_boot.sh` wipes it on clones).
-  `scripts/vpn_events_summary.py` (pure, stdlib, `scripts/tests/
-  test_vpn_events_summary.py`) turns it into verify_box's "VPN tunnel"
-  PASS/WARN — WARN at >= 6 drops or >= 30 min down in 24 h, or down right
-  now >= 10 min; never FAIL. verify_box passes gluetun's CURRENT health so
-  an outage whose recovery went unrecorded is not "down right now".
-  `box_health.headline` names an unreliable tunnel ("...but the VPN tunnel
-  is unreliable") and the card opens that section. Down time counts from
-  Docker's unhealthy mark (~5 min after the first failed check), so it
-  understates real outages by up to that much.
+- **VPN tunnel line**: native Proton WireGuard + forwarding uses the
+  fresh sanitized `vpn_recovery/status.json` snapshot through
+  `vpn_recoveryctl.py status --summary`. Ready requires current tunnel
+  generation, verified traffic, a positive forwarded port and qBit readback;
+  stale/missing/future snapshots are unknown. Box Health/Content Manager
+  must not borrow success from old event logs. Unsupported configurations
+  retain `vpn_events_summary.py` and the legacy seven-day/2000-line event
+  log. Recovery/unknown does not disable cached local movie playback.
 
 - **Time zone (Channel Guide clock)**: the Content Manager page posts the browser's `Intl` zone to `POST /admin/system/timezone` (`admin_system.py`, `timezone_apply.py`: validates against `/usr/share/zoneinfo` and aliases legacy names such as `Asia/Calcutta`, then `sudo -n timedatectl set-timezone`, rewrites `services/.env` `TZ=` when that file exists, and touches `RELOAD_MARKERS["timezone"]` = `timezone_reload_request`). A UTC report (`UTC`, `Etc/UTC`, `GMT`, `Etc/GMT`, … — what Firefox resistFingerprinting, Tor and Brave strict send whatever the real zone) never moves a box already on a named zone: `{"changed": false}`, `.env` untouched (`timezone_apply.keeps_named_zone`). **It runs on EVERY box, List style included** (clarified 2026-11-13): a correct system clock zone is right for the whole box, so the zone — and `services/.env` `TZ=` — follows the browser even on a box that never touches the Menu Style setting. The kiosk `unsetenv("TZ")`s at start-up so `/etc/localtime` decides, and the main loop's marker poll calls `tzset()` + `GuideClock::invalidate()` — no restart. The guide's clock/ticks follow the phone after the Content Manager is opened once.
 
@@ -455,6 +452,7 @@ Prefer `local` when authoring — that's the canonical default and what `playlis
 
 ### In RetroArch
 - Per-core button mappings live in `controller_mapping.cpp` (semantic tables) combined with a pad's `PhysicalProfile`; player 1 and player 2 resolve independently from whichever pad is on each port
+- Modern pads (DualSense/DS4, Xbox, Switch Pro, 8BitDo) use the PS-style tables automatically (`retroarch/standard_layout.h`), wired or Bluetooth; exit = hold Select (Share/View/−) + press Start (Options/Menu/+)
 - **Exit a game — direct quit, no RetroArch menu** (owner decision 2026-08-03; the RA menu "isn't needed at all" on a kiosk): N64-style pads = **Z + Start together, either order** (verified on a Pi 5, 2026-10-27); PS-style pads = hold **Select + press Start**. Bound from PHYSICAL controls in the style preambles (`SemanticMapping::exit_emulator`) so per-core RetroPad slot remaps can never move the gesture — the mupen table repurposes the select SLOT for N64 L, which is exactly how the old start+select combo silently became Start+L1 in N64 games. RetroArch honors these hotkeys from the PLAYER 1 pad only (accepted limitation with two pads). Auto-save-on-exit makes direct quit safe. **On N64-style pads Start is the hotkey-enable modifier and Z the exit button, never the reverse**: RetroArch withholds every other button from the game while the modifier is held, and Z is held during play (with Z as the modifier, Mario 64's Z+A backflip did nothing — owner report, Pi 5, 2026-10-27; `test_exit_gesture_binds.cpp` pins it).
 - Auto-save state on exit, auto-load on start
 
@@ -958,16 +956,97 @@ series, which would have destroyed already-watched seasons too.
 
 ### Service operations
 
-- **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged. Also hosts the **drive-absent guard** (runs before the port fetch, every tick): while `/mnt/ssd` is not a mountpoint — or is mounted but qBit cannot read a token written on the drive through its `/downloads` bind (stale bind awaiting storage-attach) — it stops every *active* torrent on EVERY tick (the kiosk's `resume_all` at game/movie exit and boot recovery, and newly added downloads, would otherwise write into the SD card until full), records the hashes it stopped in `/var/lib/magic-dingus/drive_guard/stopped_hashes` (persistent — the old tmpfs marker was lost on reboot, stranding torrents stopped), and turns on qBit's add-stopped pref (`add_stopped_enabled` / 4.x `start_paused_enabled`, original saved alongside). Release starts exactly the recorded hashes and restores the pref; operator-stopped torrents are never started. The legacy `/tmp/mdb_drive_guard_paused` marker is folded in as an "ALL" sentinel.
+- **qbit-port-sync.timer** (systemd, on Pi host) — retains the storage guard and 60s safety cadence; native VPN configuration delegates port changes to the same generation-fenced Python writer used by the 10s controller, with cookie-authenticated readback. Legacy configurations retain the shell path. The timer syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged. Also hosts the **drive-absent guard** (runs before the port fetch, every tick): while `/mnt/ssd` is not a mountpoint — or is mounted but qBit cannot read a token written on the drive through its `/downloads` bind (stale bind awaiting storage-attach) — it stops every *active* torrent on EVERY tick (the kiosk's `resume_all` at game/movie exit and boot recovery, and newly added downloads, would otherwise write into the SD card until full), records the hashes it stopped in `/var/lib/magic-dingus/drive_guard/stopped_hashes` (persistent — the old tmpfs marker was lost on reboot, stranding torrents stopped), and turns on qBit's add-stopped pref (`add_stopped_enabled` / 4.x `start_paused_enabled`, original saved alongside). Release starts exactly the recorded hashes and restores the pref; operator-stopped torrents are never started. The legacy `/tmp/mdb_drive_guard_paused` marker is folded in as an "ALL" sentinel.
 - **Gluetun pin: v3.41.3** (`@sha256:fa19cc76…e027`, the multi-arch index digest; `tests/local/compose_image_pins.bats`). Bumped from v3.41.1 on 2026-10-05 after a live capture (18:00–20:15) showed every one of 9 consecutive full-stack restarts was PORT FORWARDING, not the tunnel: Proton's NAT-PMP gateway refused a renewal minutes after granting a port (`[port forwarding] adding port mapping: ... read udp 10.2.0.2:x->10.2.0.1:5351: recvfrom: connection refused`, once `external port changed: 60551 changed to 35802`), v3.41.1's loop logged `[port forwarding] starting` and never obtained a port again, the healthcheck's port clause (`/tmp/.pf_seen`) went unhealthy ~5 min later and the cascade watcher restarted gluetun + 5 dependents ~5 min after that — while in-tunnel traffic (ping 1.1.1.1 ~170 ms, WireGuard handshakes) worked throughout. v3.41.2 "no longer stuck after failed port forwarding" + v3.41.3's deadlock fix let gluetun re-acquire the port itself; the healthcheck's port requirement stays as the backstop. The watcher now records which kind each unhealthy was (`portfwd` = the healthcheck's DNS+TCP+TLS probe still passes inside the tunnel, `tunnel` = it does not) in the VPN event log (Box health above). `WIREGUARD_PERSISTENT_KEEPALIVE_INTERVAL=25s` (Go duration; Proton configs ask for 25, gluetun's default is 0 and it ignores the .conf line).
-- **Gluetun control-server access file** (2026-10): `scripts/ensure_gluetun_auth.sh` writes `services/config/gluetun/auth/config.toml` (gluetun's default path under the `/gluetun` bind) with ONE `auth = "none"` role for `GET /v1/portforward`, `GET /v1/publicip/ip` and the legacy `GET /v1/openvpn/portforwarded` (kept for a box rolled back to an older tree). Current gluetun makes every control-server route private by default, so without it the next pin bump 401s the healthcheck's port clause (unhealthy forever once `/tmp/.pf_seen` exists → full-stack restart every ~10 min), qbit_port_sync and the Content Manager's VPN reads. With a file present even v3.41.x stops applying its built-in public role: every other route (incl. `PUT /v1/vpn/status`) is private — Byparr's browser shares the netns. Delivered by `setup_memory_tuning.sh` step 1f (MB boxes only) and `setup_services.sh --provision` before `compose up`; restarts nothing — gluetun reads it at its next start. **On a bump:** an unknown route in the file makes gluetun REFUSE TO START, so refresh `VALID_ROUTES` in `tests/local/gluetun_auth.bats` from the new version's `auth/settings.go`; that test also fails when the tree calls a `localhost:8000` route the file doesn't list.
-- **VPN server country** (2026-10): `VPN_COUNTRIES` in `services/.env` → `SERVER_COUNTRIES=${VPN_COUNTRIES-}` (`-` not `:-`: `custom` needs it empty). Content Manager → Media Browser → Advanced (`web/vpn_settings.py`, `static/vpn_settings.js`, one `register()` call in admin_media_browser.py): `GET|POST /admin/media-browser/vpn-country`, curated list of `protonvpn` country names with >= 6 port-forwarding WireGuard servers in gluetun v3.41.x's list (Netherlands default). POST rewrites ONLY that line (atomic, mode kept), then runs `scripts/recreate_gluetun.sh` as a detached root job in the shared maintenance slot (kind `vpn-country`, single-flight with OTA/setup): `compose up -d --no-deps gluetun` under the compose lock, lock released before waiting for healthy so the cascade can re-link dependents. A failed launch restores the old line. Read-only for `custom` providers. The setup route keeps the current country on Reconfigure (it used to reset to Netherlands). Existing boxes are unchanged until someone picks a country.
+- **Gluetun control-server access file**: native provisioning generates a
+  per-box 0600 `services/config/gluetun/auth/recovery.key` and scoped API-key
+  role for GET/PUT `/v1/vpn/settings` and `/v1/vpn/status`; only the three
+  existing public GET routes remain unauthenticated. Port 8000 stays
+  unpublished. `ControlClient` uses bounded host Python in the inspected
+  network namespace, stdin-only credentials and generation-fenced partial
+  selection PUTs; never round-trip settings or print complete responses.
+  `setup_memory_tuning.sh` quiesces an old watcher before auth activation
+  and converges the existing watcher unit. Reset/clone remove the local
+  credential, intent/history and fallback policy; rollback converges units
+  against the restored tree. See the
+  [VPN validation runbook](docs/superpowers/validation/2026-11-14-vpn-reliability.md)
+  for the opt-in cached-image/dummy-key contract test and live gates.
+- **VPN server country**: desired primary remains `VPN_COUNTRIES` in
+  `services/.env`; explicitly allowed fallback countries live separately
+  in `config/vpn_recovery.json`. Content Manager Advanced saves both under
+  maintenance/compose fencing. Omission preserves current policy, and
+  other boxes default to no fallback. The approved magicpi5 policy is
+  Canada then United States. Applying settings to an explicitly stopped
+  stack keeps it stopped; apply occurs at the next supported start.
+  Automatic recovery never rewrites desired country settings.
 - **Required Gluetun setup**: WireGuard config from ProtonVPN dashboard MUST have NAT-PMP toggle ON when generated. `FIREWALL_OUTBOUND_SUBNETS` MUST NOT include `10.0.0.0/8` (would block NAT-PMP routing to the VPN gateway at 10.2.0.1).
 - **Active indexers** (Prowlarr → Radarr): TPB, YTS, LimeTorrents, TorrentDownload, Knaben (the latter two with `cloudflare` tag → Byparr, which replaces FlareSolverr for current Cloudflare challenge formats). Plus 5 pre-configured but disabled (Demonoid, EZTV, Internet Archive, Magnetz, Torrent Downloads) for future enable.
 - **qBittorrent auth hardening** (Step 7.5 of `setup_services.sh`): the docker image's "bypass authentication for clients on localhost" preference is disabled programmatically and the WebUI password is set to a random value from `services/.env`. Without this, anything connecting from 127.0.0.1 (Radarr, the kiosk binary, anyone with shell) bypasses auth entirely. Step 7.6 mirrors the password to `MDB_QBIT_PASS=` in `.env` so the kiosk's QbittorrentClient (which reads that var via systemd EnvironmentFile=) keeps authenticating. It restarts the kiosk ONLY when the running kiosk's `MDB_QBIT_PASS` (from `/proc/<MainPID>/environ`; fallback: did this run change the line) is missing or stale — it used to restart on every run, killing a movie/game in progress on each Content Manager Reconfigure.
 - **Gluetun DNS**: `DNS_SERVER=off` in docker-compose.yml (spelled `DOT=off` before 2026-10-04; gluetun v3.40+ deprecated that alias and maps it to `DNS_SERVER=off`) — switches Gluetun from DNS-over-TLS to plain UDP DNS (1.1.1.1). The DoT path maintains a long-lived TLS pipe to the upstream resolver; when that pipe stalls (observed ~daily on this Pi pre-fix), all DNS queries inside the netns time out for hours and Gluetun's internal healthcheck stays green because it queries a cached-IP endpoint that needs no DNS. Plain UDP is stateless — no pipe to wedge.
 - **Gluetun healthcheck**: `wget https://one.one.one.one/cdn-cgi/trace | grep '^ip='` — actually exercises DNS + TCP + TLS through the tunnel. Cloudflare's official `one.one.one.one` hostname never blocks its own infrastructure (no rate-limit flapping). Failure of any layer → unhealthy. Replaces the older `localhost:8000/v1/publicip/ip` check which returned a cached value with no DNS lookup and missed the DNS-wedge state entirely.
-- **gluetun-cascade-restart.service** (systemd, on Pi host) — long-running watcher subscribed to `docker events --filter container=mdb_gluetun --filter event=start --filter event=health_status`. Four roles:
+- **Native VPN recovery**: the existing `gluetun-cascade-restart.service`
+  execs one host stdlib Python controller for Proton WireGuard+forwarding;
+  unsupported configurations alone retain the legacy watcher below.
+  Observe port/qBit every 10s, DNS/TCP/TLS traffic every 30s; first port and
+  candidate grace 120s, established port loss 90s, traffic loss 60s. Try at
+  most two distinct preferred-country hostnames before explicitly allowed
+  fallback; healthy fallback stays selected. Exclusion 1800s, bounded 24h
+  history/newest 256 endpoints, failed-round backoff 120/300/600s and at
+  most one disruptive restart per 600s. API success alone is not Ready.
+  Host WAN classification uses a certificate-verifying stdlib HTTPS child
+  (1.3s parent cap per provider, tighter shared observation deadline), so
+  host wget/curl is not a hidden dependency; subprocess timeout kills and
+  reaps blocked DNS. In-container probes retain pinned GNU wget/BusyBox
+  timeout. Native actions read-open the shared compose lock and defer on
+  unusable/busy locks; no unlocked mutation or health wait under lock.
+  Supported lifecycle commands publish durable intent/inhibition; explicit
+  stop/ambiguous 137 never authorize resurrection. Loaded catalog identity
+  requires a new container-start and INFO file-wins proof, independent of
+  downloaded data. One worker handles bounded actions while polling stays
+  live. Existing playback/SSD/torrent ownership remains authoritative.
+  Hard-won on magicpi5 (2026-11-15), each a live failure first:
+  - **Gluetun restart-loops a dead endpoint every ~6 s inside the SAME
+    container** (new tun0 ifindex each time; 4→30 in 150 s). Only a new
+    container start (id/pid/start) may reset failure clocks or grant a fresh
+    candidate grace; tun0-only changes keep them, ≤30 s of unknown samples
+    keep loss evidence, a tick that misses tun0 within 30 s of seeing one
+    waits a tick instead of spending the container restart, and the rotation
+    PUT is fenced on container identity. Pre-fix the controller sat in
+    "Waiting for candidate" on a dead server forever.
+  - **A round is one incident**: the two-preferred-servers budget closes
+    after 30 min of continuous Ready; a shorter success keeps it so a flapping
+    country still reaches the fallback. Pre-fix it never closed, so every
+    later incident skipped straight to the fallback country.
+  - **Catalog INFO attestation reads Gluetun's 121 s startup log window**
+    (`--since start --until start+121s`), never `--tail`: a restart loop
+    scrolls past the line within minutes, and Docker 26 returns nothing for
+    `--tail` combined with `--until`.
+  - **Polling cost is part of the Pi 4B budget.** Identity `docker inspect`
+    and `docker ps` queries are answered in-process from the Engine socket
+    (`vpn_recovery/docker_api.py`, CLI-identical stdout, CLI fallback for a
+    PATH shim/`DOCKER_HOST`/unreachable socket); root reads tun0 with
+    `nsenter --net ip`; the firewall endpoint parse is cached per generation
+    once two reads agree. Measured 16.7% → 6.1% of a Pi 5 core (controller +
+    containerd + dockerd). Don't add per-tick processes casually.
+  - **Per-server evidence**: a container restart drops `attempted` (Gluetun
+    reverts to `.env`; a healthy restarted server was once rotated away as a
+    "failed attempt"); lease `losses` are cleared on an issued rotation; any
+    intent-revision change (maintenance owners/lifecycle only, never routine
+    ticks) re-evaluates the current selection with first-lease grace.
+  - **The 1.3 s in-tunnel probe takes 650–750 ms idle** and starves under a
+    heavy indexer search. For a tunnel generation our own probe already
+    verified, a Docker in-tunnel healthcheck success ≤45 s old (after that
+    proof, not followed by a failure) counts as traffic; a new candidate never
+    borrows it. Don't "fix" this with a longer in-tick retry: it starves the
+    host-WAN check, and a starved WAN check suppresses real recovery.
+  - **Gluetun v3.41.3 can wedge** after a sub-second startup-check restart
+    loop: the settings PUT blocked 2 min and shutdown timed out. The
+    api_failed → single container restart escalation is what recovers it.
+  - Never run `scripts/tests` suites that write `/tmp/mdb_*` on a box:
+    `test_gluetun_cascade.py` used to create/delete the real playback-pause
+    marker (it now uses a private `PAUSE_MARKER`).
+- **Legacy gluetun-cascade-restart.service** (unsupported VPN configurations;
+  systemd, on Pi host) — long-running watcher subscribed to `docker events --filter container=mdb_gluetun --filter event=start --filter event=health_status`. Four roles:
   - **netns re-link**: On Gluetun `start` events, runs `docker compose restart` then `up -d` on the four netns-sharing dependents (Radarr/Prowlarr/qBit/Byparr) to refresh port-forwarding DNAT rules that get torn down with the old netns. The restart-then-up-d sequence handles both Gluetun-was-just-restarted (dependents still running but disconnected) and Gluetun-was-recreated (dependents crashed with exit 128, need to be brought back up) cases. **Playback-pause aware**: while `/tmp/mdb_playback_services_paused` exists (maintained by `playback_services_pause.sh` during games/movies), the cascade re-links qBittorrent ONLY and enforces `docker stop` on Radarr/Prowlarr/Byparr — pre-fix, the cascade's `up -d` revived the paused three mid-game and defeated the RAM-freeing pause on the 2 GB boxes (observed live 2026-07-31). The paused three re-link via the kiosk's unpause, which falls back to `compose up -d` when plain `docker start` fails (network_mode pins Gluetun's container ID at create time, so a Gluetun RECREATE mid-pause invalidates plain start).
   - **VPN event log** (2026-10): appends every transition to `/var/lib/magic-dingus/vpn_events.log`, probing in-tunnel traffic once per unhealthy event to tag it `portfwd` or `tunnel` (see Box health + diagnostics).
   - **Auto-recover from unhealthy**: On Gluetun `health_status: unhealthy` events, waits 5 minutes for confirmation (transient DNS blips self-recover), then if still unhealthy issues `docker restart mdb_gluetun`. The resulting `start` event re-enters the netns-relink branch above. Event-parsing uses `IFS= read -r line` + `event_action="${event_action// /}"` to normalize whitespace — Docker formats `health_status: healthy` (with space) which would otherwise miss the case-statement match.
@@ -1177,6 +1256,14 @@ line, so a box provisioned before this pattern existed kept the blocking
 entry forever — and that is not hypothetical, the source box was still
 carrying the automount line on 2026-08-05, one step short of baking the
 boot hang into another image.
+
+**Bluetooth pairings are per-box state too** (2026-11): `/var/lib/bluetooth`
+(one dir per adapter, each paired pad's `info` holds its LinkKey) is in
+`prepare_for_cloning.sh`'s SECRET_PATHS with `bluetooth.service` stopped for
+the clone (a connecting pad would re-create it), restored by
+`restore_after_cloning.sh`, and wiped by `first_boot.sh` Step 6c-1b. The
+source's dirs are keyed by its own adapter address so they would never load
+on a unit — they are still the operator's data.
 
 **Run `scripts/golden_image/sync_source_box.sh --pi magic@<host>` before
 every clone.** The out-of-box fixes live in eight different files and

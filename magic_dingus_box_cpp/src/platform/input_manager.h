@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -63,6 +64,17 @@ public:
     // keep pointing into it). Passing an empty map removes all overlays and
     // restores pure built-in behavior.
     void set_menu_overlays(std::map<uint32_t, MenuNavOverlay> overlays);
+
+    // Automatic menu-nav overlay for a pad that has NO entry in the map
+    // above (no captured profile): called once per joystick at open time
+    // with its capabilities, driver and bus. main.cpp installs
+    // retroarch::standard_profile() here, so a DualSense / Xbox / Switch Pro
+    // pad gets the PS-style menu buttons (L1/R1 = previous/next, Triangle =
+    // play/pause) without the Controller Setup wizard. Returning nullopt
+    // keeps the built-in table. Setting it re-resolves every open device.
+    using AutoOverlayFn = std::function<std::optional<MenuNavOverlay>(
+        const retroarch::CaptureDeviceCaps&)>;
+    void set_auto_overlay_fn(AutoOverlayFn fn);
 
     // Raw capture (wizard): while enabled, joystick devices' events are
     // delivered via drain_raw_events() INSTEAD of being action-mapped.
@@ -168,22 +180,6 @@ private:
     InputAction map_axis_to_action(uint8_t axis, int16_t value);
     InputAction map_key_to_action(uint16_t code);
 
-    // The ROTATE decision for a main-stick X axis: deadzone + fire-on-change
-    // + hold-to-repeat at ROTATE_REPEAT_HZ. Extracted from
-    // map_axis_to_action's `axis == 0` branch so the overlay path
-    // (arbitrary ABS code) and the hardcoded path (ABS_X) are literally the
-    // same code and share last_rotate_dir_/last_rotate_time_ -- they can
-    // never drift apart, and only one of the two ever runs per event.
-    //
-    // `deflection` is signed distance from the axis's REST CENTRE, not the raw
-    // evdev value: an axis reporting 0..255 rests at 127, so comparing its raw
-    // value against a symmetric deadzone would read "hard right" forever. The
-    // hardcoded ABS_X path passes the raw value with AXIS_DEADZONE, which is
-    // exactly what it always did (centre 0, threshold 5000); the overlay path
-    // passes a value centred and a threshold scaled by the device's reported
-    // min/max (Device::AxisNorm).
-    InputAction rotate_from_axis_value(int32_t deflection, int32_t deadzone);
-
     // Deadzone for a signed-16-bit axis: ~15% of half-range. Also the
     // numerator of the proportional threshold derived for other ranges, so a
     // signed-16 axis normalizes back to exactly this value (see
@@ -195,7 +191,15 @@ private:
     // overlays_ and is invalidated by set_menu_overlays().
     const MenuNavOverlay* lookup_overlay(uint16_t vid, uint16_t pid) const;
 
+    // The overlay a device should use: its captured one from overlays_,
+    // else its automatic one (Device::auto_overlay), else nullptr.
+    const MenuNavOverlay* resolve_overlay(Device& device);
+    // Capability snapshot of one open joystick (shared by device_caps()
+    // and the automatic overlay).
+    static retroarch::CaptureDeviceCaps caps_of(const Device& device);
+
     std::map<uint32_t, MenuNavOverlay> overlays_;   // (vid << 16) | pid
+    AutoOverlayFn auto_overlay_fn_;
 
     bool raw_capture_ = false;
     std::vector<RawInputEvent> raw_events_;
@@ -204,11 +208,6 @@ private:
     static constexpr size_t MAX_RAW_EVENTS = 4096;
 
     static constexpr const char* PHONE_REMOTE_NAME = "MagicDingus Phone Remote";
-
-    // State tracking for axes/hats
-    int last_rotate_dir_;
-    double last_rotate_time_;
-    static constexpr double ROTATE_REPEAT_HZ = 8.0;
 
     // D-pad hold-to-repeat
     static constexpr double DPAD_INITIAL_DELAY = 0.4;

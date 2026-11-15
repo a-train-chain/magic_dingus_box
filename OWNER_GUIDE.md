@@ -38,6 +38,28 @@ guide walks through all of it.
 - **Settings menu**: press **B** (the Circle button on a
   PlayStation-style pad). Everything else in this guide starts there.
 
+**Using your own wireless controller** (PlayStation 4 or 5, Xbox,
+Switch Pro, 8BitDo and most other Bluetooth controllers):
+
+1. Open Settings and choose **Pair Wireless Controller**. You can use
+   the knob and buttons on the front of the box if you have no
+   controller working yet.
+2. Put the controller in pairing mode — the screen shows how for each
+   kind (on a PlayStation 5 controller, hold **Create** and the **PS**
+   button until the light flashes).
+3. The box finds it and connects. Press any button on it when asked.
+4. PlayStation, Xbox, Switch Pro and 8BitDo controllers are ready to
+   play straight away. For anything else the box walks you through
+   setting up its buttons.
+
+After that, just press the controller's PS / Home / Xbox button to
+connect it again. On these controllers the bottom face button selects
+and the right one opens Settings, and you **exit a game by holding
+Select (Share, View or −) and pressing Start (Options, Menu or +)**.
+If a wireless controller ever feels laggy, connect the box to the
+internet with a network cable or a 5 GHz Wi-Fi network — Bluetooth
+shares a radio with 2.4 GHz Wi-Fi.
+
 ## 3. Connect to your Wi-Fi
 
 1. Press **B** to open Settings.

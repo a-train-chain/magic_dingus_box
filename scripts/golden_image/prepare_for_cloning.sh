@@ -352,6 +352,15 @@ done
 unset _u
 log "[1/5] Periodic timers + cascade watcher stopped for the duration of the clone"
 
+VPN_STATE=/var/lib/magic-dingus/vpn_recovery
+VPN_CTL="$CPP_DIR/scripts/vpn_recoveryctl.py"
+if [[ -f "$VPN_CTL" ]]; then
+    python3 "$VPN_CTL" --base "$INSTALL_DIR" intent adopt-running || true
+    mdb_clone_vpn_snapshot "$VPN_STATE" "$SECRET_STASH" || exit 1
+    python3 "$VPN_CTL" --base "$INSTALL_DIR" inhibit begin "clone-$$" --owner-pid "$$" --reason clone || exit 1
+fi
+
+
 systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
 # The kiosk is stopped, so a build.prev.* left by sync_source_box.sh / deploy_cpp.sh
 # (the old kiosk's cwd while it ran) is nobody's cwd any more: don't ship it.
@@ -361,6 +370,11 @@ rm -rf "${CPP_DIR}"/build.prev.* 2>/dev/null || true
 # ~/.config/pulse, and a copy caught mid-write would ship in every clone.
 systemctl stop magic-dingus-audio.service 2>/dev/null || true
 systemctl stop magic-dingus-web.service 2>/dev/null || true
+# bluetoothd rewrites /var/lib/bluetooth/<adapter>/<device>/info whenever a
+# paired controller connects, so a running daemon could re-create the
+# pairings SECRET_PATHS stashes below before dd reads the card.
+# restore_after_cloning.sh starts it again.
+systemctl stop bluetooth.service 2>/dev/null || true
 
 # Stop docker-compose stack via the systemd unit so its ExecStop runs
 # (which calls `docker compose down` cleanly). reset-failed first so a
@@ -374,7 +388,12 @@ systemctl stop magic-dingus-services.service 2>/dev/null || true
 # do it directly. This handles the case where containers were started
 # manually outside the systemd unit.
 if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null; then
+    if [[ -f "$VPN_CTL" ]]; then
+        python3 "$VPN_CTL" --base "$INSTALL_DIR" provision
+        python3 "$VPN_CTL" --base "$INSTALL_DIR" lifecycle stop || exit 1
+    else
     (cd "$SERVICES_DIR" && docker compose down 2>&1 | sed 's/^/    /' || true)
+    fi
 fi
 
 # Now stop the DAEMONS themselves. Stopping the compose stack leaves dockerd
@@ -398,6 +417,10 @@ systemctl stop docker.socket 2>/dev/null || true
 systemctl stop docker.service 2>/dev/null || true
 systemctl stop containerd.service 2>/dev/null || true
 log "[1/5] Docker + containerd daemons stopped (they rewrite secret-bearing metadata)"
+# Unit stop changed only the temporary live intent. Put its exact original
+# back before the normal manifest verification/shred pass. Recovery is stopped.
+mdb_clone_vpn_restore_snapshot "$VPN_STATE" "$SECRET_STASH" || exit 1
+
 
 log "[1/5] Services stopped"
 
@@ -635,6 +658,13 @@ SECRET_PATHS=(
     # /root), and would have passed the leak check below, which also tested
     # `-name .env` exactly. The glob catches .env and every sibling.
     "/opt/magic_dingus_box/services/.env*"
+    "/opt/magic_dingus_box/services/config/gluetun/auth/**"
+    "/var/lib/magic-dingus/vpn_recovery/**"
+    "/opt/magic_dingus_box/config/vpn_recovery.json*"
+    # Owner repair/deploy snapshots contain the same private keys as .env.
+    # Keep them off the image and restore every original on the source.
+    "/var/backups/mdb-vpn-recovery-*/**"
+    "/var/backups/mdb-vpn-reliability-*/**"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/flask_secret.key"
     "/home/magic/.config/magic_dingus_box/tmdb_api_key*"
@@ -693,6 +723,13 @@ SECRET_PATHS=(
     # reboot between prepare and restore" rule was already load-bearing for
     # the boot-partition stash; it now covers Wi-Fi continuity too.
     "/etc/NetworkManager/system-connections/*.nmconnection"
+    # Paired Bluetooth controllers (Settings -> Pair Wireless Controller):
+    # one directory per adapter, each paired device's `info` file holding
+    # its LinkKey. Useless on a unit -- the directory is keyed by the SOURCE
+    # board's adapter address -- but it is the operator's pairing data and
+    # key material. bluetooth.service is stopped above so nothing re-creates
+    # it mid-clone; first_boot.sh Step 6c-1b wipes it on the unit as well.
+    "/var/lib/bluetooth/**"
 )
 
 for _app in "${ARR_APPS[@]}"; do
@@ -1179,7 +1216,7 @@ unset _i _store _pruned _stashed
 # Backups/ behind is correct, and restore rebuilds the tree on the way back in
 # via its own `mkdir -p "$(dirname "$dest")"`.
 _expanded=()
-shopt -s nullglob globstar
+shopt -s nullglob globstar dotglob
 for _entry in "${SECRET_PATHS[@]}"; do
     if [[ "$_entry" == *'*'* ]]; then
         for _match in $_entry; do _expanded+=("$_match"); done
@@ -1187,7 +1224,7 @@ for _entry in "${SECRET_PATHS[@]}"; do
         _expanded+=("$_entry")
     fi
 done
-shopt -u nullglob globstar
+shopt -u nullglob globstar dotglob
 SECRET_PATHS=("${_expanded[@]}")
 unset _expanded _entry _match
 
@@ -1407,6 +1444,10 @@ leak_checks=(
     '/var/lib/cloud|obj.pkl'
     '/etc/NetworkManager/system-connections|*.nmconnection'
     '/opt/magic_dingus_box/services|.env*'
+    '/opt/magic_dingus_box/services/config/gluetun/auth|*'
+    '/var/lib/magic-dingus/vpn_recovery|*'
+    '/opt/magic_dingus_box/config|vpn_recovery.json*'
+    '/var/backups|mdb-vpn-*'
     '/var/log|cloud-init.log*'
     '/var/log|cloud-init-output.log*'
     # Outcome assertions for stash classes that have silently matched nothing
@@ -1427,6 +1468,14 @@ leak_checks=(
     # starts gluetun from it on the clone whether or not .env exists.
     '/var/lib/docker/containers|config.v2.json'
 )
+for _vpn_backup in /var/backups/mdb-vpn-recovery-* /var/backups/mdb-vpn-reliability-*; do
+    [[ -d "$_vpn_backup" ]] || continue
+    if [[ -n "$(find "$_vpn_backup" -type f -print -quit 2>/dev/null)" ]]; then
+        log "ERROR: VPN backup remains in clone artifact: $_vpn_backup"
+        leak_found=$((leak_found + 1))
+    fi
+done
+unset _vpn_backup
 for chk in "${leak_checks[@]}"; do
     dir="${chk%%|*}"
     name="${chk#*|}"
