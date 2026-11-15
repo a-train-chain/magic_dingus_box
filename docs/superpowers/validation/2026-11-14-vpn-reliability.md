@@ -208,3 +208,24 @@ Gluetun's own restarts stopped as soon as each fault was removed (0 in the follo
 
 Final state (04:08 PST): Ready on Canada `node-ca-51` (desired country), forwarded port 52371 = qBit, kiosk PID 308949 / NRestarts 0, deployed controller = `004c2bf` (fingerprint `d266169b…`). Gluetun v3.41.3 can wedge its VPN loop after a sub-second startup-check restart loop (settings PUT blocked 2 min, shutdown timed out); the controller's api_failed → single restart path is what recovers it, so keep that escalation.
 
+
+## Live validation — 2026-11-15 afternoon (fallback optimizations, PR #24)
+
+Deployed to magicpi5 as module swaps under `run-inhibited` (backups
+`/var/backups/mdb-vpn-reliability-20261115T090842Z/before-diversity-deadcandidate`
+and `before-abandoned-escalation`): network-block candidate diversity, the
+dead-candidate rule, and the abandoned-rotation escalation. Faults came from
+the in-repo helper `tests/vpn_fault/check_network_fault.py`.
+
+| Run (box time) | Mode | Result | What it showed |
+|---|---|---|---|
+| 12:17 | fallback | unproven (namespace changed) | Diversity: from `node-ca-51` (185.111.110.x) the next candidate skipped `ca-50`/`ca-43` (same block) for `node-ca-59` (84.20.16.x). Dead-candidate rule: `ca-59` judged **69 s** after the rotation (was 120 s+). Fallback reached `node-us-119`, which again never leased a port; after its 120 s first-lease grace the controller correctly rotated to `node-us-390`. That settings PUT hung **2 min** in Gluetun v3.41.3 (`200 PUT /v1/vpn/settings … in 2m0.5s`, then "Shutdown failed: … http server: goroutine shutdown timed out"). The controller had marked `api_failed` but waited out the rest of the grace before its one restart, which led to the abandoned-rotation escalation (`7ca0798`). The restart replaced the pinned namespace, so the helper could not prove the US leg. Its 550 s watchdog then crashed on `/proc/<old pid>/stat` and left a failed unit (fixed in `4231578`; no rules remained). |
+| 12:58 | fallback | unproven (`unexpected_endpoint_do_not_chase`) | After the 12:23 container restart, Gluetun ran its `.env` selection (any Canada server). When `node-ca-14` was blocked, Gluetun's own healthcheck hopped to `node-ca-51` in ~45 s, before the controller acted. That is good recovery, but it bypasses the path under test: the controller's two-Canada-then-US logic only engages on a controller-pinned selection. |
+| 13:00 | port-loss | **pass** (observed) | Rotation 90.07 s after the port loss (threshold 90), `ca-51` → `ca-59`, qBit synced, Ready. This also pinned `ca-59` for the next run. |
+| 13:33 | fallback | unproven (namespace changed) | Started from the pinned `node-ca-59`. Diversity again: the next Canada candidate was `node-ca-24` (176.113.74.x), not a 84.20.16.x neighbour. Dead-candidate rule judged `ca-24` after **80 s**, and the two-Canada round moved to the fallback country: `node-us-119`, which again never leased a port. After its first-lease grace (131 s) the controller rotated to `node-us-390`; that settings PUT hung in Gluetun again, and the new abandoned-rotation escalation restarted the container **66 s** after the rotation (was the rest of the grace). Box Ready on `node-ca-37` afterwards, kiosk NRestarts 0, 0 failed units; the fixed helper cleaned up without crashing. The restart replaced the pinned namespace, so the US leg is still not proven. |
+
+Lessons (also in CLAUDE.md and `tests/vpn_fault/README.md`):
+- Gluetun self-hops within its country under the `.env` selection. A fallback proof needs a controller-pinned server: run port-loss first.
+- A rotation records two attempts in the round (the server left and the one chosen), so wait for the round to close (30 min continuous Ready, restarted by any watcher restart) before the next fallback run.
+- `node-us-119` failed to lease a port on both fallback runs that reached the US. Its history entry held only the latest failure, so once the 30-min exclusion lapsed it was first in catalog order again, and every rotation away from it hung Gluetun's settings PUT. Fix (PR #24): failure entries now count repeats within 24 h, and a server with two or more goes to the back of its pool (still used when nothing else is left).
+- Still unproven on hardware: a fallback server becoming Ready after a controller rotation. Both attempts ended in the abandoned-rotation restart because the first US server was the bad one; the box's history still holds `us-119` as a single failure (recorded before counting existed), so it goes last only after it fails once more.

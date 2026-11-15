@@ -37,7 +37,17 @@ fault-helper tests") and in `tests/run_offline.sh --suite vpn-fault`.
   `--cleanup <manifest>` removes it by hand.
 - **Prerequisites:** a Ready box, an attested Gluetun catalog, verified
   traffic both in the tunnel and on the host WAN, and (for `fallback`) the
-  policy Canada → United States.
+  policy Canada → United States and a **controller-pinned** server. After
+  any Gluetun container start, the selection is the `.env` country, and
+  Gluetun's own healthcheck hops to another server within ~45 s of a
+  fault, before the controller acts: good recovery, but it bypasses the
+  path under test. Run `port-loss` first: its rotation pins a server.
+  That rotation records two Canada attempts in the controller's round
+  (the server it left and the one it chose), so wait for the round to
+  close (30 min of continuous Ready, restarted by any watcher restart)
+  before `fallback`, or its preflight refuses with
+  `history_does_not_allow_distinct_second_Canada`. Don't restart Gluetun
+  in between, or the pin is lost.
 
 ## Modes
 

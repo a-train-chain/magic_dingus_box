@@ -1004,7 +1004,12 @@ series, which would have destroyed already-watched seasons too.
   rotation instead of after the grace: Gluetun v3.41.3 hung that PUT for
   2 min on magicpi5 (2026-11-15) while rotating away from a server with
   traffic but no port. A server that recovers first is Ready and is never
-  restarted. Exclusion 1800s, bounded 24h
+  restarted. A server that failed twice, each failure within 24 h of the
+  one before (the history entry's `count`, capped at 16; only
+  `catalog.record_failure` increments it), goes to the back of its pool
+  for as long as the count lasts, never out of it: node-us-119 never
+  leased a port on three fallback runs that afternoon, and was picked
+  again each time its exclusion had lapsed. Exclusion 1800s, bounded 24h
   history/newest 256 endpoints, failed-round backoff 120/300/600s and at
   most one disruptive restart per 600s. API success alone is not Ready.
   Host WAN classification uses a certificate-verifying stdlib HTTPS child
@@ -1059,6 +1064,13 @@ series, which would have destroyed already-watched seasons too.
   - Never run `scripts/tests` suites that write `/tmp/mdb_*` on a box:
     `test_gluetun_cascade.py` used to create/delete the real playback-pause
     marker (it now uses a private `PAUSE_MARKER`).
+  - **Gluetun self-hops under its `.env` selection.** After any container
+    start Gluetun selects "any Canada server", and its own healthcheck
+    restart picks another Canada server within ~45 s of a fault, before
+    the controller's 60 s loss window (magicpi5 2026-11-15). The
+    controller's own path (pinned PUT → two preferred → fallback) applies
+    once it has rotated; a container restart returns to the `.env`
+    selection, which is also why the restart escalation reverts country.
   - Live proof uses `tests/vpn_fault/` (attended, magicpi5-only, opt-in;
     see its README): `check_network_fault.py` modes capability /
     port-loss / first-lease / fallback, plus a read-only `soak.py`. The

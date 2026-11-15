@@ -46,7 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now checks the VPN connection itself. When the server stops carrying
   traffic or loses its forwarded port, it moves to another server within
   a couple of minutes, and to a second country only if you allow one
-  (Content Manager → Movies → Advanced; none by default). Box health now
+  (Content Manager → Movies → Advanced; none by default). It passes over
+  servers that just failed and their close neighbours, gives up on a new
+  server that carries no traffic after a minute instead of two, and
+  tries a server that keeps failing only after the others. Box health now
   shows whether the VPN is working right now, not just whether it has
   dropped recently.
 - **Movie channels in the Channel Guide.** After Movies is unlocked,
