@@ -80,7 +80,7 @@ def validate_catalog(provider, now):
         raise ValueError('incompatible catalog')
     timestamp = provider.get('timestamp')
     servers = provider.get('servers')
-    if type(timestamp) is not int or timestamp <= 0 or timestamp > now+86400:
+    if type(timestamp) is not int or timestamp <= 0 or timestamp > int(now):
         raise ValueError('invalid catalog timestamp')
     if not isinstance(servers, list) or not servers or len(servers) > 50000:
         raise ValueError('empty or oversized catalog')
@@ -361,7 +361,7 @@ class CatalogStore:
             try:
                 with bounded_lock(self.paths.compose_lock, 1):
                     raw, document, current = self._load(now)
-                    downloaded = validate_catalog(downloaded.provider, now)
+                    downloaded = validate_catalog(downloaded.provider, self.clock())
                     policy = load_config(self.paths)
                     if not eligible_candidates(downloaded, policy['preferred_countries']):
                         raise ValueError('empty preferred pool')

@@ -15,7 +15,7 @@ from .common import Paths, bounded_lock, load_config
 from .intent import (set_intent, inhibit, release_inhibit, read_intent, read_json,
                      settings_revision, adopt_running, enable_if_idle)
 from .runtime import Controller, SystemAdapters
-from .lifecycle import activate, manage, fingerprint, provision, record_catalog_submission, migration_needed
+from .lifecycle import activate, manage, fingerprint, provision, record_catalog_submission, migration_needed, staged_start
 from .common import atomic_json
 from pathlib import Path
 
@@ -160,7 +160,7 @@ def parser():
     p.add_argument('--runtime',default=os.environ.get('MDB_VPN_RUNTIME','/run/mdb-vpn-recovery'));p.add_argument('--compose-lock',default=os.environ.get('MDB_COMPOSE_LOCK','/run/lock/mdb-compose.lock'))
     sub=p.add_subparsers(dest='command',required=True)
     run=sub.add_parser('run');run.add_argument('--once',action='store_true')
-    for name in ('sync-port','catalog-refresh','supported','check-operation','check-fence','activate','fingerprint','settings-revision','provision','record-start','migration-needed'):sub.add_parser(name)
+    for name in ('sync-port','catalog-refresh','supported','check-operation','check-fence','activate','fingerprint','settings-revision','provision','record-start','migration-needed','setup-start'):sub.add_parser(name)
     status=sub.add_parser('status');status.add_argument('--summary',action='store_true')
     lifecycle=sub.add_parser('lifecycle');lifecycle.add_argument('operation',choices=['start','stop','restart'])
     intent=sub.add_parser('intent');intent.add_argument('operation',choices=['enable','stop','adopt-running']);intent.add_argument('--reason',default='operator');intent.add_argument('--if-idle',action='store_true')
@@ -185,6 +185,8 @@ def main(argv=None):
             else: return activate(paths)
             return 0
         if args.command=='migration-needed': return 0 if migration_needed(paths,Path(__file__).resolve().parent.parent) else 1
+        if args.command=='setup-start':
+            return staged_start(paths,lambda: operation_allowed(paths),time.monotonic()+270,provisioning=True)
         if args.command=='record-start':
             # Shell's read-open fd9 shares the same open-file description.
             # Take/retain its lock before touching the intent fence; never
@@ -194,7 +196,7 @@ def main(argv=None):
             if (held.st_dev,held.st_ino)!=(expected.st_dev,expected.st_ino): return 3
             fcntl.flock(9,fcntl.LOCK_EX|fcntl.LOCK_NB)
             if not operation_allowed(paths): return 3
-            record_catalog_submission(paths,SystemAdapters(paths).current(time.monotonic()+2))
+            record_catalog_submission(paths,SystemAdapters(paths).current(time.monotonic()+2),operation='start')
             return 0
         if args.command=='provision': provision(paths);return 0
         if args.command=='settings-revision': print(settings_revision(paths));return 0
@@ -244,7 +246,7 @@ def main(argv=None):
         lock=paths.runtime/'controller.lock'
         fd=os.open(lock,os.O_CREAT|os.O_RDONLY,0o600);os.close(fd)
         with bounded_lock(lock,0):
-            atomic_json(paths.runtime/'running-fingerprint.json',{'fingerprint':fingerprint(Path(__file__).resolve().parent.parent)})
+            atomic_json(paths.runtime/'running-fingerprint.json',{'fingerprint':fingerprint(Path(__file__).resolve().parent.parent),'pid':os.getpid()})
             controller=Controller(paths)
             stopped=[False]
             old={sig:signal.signal(sig,lambda *_:stopped.__setitem__(0,True)) for sig in (signal.SIGTERM,signal.SIGINT)}

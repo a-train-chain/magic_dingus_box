@@ -32,7 +32,9 @@ def snapshot(path=None, *, now=None):
     effective=data.get('effective') if isinstance(data.get('effective'),dict) else {}
     catalog=data.get('catalog') if isinstance(data.get('catalog'),dict) else {}
     def text(value): return value[:160] if isinstance(value,str) else None
-    def number(value): return value if type(value) in (int,float) and math.isfinite(value) and value>=0 else None
+    def number(value):
+        try: return value if type(value) in (int,float) and math.isfinite(value) and value>=0 else None
+        except OverflowError: return None
     port=data.get('forwarded_port')
     return {'fresh':fresh,'age_s':number(age),'checked_at':text(data.get('checked_at')),
             'ready':fresh and data.get('ready') is True,

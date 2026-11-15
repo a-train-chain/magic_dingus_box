@@ -338,6 +338,7 @@ class Controller:
         self.relinked=durable.get('relinked'); self.last_converge=-300
         self.next_traffic=0
         self.next_refresh=self.a.mono()+max(0,min(86400,durable.get('refresh_after',0)-self.a.wall())) if finite(durable.get('refresh_after')) else 0
+        self.last_load_container=durable.get('last_load_container')
         self.last_load_identity=durable.get('last_load_identity')
         self.last_load_wall=durable.get('last_load_wall',0)
         if not finite(self.last_load_wall):self.last_load_wall=self.a.wall()
@@ -350,11 +351,14 @@ class Controller:
             if not finite(submitted_wall) or not 0 <= self.a.wall()-submitted_wall <= 86400:
                 raise ValueError('invalid load submission time')
             snapshot = validate_catalog(pending_load['provider'],self.a.wall())
-            self.load_pending={'snapshot':snapshot,'old_container':pending_load['old_container']}
-            if submitted_wall >= self.last_load_wall:
-                self.last_load_identity = snapshot.identity
-                self.last_load_wall = submitted_wall
-                self.state['last_restart'] = self.a.mono()-(self.a.wall()-submitted_wall)
+            self.load_pending={'snapshot':snapshot,'old_container':pending_load['old_container'],
+                               'submitted_wall':submitted_wall,'operation':pending_load.get('operation','restart')}
+            if (submitted_wall==self.last_load_wall and self.last_load_container
+                    and self.last_load_container!=pending_load['old_container']):
+                self.load_pending['result_container']=self.last_load_container
+            self.external_load_wall=submitted_wall
+            if self.load_pending['operation']!='start':
+                self._charge_load(self.load_pending, self.a.mono(), self.a.wall())
         except (KeyError,ValueError,TypeError):pass
         loaded=read_json(paths.state/'loaded.json',9*1024*1024)
         try:
@@ -365,6 +369,22 @@ class Controller:
     @staticmethod
     def container_key(generation):
         return {k:generation.get(k) for k in ('container_id','started_at','pid')} if isinstance(generation,dict) else None
+
+    def _charge_load(self, pending, now, wall, container=None):
+        """Charge a real/uncertain restart, or a Compose start proven non-no-op.
+
+        The resulting start consumes the allowance even without INFO proof.
+        Its identity, unlike catalog identity alone, permits a later autonomous
+        start one necessary recovery load. It never resets the restart limit.
+        """
+        submitted=pending['submitted_wall']
+        if not pending.get('snapshot'): return
+        if submitted>=self.last_load_wall:
+            self.last_load_identity=pending['snapshot'].identity
+            self.last_load_wall=submitted
+            self.last_load_container=container or pending.get('result_container') or pending['old_container']
+            self.state['version']=2
+            self.state['last_restart']=max(self.state.get('last_restart',float('-inf')),now-(wall-submitted))
 
     def close(self): self.executor.shutdown(wait=True)
 
@@ -480,7 +500,8 @@ class Controller:
                 if candidate.hostname not in self.round_attempts: self.round_attempts.append(candidate.hostname)
         elif ctx['action']=='restart_container' and result.get('submission'):
             self.api_failed=False
-            self.load_pending={'snapshot':ctx.get('snapshot'),'old_container':self.container_key(ctx.get('generation'))}
+            self.load_pending={'snapshot':ctx.get('snapshot'),'old_container':self.container_key(ctx.get('generation') or ctx['observation']),
+                               'submitted_wall':result['submission']['wall'],'operation':'restart'}
         elif ctx['action']=='relink_dependents' and result['status']=='issued':
             self.relinked=self.container_key(ctx.get('generation'))
         if ctx['action'] in ('relink_dependents','converge_dependents'):
@@ -536,6 +557,8 @@ class Controller:
                 and isinstance(observed_container['started_at'], str) and observed_container['started_at']):
             if self.loaded_container != observed_container:
                 self.loaded = None
+        else:
+            observed_container=None
         # Supported lifecycle commands can load a catalog without restarting
         # this polling owner. Consume their real submitted-start journal with
         # exactly the same new-container/disk/INFO attestation as own restarts.
@@ -544,24 +567,37 @@ class Controller:
             submitted=external_load['submitted_wall']
             if finite(submitted) and 0<=wall-submitted<=180 and submitted>getattr(self,'external_load_wall',0):
                 snapshot=validate_catalog(external_load['provider'],wall)
-                self.load_pending={'snapshot':snapshot,'old_container':external_load['old_container']}
+                self.load_pending={'snapshot':snapshot,'old_container':external_load['old_container'],
+                                   'submitted_wall':submitted,'operation':external_load.get('operation','restart')}
                 self.external_load_wall=submitted
-                if submitted>=self.last_load_wall:
-                    self.last_load_identity=snapshot.identity;self.last_load_wall=submitted
-                    self.state['last_restart']=now-(wall-submitted)
+                if self.load_pending['operation']!='start':
+                    self._charge_load(self.load_pending,now,wall)
         except (KeyError,ValueError,TypeError): pass
-        if self.load_pending and finite(self.last_load_wall) and wall-self.last_load_wall>180:
-            self.load_pending=None
-            (self.paths.state/'load-pending.json').unlink(missing_ok=True)
-        if self.load_pending and generation and container!=self.load_pending['old_container']:
-            snapshot=self.load_pending['snapshot']
-            try:
-                if snapshot and self.a.attest_catalog(generation,snapshot,deadline):
-                    self.loaded=snapshot;self.loaded_container=container
-                    atomic_json(self.paths.state/'loaded.json',{'provider':snapshot.provider,'container':container})
-                    self.load_pending=None
-                    (self.paths.state/'load-pending.json').unlink(missing_ok=True)
-            except Exception: pass
+        if self.load_pending:
+            pending=self.load_pending
+            changed=bool(observed_container and observed_container.get('pid') and
+                         observed_container!=pending['old_container'])
+            result_container=pending.get('result_container')
+            if result_container and observed_container and observed_container!=result_container:
+                # This submission already produced one start. A subsequent
+                # autonomous start cannot inherit either its proof or charge.
+                self.load_pending=None
+                (self.paths.state/'load-pending.json').unlink(missing_ok=True)
+            elif changed:
+                pending['result_container']=observed_container
+                self._charge_load(pending,now,wall,observed_container)
+            if self.load_pending and wall-pending['submitted_wall']>180:
+                self.load_pending=None
+                (self.paths.state/'load-pending.json').unlink(missing_ok=True)
+            elif self.load_pending and changed and generation:
+                snapshot=pending['snapshot']
+                try:
+                    if snapshot and self.a.attest_catalog(generation,snapshot,deadline):
+                        self.loaded=snapshot;self.loaded_container=container
+                        atomic_json(self.paths.state/'loaded.json',{'provider':snapshot.provider,'container':container})
+                        self.load_pending=None
+                        (self.paths.state/'load-pending.json').unlink(missing_ok=True)
+                except Exception: pass
         try:
             path=getattr(self.a.store,'path',None)
             metadata=path.stat() if path else None
@@ -590,9 +626,11 @@ class Controller:
                  busy=self.pending is not None)
         # A failed/missing log attestation is not permission to restart over and
         # over merely seeking logs. Retry that same load at most daily; a newly
-        # downloaded identity may authorize one necessary recovery load sooner.
+        # downloaded identity or autonomous container start may authorize one
+        # necessary recovery load sooner. Its resulting start is charged too.
         can_load=bool(downloaded and (downloaded.identity!=self.last_load_identity or
-                      not finite(self.last_load_wall) or wall-self.last_load_wall>=86400))
+                      not finite(self.last_load_wall) or wall-self.last_load_wall>=86400 or
+                      (observed_container and observed_container!= (self.last_load_container or self.loaded_container))))
         o['catalog_unattested']=self.loaded is None and can_load
         o['catalog_needs_load']=bool(self.loaded and downloaded and self.loaded.identity!=downloaded.identity and can_load)
         if self.attempted and isinstance(self.attempted,dict):
@@ -651,7 +689,7 @@ class Controller:
         atomic_json(self.paths.state/'status.json',status,mode=0o644)
         atomic_json(self.paths.state/'controller.json',{'version':1,'saved_wall':wall,'saved_mono':now,'policy':self.state,
             'failures':self.failures,'round_attempts':self.round_attempts,'attempted':self.attempted,
-            'relinked':self.relinked or container,'last_load_identity':self.last_load_identity,'last_load_wall':self.last_load_wall,
+            'relinked':self.relinked or container,'last_load_container':self.last_load_container,'last_load_identity':self.last_load_identity,'last_load_wall':self.last_load_wall,
             'refresh_after':wall+max(0,self.next_refresh-now),'last_success':self.last_success,'last_selection':self.last_selection,'last_recovery_reason':self.last_reason})
         if self.relinked is None:self.relinked=container
         return status

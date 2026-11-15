@@ -83,6 +83,62 @@ class RuntimeTests(unittest.TestCase):
         return self.c.tick()
     def finish(self):
         if self.c.pending: self.c.pending.result(timeout=2)
+    def test_noop_managed_start_keeps_new_start_recovery_live(self):
+        self._new_unattested_start_recovers(managed_noop=True)
+
+    def test_autonomous_start_keeps_new_start_recovery_live(self):
+        self._new_unattested_start_recovers(managed_noop=False)
+
+    def _new_unattested_start_recovers(self, managed_noop):
+        from vpn_recovery.lifecycle import record_catalog_submission
+        self.c.last_load_identity=self.a.catalog.identity
+        self.c.last_load_wall=self.a.wall()
+        self.a.observation.update(port=1234,qbit_synced=True)
+        self.tick(0)
+        self.c.state['last_restart']=0
+        newer={**GEN,'pid':43,'started_at':'autonomous-start'}
+        self.a.observation['generation']=newer
+        if managed_noop:
+            with bounded_lock(self.paths.compose_lock,0):
+                record_catalog_submission(self.paths,newer,snapshot=self.a.catalog,
+                                          now=self.a.wall()+1,operation='start')
+        self.tick(10)
+        self.assertIsNone(self.c.loaded)  # never borrow the previous proof
+        self.tick(200)
+        self.assertFalse(any(c[0]=='restart_container' for c in self.a.calls))
+        self.a.observation.update(port=0,qbit_synced=False)
+        for t in [210,300,400,599]: self.tick(t)
+        self.assertFalse(any(c[0]=='restart_container' for c in self.a.calls))
+        self.tick(600);self.finish();self.tick(610)
+        self.assertEqual(sum(c[0]=='restart_container' for c in self.a.calls),1)
+        # A failed log check on the resulting start must consume its allowance,
+        # even across controller restart, so this is not a log-seeking loop.
+        self.a.attested=False
+        resulting={**newer,'pid':44,'started_at':'recovery-start'}
+        self.a.observation['generation']=resulting
+        self.tick(620)
+        self.c=Controller(self.paths,self.a);self.addCleanup(self.c.close)
+        self.c.next_refresh=100000
+        for t in [790,1200,1800,3600]: self.tick(t)
+        self.assertIsNone(self.c.loaded)
+        self.assertEqual(sum(c[0]=='restart_container' for c in self.a.calls),1)
+
+    def test_second_autonomous_start_does_not_inherit_previous_load_charge(self):
+        self.c.loaded=None;self.a.attested=False
+        self.tick(0);self.tick(120);self.finish()
+        first={**GEN,'pid':43,'started_at':'first-load-result'}
+        self.a.observation['generation']=first
+        self.tick(130)
+        # Reopen the owner to prove the consumed result is durable, then
+        # replace that result before its failed log-attestation window expires.
+        self.c=Controller(self.paths,self.a);self.addCleanup(self.c.close)
+        self.c.next_refresh=100000
+        self.a.observation['generation']={**GEN,'pid':44,'started_at':'autonomous-after-result'}
+        for t in [140,150,280,719]: self.tick(t)
+        self.assertEqual(sum(c[0]=='restart_container' for c in self.a.calls),1)
+        self.tick(720);self.finish()
+        self.assertEqual(sum(c[0]=='restart_container' for c in self.a.calls),2)
+
     def test_managed_recreation_after_recent_load_can_attest_then_recover(self):
         import vpn_recovery.lifecycle as lifecycle
         self.assertTrue(hasattr(lifecycle,'record_catalog_submission'),'managed catalog submission is absent')
@@ -158,6 +214,29 @@ class RuntimeTests(unittest.TestCase):
         self.a.observation.update(port=12345,qbit_synced=True)
         for t in [0,10,20,30,100,599]: self.tick(t)
         self.assertEqual(sum(c[0]=='refresh' for c in self.a.calls),1)
+    def test_future_catalog_retry_after_clock_correction_preserves_healthy_tunnel(self):
+        from vpn_recovery.catalog import CatalogStore, FetchResponse
+        file=self.paths.services/'config/gluetun/servers.json'
+        file.parent.mkdir(parents=True)
+        file.write_text(json.dumps({'version':4,'protonvpn':self.a.catalog.provider}))
+        before=file.read_bytes()
+        future=copy.deepcopy(self.a.catalog.provider);future['timestamp']=int(self.a.wall())+600
+        fetches=[]
+        def fetch(*args):
+            fetches.append(self.a.now)
+            return FetchResponse(200,json.dumps(future).encode(),{})
+        self.a.store=CatalogStore(self.paths,fetch,clock=self.a.wall,jitter=lambda:0)
+        self.c.next_refresh=0
+        self.a.observation.update(port=1234,qbit_synced=True)
+        for t in [0,10,599,609]:self.tick(t)
+        self.assertEqual(fetches,[0])
+        self.assertEqual(file.read_bytes(),before)
+        self.tick(610);self.finish();self.tick(620)
+        self.assertEqual(fetches,[0,610])
+        self.assertEqual(json.loads(file.read_text())['protonvpn']['timestamp'],1800000600)
+        self.assertEqual(self.c.loaded.identity,self.a.catalog.identity)
+        self.assertFalse(any(call[0]=='restart_container' for call in self.a.calls))
+
     def test_paused_dependents_and_ssd_guard_are_not_torrent_owners(self):
         self.a.observation.update(port=1234,qbit_synced=False,playback_paused=True,ssd_missing=True)
         self.tick(0);self.finish()

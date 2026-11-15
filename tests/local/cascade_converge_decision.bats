@@ -79,3 +79,15 @@ setup() {
     [ -s "$checks" ]
     ! grep -q ' up -d ' "$calls"
 }
+
+@test "native dependent starts cannot trigger Compose dependency health waits" {
+    export MDB_COMPOSE_LOCK_HELD=1
+    local calls="$BATS_TEST_TMPDIR/calls"
+    native_check() { return 0; }
+    timeout() { shift 3; "$@"; }
+    docker() { echo "$*" >> "$calls"; }
+    PAUSE_MARKER="$BATS_TEST_TMPDIR/no-pause"
+    cascade_dependents
+    grep -q ' up --no-deps -d radarr sonarr prowlarr qbittorrent byparr$' "$calls"
+    grep -q ' restart --no-deps radarr sonarr prowlarr qbittorrent byparr$' "$calls"
+}

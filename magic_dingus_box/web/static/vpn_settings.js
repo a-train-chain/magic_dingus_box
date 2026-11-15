@@ -28,6 +28,17 @@
         const select = el('mbVpnFallbackSelect');
         return select ? Array.from(select.selectedOptions, o => o.value) : [];
     }
+    function rebuildFallback(choices, primary, selected) {
+        const fallback = el('mbVpnFallbackSelect');
+        if (!fallback) return;
+        fallback.replaceChildren();
+        choices.filter(c => c && c !== primary).forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c; opt.textContent = c;
+            opt.selected = selected.includes(c);
+            fallback.appendChild(opt);
+        });
+    }
     function changed() {
         const select = el('mbVpnCountrySelect');
         const fallback = el('mbVpnFallbackSelect');
@@ -62,13 +73,7 @@
 
         const fallback = el('mbVpnFallbackSelect');
         if (fallback) {
-            fallback.replaceChildren();
-            choices.filter(c => c !== current).forEach(c => {
-                const opt = document.createElement('option');
-                opt.value = c; opt.textContent = c;
-                opt.selected = (data.fallback_countries || []).includes(c);
-                fallback.appendChild(opt);
-            });
+            rebuildFallback(choices, current, data.fallback_countries || []);
             fallback.dataset.current = JSON.stringify(fallbackSelection());
         }
         const running = data.job && data.job.status === 'running';
@@ -152,8 +157,7 @@
         details.addEventListener('toggle', () => { if (details.open) load(); });
         if (select) {
             select.addEventListener('change', () => {
-                const fallback = el('mbVpnFallbackSelect');
-                if (fallback) Array.from(fallback.options).forEach(o => { if (o.value === select.value) o.selected = false; });
+                rebuildFallback(Array.from(select.options, o => o.value), select.value, fallbackSelection());
                 if (btn) btn.disabled = !select.value || !changed();
                 setStatus('');
             });

@@ -65,6 +65,14 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('qbittorrent',self.calls[1][5:])
         self.assertNotIn('gluetun',self.calls[1][5:])
 
+    def test_setup_provisioning_explicitly_starts_all_dependents_during_playback(self):
+        from vpn_recovery.lifecycle import staged_start, PLAYBACK_PAUSE_MARKER
+        import time
+        PLAYBACK_PAUSE_MARKER.touch()
+        self.assertEqual(staged_start(self.paths,lambda:True,time.monotonic()+10,
+                                     runner=self.command,provisioning=True),0)
+        self.assertEqual(self.calls[-1][5:],['radarr','sonarr','prowlarr','qbittorrent','byparr'])
+
     def test_changed_generation_after_health_prevents_dependent_up(self):
         self.current.return_value=self.gen
         with patch('vpn_recovery.lifecycle.generation',return_value={**self.gen,'tunnel_ifindex':3}):

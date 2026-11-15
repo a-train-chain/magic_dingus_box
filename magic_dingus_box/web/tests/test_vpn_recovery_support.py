@@ -56,3 +56,11 @@ def test_detached_handoff_releases_intent_while_retaining_compose_lock(tmp_path,
         finally:other.close()
         assert [c[:2] for c in calls]==[('inhibit','begin'),('inhibit','end')]
     assert [c[:2] for c in calls]==[('inhibit','begin'),('inhibit','end')]
+
+@pytest.mark.parametrize('age', [0, 100])
+@pytest.mark.parametrize('value', [10**400, -10**400, float('inf'), float('nan'), True, '12'], ids=['huge','negative-huge','infinite','nan','boolean','string'])
+def test_corrupt_numeric_status_is_unknown_even_when_stale(tmp_path, age, value):
+    path=tmp_path/'status.json'
+    path.write_text(json.dumps({'checked_at':datetime.fromtimestamp(1000-age,timezone.utc).isoformat(),
+                                'catalog':{'age_s':value}}))
+    assert snapshot(path,now=1000)['catalog_age_s'] is None

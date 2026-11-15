@@ -62,7 +62,7 @@ class CatalogTests(unittest.TestCase):
 
     def test_schema_key_ip_and_timestamp_validation(self):
         mutations = [lambda p: p.update(version=3), lambda p: p.update(version=True),
-                     lambda p: p.update(timestamp=NOW+86401), lambda p: p.update(timestamp=-1),
+                     lambda p: p.update(timestamp=NOW+1), lambda p: p.update(timestamp=-1),
                      lambda p: p['servers'][0].update(wgpubkey='bad'),
                      lambda p: p['servers'][0].update(ips=['127.0.0.1']),
                      lambda p: p['servers'][0].update(ips=['bad']),
@@ -75,8 +75,26 @@ class CatalogTests(unittest.TestCase):
                 mutate(value)
                 with self.assertRaises(ValueError):
                     validate_catalog(value, NOW)
-        self.provider['timestamp'] = NOW+86400
-        self.assertEqual(validate_catalog(self.provider, NOW).timestamp, NOW+86400)
+        self.provider['timestamp'] = NOW
+        self.assertEqual(validate_catalog(self.provider, NOW+.9).timestamp, NOW)
+
+    def test_future_publication_preserves_good_data_then_recovers_with_clock(self):
+        before=self.file.read_bytes()
+        self.provider['timestamp']=NOW+600
+        self.assertEqual(self.store.refresh(NOW,force=True)['status'],'failed')
+        self.assertEqual(self.file.read_bytes(),before)
+        self.assertFalse(self.file.with_name('servers.json.known-good').exists())
+        self.store.clock=lambda: NOW+600
+        self.assertEqual(self.store.refresh(NOW+600)['status'],'updated')
+        self.assertEqual(json.loads(self.file.read_text())['protonvpn']['timestamp'],NOW+600)
+        self.assertEqual(self.file.with_name('servers.json.known-good').read_bytes(),before)
+
+    def test_clock_rollback_during_fetch_cannot_publish_future_provider(self):
+        before=self.file.read_bytes()
+        self.provider['timestamp']=NOW
+        self.store.clock=lambda: NOW-1
+        self.assertEqual(self.store.refresh(NOW,force=True)['status'],'failed')
+        self.assertEqual(self.file.read_bytes(),before)
 
     def test_duplicates_are_deduplicated_and_other_protocols_excluded(self):
         self.provider['servers'].append(copy.deepcopy(self.provider['servers'][0]))

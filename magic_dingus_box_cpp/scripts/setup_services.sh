@@ -367,8 +367,7 @@ cd "${SERVICES_DIR}"
 # cascade watcher's restart/up -d on the same containers races it ("name
 # already in use"). Taken ONLY around this script's container commands —
 # never across the long API-provisioning waits, which would stall every
-# other actor for minutes. Bounded: after the wait we proceed without it
-# (the pre-lock behavior) — never a deadlock. Copied, not sourced: each
+# other actor for minutes. Busy or unusable locks defer. Copied, not sourced: each
 # script must stand alone when an older updater runs it.
 # Returns 0 = held, 1 = timed out, 2 = no flock / lock file unusable.
 MDB_COMPOSE_LOCK="${MDB_COMPOSE_LOCK:-/run/lock/mdb-compose.lock}"
@@ -406,33 +405,24 @@ echo "Starting Docker stack..."
 # compose file we were trying to use, then re-exit with docker's own code
 # so the number in the UI still means what it always meant.
 #
-# Held across `up` only. `up` itself waits for gluetun's healthcheck before
-# it starts the dependents (depends_on: service_healthy), so the span is
-# the recreate plus that wait — the cascade watcher's re-link for the new
-# gluetun then runs right after, against containers this run finished
-# creating, instead of racing them.
-_lock_rc=0
-compose_lock 120 || _lock_rc=$?
-[ "${_lock_rc}" = "0" ] || { echo "ERROR: compose lock unavailable; setup deferred"; exit 1; }
-if [[ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
-    export MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)"
-    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" check-operation || { compose_unlock; exit 3; }
-fi
-# Marker checked inside the lock. Provisioning needs every container
-# running, so the pause is NOT honored here: say so, so a slow movie after
-# a Reconfigure has an explanation in the setup log. The kiosk's unpause at
-# the end of the movie/game clears the marker; until then these stay up.
+# Provisioning deliberately overrides playback pause: API setup needs all
+# dependents. Native startup stages Gluetun, waits without the compose lock,
+# then rechecks this setup owner's intent/settings/generation before --no-deps.
 if [ -f "${PAUSE_MARKER}" ]; then
-    echo "  NOTE: a movie or game is playing (${PAUSE_MARKER} present). Setup needs"
-    echo "        Radarr/Sonarr/Prowlarr/Byparr running, so they start now even though"
-    echo "        playback had stopped them to free memory."
+    echo "  NOTE: playback is active. Setup needs all companion services for provisioning."
 fi
 _compose_rc=0
-if [[ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
-    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" record-start || { compose_unlock; exit 3; }
+if [[ -f "$SCRIPT_DIR/vpn_recoveryctl.py" ]]; then
+    export MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)"
+    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" setup-start || _compose_rc=$?
+else
+    # Package-absent rollback compatibility only.
+    _lock_rc=0
+    compose_lock 120 || _lock_rc=$?
+    [ "${_lock_rc}" = "0" ] || { echo "ERROR: compose lock unavailable; setup deferred"; exit 1; }
+    docker compose up -d --remove-orphans || _compose_rc=$?
+    compose_unlock
 fi
-docker compose up -d --remove-orphans || _compose_rc=$?
-[ "${_lock_rc}" = "0" ] && compose_unlock
 if [ "${_compose_rc}" -ne 0 ]; then
     echo "ERROR: 'docker compose up -d' failed (exit ${_compose_rc}) in ${SERVICES_DIR}"
     echo "       compose file: ${COMPOSE_FILE}"

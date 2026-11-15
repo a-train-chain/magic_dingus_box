@@ -197,6 +197,9 @@ local_compose() {
                 qbittorrent) has_service=1 ;;
             esac
             targets+=("$arg")
+            # Native caller already fenced Gluetun. Never ask Compose to
+            # start/restart a dependency or wait for its health under our lock.
+            case "$arg" in up|restart) targets+=(--no-deps) ;; esac
         done
         [ "$has_service" = 1 ] || return 0
         timeout --signal=TERM --kill-after=2 20 docker compose -f "${COMPOSE_DIR}/docker-compose.yml" "${targets[@]}"

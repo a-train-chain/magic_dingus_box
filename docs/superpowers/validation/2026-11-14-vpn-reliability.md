@@ -83,15 +83,19 @@ The parent controller's code-only staging generator is `/private/tmp/mdb-vpn-rel
 
 Use the established rsync exclusions and `-rltci` flags: **no `-p/-o/-g`**, since a private 0700 stage root must not change existing application-directory permissions. Run `--dry-run` first, inspect every target and any proposed deletion. These changes need additions/modifications only, so no `--delete` is needed; if a different delivery path proposes it, review its exact effects before proceeding. Never overwrite per-box env/config/auth/state/content through source sync.
 
-After the fresh backup and inspected sync, run the existing root hook:
+The source staging generator does **not** refresh `/usr/local/bin`. After the fresh backup and inspected sync, run this attended scoped handoff (do not substitute the common hook alone):
 
 ```sh
-sudo /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh
+sudo python3 /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/activate_vpn_recovery.py --opt-in-scoped-activation
 ```
 
-It converges the unit, shared lock and auth, quiesces the old watcher before migration, provisions/loads scoped auth, and activates one native controller. Never start old and new watchers together. Refresh the web service via the existing deployment path. Do not rebuild/restart the unchanged C++ kiosk. Verify the kiosk's PID/NRestarts remain at baseline after the hook and web restart. Inspect sanitized `status --summary`, unit state and auth file modes; never cat recovery.key or complete settings. Confirm control 8000 remains unpublished.
+It first stops an active watcher, provisions/loads auth, and runs the common hook with the watcher quiesced. It atomically refreshes the two changed installed entrypoints: `gluetun_cascade_restart.sh` → `/usr/local/bin/gluetun_cascade_restart.sh`, and `qbit_port_sync.sh` → `/usr/local/bin/qbit-port-sync.sh`, using the same mappings as `update.sh:refresh_out_of_tree_files`. No persistent package copy is installed. It resumes only a previously active configured watcher and requires a **fresh** running fingerprint, matching MainPID, and that PID's actual `vpn_recoveryctl.py ... run` command. Expected sanitized output is `{"watcher":"native","pid":<PID>,"fingerprint":"<SHA256>"}`; this proves native activation, not VPN Ready. Originally inactive/unconfigured watchers return `{"watcher":"inactive"}` without starting the stack; explicit stopped intent is preserved. Any failure stops deployment: inspect the watcher before manually resuming. Never run old and new watchers together.
+
+This helper is for this reviewed, attended scoped path only. It is deliberately not called by `setup_memory_tuning.sh` or OTA: the OLD updater must retain its installed-helper refresh **after** verified kiosk startup. Normal deploy keeps its existing `refresh_out_of_tree_files` call. Refresh the web service via the existing deployment path. Do not rebuild/restart the unchanged C++ kiosk. Verify the kiosk's PID/NRestarts remain at baseline after the hook and web restart. Inspect sanitized `status --summary`, unit state and auth file modes; never cat recovery.key or complete settings. Confirm control 8000 remains unpublished.
 
 On **magicpi5 only**, Content Manager → Media Browser → Advanced: desired primary **Canada**, explicitly allowed fallback **United States**, Apply. Save both policy files under the existing maintenance workflow. Omitted fallback elsewhere stays empty. An operator-stopped stack must remain stopped after Apply; use an explicit supported start if it should run. This is desired policy, separate from effective server selection; automatic recovery must not rewrite `.env`.
+
+Catalog compatibility: reject/defer every provider timestamp above `int(time.time())`, preserving the existing file and known-good backup. A corrected clock permits the next bounded failed-refresh retry (at least 600 seconds); never rewrite upstream timestamps or reload a healthy tunnel to compensate. Catalog load accounting distinguishes a no-op Compose start from a changed container start. A newly unattested autonomous start may obtain one necessary recovery load; the resulting start is charged even without log proof, and the global 600-second disruptive restart limit still applies.
 
 ## Bounded Ready gate
 
