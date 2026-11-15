@@ -53,8 +53,11 @@ class FakeDaemon:
                 time.sleep(self.delay)
                 status, body = self.route(target)
                 if self.broken: body = b'{not json'
-                conn.sendall(b'HTTP/1.1 %d X\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n'
-                             % (status, len(body)) + body)
+                try:
+                    conn.sendall(b'HTTP/1.1 %d X\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n'
+                                 % (status, len(body)) + body)
+                except OSError:
+                    pass  # the client already timed out and hung up (slow-daemon test)
 
     def route(self, target):
         url = urlsplit(target)
