@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -54,7 +55,14 @@ enum class MenuSection {
     CYCLE_RGB_MASK,    // Renamed from CYCLE_PHOSPHOR_MASK to match the UI label "RGB Mask"
     CYCLE_INTERLACING,
     CYCLE_FLICKER,
-    TOGGLE_ENHANCED_CRT,   // Classic ↔ Enhanced CRT pipeline (Phase 1+ shader rework)
+    CYCLE_CRT_ENGINE,      // Classic → Enhanced (→ Tube when app::tube_offered) → Classic
+    CYCLE_TUBE_LOOK,       // Tube: the look (PVM → Monitor → … → Everything)
+    TUBE_RESET_LOOK,       // Tube: clear every row moved off the look
+    TUBE_GROUP,            // Tube: a group row on Display, and the submenu it opens
+    TUBE_GROUP_BACK,       // Tube: "Back" inside a group submenu (returns to Display)
+    TUBE_VALUE,            // Tube: a 0..100 row inside a group
+    TUBE_MASK,             // Tube: the MASK row inside the MASK group
+    TUBE_DEGAUSS,          // Tube: demagnetize the tube (a live request, never saved)
     DOWNLOAD_CORES
 #ifdef MEDIA_BROWSER_ENABLED
     ,
@@ -132,6 +140,10 @@ public:
     void enter_submenu(MenuSection section);
     void exit_submenu();
     void rebuild_current_submenu();
+
+    // Opens one of the Tube groups (an index into tube::kGroups) from its row
+    // on the Display page, remembering that row for the way back.
+    void enter_tube_group(std::size_t group);
     
     void enter_game_browser();
     void exit_game_browser();
@@ -229,6 +241,10 @@ private:
     std::chrono::steady_clock::time_point last_scan_refresh_{};
     
     MenuSection current_submenu_;
+    // The Tube group open in TUBE_GROUP (an index into tube::kGroups), and the
+    // Display row to put the cursor back on when it closes.
+    std::size_t tube_group_index_ = 0;
+    int tube_group_return_index_ = 0;
     std::vector<MenuItem> menu_items_;
     std::vector<MenuItem> submenu_items_;
     
