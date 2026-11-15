@@ -15,6 +15,9 @@
 //   - The two whole-pixel sizes count at the 1080-line reference (tube_looks.h).
 //   - A picture already on a real CRT (`crt_native`) keeps the tube's own
 //     scanlines, mask and glass: those rows are drawn at 0 and the mask as none.
+//   - On a real CRT the picture is not inset either: no corner fillet, no design
+//     margin, flatFit 1 (design section 3, owner question 1). The real tube's own
+//     glass is the opening; Sound Factory always draws its bezel's.
 //
 // THE CAPS ARE NOT HERE. A row's 100 is the flash-safe ceiling because of what
 // the shader multiplies each input by; these curves only say what a row's 100
@@ -208,7 +211,8 @@ inline float glow_sigma_px(const Resolved& resolved, const Picture& picture) noe
 }
 
 // A resolved setting drawn into `picture`. Corner and margin are millimetres, so
-// they scale with the picture.
+// they scale with the picture. On a real CRT (`crt_native`) there are none and
+// the picture fills the output: the tube's own glass already rounds and frames it.
 inline TubeUniforms tube_uniforms_for(const Resolved& resolved, const Picture& picture) noexcept {
     const auto value = [&resolved, &picture](Effect effect) {
         return picture.crt_native && neutral_in_crt_native(effect) ? 0 : resolved.effects[index_of(effect)];
@@ -223,9 +227,11 @@ inline TubeUniforms tube_uniforms_for(const Resolved& resolved, const Picture& p
 
     // The shape.
     u.curvature = fraction(row(Effect::curvature));
-    u.cornerPx = px(kTubeCornerMm);
-    u.marginPx = px(kTubeDesignMarginMm);
-    u.flatFit = static_cast<float>(detail::flat_fit_for(picture));
+    if (!picture.crt_native) {   // CRT Native keeps tube_neutral's 0, 0 and 1
+        u.cornerPx = px(kTubeCornerMm);
+        u.marginPx = px(kTubeDesignMarginMm);
+        u.flatFit = static_cast<float>(detail::flat_fit_for(picture));
+    }
     u.rim = fraction(row(Effect::rim));
 
     // Not light on their own, but the shader divides by them on the way.
@@ -282,7 +288,10 @@ inline TubeUniforms tube_uniforms_for(const Resolved& resolved, const Picture& p
 //     the picture decide. It bisects, so a renderer may cache it until either
 //     changes.
 //   - tube_frame() is the per-frame entry point: still uniforms + FrameState in,
-//     this frame's uniforms out. It never touches the still.
+//     this frame's uniforms out. It never touches the still. `seconds` drives
+//     hum, flicker, degauss and signal motion; the rolling band, colour drift
+//     and flagging are drawn at FrameState::phases, which the renderer advances
+//     once a drawn frame with advance_character_phases() (see "What differs").
 //   - tube_frame_phases(), tube_signal_motion() and tube_character_frame() are
 //     its parts. Anyone calling them directly must apply them to a FRESH COPY of
 //     the still uniforms each frame, in that order (tube_frame's own order, which
@@ -310,6 +319,15 @@ inline TubeUniforms tube_uniforms_for(const Resolved& resolved, const Picture& p
 //     tube_frame_phases().
 //   - A millimetre is `u.pxPerMm` pixels: the source is the output.
 //   - No bypass: `enabled` is the one switch.
+//   - The three speed rows' phases are ACCUMULATED, not derived from time.
+//     Sound Factory draws the rolling band at fmod(time / period, 1) and colour
+//     drift and flagging at sin(time * 2 pi / period), so moving ROLL SPEED,
+//     DRIFT SPEED or FLAG SPEED while the kiosk has run a while jumps the band,
+//     the drift and the bend to wherever the new period puts that much time.
+//     Here the renderer keeps a CharacterPhases and advances it each frame
+//     (advance_character_phases), so a speed step changes only the RATE. TRACKING
+//     keeps Sound Factory's clock (`tracking_elapsed`): a slip restarts when a
+//     tracking row changes, which is the behaviour it had there.
 
 // Seconds per roll of the hum bar: 60 Hz mains against a 59.94 Hz field beat.
 inline constexpr double kHumPeriodSeconds = 16.7;
@@ -383,6 +401,45 @@ inline void tube_signal_motion(TubeUniforms& u, double seconds, double amount, d
                                                     std::clamp(rising_light, 0.0, 1.0));
 }
 
+// ---- The accumulated phases of the three speed rows -------------------------
+
+// Each a fraction of one cycle, in [0, 1). The renderer owns one, advances it
+// once a drawn frame with advance_character_phases() and hands it to the frame
+// through FrameState::phases.
+struct CharacterPhases {
+    double roll = 0.0, drift = 0.0, flag = 0.0;
+};
+
+// The most one advance may move the phases: a frame after a long gap (a game,
+// the Media Browser, a stalled loop) resumes where it left off rather than
+// leaping, and a clock that went backwards moves nothing.
+inline constexpr double kMaxPhaseStepSeconds = 0.1;
+
+// Seconds a cycle, from each speed row (Sound Factory's periods).
+inline double roll_period(const Resolved& resolved) noexcept {
+    return 30.0 - 24.0 * detail::row_fraction(resolved, Effect::rollSpeed);
+}
+inline double drift_period(const Resolved& resolved) noexcept {
+    return 24.0 - 18.0 * detail::row_fraction(resolved, Effect::driftSpeed);
+}
+inline double flag_period(const Resolved& resolved) noexcept {
+    return 12.0 - 10.0 * detail::row_fraction(resolved, Effect::flagSpeed);
+}
+
+// `dt` seconds more of each phase at the current speeds, `dt` clamped to
+// [0, kMaxPhaseStepSeconds], each kept in one cycle.
+inline void advance_character_phases(CharacterPhases& phases, const Resolved& resolved, double dt) noexcept {
+    const double step = dt > 0.0 ? std::min(dt, kMaxPhaseStepSeconds) : 0.0;  // a NaN dt moves nothing
+    const auto advance = [step](double& phase, double period) {
+        const double x = phase + step / period;
+        phase = x - std::floor(x);
+        if (!(phase >= 0.0 && phase < 1.0)) phase = 0.0;  // only a phase that was already NaN or infinite
+    };
+    advance(phases.roll, roll_period(resolved));
+    advance(phases.drift, drift_period(resolved));
+    advance(phases.flag, flag_period(resolved));
+}
+
 // TRACKING: one slip every period, lasting the duration (RECOVERY).
 inline double tracking_duration(const Resolved& resolved) noexcept {
     return 0.12 + detail::row_fraction(resolved, Effect::trackingRecovery);
@@ -397,9 +454,11 @@ inline bool tracking_moving(const Resolved& resolved, double elapsed) noexcept {
 }
 
 // THE OPTIONAL CHARACTER, once a frame: the rolling band, the tracking slip,
-// colour drift, flagging and the purity patch. Disabled, every field is 0.
-inline void tube_character_frame(TubeUniforms& u, const Resolved& resolved, double seconds, double tracking_elapsed,
-                                 bool enabled) noexcept {
+// colour drift, flagging and the purity patch. Disabled, every field is 0. The
+// band, drift and flagging are drawn at `phases` (accumulated by the renderer);
+// tracking at `tracking_elapsed`.
+inline void tube_character_frame(TubeUniforms& u, const Resolved& resolved, const CharacterPhases& phases,
+                                 double tracking_elapsed, bool enabled) noexcept {
     u.rollAmount = u.rollPosition = u.rollHalfWidth = u.rollTint = 0.0f;
     u.trackingOffset = u.trackingPosition = u.driftOffset = 0.0f;
     u.trackingHalfWidth = u.flagOffset = u.flagExtent = 0.0f;
@@ -410,8 +469,7 @@ inline void tube_character_frame(TubeUniforms& u, const Resolved& resolved, doub
     constexpr double kTwoPi = detail::kTwoPi;
     if (row(Effect::rollBand) > 0.0) {
         u.rollAmount = static_cast<float>(detail::character_strength(row(Effect::rollBand), 2.0));
-        u.rollPosition =
-            static_cast<float>(std::fmod(std::max(0.0, seconds) / (30.0 - 24.0 * row(Effect::rollSpeed)), 1.0));
+        u.rollPosition = static_cast<float>(phases.roll);
         u.rollHalfWidth = static_cast<float>((4.0 + 26.0 * row(Effect::rollWidth)) * px_per_mm / u.outH);
         u.rollTint = static_cast<float>(2.0 * row(Effect::rollTint) - 1.0);
     }
@@ -428,9 +486,9 @@ inline void tube_character_frame(TubeUniforms& u, const Resolved& resolved, doub
     }
     if (row(Effect::colorDrift) > 0.0)
         u.driftOffset = static_cast<float>(0.25 * px_per_mm * detail::character_strength(row(Effect::colorDrift), 3.0) *
-                                           std::sin(seconds * kTwoPi / (24.0 - 18.0 * row(Effect::driftSpeed))));
+                                           std::sin(kTwoPi * phases.drift));
     if (row(Effect::flagging) > 0.0) {
-        const double phase = seconds * kTwoPi / (12.0 - 10.0 * row(Effect::flagSpeed));
+        const double phase = kTwoPi * phases.flag;
         u.flagOffset = static_cast<float>(4.0 * px_per_mm * row(Effect::flagging) *
                                           (0.8 * std::sin(phase) + 0.2 * std::sin(phase * 2.0)));
         u.flagExtent = static_cast<float>(0.05 + 0.30 * row(Effect::flagHeight));
@@ -462,6 +520,7 @@ struct FrameState {
     float degauss = 0.0f;           // 1 .. 0 decaying
     float spot = 0.0f;              // power-off dot
     float warmupGain = 1.0f;        // warmup_gain(seconds since the tube started)
+    CharacterPhases phases{};       // the band, drift and flagging: advance_character_phases()
 };
 
 // ONE FRAME, from the still uniforms (tube_uniforms_for, cacheable) and what the
@@ -478,7 +537,7 @@ inline TubeUniforms tube_frame(const TubeUniforms& still, const Resolved& resolv
     if (u.warmupGain < 1.0f) u.sharpness *= 0.8f + 0.2f * u.warmupGain;
     u.degauss = state.degauss;
     if (state.motion_enabled) tube_signal_motion(u, state.seconds, state.motion_amount, state.rising_light);
-    tube_character_frame(u, resolved, state.seconds, state.tracking_elapsed, state.character_enabled);
+    tube_character_frame(u, resolved, state.phases, state.tracking_elapsed, state.character_enabled);
     u.spot = state.spot;
     return u;
 }
