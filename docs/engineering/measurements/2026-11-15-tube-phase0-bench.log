@@ -1,0 +1,190 @@
+# bench 1  2026-11-15 11:56:19  GL_RENDERER=V3D 7.1.10.2  gamma=0  reps=31 (+2 warm-up)  picture=1440x1080  abl_level=0.5
+# times are glFinish-bracketed wall ms; full = prepasses + tube (+ history copy); tube ~= full - prepass
+# passes: q quarter, g glow blur H+V, l line prepass, h afterglow history + copy
+config                                                                  size  full_med  full_min   pre_med   pre_min  tube_med passes
+copy                                                               1440x1080     1.733     1.672     0.000     0.000     1.733 -
+pvm                                                                1440x1080    29.444    29.227     2.966     2.908    26.478 qgh
+monitor                                                            1440x1080    27.277    26.973     2.318     2.285    24.959 qg
+trinitron                                                          1440x1080    52.152    51.851     8.675     8.585    43.476 qglh
+tv                                                                 1440x1080    60.580    60.319     9.298     9.194    51.282 qglh
+arcade                                                             1440x1080    60.413    60.117     9.787     9.663    50.626 qglh
+everything                                                         1440x1080    60.700    60.210     9.360     9.242    51.340 qglh
+everything sharpness=50                                            1440x1080    51.281    50.910     7.265     6.929    44.016 qglh
+everything convergence=0                                           1440x1080    50.539    50.391     9.319     9.232    41.221 qglh
+everything chromaBleed=0                                           1440x1080    55.540    55.224     9.292     9.216    46.248 qglh
+everything raster=0                                                1440x1080    45.170    44.944     4.228     4.180    40.942 qgh
+everything scanlines=0                                             1440x1080    60.579    60.302     9.330     9.237    51.249 qglh
+everything mask=none                                               1440x1080    56.074    55.731     9.448     9.221    46.626 qglh
+everything glow=0                                                  1440x1080    56.865    56.607     5.775     5.703    51.090 qlh
+everything afterglow=0                                             1440x1080    59.682    59.153     9.349     9.233    50.333 qgl
+everything afterglow=100                                           1440x1080    60.548    60.294     9.320     9.223    51.228 qglh
+everything noise=0                                                 1440x1080    59.348    58.970     9.282     9.229    50.066 qglh
+everything jitter=0                                                1440x1080    60.601    60.311     9.306     9.250    51.295 qglh
+everything hum=0                                                   1440x1080    60.625    60.351     9.309     9.246    51.316 qglh
+everything flicker=0                                               1440x1080    60.582    60.307     9.324     9.241    51.257 qglh
+everything curvature=0                                             1440x1080    59.272    58.914     9.300     9.242    49.971 qglh
+everything glass=0 (vignette rim glassBlack reflection)            1440x1080    60.522    60.217     9.307     9.214    51.215 qglh
+everything wear=100 (rollBand tracking colorDrift flagging purity) 1440x1080    62.404    62.160     9.298     9.233    53.106 qglh
+pvm -afterglow                                                     1440x1080    27.676    27.360     3.027     2.912    24.649 qg
+pvm -afterglow -glow                                               1440x1080    25.030    24.831     0.006     0.006    25.024 -
+pvm ... -mask                                                      1440x1080    23.105    22.960     0.006     0.006    23.099 -
+pvm ... -scanlines                                                 1440x1080    23.106    22.835     0.007     0.006    23.099 -
+pvm ... -sharpness                                                 1440x1080    20.401    20.337     0.007     0.006    20.394 -
+pvm ... -picture (bright/contrast/sat/white 50)                    1440x1080    20.398    20.333     0.006     0.006    20.392 -
+pvm ... -glass (curv vig rim black refl)                           1440x1080    20.201    20.127     0.008     0.006    20.193 -
+pvm ... -supply (abl breathing) = MINIMAL TUBE                     1440x1080    20.171    20.128     0.007     0.006    20.164 -
+copy FULL FRAME                                                    1920x1080     2.442     2.253     0.000     0.000     2.442 -
+everything FULL FRAME                                              1920x1080    81.579    81.102    13.835    13.742    67.743 qglh
+
+# bench 2  2026-11-15 11:57:41  GL_RENDERER=V3D 7.1.10.2  gamma=2  reps=31 (+2 warm-up)  picture=1440x1080  abl_level=0.5
+# times are glFinish-bracketed wall ms; full = prepasses + tube (+ history copy); tube ~= full - prepass
+# passes: q quarter, g glow blur H+V, l line prepass, h afterglow history + copy
+config                                                                  size  full_med  full_min   pre_med   pre_min  tube_med passes
+copy                                                               1440x1080     1.935     1.826     0.000     0.000     1.935 -
+pvm                                                                1440x1080    26.263    26.147     3.025     2.977    23.239 qgh
+monitor                                                            1440x1080    24.282    24.033     2.300     2.269    21.982 qg
+trinitron                                                          1440x1080    44.211    44.014     7.299     6.837    36.913 qglh
+tv                                                                 1440x1080    52.613    52.316     7.573     7.492    45.040 qglh
+arcade                                                             1440x1080    52.320    52.148     7.992     7.921    44.328 qglh
+everything                                                         1440x1080    52.606    52.365     7.558     7.493    45.049 qglh
+everything sharpness=50                                            1440x1080    47.905    47.674     5.857     5.800    42.048 qglh
+everything convergence=0                                           1440x1080    46.634    46.494     7.858     7.494    38.776 qglh
+everything chromaBleed=0                                           1440x1080    47.755    47.612     7.578     7.486    40.177 qglh
+everything raster=0                                                1440x1080    39.191    39.033     4.209     4.182    34.982 qgh
+everything scanlines=0                                             1440x1080    52.655    52.412     7.561     7.477    45.094 qglh
+everything mask=none                                               1440x1080    47.877    47.732     7.655     7.493    40.222 qglh
+everything glow=0                                                  1440x1080    49.079    48.717     4.038     3.980    45.041 qlh
+everything afterglow=0                                             1440x1080    51.149    50.724     7.616     7.485    43.533 qgl
+everything afterglow=100                                           1440x1080    52.608    52.348     7.568     7.491    45.040 qglh
+everything noise=0                                                 1440x1080    51.284    51.053     7.588     7.485    43.696 qglh
+everything jitter=0                                                1440x1080    52.576    52.371     7.593     7.500    44.983 qglh
+everything hum=0                                                   1440x1080    52.591    52.365     7.581     7.461    45.010 qglh
+everything flicker=0                                               1440x1080    52.601    52.412     7.634     7.517    44.967 qglh
+everything curvature=0                                             1440x1080    51.667    51.496     7.576     7.490    44.091 qglh
+everything glass=0 (vignette rim glassBlack reflection)            1440x1080    52.513    52.390     7.580     7.510    44.933 qglh
+everything wear=100 (rollBand tracking colorDrift flagging purity) 1440x1080    54.321    54.065     7.577     7.503    46.743 qglh
+pvm -afterglow                                                     1440x1080    24.990    24.744     2.945     2.898    22.044 qg
+pvm -afterglow -glow                                               1440x1080    22.153    21.925     0.007     0.006    22.146 -
+pvm ... -mask                                                      1440x1080    19.711    19.515     0.007     0.006    19.704 -
+pvm ... -scanlines                                                 1440x1080    19.698    19.598     0.007     0.006    19.692 -
+pvm ... -sharpness                                                 1440x1080    18.845    18.737     0.007     0.007    18.837 -
+pvm ... -picture (bright/contrast/sat/white 50)                    1440x1080    18.840    18.747     0.007     0.007    18.833 -
+pvm ... -glass (curv vig rim black refl)                           1440x1080    18.658    18.578     0.007     0.006    18.651 -
+pvm ... -supply (abl breathing) = MINIMAL TUBE                     1440x1080    18.653    18.578     0.006     0.006    18.647 -
+copy FULL FRAME                                                    1920x1080     2.263     2.202     0.000     0.000     2.263 -
+everything FULL FRAME                                              1920x1080    71.089    70.789    11.619    11.485    59.470 qglh
+
+# bench 3  2026-11-15 12:02:37  GL_RENDERER=V3D 7.1.10.2  gamma=2  reps=31 (+2 warm-up)  picture=1440x1080  abl_level=0.5
+# times are glFinish-bracketed wall ms; full = prepasses + tube (+ history copy); tube ~= full - prepass
+# passes: q quarter, g glow blur H+V, l line prepass, h afterglow history + copy
+config                                                                  size  full_med  full_min   pre_med   pre_min  tube_med passes
+copy                                                               1440x1080     1.757     1.705     0.000     0.000     1.757 -
+pvm                                                                1440x1080     8.938     8.341     3.094     2.902     5.843 qgh
+monitor                                                            1440x1080     5.096     4.847     2.521     2.344     2.576 qg
+trinitron                                                          1440x1080    10.805    10.541     5.604     5.131     5.201 qglh
+tv                                                                 1440x1080    11.443    11.248     5.750     5.657     5.693 qglh
+arcade                                                             1440x1080    11.812    11.506     6.167     6.104     5.646 qglh
+everything                                                         1440x1080    11.356    11.163     5.737     5.651     5.619 qglh
+everything sharpness=50                                            1440x1080    11.399    11.166     5.745     5.675     5.654 qglh
+everything convergence=0                                           1440x1080    11.325    11.188     5.735     5.674     5.589 qglh
+everything chromaBleed=0                                           1440x1080    11.355    11.134     5.728     5.653     5.627 qglh
+everything raster=0                                                1440x1080     9.843     9.671     4.232     4.179     5.611 qgh
+everything scanlines=0                                             1440x1080    11.320    11.109     5.749     5.651     5.572 qglh
+everything mask=none                                               1440x1080    11.468    11.174     5.759     5.643     5.709 qglh
+everything glow=0                                                  1440x1080     7.837     7.648     2.206     2.155     5.631 qlh
+everything afterglow=0                                             1440x1080     8.359     8.222     5.723     5.659     2.636 qgl
+everything afterglow=100                                           1440x1080    11.330    11.127     5.712     5.648     5.619 qglh
+everything noise=0                                                 1440x1080    11.333    11.119     5.703     5.656     5.631 qglh
+everything jitter=0                                                1440x1080    11.382    11.122     5.760     5.648     5.623 qglh
+everything hum=0                                                   1440x1080    11.350    11.123     5.715     5.669     5.635 qglh
+everything flicker=0                                               1440x1080    11.351    11.173     5.719     5.656     5.632 qglh
+everything curvature=0                                             1440x1080    11.771    11.167     5.946     5.665     5.824 qglh
+everything glass=0 (vignette rim glassBlack reflection)            1440x1080    11.355    11.153     5.772     5.682     5.583 qglh
+everything wear=100 (rollBand tracking colorDrift flagging purity) 1440x1080    11.400    11.127     5.745     5.651     5.654 qglh
+pvm -afterglow                                                     1440x1080     5.553     5.456     2.944     2.908     2.609 qg
+pvm -afterglow -glow                                               1440x1080     2.655     2.610     0.007     0.006     2.648 -
+pvm ... -mask                                                      1440x1080     2.639     2.610     0.007     0.006     2.633 -
+pvm ... -scanlines                                                 1440x1080     2.676     2.615     0.006     0.006     2.669 -
+pvm ... -sharpness                                                 1440x1080     2.655     2.615     0.007     0.006     2.648 -
+pvm ... -picture (bright/contrast/sat/white 50)                    1440x1080     2.685     2.614     0.006     0.006     2.679 -
+pvm ... -glass (curv vig rim black refl)                           1440x1080     2.651     2.618     0.007     0.006     2.644 -
+pvm ... -supply (abl breathing) = MINIMAL TUBE                     1440x1080     2.648     2.603     0.006     0.006     2.642 -
+copy FULL FRAME                                                    1920x1080     2.298     2.208     0.000     0.000     2.298 -
+everything FULL FRAME                                              1920x1080    16.517    16.273     9.063     8.948     7.454 qglh
+
+# bench 4  2026-11-15 12:03:06  GL_RENDERER=V3D 7.1.10.2  gamma=2  reps=31 (+2 warm-up)  picture=1440x1080  abl_level=0.5
+# times are glFinish-bracketed wall ms; full = prepasses + tube (+ history copy); tube ~= full - prepass
+# passes: q quarter, g glow blur H+V, l line prepass, h afterglow history + copy
+config                                                                  size  full_med  full_min   pre_med   pre_min  tube_med passes
+copy                                                               1440x1080     1.700     1.669     0.000     0.000     1.700 -
+pvm                                                                1440x1080    15.575    15.469     2.934     2.895    12.641 qgh
+monitor                                                            1440x1080    12.460    12.224     2.294     2.267    10.166 qg
+trinitron                                                          1440x1080    19.738    19.523     7.009     6.869    12.729 qglh
+tv                                                                 1440x1080    20.298    20.134     7.610     7.485    12.689 qglh
+arcade                                                             1440x1080    20.649    20.522     8.003     7.907    12.646 qglh
+everything                                                         1440x1080    20.332    20.116     7.577     7.486    12.755 qglh
+everything sharpness=50                                            1440x1080    17.761    17.514     5.858     5.806    11.903 qglh
+everything convergence=0                                           1440x1080    20.343    20.148     7.583     7.473    12.760 qglh
+everything chromaBleed=0                                           1440x1080    20.332    20.126     7.582     7.499    12.750 qglh
+everything raster=0                                                1440x1080    16.932    16.750     4.214     4.178    12.718 qgh
+everything scanlines=0                                             1440x1080    20.300    20.109     7.561     7.473    12.739 qglh
+everything mask=none                                               1440x1080    20.332    20.137     7.569     7.470    12.763 qglh
+everything glow=0                                                  1440x1080    16.493    16.227     4.052     3.977    12.441 qlh
+everything afterglow=0                                             1440x1080    18.320    17.615     7.650     7.484    10.671 qgl
+everything afterglow=100                                           1440x1080    20.328    20.133     7.590     7.512    12.738 qglh
+everything noise=0                                                 1440x1080    20.210    20.134     7.539     7.481    12.671 qglh
+everything jitter=0                                                1440x1080    20.273    20.113     7.550     7.477    12.723 qglh
+everything hum=0                                                   1440x1080    20.302    20.092     7.586     7.478    12.715 qglh
+everything flicker=0                                               1440x1080    20.314    20.195     7.612     7.493    12.702 qglh
+everything curvature=0                                             1440x1080    20.264    20.082     7.603     7.524    12.661 qglh
+everything glass=0 (vignette rim glassBlack reflection)            1440x1080    20.336    20.180     7.614     7.511    12.722 qglh
+everything wear=100 (rollBand tracking colorDrift flagging purity) 1440x1080    20.304    20.193     7.609     7.512    12.694 qglh
+pvm -afterglow                                                     1440x1080    12.957    12.879     2.925     2.901    10.032 qg
+pvm -afterglow -glow                                               1440x1080     9.823     9.731     0.007     0.006     9.816 -
+pvm ... -mask                                                      1440x1080     9.803     9.747     0.007     0.006     9.795 -
+pvm ... -scanlines                                                 1440x1080     9.811     9.716     0.007     0.007     9.804 -
+pvm ... -sharpness                                                 1440x1080     9.287     9.147     0.007     0.006     9.280 -
+pvm ... -picture (bright/contrast/sat/white 50)                    1440x1080     9.399     9.202     0.010     0.006     9.388 -
+pvm ... -glass (curv vig rim black refl)                           1440x1080     9.189     9.081     0.007     0.006     9.182 -
+pvm ... -supply (abl breathing) = MINIMAL TUBE                     1440x1080     9.176     9.077     0.007     0.006     9.169 -
+copy FULL FRAME                                                    1920x1080     2.264     2.187     0.000     0.000     2.264 -
+everything FULL FRAME                                              1920x1080    28.475    28.233    11.559    11.483    16.916 qglh
+
+# bench 5  2026-11-15 12:03:56  GL_RENDERER=V3D 7.1.10.2  gamma=2  reps=31 (+2 warm-up)  picture=1440x1080  abl_level=0.5
+# times are glFinish-bracketed wall ms; full = prepasses + tube (+ history copy); tube ~= full - prepass
+# passes: q quarter, g glow blur H+V, l line prepass, h afterglow history + copy
+config                                                                  size  full_med  full_min   pre_med   pre_min  tube_med passes
+copy                                                               1440x1080     1.720     1.669     0.000     0.000     1.720 -
+pvm                                                                1440x1080    22.536    21.164     3.129     2.919    19.407 qgh
+monitor                                                            1440x1080    19.040    18.931     2.314     2.262    16.726 qg
+trinitron                                                          1440x1080    37.969    37.830     6.957     6.831    31.013 qglh
+tv                                                                 1440x1080    43.354    43.142     7.610     7.488    35.744 qglh
+arcade                                                             1440x1080    43.778    43.530     8.012     7.935    35.766 qglh
+everything                                                         1440x1080    43.826    43.130     7.744     7.566    36.082 qglh
+everything sharpness=50                                            1440x1080    39.096    38.666     5.897     5.786    33.199 qglh
+everything convergence=0                                           1440x1080    38.111    37.561     8.511     7.828    29.600 qglh
+everything chromaBleed=0                                           1440x1080    38.639    38.463     7.614     7.498    31.025 qglh
+everything raster=0                                                1440x1080    30.099    29.948     4.203     4.173    25.896 qgh
+everything scanlines=0                                             1440x1080    43.371    43.137     7.620     7.472    35.751 qglh
+everything mask=none                                               1440x1080    43.382    43.150     7.586     7.491    35.796 qglh
+everything glow=0                                                  1440x1080    39.993    39.828     4.055     3.981    35.939 qlh
+everything afterglow=0                                             1440x1080    43.609    42.679     7.570     7.487    36.039 qgl
+everything afterglow=100                                           1440x1080    43.303    43.087     7.573     7.468    35.730 qglh
+everything noise=0                                                 1440x1080    42.388    42.241     7.594     7.504    34.794 qglh
+everything jitter=0                                                1440x1080    43.346    43.161     7.605     7.510    35.741 qglh
+everything hum=0                                                   1440x1080    43.338    43.167     7.586     7.493    35.752 qglh
+everything flicker=0                                               1440x1080    43.358    43.145     7.581     7.496    35.776 qglh
+everything curvature=0                                             1440x1080    42.837    42.421     7.577     7.503    35.260 qglh
+everything glass=0 (vignette rim glassBlack reflection)            1440x1080    43.281    43.174     7.578     7.481    35.703 qglh
+everything wear=100 (rollBand tracking colorDrift flagging purity) 1440x1080    43.301    43.128     7.595     7.486    35.706 qglh
+pvm -afterglow                                                     1440x1080    19.701    19.520     2.928     2.902    16.773 qg
+pvm -afterglow -glow                                               1440x1080    16.935    16.773     0.007     0.006    16.928 -
+pvm ... -mask                                                      1440x1080    16.898    16.790     0.007     0.006    16.891 -
+pvm ... -scanlines                                                 1440x1080    16.924    16.741     0.008     0.006    16.915 -
+pvm ... -sharpness                                                 1440x1080    16.144    16.063     0.006     0.006    16.138 -
+pvm ... -picture (bright/contrast/sat/white 50)                    1440x1080    16.143    16.075     0.007     0.006    16.136 -
+pvm ... -glass (curv vig rim black refl)                           1440x1080    15.949    15.892     0.007     0.006    15.943 -
+pvm ... -supply (abl breathing) = MINIMAL TUBE                     1440x1080    15.935    15.897     0.006     0.006    15.929 -
+copy FULL FRAME                                                    1920x1080     2.373     2.201     0.000     0.000     2.373 -
+everything FULL FRAME                                              1920x1080    59.149    58.606    11.582    11.476    47.567 qglh
+
