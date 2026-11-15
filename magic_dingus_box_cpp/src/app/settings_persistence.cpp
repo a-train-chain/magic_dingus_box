@@ -50,20 +50,12 @@ app::AppState::DisplaySettings::MbLibraryFilter mb_library_filter_from_string(co
     return R::All;
 }
 
-// display.crt_engine's words.
-const char* crt_engine_to_string(app::CrtEngine e) {
-    switch (e) {
-        case app::CrtEngine::Classic:  return "classic";
-        case app::CrtEngine::Enhanced: return "enhanced";
-        case app::CrtEngine::Tube:     return "tube";
-    }
-    return "classic";
+// display.crt_engine's words (spelled once, in app_state.h).
+std::string crt_engine_to_string(app::CrtEngine e) {
+    return std::string(app::crt_engine_name(e));
 }
 std::optional<app::CrtEngine> crt_engine_from_string(const std::string& s) {
-    if (s == "classic")  return app::CrtEngine::Classic;
-    if (s == "enhanced") return app::CrtEngine::Enhanced;
-    if (s == "tube")     return app::CrtEngine::Tube;
-    return std::nullopt;
+    return app::parse_crt_engine(s);
 }
 
 // A JSON value as one line of text, for a warning.

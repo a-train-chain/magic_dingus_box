@@ -10,6 +10,9 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
+#include <string_view>
+#include <array>
+#include <cstddef>
 
 #include "guide_nav.h"
 #include "tube/tube_setting.h"
@@ -45,6 +48,45 @@ enum class CrtEngine { Classic, Enhanced, Tube };
 constexpr CrtEngine effective_crt_engine(CrtEngine saved, bool tube_gate) noexcept {
     return (saved == CrtEngine::Tube && !tube_gate) ? CrtEngine::Enhanced : saved;
 }
+
+namespace detail {
+// Index-aligned with CrtEngine's order: the config's word, then the menu's.
+inline constexpr std::array<CrtEngine, 3> kCrtEngines{CrtEngine::Classic, CrtEngine::Enhanced,
+                                                      CrtEngine::Tube};
+inline constexpr std::array<std::string_view, 3> kCrtEngineNames{"classic", "enhanced", "tube"};
+inline constexpr std::array<std::string_view, 3> kCrtEngineWords{"Classic", "Enhanced", "Tube"};
+}  // namespace detail
+
+// The ONLY spellings of the engine words. crt_engine_name is display.crt_engine's
+// word (and the web's); crt_engine_word is what the TV menu shows. A value
+// outside the enum reads as Classic.
+constexpr std::string_view crt_engine_name(CrtEngine engine) noexcept {
+    const auto i = static_cast<std::size_t>(engine);
+    return i < detail::kCrtEngineNames.size() ? detail::kCrtEngineNames[i] : detail::kCrtEngineNames[0];
+}
+constexpr std::string_view crt_engine_word(CrtEngine engine) noexcept {
+    const auto i = static_cast<std::size_t>(engine);
+    return i < detail::kCrtEngineWords.size() ? detail::kCrtEngineWords[i] : detail::kCrtEngineWords[0];
+}
+// The engine `word` is the config name of, exactly (case matters), or nullopt.
+constexpr std::optional<CrtEngine> parse_crt_engine(std::string_view word) noexcept {
+    for (const CrtEngine candidate : detail::kCrtEngines)
+        if (crt_engine_name(candidate) == word) return candidate;
+    return std::nullopt;
+}
+
+// Whether the Tube engine's renderer is built into this binary. While false, Tube
+// is offered nowhere (no menu option, no Tube rows, no Degauss, no web tab) on any
+// board. Plan 3 (the renderer) sets it to true. Read through tube_offered(), never
+// directly; AppState::tube_renderer_ready copies it so tests can open the gate.
+inline constexpr bool kTubeRendererReady = false;
+
+// The op log's progress and the Degauss presses. In memory only.
+struct TubeLiveState {
+    std::uint64_t handled_seq = 0;      // highest op seq read (applied or skipped); published
+    std::uint64_t degauss_requests = 0; // presses on the TV or the web; Plan 3 consumes the increase
+    bool adopted = false;               // the op log has been looked at since boot
+};
 
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
 // ALSA `amixer numid=3` method — see app/audio_router.h. Sink names are
@@ -885,6 +927,12 @@ public:
     // launch contract).
     platform::PlatformProfile platform_profile;
 
+    // Tube live tuning (op log progress, Degauss presses) and the renderer-ready
+    // gate. Ask app::tube_offered(state), which ANDs this flag with the board
+    // gate above; production never changes the flag from kTubeRendererReady.
+    TubeLiveState tube_live;
+    bool tube_renderer_ready = kTubeRendererReady;
+
     // Available bezels (loaded from bezels.json)
     std::vector<BezelInfo> available_bezels;
 
@@ -943,5 +991,20 @@ public:
     // For now, pointer to avoid header dependency hell in this header 
     // (forward declared above).
 };
+
+// Whether Tube may be offered anywhere: the Pi 5 board gate AND the renderer
+// built in. Every Tube decision (menu rows, the engine cycle, Degauss, the web
+// tab, applying live ops) takes this, never the profile field directly.
+inline bool tube_offered(const AppState& s) noexcept {
+    return s.platform_profile.tube_crt_engine && s.tube_renderer_ready;
+}
+
+// Why Tube is not offered, for the status file and the web: "" when it is,
+// "needs_pi5" when the board gate is closed, otherwise "not_ready".
+inline std::string_view tube_not_offered_reason(const AppState& s) noexcept {
+    if (tube_offered(s)) return "";
+    if (!s.platform_profile.tube_crt_engine) return "needs_pi5";
+    return "not_ready";
+}
 
 } // namespace app
