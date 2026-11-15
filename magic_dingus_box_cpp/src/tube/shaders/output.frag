@@ -239,9 +239,11 @@ void main()
         if (tint != vec3(1.0))
             col *= tint;
 #ifdef OUT_MOTION
-        // FLICKER: the light breathing. THE CAP (crt.metal): +-2.5 % at 1.
+        // FLICKER: the light breathing. THE CAP (crt.metal): +-2.5 % at 1. crt.metal
+        // computes the wave here (|wave| <= 1 by construction); it arrives as a uniform,
+        // so it is clamped here too, and the cap holds whatever the CPU uploads.
         if (flicker > 0.0)
-            col *= 1.0 + min(flicker, 1.0) * 0.025 * flickerWave;
+            col *= 1.0 + min(flicker, 1.0) * 0.025 * clamp(flickerWave, -1.0, 1.0);
         // HUM: one soft band rolling up the tube. THE CAP (crt.metal): at most 25 % darker at 1.
         if (hum > 0.0)
             col *= 1.0 - min(hum, 1.0) * 0.25 * pow(max(0.5 + 0.5 * sin(6.2832 * (p.y / outH + humPhase)), 0.0), 2.32);

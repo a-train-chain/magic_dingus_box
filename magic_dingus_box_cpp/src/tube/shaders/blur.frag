@@ -19,7 +19,10 @@ void main()
     ivec2 size = textureSize(src, 0);
     ivec2 at = ivec2(gl_FragCoord.xy);
     int r = min(uRadius, MAX_RADIUS);
-    float k2 = -0.5 / (uSigma * uSigma);
+    // A floor on sigma: at 0 the factor is -inf and tap 0's 0 * -inf is NaN. Any real
+    // glow sigma is far above it, so its weights are unchanged.
+    float sigma = max(uSigma, 0.001);
+    float k2 = -0.5 / (sigma * sigma);
     vec3 sum = vec3(0.0);
     float wsum = 0.0;
     for (int i = 0; i < 2 * MAX_RADIUS + 1; ++i) {

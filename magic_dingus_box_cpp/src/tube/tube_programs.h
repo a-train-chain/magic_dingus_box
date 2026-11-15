@@ -426,14 +426,15 @@ inline std::vector<PassPlan> validation_plans() {
     return plans;
 }
 
-// The uniforms a program declares: TubeUniforms fields by their member names (the
-// renderer uploads these from the frame's uniforms) and the program's own, prefixed
-// `u` or a sampler's name (the renderer sets these itself). Follows the defines, so
-// the lean outputs list what the lean set compiles in. Task 6 checks every name is
-// declared in the program's assembled source.
-inline std::vector<std::string_view> uniforms_of(Program p) {
-    const ProgramInfo& info = program_info(p);
-    const std::string defines = " " + program_defines(p) + " ";
+namespace detail {
+// The uniforms `file` reads when built with `defines` (space-separated), each
+// define's block listing every uniform that block's code reads. uniforms_of() is
+// this for a program of the table; test_tube_shaders.cpp also sweeps it over the
+// table's programs with one define taken away, so a name one block reads cannot
+// hide behind another block that happens to list it too. Never a way to BUILD a
+// program: only the table's are built.
+inline std::vector<std::string_view> uniforms_for(ShaderFile file, bool reads_scene, const std::string& defines_list) {
+    const std::string defines = " " + defines_list + " ";
     const auto has = [&defines](std::string_view d) {
         return defines.find(" " + std::string(d) + " ") != std::string::npos;
     };
@@ -442,8 +443,8 @@ inline std::vector<std::string_view> uniforms_of(Program p) {
         for (std::string_view name : names)
             if (std::find(out.begin(), out.end(), name) == out.end()) out.push_back(name);
     };
-    if (info.reads_scene) add({"ui", "uSceneMap", "uSceneClamp"});
-    switch (info.file) {
+    if (reads_scene) add({"ui", "uSceneMap", "uSceneClamp"});
+    switch (file) {
         case ShaderFile::glass: add({"outW", "outH", "cornerPx", "rim", "vignette", "glassBlack", "reflection"}); break;
         case ShaderFile::quarter: add({"uPicSize", "uDstSize"}); break;
         case ShaderFile::blur: add({"src", "uDir", "uSigma", "uRadius"}); break;
@@ -463,11 +464,11 @@ inline std::vector<std::string_view> uniforms_of(Program p) {
             if (has("OUT_SIGNAL")) add({"signalTex"});
             if (has("OUT_BEND")) add({"curvature"});
             if (has("OUT_SCANLINES")) add({"scanlines", "lines", "beamMin", "beamMax"});
-            if (has("OUT_RASTER")) add({"raster", "lines", "linesTex"});
+            if (has("OUT_RASTER")) add({"raster", "lines", "linesTex", "scanlines", "beamMin", "beamMax"});
             if (has("OUT_TONE")) add({"contrast", "saturation"});
             if (has("OUT_DISPLACE"))
-                add({"jitter", "jitterSeed", "jitterBias", "trackingOffset", "trackingPosition", "trackingHalfWidth",
-                     "flagOffset", "flagExtent"});
+                add({"jitter", "jitterSeed", "jitterBias", "lines", "trackingOffset", "trackingPosition",
+                     "trackingHalfWidth", "flagOffset", "flagExtent"});
             if (has("OUT_MOTION"))
                 add({"noise", "noiseSeed", "flicker", "flickerWave", "hum", "humPhase", "rollAmount", "rollPosition",
                      "rollHalfWidth", "rollTint", "purityAmount", "purityX", "purityY", "purityRadius", "purityR",
@@ -478,6 +479,18 @@ inline std::vector<std::string_view> uniforms_of(Program p) {
             break;
     }
     return out;
+}
+}  // namespace detail
+
+// The uniforms a program declares and reads: TubeUniforms fields by their member
+// names (the renderer uploads these from the frame's uniforms) and the program's
+// own, prefixed `u` or a sampler's name (the renderer sets these itself). Follows the
+// defines, so the lean outputs list what the lean set compiles in. Task 6's tests
+// check every name is declared in the program's assembled source, and every
+// uniform the enabled code reads is listed.
+inline std::vector<std::string_view> uniforms_of(Program p) {
+    const ProgramInfo& info = program_info(p);
+    return detail::uniforms_for(info.file, info.reads_scene, program_defines(p));
 }
 
 }  // namespace tube
