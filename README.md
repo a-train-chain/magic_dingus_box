@@ -41,13 +41,14 @@ working WireGuard config (web admin) before the feature appears.
 
 ## What it does
 
-- **Plays curated video playlists** at full-screen with a configurable CRT-effect shader pipeline (scanlines, aperture-grille mask, RGB convergence + phosphor glow, luma-driven halation) — opt-in via `Settings → Display → CRT Engine: Enhanced`.
+- **Plays curated video playlists** as a list or as live TV channels in a cable-style **Channel Guide** (`Settings → Display → Menu Style`; daily lineups, optional Pick Ahead), at full-screen with a configurable CRT-effect shader pipeline (scanlines, aperture-grille mask, RGB convergence + phosphor glow, luma-driven halation) — opt-in via `Settings → Display → CRT Engine: Enhanced`.
 - **Launches retro-game ROMs** via RetroArch with per-core controller mappings for 9 systems: NES, SNES, Genesis/Mega Drive, PC Engine, Atari 7800, PlayStation 1, arcade (FBNeo), plus Nintendo 64 and Dreamcast on Raspberry Pi 5 (hidden on a Pi 4B). Auto-saves SRAM and save states on exit, auto-loads on next launch.
-- **Routes input** from rotary encoder, GPIO buttons, and USB controllers (currently supports an N64-style USB adapter and PlayStation-style pads with an internal `controller_detector` distinguishing the two).
+- **Routes input** from rotary encoder, GPIO buttons, USB and **Bluetooth** controllers. Pads pair from the TV (`Settings → Pair Wireless Controller`). PlayStation, Xbox, Switch Pro and 8BitDo pads get automatic layouts; others use the Controller Setup wizard. The N64-style USB adapter and PlayStation-style pads have built-in profiles.
 - **Routes audio** through PulseAudio with selectable HDMI / 3.5mm headphone output and a per-game RetroArch volume offset.
 - **Updates over the air** from GitHub Releases via [`magic_dingus_box_cpp/scripts/update.sh`](magic_dingus_box_cpp/scripts/update.sh), with backup + rollback support and a documented preservation contract for operator content.
 - **Clones live** to a `.img.gz` for a golden-image distribution flow — fresh Pis boot, run `first_boot.sh` once, and end up with their own identity (UUID, hostname, fresh WiFi setup) while inheriting the source's curated content (videos, playlists, ROMs, saves, thumbnails).
-- **Optional Media Browser** for movie discovery + download (TMDB / Radarr / Prowlarr / qBittorrent over a Gluetun-protected VPN tunnel with NAT-PMP port forwarding). Hidden by default behind a chord-sequence unlock; configured per-Pi via the Content Manager web UI without ever needing SSH.
+- **Keeps each video's shape**: uploads keep their aspect ratio (portrait included), with a per-video **Crop** choice (fill the 4:3 frame, or show the whole picture) on the TV and in the Content Manager.
+- **Optional Media Browser** for movie discovery + download (TMDB / Radarr / Prowlarr / qBittorrent over a Gluetun-protected VPN tunnel with NAT-PMP port forwarding). Hidden by default behind a chord-sequence unlock; configured per-Pi via the Content Manager web UI without ever needing SSH. Downloaded films can air as **movie channels** in the Channel Guide. On ProtonVPN a native recovery controller verifies the tunnel and switches servers (and, only if allowed, countries) on its own.
 
 ## Quick start
 
