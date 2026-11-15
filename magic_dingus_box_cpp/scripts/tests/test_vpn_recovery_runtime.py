@@ -774,8 +774,20 @@ class RuntimeTests(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, log, '')
         adapter = SystemAdapters(self.paths, runner)
         self.assertTrue(adapter.attest_catalog(GEN, snapshot, time.monotonic()+3))
+        # The INFO line is printed at startup. Read the startup window, not
+        # the last 1000 lines: a restart-looping tunnel logs >1000 lines
+        # within minutes (1199 on magicpi5, 2026-11-15), and Docker 26
+        # returns nothing for --tail combined with --until.
         self.assertEqual(calls, [['docker', 'logs', '--since', GEN['started_at'],
-                                  '--tail', '1000', GEN['container_id']]])
+                                  '--until', '2026-11-14T00:02:01Z', GEN['container_id']]])
+        calls.clear()
+        nanos = {**GEN, 'started_at': '2026-11-15T09:43:28.926046613Z'}
+        self.assertTrue(adapter.attest_catalog(nanos, snapshot, time.monotonic()+3))
+        self.assertEqual(calls[0][4:6], ['--until', '2026-11-15T09:45:29Z'])
+        calls.clear()
+        odd = {**GEN, 'started_at': 'not-a-time'}
+        self.assertTrue(adapter.attest_catalog(odd, snapshot, time.monotonic()+3))
+        self.assertEqual(calls[0][4:6], ['--tail', '1000'])
         log = ''
         self.assertFalse(adapter.attest_catalog(GEN, snapshot, time.monotonic()+3))
         log = 'INFO [storage] Using protonvpn servers from file which are 361 days more recent'

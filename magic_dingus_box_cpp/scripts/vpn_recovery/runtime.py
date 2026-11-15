@@ -6,7 +6,7 @@ separate aggregate deadlines and run on ONE worker: slow compose never stalls
 10s observation cadence. Results are fenced before use, not trusted as health.
 """
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict
 import copy
 import ipaddress
@@ -351,7 +351,15 @@ class SystemAdapters:
             return False
         # INFO log in pinned storage/merge.go, not a debug-only message. Only
         # return a Boolean; container logs/settings never leave this function.
-        output=self.run(['docker','logs','--since',generation['started_at'],'--tail','1000',
+        # It is printed during startup: read that window, not the newest 1000
+        # lines (a restart-looping tunnel scrolls past it within minutes;
+        # Docker 26 also returns nothing for --tail with --until).
+        try:
+            start=datetime.strptime(generation['started_at'][:19],'%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)
+            window=['--until',(start+timedelta(seconds=121)).strftime('%Y-%m-%dT%H:%M:%SZ')]
+        except (TypeError,ValueError):
+            window=['--tail','1000']
+        output=self.run(['docker','logs','--since',generation['started_at'],*window,
                          generation['container_id']],deadline,2)
         return bool(re.search(r'Using protonvpn servers from file which are .* more recent',output))
 
