@@ -47,13 +47,10 @@ inline Resolved resolve(const TubeSetting& setting) noexcept {
     out.look = setting.look;
     out.mask = setting.mask.value_or(base.mask);
     out.effects = base.effects;
-    out.custom = setting.mask.has_value();
-    for (std::size_t i = 0; i < kEffectCount; ++i) {
-        if (setting.rows[i]) {
-            out.effects[i] = *setting.rows[i];
-            out.custom = true;
-        }
-    }
+    for (std::size_t i = 0; i < kEffectCount; ++i)
+        if (setting.rows[i]) out.effects[i] = *setting.rows[i];
+    // By value, as moved_keys() is: a row stated at the look's own value is not moved.
+    out.custom = out.mask != base.mask || out.effects != base.effects;
     return out;
 }
 

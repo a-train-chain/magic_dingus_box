@@ -43,3 +43,24 @@ TEST_CASE("tube setting: picking a look clears what was moved", "[tube]") {
     REQUIRE(s.look == Look::arcade);
     REQUIRE_FALSE(resolve(s).custom);
 }
+
+TEST_CASE("tube setting: a row stated at the look's own value is not custom", "[tube]") {
+    TubeSetting s;                                   // pvm, fields written directly
+    s.rows[index_of(Effect::hum)] = look_values(Look::pvm).effects[index_of(Effect::hum)];
+    s.mask = look_values(Look::pvm).mask;
+    auto r = resolve(s);
+    REQUIRE_FALSE(r.custom);
+    REQUIRE(moved_keys(s).empty());
+    REQUIRE(r.effects == look_values(Look::pvm).effects);
+    REQUIRE(r.mask == look_values(Look::pvm).mask);
+}
+TEST_CASE("tube setting: custom agrees with moved_keys for a directly written difference", "[tube]") {
+    TubeSetting s;
+    s.rows[index_of(Effect::hum)] = 20;
+    REQUIRE(resolve(s).custom);
+    REQUIRE(moved_keys(s) == std::vector<std::string_view>{"hum"});
+    TubeSetting m;
+    m.mask = Mask::dots;
+    REQUIRE(resolve(m).custom == !moved_keys(m).empty());
+    REQUIRE(resolve(m).custom);
+}
