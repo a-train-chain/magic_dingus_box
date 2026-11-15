@@ -364,6 +364,17 @@ inline PassPlan plan_passes(const Resolved& resolved, const Picture& picture) no
     return p;
 }
 
+// The still uniforms as the plan draws them: a row whose pass the plan dropped reads 0.
+// Every rich output program compiles OUT_GLOW, so a GLOW left above 0 after
+// plan_passes() dropped the glow pass would sample a stale glow texture. A dropped
+// afterglow selects a program without OUT_HISTORY, so PERSISTENCE is not read; it is
+// zeroed too, so the uniforms never claim a pass the plan does not draw (and
+// settle_frames() owes no afterglow frames for it).
+inline void apply_plan(TubeUniforms& u, const PassPlan& plan) noexcept {
+    if (!plan.glow) u.glow = 0.0f;
+    if (!plan.afterglow) u.persistence = 0.0f;
+}
+
 // The programs a plan draws with: the glass first (the bake), then in pass order, each once.
 inline std::vector<Program> programs_of(const PassPlan& plan) {
     std::vector<Program> out{Program::glass};
