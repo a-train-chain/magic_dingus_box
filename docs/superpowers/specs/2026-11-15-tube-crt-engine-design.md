@@ -322,12 +322,11 @@ misses the lean budget): every shipped look is Rich30, the Lean60 path stays
 for any custom mix that qualifies, and the owner is told.
 
 **The shipped looks in two classes (call).** As copied from Sound Factory
-every look is rich (each has GLOW > 0 and SHARPNESS ≠ 50). PVM and Monitor
-become Lean60 **only if Task 1b's table shows a lean PVM-like look holding
-60 fps**; then each row of theirs that forces 30 fps goes to neutral (at
-least PVM's GLOW 8, AFTERGLOW 10, SHARPNESS 63 and Monitor's GLOW 5,
-SHARPNESS 60 → 0, 0, 50, 0, 50) and they still move nothing. Otherwise they
-stay exactly as Sound Factory has them, at 30 fps. Trinitron, TV, Arcade
+every look is rich (each has GLOW > 0 and SHARPNESS ≠ 50). Task 1b decided
+(pvm_lean: no): PVM-lean needs the probe for its ABL 20 and breathing 15, and
+its run without the probe did not hold 60 fps. PVM and Monitor therefore stay
+exactly as Sound Factory has them, at 30 fps, and no look value changes. The
+60 fps class is for a custom mix that leaves every 30 fps row neutral. Trinitron, TV, Arcade
 and Everything stay Rich30, with rows taken to neutral by the hardware
 acceptance where they miss the rich budget (Acceptance's ladder).
 
@@ -337,8 +336,7 @@ table current; the parity script lists each cell as deliberate):
 | Look | Row | Sound Factory | Box | Why |
 |---|---|---|---|---|
 | all six | lineSize, maskSize | see plan 1 Task 2 | see plan 1 Task 2 | whole TV pixels (§5) |
-| pvm | sharpness, glow, afterglow | 63, 8, 10 | 50, 0, 0 *if lean* | Lean60, only if Task 1b says it holds |
-| monitor | sharpness, glow | 60, 5 | 50, 0 *if lean* | as PVM |
+| pvm, monitor | (none) | Sound Factory's | the same | Task 1b: PVM-lean needs the probe for ABL 20 and breathing 15 and did not hold 60 fps without it, so no row differs |
 | rich looks | the rows the ladder neutralises | — | recorded by plan 3 Task 15 | the rich budget |
 
 **The pipeline (call).** The spike's pipeline 2, with these fixed choices:
