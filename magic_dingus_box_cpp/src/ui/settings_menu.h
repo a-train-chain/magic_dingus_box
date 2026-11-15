@@ -7,6 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+
+#include "../tube/tube_edit.h"
 
 namespace app {
     struct AppState;
@@ -144,6 +147,22 @@ public:
     // Opens one of the Tube groups (an index into tube::kGroups) from its row
     // on the Display page, remembering that row for the way back.
     void enter_tube_group(std::size_t group);
+    // Back from a group to the Display page, on the group's own row; ends (and
+    // saves) any open edit first.
+    void exit_tube_group();
+    std::size_t tube_group_index() const { return tube_group_index_; }
+
+    // EDIT MODE on one row of the open group (tube/tube_edit.h): SELECT on a
+    // row begins it, each knob click / D-pad press steps it, SELECT or BTN4
+    // ends it and saves once if anything changed. Every path that leaves the
+    // group or closes the menu ends it first, so no change is left unsaved.
+    bool is_tube_editing() const { return tube_edit_.active; }
+    void begin_tube_edit(std::optional<tube::Effect> effect);  // nullopt: the MASK row
+    void step_tube_edit(int direction);
+    void end_tube_edit();
+
+    // The header the renderer draws over the open page.
+    std::string submenu_title() const;
     
     void enter_game_browser();
     void exit_game_browser();
@@ -245,6 +264,7 @@ private:
     // Display row to put the cursor back on when it closes.
     std::size_t tube_group_index_ = 0;
     int tube_group_return_index_ = 0;
+    tube::Edit tube_edit_;
     std::vector<MenuItem> menu_items_;
     std::vector<MenuItem> submenu_items_;
     
@@ -261,6 +281,10 @@ private:
     std::vector<MenuItem> build_system_submenu();
     std::vector<MenuItem> build_wifi_submenu();
     std::vector<MenuItem> build_wifi_networks_submenu();
+    std::vector<MenuItem> build_tube_group_submenu();
+    // Ends an open edit WITHOUT rebuilding the rows (for paths that are about
+    // to rebuild or leave them) and saves once if it changed anything.
+    void settle_tube_edit();
     std::string intensity_to_label(float intensity);
 
     std::unique_ptr<PairingScreen> pairing_screen_;
