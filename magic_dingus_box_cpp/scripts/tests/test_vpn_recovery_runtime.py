@@ -504,6 +504,55 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(args[:5],['docker','exec',GEN['container_id'],'timeout','3'])
             self.assertIn('--timeout=1',args)
             self.assertLessEqual(kwargs['timeout'],1.3)
+    def _health_adapter(self, own_probe, health_age_s, health_exit=0):
+        from types import SimpleNamespace
+        from datetime import datetime, timezone, timedelta
+        from vpn_recovery.runtime import SystemAdapters
+        a=SystemAdapters(self.paths)
+        a.mono=lambda:100; a.wall=lambda:1800000000.
+        a.current=lambda *_:dict(running=True,configured=True,unit_active=True)
+        a._events=lambda *_:None
+        a._dependents=lambda *_:{'dependents_ok':True}
+        a.ports=SimpleNamespace(observe=lambda **_:dict(generation=GEN,forwarded_port=1234,status='synced',qbit_port=1234))
+        a.control=SimpleNamespace(observe_generation=lambda **_:GEN)
+        probes=iter(own_probe)
+        a._traffic=lambda generation,deadline,host=False: True if host else next(probes)
+        end=datetime.fromtimestamp(1800000000-health_age_s,timezone(timedelta(hours=-8)))
+        log=json.dumps([{'Start':'x','End':end.isoformat(timespec='microseconds')[:-6]+'123-08:00','ExitCode':health_exit,'Output':'ip=198.51.100.9'}])
+        a.health_calls=[]
+        def run(args,deadline,cap=3,**_):
+            if args[:4]==['docker','inspect','--format','{{json .State.Health.Log}}']:
+                a.health_calls.append(args); return log
+            return '-A OUTPUT -d 84.20.16.29/32 -o eth0 -p udp --dport 51820 -j ACCEPT'
+        a.run=run
+        return a
+
+    def test_docker_healthcheck_vouches_for_a_proven_tunnel_when_our_probe_starves(self):
+        # Live magicpi5 2026-11-15: our 1.3 s in-tunnel probe (650-750 ms
+        # idle) failed for 60 s during a heavy indexer search while Docker's
+        # own 3 s in-tunnel healthcheck kept passing; a healthy server was
+        # recorded as failed. A tunnel this generation already proved working
+        # is vouched for by a Docker success no older than 45 s.
+        a=self._health_adapter([True,False],health_age_s=20)
+        self.assertIs(a.observe(deadline=109,traffic_due=True)['traffic'],True)
+        self.assertEqual(a.health_calls,[])
+        self.assertIs(a.observe(deadline=109,traffic_due=True)['traffic'],True)
+        self.assertEqual(len(a.health_calls),1)
+
+    def test_stale_or_failed_healthcheck_does_not_vouch(self):
+        for age,code in ((60,0),(5,1)):
+            with self.subTest(age=age,code=code):
+                a=self._health_adapter([True,False],health_age_s=age,health_exit=code)
+                a.observe(deadline=109,traffic_due=True)
+                self.assertIs(a.observe(deadline=109,traffic_due=True)['traffic'],False)
+
+    def test_healthcheck_never_vouches_for_an_unproven_tunnel(self):
+        # A new/dead candidate tunnel cannot borrow the previous tunnel's
+        # Docker success: only a generation our own probe verified.
+        a=self._health_adapter([False],health_age_s=5)
+        self.assertIs(a.observe(deadline=109,traffic_due=True)['traffic'],False)
+        self.assertEqual(a.health_calls,[])
+
     def test_host_probe_uses_bounded_python_child_with_verified_tls_and_fallback(self):
         from vpn_recovery.runtime import SystemAdapters
         import subprocess

@@ -128,6 +128,8 @@ class SystemAdapters:
         self.mono, self.wall = time.monotonic, time.time
         self.control = ControlClient(paths, self.runner)
         self.endpoint_cache = None
+        # Generation our own in-tunnel probe has verified at least once.
+        self.traffic_proven = None
         self.ports = PortSynchronizer(paths, self.control, QbitClient(paths.services/'.env', runner=runner))
         self.store = CatalogStore(paths)
         self.traffic = {}
@@ -188,6 +190,23 @@ class SystemAdapters:
             except Exception:
                 pass
         return False
+
+    def _healthcheck_vouches(self, generation, deadline):
+        """Docker's own in-tunnel healthcheck (DNS+TCP+TLS, 3 s) passed <=45 s ago.
+
+        Only the boolean leaves: the log Output holds the probe body.
+        """
+        try:
+            log=json.loads(self.run(['docker','inspect','--format','{{json .State.Health.Log}}',
+                                     generation['container_id']],deadline,.6))
+            ends=[]
+            for entry in (log[-5:] if isinstance(log,list) else []):
+                if isinstance(entry,dict) and entry.get('ExitCode')==0 and isinstance(entry.get('End'),str):
+                    text=re.sub(r'(\.\d{6})\d+',r'\1',entry['End']).replace('Z','+00:00')
+                    ends.append(datetime.fromisoformat(text).timestamp())
+            return bool(ends) and 0<=self.wall()-max(ends)<=45
+        except Exception:
+            return False
 
     def _events(self, observation, deadline):
         now = int(self.wall())
@@ -301,12 +320,21 @@ class SystemAdapters:
         o.update(self._dependents(min(deadline,now+6.8),generation))
         if generation is not None:
             if traffic_due or self.traffic.get('traffic_generation') != generation:
-                ok=self._traffic(generation,min(deadline,now+8.2))
+                ok=own=self._traffic(generation,min(deadline,now+8.2))
+                # Our 1.3 s probe (650-750 ms idle) can starve under heavy
+                # load while the tunnel is fine. Only for a tunnel this same
+                # generation already proved working, a recent Docker in-tunnel
+                # healthcheck success vouches for it; a new or dead candidate
+                # never borrows that evidence.
+                if not own and self.traffic_proven==generation:
+                    ok=self._healthcheck_vouches(generation,min(deadline,now+8.4))
                 # A late success from a replaced interface is not readiness.
                 try: stable=self.control.observe_generation(deadline=min(deadline,now+8.6))==generation
                 except Exception: stable=False
                 self.traffic={'traffic':ok if stable else None,'traffic_at':self.mono(),
                               'traffic_generation':generation}
+                if own and stable:
+                    self.traffic_proven=copy.deepcopy(generation)
                 if not ok:
                     # Host traffic is public probe metadata only, never indexer traffic.
                     self.traffic['wan']=self._traffic(generation,deadline,host=True)
@@ -362,8 +390,9 @@ class SystemAdapters:
             window=['--until',(start+timedelta(seconds=121)).strftime('%Y-%m-%dT%H:%M:%SZ')]
         except (TypeError,ValueError):
             window=['--tail','1000']
+        # Without --tail Docker reads json-file from the start (<=3x10 MB).
         output=self.run(['docker','logs','--since',generation['started_at'],*window,
-                         generation['container_id']],deadline,2)
+                         generation['container_id']],deadline,5)
         return bool(re.search(r'Using protonvpn servers from file which are .* more recent',output))
 
     def container_action(self, action, observation, deadline, *, on_submit=None):
