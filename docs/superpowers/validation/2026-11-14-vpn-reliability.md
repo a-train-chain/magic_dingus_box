@@ -163,7 +163,7 @@ Remove only disposable container/fixture and ephemeral staged tests/Bats created
 
 | Gate | UTC / evidence / result |
 |---|---|
-| Astra review and local pi5-test integration | Pending |
+| Astra review and local pi5-test integration | Whole-branch review plus scoped fix review approved through code commit `2d68205`; local integration recorded below. |
 | Linux root/unprivileged identity + affected Bash 5 tests | Pending |
 | Cached pinned disposable contract and exact cleanup | Pending |
 | Fresh secure backup/baseline and scoped dry-run | Pending |
@@ -173,3 +173,13 @@ Remove only disposable container/fixture and ephemeral staged tests/Bats created
 | External TCP port and 15 service checks | Pending |
 | Full 30min steady-state interval and final inventories | Pending |
 | Rollback rehearsal/results; Pi 4 release gate | Pending |
+
+## Local verification checkpoint — 2026-11-14
+
+All six task gates and the fresh Astra whole-branch/scoped fix review are complete. I1–I4 and M1/M3 are closed; the broad `Controller.tick()` readability refactor (M2) is explicitly deferred. Reviewed code head: `2d68205`. No implementation changes have been deployed to magicpi5.
+
+Root verified the current checkout: 195 package tests in9.973s (194 passed,1 explicit Linux-root identity skip);28 cascade tests passed;77 affected web tests passed with29 known Mac missing-evdev/uinput warnings;46 affected Bats cases (45 passed,1 known missing-flock skip);1 Node UI test passed. The first simultaneous package/cascade/web/Bats run hit the setup fixture's8-second startup deadline in one test while cascade duration rose from about9s to29s. Both setup cases then passed alone in3.727s, and the full isolated package run passed. No code was changed to mask the timing failure; retain this concurrency limitation when running process-heavy validation on the Mac.
+
+Hardware access became unavailable during a read-only check: the Mac moved from the home LAN to en0 `172.20.10.14`, gateway `172.20.10.1`; SSH/web at`10.0.0.227` and mDNS are unreachable. The owner was asked to reconnect or leave Pi checks for later. Last successful read-only sample (epoch1794693858) showed the same Canada container/start, fresh TLS traffic, forwarded port60906=qBit, and kioskPID308949/NRestarts0. This is baseline evidence, not validation of the new code.
+
+Linux identity/flock and pinned-image contracts, fresh backup/dry-run, activation/deployment, real fault/port/country recovery, external TCP, actual browser/preservation checks and the full30-minute soak remain **pending** until the Mac can reach the Pi. No source credentials, content, services, or network configuration were changed on the Pi during implementation. The earlier manual Netherlands→Canada repair remains separate. Do not substitute the old preparation snapshot for the required fresh baseline; real settings are under `/opt/magic_dingus_box/config/`.
