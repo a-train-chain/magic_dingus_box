@@ -128,8 +128,9 @@ class SystemAdapters:
         self.mono, self.wall = time.monotonic, time.time
         self.control = ControlClient(paths, self.runner)
         self.endpoint_cache = None
-        # Generation our own in-tunnel probe has verified at least once.
+        # Generation our own in-tunnel probe has verified, and when (wall).
         self.traffic_proven = None
+        self.traffic_proven_at = None
         self.ports = PortSynchronizer(paths, self.control, QbitClient(paths.services/'.env', runner=runner))
         self.store = CatalogStore(paths)
         self.traffic = {}
@@ -199,12 +200,18 @@ class SystemAdapters:
         try:
             log=json.loads(self.run(['docker','inspect','--format','{{json .State.Health.Log}}',
                                      generation['container_id']],deadline,.6))
-            ends=[]
+            passed,failed=[],[]
             for entry in (log[-5:] if isinstance(log,list) else []):
-                if isinstance(entry,dict) and entry.get('ExitCode')==0 and isinstance(entry.get('End'),str):
+                if isinstance(entry,dict) and isinstance(entry.get('End'),str):
                     text=re.sub(r'(\.\d{6})\d+',r'\1',entry['End']).replace('Z','+00:00')
-                    ends.append(datetime.fromisoformat(text).timestamp())
-            return bool(ends) and 0<=self.wall()-max(ends)<=45
+                    (passed if entry.get('ExitCode')==0 else failed).append(datetime.fromisoformat(text).timestamp())
+            if not passed or not finite(self.traffic_proven_at):
+                return False
+            latest=max(passed)
+            # It must have run on THIS tunnel after our own probe proved it,
+            # be recent, and not be followed by a failed check.
+            return (latest>self.traffic_proven_at and 0<=self.wall()-latest<=45
+                    and not any(end>latest for end in failed))
         except Exception:
             return False
 
@@ -333,8 +340,9 @@ class SystemAdapters:
                 except Exception: stable=False
                 self.traffic={'traffic':ok if stable else None,'traffic_at':self.mono(),
                               'traffic_generation':generation}
-                if own and stable:
+                if own and stable and self.traffic_proven!=generation:
                     self.traffic_proven=copy.deepcopy(generation)
+                    self.traffic_proven_at=self.wall()
                 if not ok:
                     # Host traffic is public probe metadata only, never indexer traffic.
                     self.traffic['wan']=self._traffic(generation,deadline,host=True)

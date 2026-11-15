@@ -504,12 +504,15 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(args[:5],['docker','exec',GEN['container_id'],'timeout','3'])
             self.assertIn('--timeout=1',args)
             self.assertLessEqual(kwargs['timeout'],1.3)
-    def _health_adapter(self, own_probe, health_age_s, health_exit=0):
+    def _health_adapter(self, own_probe, health_age_s, health_exit=0, newer_failure=False):
+        # Proven by our own probe at wall 1799999940, observed again at
+        # 1800000000; the Docker entry ended health_age_s before that.
         from types import SimpleNamespace
         from datetime import datetime, timezone, timedelta
         from vpn_recovery.runtime import SystemAdapters
         a=SystemAdapters(self.paths)
-        a.mono=lambda:100; a.wall=lambda:1800000000.
+        a.clock=[1799999940.]
+        a.mono=lambda:100; a.wall=lambda:a.clock[0]
         a.current=lambda *_:dict(running=True,configured=True,unit_active=True)
         a._events=lambda *_:None
         a._dependents=lambda *_:{'dependents_ok':True}
@@ -517,8 +520,12 @@ class RuntimeTests(unittest.TestCase):
         a.control=SimpleNamespace(observe_generation=lambda **_:GEN)
         probes=iter(own_probe)
         a._traffic=lambda generation,deadline,host=False: True if host else next(probes)
-        end=datetime.fromtimestamp(1800000000-health_age_s,timezone(timedelta(hours=-8)))
-        log=json.dumps([{'Start':'x','End':end.isoformat(timespec='microseconds')[:-6]+'123-08:00','ExitCode':health_exit,'Output':'ip=198.51.100.9'}])
+        def stamp(t):
+            return datetime.fromtimestamp(t,timezone(timedelta(hours=-8))).isoformat(timespec='microseconds')[:-6]+'123-08:00'
+        entries=[{'Start':'x','End':stamp(1800000000-health_age_s),'ExitCode':health_exit,'Output':'ip=198.51.100.9'}]
+        if newer_failure:
+            entries.append({'Start':'x','End':stamp(1800000000-health_age_s+5),'ExitCode':1,'Output':''})
+        log=json.dumps(entries)
         a.health_calls=[]
         def run(args,deadline,cap=3,**_):
             if args[:4]==['docker','inspect','--format','{{json .State.Health.Log}}']:
@@ -536,14 +543,18 @@ class RuntimeTests(unittest.TestCase):
         a=self._health_adapter([True,False],health_age_s=20)
         self.assertIs(a.observe(deadline=109,traffic_due=True)['traffic'],True)
         self.assertEqual(a.health_calls,[])
+        a.clock[0]=1800000000.
         self.assertIs(a.observe(deadline=109,traffic_due=True)['traffic'],True)
         self.assertEqual(len(a.health_calls),1)
 
     def test_stale_or_failed_healthcheck_does_not_vouch(self):
-        for age,code in ((60,0),(5,1)):
-            with self.subTest(age=age,code=code):
-                a=self._health_adapter([True,False],health_age_s=age,health_exit=code)
+        # 70 s: before our own proof of this tunnel (and >45 s old); 50 s:
+        # after the proof but too old; exit 1: failed; newer failure cancels.
+        for age,code,newer in ((70,0,False),(50,0,False),(5,1,False),(20,0,True)):
+            with self.subTest(age=age,code=code,newer=newer):
+                a=self._health_adapter([True,False],health_age_s=age,health_exit=code,newer_failure=newer)
                 a.observe(deadline=109,traffic_due=True)
+                a.clock[0]=1800000000.
                 self.assertIs(a.observe(deadline=109,traffic_due=True)['traffic'],False)
 
     def test_healthcheck_never_vouches_for_an_unproven_tunnel(self):
