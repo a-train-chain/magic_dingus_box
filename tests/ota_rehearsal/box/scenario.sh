@@ -305,7 +305,19 @@ ROLLBACK_ALLOW=('*/__pycache__*' 'tmp' 'tmp/*' 'magic_dingus_box_cpp/data/kiosk_
                 # older than every Media Browser box). Exactly these paths;
                 # the directory's owner only — never its mode, never a removal.
                 'services/config/gluetun::uid,gid' 'services/config/gluetun/auth'
-                'services/config/gluetun/auth/config.toml')
+                'services/config/gluetun/auth/config.toml'
+                # Native VPN recovery (2026-11) keeps its per-box control
+                # credential beside that file, under the same contract: a
+                # rolled-back tree never reads it, the access file's legacy
+                # public routes still serve that tree, and reset/clone (not
+                # rollback) delete it, so a later update reuses it.
+                'services/config/gluetun/auth/recovery.key'
+                'services/config/gluetun/auth/.install.lock'
+                # An OLD updater's rollback rsync excludes __pycache__, so
+                # the package directory survives holding only bytecode that
+                # Python never imports without its source. The directory
+                # entry only: a .py left behind is still a violation.
+                'magic_dingus_box_cpp/scripts/vpn_recovery')
 assert_rolled_back_to() {  # <snap-before-install> <snap-now> <label> <want-version> <want-bin-sha>
     eq "$3: VERSION restored" "$(ver)" "$4"
     eq "$3: kiosk binary restored (sha256)" "$(sha "$BIN")" "$5"
