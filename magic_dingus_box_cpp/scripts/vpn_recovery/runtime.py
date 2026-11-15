@@ -557,7 +557,8 @@ class Controller:
         except Exception:
             return {'status':'failed' if allowed[0] else 'deferred', 'submission':submission,'authorized':authorized[0]}
 
-    def _complete(self, o):
+    def _complete(self, o, now):
+        """now is the tick's clock read: decide() rejects any later timer."""
         if not self.pending or not self.pending.done(): return
         ctx=self.pending_context
         try: result=self.pending.result()
@@ -611,7 +612,7 @@ class Controller:
                 # the previous server's here (candidate grace is unchanged).
                 for key in ('traffic_lost','port_lost','control_lost','traffic_unknown','port_unknown'):
                     self.state.pop(key,None)
-                self.state.update(started=self.a.mono(),had_port=False,port_was_present=False)
+                self.state.update(started=now,had_port=False,port_was_present=False)
         elif ctx['action']=='restart_container' and result.get('submission'):
             self.api_failed=False
             self.load_pending={'snapshot':ctx.get('snapshot'),'old_container':self.container_key(ctx.get('generation') or ctx['observation']),
@@ -658,7 +659,7 @@ class Controller:
             if not own:set_intent(self.paths,False,'observed Docker stop')
         config_current = config_revision is not None and settings_revision(self.paths) == config_revision
         o['allowed'] = may_recover(self.paths,actual) and config_current
-        self._complete(o)
+        self._complete(o,now)
         generation=o.get('generation'); container=self.container_key(generation)
         # Health can be unknown while a previously attested catalog remains
         # loaded in the same container. Only affirmative container-start
@@ -672,6 +673,12 @@ class Controller:
                 self.loaded = None
         else:
             observed_container=None
+        # A new container start reverts Gluetun to the .env selection: our
+        # earlier PUT no longer applies, so the server it brought up must be
+        # judged on its own evidence, not as a failed attempt at ours.
+        if (self.attempted and observed_container and self.container_key(self.attempted.get('prior_generation'))
+                and observed_container!=self.container_key(self.attempted.get('prior_generation'))):
+            self.attempted=None
         # Supported lifecycle commands can load a catalog without restarting
         # this polling owner. Consume their real submitted-start journal with
         # exactly the same new-container/disk/INFO attestation as own restarts.
@@ -787,6 +794,10 @@ class Controller:
                  'generation':generation,'observation':copy.deepcopy(o),'candidate':candidate,'snapshot':downloaded,
                  'decision_mono':now,'restart_before':restart_before}
             self.last_reason=decision['reason']
+            # One sanitized journal line per mutation (hostnames are public
+            # catalog data; never settings, keys or HTTP bodies).
+            target=(' -> %s (%s)'%(candidate.hostname,candidate.country)) if action=='rotate_server' and candidate else ''
+            print('[vpn-recovery] %s: %s%s'%(action,decision['reason'],target),flush=True)
             self.pending_context=ctx;self.pending=self.executor.submit(self._perform,ctx)
         elif not self.pending and not self.load_pending and now>=self.next_refresh and o.get('allowed'):
             self.next_refresh=now+600

@@ -257,6 +257,49 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(self.c.round_attempts), 2)
         self.assertEqual(self._next_failure_country(600), ['United States'])
 
+    def test_issued_rotation_never_wipes_policy_state(self):
+        # _complete runs after the tick's clock read: a clock taken inside it
+        # is "in the future" for decide(), whose corrupt-state guard then
+        # discarded the whole state (candidate grace, restart rate limit).
+        self.a.observation.update(port=1234, qbit_synced=True)
+        self.tick(0)
+        self.a.observation.update(traffic=False, port=0)
+        for t in range(10, 80, 10):
+            self.tick(t); self.finish()
+        self.assertEqual([c[0] for c in self.a.calls], ['put'])
+        until = self.c.state['candidate_until']
+        # A real monotonic clock advances between every read.
+        reads = [0]
+        def mono():
+            reads[0] += 1
+            return 80+reads[0]*.001
+        self.a.mono = mono; self.a.now = 80
+        self.c.tick()
+        self.assertEqual(self.c.state.get('candidate_until'), until)
+        self.assertLessEqual(self.c.state['started'], self.c.state['last_tick'])
+
+    def test_container_restart_drops_the_attempted_selection(self):
+        # Live magicpi5 2026-11-15: after a restart reverted Gluetun to the
+        # .env country, a healthy Canadian server with a forwarded port was
+        # rotated away 120 s later because `attempted` still named the US
+        # host the controller had PUT before the restart.
+        self.a.observation.update(port=1234, qbit_synced=True)
+        self.tick(0)
+        self.a.observation.update(traffic=False, port=0)
+        for t in range(10, 80, 10):
+            self.tick(t); self.finish()
+        self.tick(80)
+        self.assertIsNotNone(self.c.attempted)
+        restarted = {**GEN, 'pid': 99, 'started_at': '2026-11-14T01:00:00Z', 'tunnel_ifindex': 3}
+        candidates = [c for c in eligible_candidates(self.a.catalog, []) if c.endpoint_ip != self.c.attempted['endpoint_ip']]
+        self.a.observation.update(generation=restarted, traffic=True, port=4321, qbit_synced=True,
+                                  endpoint=candidates[0].endpoint_ip)
+        self.c.loaded_container = self.c.container_key(restarted)
+        statuses = [self.tick(t) for t in range(90, 400, 10)]
+        self.assertIsNone(self.c.attempted)
+        self.assertTrue(statuses[-1]['ready'])
+        self.assertEqual([c[0] for c in self.a.calls], ['put'])
+
     def test_settings_change_inside_lock_defers(self):
         self.tick(0)
         self.a.before_action=lambda: (self.paths.services/'.env').write_text('VPN_COUNTRIES=Netherlands\n')
