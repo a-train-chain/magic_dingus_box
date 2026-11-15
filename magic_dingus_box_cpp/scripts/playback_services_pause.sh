@@ -255,7 +255,7 @@ else
     # exact record remains retry authority even after this owner's release.
     journal sync "$PLAYBACK_OWNED_FILE" || exit 1
     PRESENT=()
-    for c in "${EXISTING[@]}"; do
+    for c in ${EXISTING[@]+"${EXISTING[@]}"}; do  # bash 3.2-safe when empty under set -u
         observe_container "$c" || exit 1
         [ "$OBSERVED" = absent ] || PRESENT+=("$c")
     done
@@ -264,7 +264,7 @@ else
         docker start "${PRESENT[@]}" >/dev/null 2>&1 || true
     fi
     failed=()
-    for c in "${PRESENT[@]}"; do
+    for c in ${PRESENT[@]+"${PRESENT[@]}"}; do  # bash 3.2-safe when empty under set -u
         if observe_container "$c"; then
             case "$OBSERVED" in
                 'true false'|absent) ;;
@@ -284,7 +284,7 @@ else
             up -d "${services[@]}" >/dev/null 2>&1 || true
     fi
     remaining=()
-    for c in "${EXISTING[@]}"; do
+    for c in ${EXISTING[@]+"${EXISTING[@]}"}; do  # bash 3.2-safe when empty under set -u
         if ! observe_container "$c"; then
             remaining+=("$c")
         else
