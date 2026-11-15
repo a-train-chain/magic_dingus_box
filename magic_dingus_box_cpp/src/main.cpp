@@ -69,6 +69,7 @@
 #include "app/sample_mode.h"
 #include "app/settings_persistence.h"
 #include "app/status_writer.h"
+#include "app/tube_live.h"
 #include "app/playback_reset.h"
 #include "app/redraw_gate.h"
 #include "app/post_game_gate.h"
@@ -643,6 +644,10 @@ int main(int /* argc */, char* /* argv */[]) {
     controller.set_input_manager(&input);  // Set input manager reference for controller release
     controller.set_text_input_queue_path(
         config::get_data_path() + "/text_input_queue.jsonl");
+    // The web's live Tube tuning (app/tube_live.h): one stat per 100 ms, a
+    // read only when the file changed, never a write to it; settings are saved
+    // a second after the last change.
+    app::TubeRequestPoller tube_requests(config::get_data_path() + "/tube_request.json");
     
     // Initialize Virtual Keyboard
     VirtualKeyboard keyboard;
@@ -2252,6 +2257,7 @@ int main(int /* argc */, char* /* argv */[]) {
             sig.add(as_u64(state.get_position()));
             sig.add(as_u64(state.get_duration()));
             sig.add(static_cast<uint64_t>(state.display_settings.mode));
+            app::add_tube_redraw_signature(sig, state);
             sig.add(static_cast<uint64_t>(state.display_settings.bezel_index));
             // An open, static Settings menu: page, cursor, row labels.
             if (settings_shown) {
@@ -2785,6 +2791,18 @@ int main(int /* argc */, char* /* argv */[]) {
         controller.poll_seek_request();
 #endif
         controller.poll_text_input_queue(state);
+        {
+            const auto tube_seq_before = state.tube_live.handled_seq;
+            // New values on a page that shows them (Display, a Tube group; a
+            // group the engine change ended goes back to Display). Wi-Fi,
+            // Audio and the rest are left alone.
+            if (tube_requests.poll(state, std::chrono::steady_clock::now()) &&
+                settings_menu.is_active() && settings_menu.page_shows_tube_state()) {
+                settings_menu.rebuild_current_submenu();
+            }
+            // The web page waits on handled_seq: publish it now, not at the next 5 Hz tick.
+            if (state.tube_live.handled_seq != tube_seq_before) status_writer.write_now(state);
+        }
 
         // Per-video media info: adopt whatever the store's worker read or
         // wrote since the last frame. No file I/O and no file lock here —
@@ -2825,7 +2843,9 @@ int main(int /* argc */, char* /* argv */[]) {
                     // reload_from_disk, not load_settings: saves are
                     // written in the background, and one of ours still in
                     // the air must not land on top of the restored file
-                    // after this load (see settings_persistence.h).
+                    // after this load (see settings_persistence.h). Nor
+                    // may a live-tuning save armed before the restore.
+                    tube_requests.forget_pending_save();
                     app::SettingsPersistence::reload_from_disk(state);
                     // A restored Menu Style rebuilds the channels for it
                     // (List: none). The restored last channel is what the
@@ -3252,6 +3272,7 @@ int main(int /* argc */, char* /* argv */[]) {
     {
         const auto persist_deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        tube_requests.flush(state);  // a live-tuning save still in its quiet second
         if (!app::SettingsPersistence::flush_pending_saves(
                 std::chrono::seconds(3))) {
             LOG_WARN("Shutdown: settings.json save did not finish in time — "

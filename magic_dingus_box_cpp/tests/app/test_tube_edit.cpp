@@ -35,3 +35,12 @@ TEST_CASE("tube edit: knob and D-pad agree on up; an idle edit does nothing", "[
     REQUIRE(edit_direction(0, true) == 0);
     TubeSetting s; Edit e; REQUIRE_FALSE(edit_turn(e, s, +1)); REQUIRE(s == TubeSetting{});
 }
+TEST_CASE("tube edit: opening an edit over an open one keeps its pending change", "[tube]") {
+    TubeSetting s; Edit e;
+    begin_edit(e, Effect::hum); REQUIRE(edit_turn(e, s, +1));
+    begin_edit(e, std::nullopt);                         // another row, the first unsaved
+    REQUIRE(e.active); REQUIRE(e.mask);
+    REQUIRE(end_edit(e));                                // the save is still asked for
+    begin_edit(e, Effect::hum);                          // a fresh edit starts unchanged
+    REQUIRE_FALSE(end_edit(e));
+}

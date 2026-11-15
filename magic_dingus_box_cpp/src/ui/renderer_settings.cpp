@@ -74,8 +74,9 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
         section_color = theme_->highlight1;
     } else if (current_submenu == ui::MenuSection::VIDEO_GAMES) {
         section_color = theme_->highlight1;  // Green
-    } else if (current_submenu == ui::MenuSection::DISPLAY) {
-        section_color = theme_->highlight3;  // Gold
+    } else if (current_submenu == ui::MenuSection::DISPLAY ||
+               current_submenu == ui::MenuSection::TUBE_GROUP) {
+        section_color = theme_->highlight3;  // Gold (a Tube group sits under Display)
     } else if (current_submenu == ui::MenuSection::AUDIO) {
         section_color = theme_->action;  // Blue
     } else if (current_submenu == ui::MenuSection::SYSTEM) {
@@ -96,23 +97,8 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
         return;
     }
     
-    // Header
-    std::string header_text = "Settings";
-    if (current_submenu != ui::MenuSection::BACK) {
-        if (current_submenu == ui::MenuSection::VIDEO_GAMES) {
-            header_text = "Video games";
-        } else if (current_submenu == ui::MenuSection::DISPLAY) {
-            header_text = "Display";
-        } else if (current_submenu == ui::MenuSection::AUDIO) {
-            header_text = "Audio";
-        } else if (current_submenu == ui::MenuSection::SYSTEM) {
-            header_text = "System info";
-        } else if (current_submenu == ui::MenuSection::WIFI) {
-            header_text = "Wi-Fi";
-        } else if (current_submenu == ui::MenuSection::WIFI_NETWORKS) {
-            header_text = "Wi-Fi Networks";
-        }
-    }
+    // Header (the words live in SettingsMenuManager, unit-tested on the Mac)
+    const std::string header_text = menu->submenu_title();
     
     int header_width = title_font_manager_->get_text_width(header_text, theme_->font_heading_size);
     float header_x = menu_x + (static_cast<float>(menu_width) - header_width) / 2.0f;

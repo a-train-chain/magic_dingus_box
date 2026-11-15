@@ -168,6 +168,8 @@ seed_source_state() {
     echo 'source-hmac' > "$DATA/flask_secret.key"
     echo 'source-hmac' > "$BUILD_DATA/flask_secret.key"
     echo '{"diag":1}' > "$DATA/remote_viewport_diag.jsonl"
+    echo '{"seq":7}' > "$DATA/tube_request.json"
+    echo '{"seq":7}' > "$BUILD_DATA/tube_request.json"
     echo 'psk=source-wifi-password' > "$NM/SourceHome.nmconnection"
     echo 'srm' > "$DATA/saves/PCSX-ReARMed/game.srm"
     echo 'srm' > "$BUILD_DATA/saves/game.srm"
@@ -407,6 +409,9 @@ $(real_wipes)"
     [ ! -e "$DATA/flask_secret.key" ]
     [ ! -e "$BUILD_DATA/flask_secret.key" ]
     [ ! -e "$DATA/remote_viewport_diag.jsonl" ]
+    # The live CRT-look op log: the source box's tuning history, both copies.
+    [ ! -e "$DATA/tube_request.json" ]
+    [ ! -e "$BUILD_DATA/tube_request.json" ]
     [ ! -e "$NM/SourceHome.nmconnection" ]
     [ ! -e "$DATA/saves/PCSX-ReARMed" ]
     [ ! -e "$BUILD_DATA/saves/game.srm" ]

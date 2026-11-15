@@ -53,4 +53,14 @@ GameListSelect classify_game_list_select(int game_idx, int game_count);
 enum class GameBrowserSelect { ExitBrowser, EnterPlaylist, Nothing };
 GameBrowserSelect classify_game_browser_select(int selected, int playlist_count);
 
+// The keys that end a Tube row's edit mode (SettingsMenuManager::end_tube_edit).
+// SELECT ends it on the press (the menu ignores SELECT releases). QUIT (keyboard
+// Esc/Q only — pads and the phone remote never send it) ends it on the RELEASE
+// and its press is swallowed: ending on the press would leave the release to
+// fall through to the menu's QUIT -> close() and shut the whole menu.
+enum class TubeEditKey { Select, Quit };
+constexpr bool tube_edit_ends_on(TubeEditKey key, bool pressed) noexcept {
+    return key == TubeEditKey::Select ? pressed : !pressed;
+}
+
 }  // namespace app
