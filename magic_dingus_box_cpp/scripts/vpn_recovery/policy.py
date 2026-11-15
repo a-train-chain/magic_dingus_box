@@ -153,6 +153,12 @@ def decide(observation, state, config, now_mono, now_wall):
             return answer('none', 'Verifying services')
         return answer('none', 'Ready')
 
+    # A failed rotation request (Gluetun v3.41.3 can hang a settings PUT for
+    # 2 min) left no candidate to wait for: escalate one loss window after
+    # the rotation instead of after the full grace. A server that recovers
+    # meanwhile is Ready first (which clears rotated_at), so never restarted.
+    abandoned = (bool(o.get('api_failed')) and finite(s.get('rotated_at'))
+                 and now-s['rotated_at'] >= TRAFFIC_LOSS_S)
     if now < s.get('candidate_until', 0):
         # A candidate whose own new tunnel has carried no verified traffic
         # for a whole loss window is dead: judge it now rather than idle
@@ -162,7 +168,7 @@ def decide(observation, state, config, now_mono, now_wall):
         dead = (traffic is False and o.get('selection_verified') is True and not o.get('api_failed')
                 and finite(s.get('rotated_at')) and finite(s.get('traffic_lost'))
                 and now-max(s['traffic_lost'], s['rotated_at']) >= TRAFFIC_LOSS_S)
-        if not dead:
+        if not (dead or abandoned):
             return answer('none', 'Waiting for candidate')
     new_round = False
     if 'backoff_until' in s:
@@ -176,7 +182,7 @@ def decide(observation, state, config, now_mono, now_wall):
                or port == 0 and ((not s.get('had_port') and now-s['started'] >= 120)
                                   or s.get('had_port') and now-s.get('port_lost', now) >= 90
                                   or len(s['losses']) >= 3)
-               or control_down
+               or control_down or abandoned
                or o.get('selection_failed') is True)
     if not failure:
         return answer('none', 'Recovering port forwarding' if traffic is True and port == 0 else 'Verifying VPN')

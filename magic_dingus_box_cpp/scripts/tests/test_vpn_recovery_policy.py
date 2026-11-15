@@ -55,6 +55,23 @@ class PolicyTests(unittest.TestCase):
             result = self.step(t, traffic=True, port=0)
             self.assertEqual((result['action'], result['reason']), ('none', 'Waiting for candidate'), t)
 
+    def test_failed_rotation_request_escalates_after_one_loss_window(self):
+        # magicpi5 2026-11-15: Gluetun v3.41.3 hung the settings PUT for 2 min
+        # while the box still had traffic (port 0). With no candidate to wait
+        # for, escalate one loss window after the rotation, not after 120 s.
+        self.step(0)
+        self.step(10, port=0)
+        self.assertEqual(self.step(100, port=0)['action'], 'rotate_server')
+        self.assertEqual(self.step(159, port=0, api_failed=True)['reason'], 'Waiting for candidate')
+        self.assertEqual(self.step(160, port=0, api_failed=True)['action'], 'restart_container')
+
+    def test_failed_rotation_request_never_restarts_a_recovered_server(self):
+        self.step(0)
+        self.step(10, port=0)
+        self.assertEqual(self.step(100, port=0)['action'], 'rotate_server')
+        self.assertEqual(self.step(150, api_failed=True)['reason'], 'Ready')
+        self.assertEqual(self.step(200, api_failed=True)['action'], 'none')
+
     def test_unknown_candidate_traffic_never_counts_as_dead(self):
         self._rotate_on_traffic_loss()
         for t in (100, 130, 150):
@@ -237,9 +254,11 @@ class PolicyTests(unittest.TestCase):
             self.step(t, **dead)
         self.assertEqual(self.step(70, **dead)['action'], 'rotate_server')
         # The rotation PUT could not reach the control server: api_failed.
-        for t in range(80, 190, 10):
+        # No candidate exists to wait for, so it escalates one loss window
+        # after the rotation (130), not at the end of the 120 s grace (190).
+        for t in range(80, 130, 10):
             self.assertEqual(self.step(t, api_failed=True, **dead)['action'], 'none', t)
-        self.assertEqual(self.step(190, api_failed=True, **dead)['action'], 'restart_container')
+        self.assertEqual(self.step(130, api_failed=True, **dead)['action'], 'restart_container')
 
     def test_operator_selection_change_gets_first_lease_grace_and_clean_losses(self):
         # Live first-lease row 2026-11-15: two earlier servers' lease losses

@@ -999,7 +999,12 @@ series, which would have destroyed already-watched seasons too.
   loss is judged then (dead-candidate rule, `rotated_at`), not after the
   full 120 s grace, which stays for a slow first port lease; container
   starts, restarts, maintenance resets and failed rotation PUTs keep the
-  full grace. Exclusion 1800s, bounded 24h
+  full grace. A failed rotation PUT (api_failed) leaves no candidate, so it
+  escalates to the one container restart one loss window after the
+  rotation instead of after the grace: Gluetun v3.41.3 hung that PUT for
+  2 min on magicpi5 (2026-11-15) while rotating away from a server with
+  traffic but no port. A server that recovers first is Ready and is never
+  restarted. Exclusion 1800s, bounded 24h
   history/newest 256 endpoints, failed-round backoff 120/300/600s and at
   most one disruptive restart per 600s. API success alone is not Ready.
   Host WAN classification uses a certificate-verifying stdlib HTTPS child
