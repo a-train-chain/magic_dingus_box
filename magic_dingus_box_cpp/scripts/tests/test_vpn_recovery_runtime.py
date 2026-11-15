@@ -222,6 +222,41 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((self.c.state['traffic_lost'], self.c.state['port_lost'], self.c.state['started']), (80, 80, 80))
         self.assertFalse(self.c.state.get('had_port'))
 
+    def _recover_on_second_canadian_server(self):
+        # Ready on the first server, it dies, one rotation to a second
+        # Canadian server, which then stays healthy (Ready).
+        self.a.observation.update(port=1234, qbit_synced=True)
+        self.tick(0)
+        self.a.observation.update(traffic=False, port=0)
+        for t in range(10, 80, 10):
+            self.tick(t); self.finish()
+        put = [c for c in self.a.calls if c[0] == 'put'][-1][1]['provider']['server_selection']
+        self.assertEqual(put['countries'], ['Canada'])
+        self.a.observation.update(traffic=True, port=2222, qbit_synced=True,
+                                  generation={**GEN, 'tunnel_ifindex': 9}, endpoint=put['wireguard']['endpoint_ip'])
+        self.assertTrue(self.tick(80)['ready'])
+        self.assertEqual(len(self.c.round_attempts), 2)
+
+    def _next_failure_country(self, start):
+        self.a.observation.update(traffic=False, port=0)
+        for t in range(start, start+80, 10):
+            self.tick(t); self.finish()
+        return [c for c in self.a.calls if c[0] == 'put'][-1][1]['provider']['server_selection']['countries']
+
+    def test_stable_recovery_closes_the_round_so_next_incident_tries_preferred_first(self):
+        self._recover_on_second_canadian_server()
+        for t in range(90, 1900, 10):
+            self.tick(t)
+        self.assertEqual(self.c.round_attempts, [])
+        self.assertEqual(self._next_failure_country(2000), ['Canada'])
+
+    def test_short_success_keeps_the_round_so_flapping_reaches_fallback(self):
+        self._recover_on_second_canadian_server()
+        for t in range(90, 600, 10):
+            self.tick(t)
+        self.assertEqual(len(self.c.round_attempts), 2)
+        self.assertEqual(self._next_failure_country(600), ['United States'])
+
     def test_settings_change_inside_lock_defers(self):
         self.tick(0)
         self.a.before_action=lambda: (self.paths.services/'.env').write_text('VPN_COUNTRIES=Netherlands\n')

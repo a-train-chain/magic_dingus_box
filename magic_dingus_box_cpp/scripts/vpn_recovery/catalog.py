@@ -171,7 +171,8 @@ def select_candidate(candidates, history, preferred_countries, fallback_countrie
 
     history is {failures: [{hostname, endpoint_ip, failed_at}],
     round_attempts: [hostname, ...]}. A legacy list means failures with an empty
-    round. Runtime resets round_attempts only after the failed-round backoff.
+    round. Runtime resets round_attempts after the failed-round backoff, or once
+    a recovered selection has been continuously Ready for 30 minutes.
     """
     failures = bounded_history(history.get('failures', []) if isinstance(history, dict) else history, now)
     attempts = history.get('round_attempts', []) if isinstance(history, dict) else []

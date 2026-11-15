@@ -114,6 +114,9 @@ class Deferred(RuntimeError):
     pass
 
 
+ROUND_STABLE_S = 1800
+
+
 class SystemAdapters:
     def __init__(self, paths, runner=subprocess.run):
         self.paths = paths
@@ -410,6 +413,8 @@ class Controller:
         if not isinstance(self.attempted,dict) or not all(isinstance(self.attempted.get(k),str) for k in ('hostname','country','endpoint_ip')):
             self.attempted=None
         self.api_failed=False; self.operation=read_json(paths.state/'operation.json')
+        # Continuous-Ready start (monotonic); closes a recovery round once stable.
+        self.ready_since=None
         self.relinked=durable.get('relinked'); self.last_converge=-300
         self.last_converge_container=self.container_key(durable.get('last_converge_container'))
         last_converge_wall=durable.get('last_converge_wall')
@@ -790,6 +795,15 @@ class Controller:
         if decision['reason']=='Ready':
             self.api_failed=False
             self.last_success=utc(wall)
+            # A round is one incident: once the recovered selection has been
+            # Ready continuously for the exclusion period it is stable, so the
+            # next incident tries the preferred country again. A shorter
+            # success keeps the round, so a flapping country still reaches
+            # the allowed fallback (spec: short success must not erase it).
+            if self.ready_since is None:
+                self.ready_since=now
+            elif self.round_attempts and now-self.ready_since>=ROUND_STABLE_S:
+                self.round_attempts=[]
             if self.effective:
                 self.last_selection={k:v for k,v in self.effective.items() if k!='public_key'}
             self.attempted=None
@@ -803,6 +817,8 @@ class Controller:
                 'last_success':self.last_success,'last_recovery_reason':self.last_reason,
                 'next_retry':utc(wall+max(0,self.state.get('backoff_until',self.state.get('candidate_until',now))-now)),
                 'failures':self.failures[-20:]}
+        if decision['reason']!='Ready':
+            self.ready_since=None
         self.paths.state.mkdir(parents=True,exist_ok=True)
         atomic_json(self.paths.state/'status.json',status,mode=0o644)
         atomic_json(self.paths.state/'controller.json',{'version':1,'saved_wall':wall,'saved_mono':now,'policy':self.state,
