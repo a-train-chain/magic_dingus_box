@@ -857,6 +857,33 @@ series, which would have destroyed already-watched seasons too.
   requires a new container-start and INFO file-wins proof, independent of
   downloaded data. One worker handles bounded actions while polling stays
   live. Existing playback/SSD/torrent ownership remains authoritative.
+  Hard-won on magicpi5 (2026-11-15), each a live failure first:
+  - **Gluetun restart-loops a dead endpoint every ~6 s inside the SAME
+    container** (new tun0 ifindex each time; 4→30 in 150 s). Only a new
+    container start (id/pid/start) may reset failure clocks or grant a fresh
+    candidate grace; tun0-only changes keep them, ≤30 s of unknown samples
+    keep loss evidence, a tick that misses tun0 within 30 s of seeing one
+    waits a tick instead of spending the container restart, and the rotation
+    PUT is fenced on container identity. Pre-fix the controller sat in
+    "Waiting for candidate" on a dead server forever.
+  - **A round is one incident**: the two-preferred-servers budget closes
+    after 30 min of continuous Ready; a shorter success keeps it so a flapping
+    country still reaches the fallback. Pre-fix it never closed, so every
+    later incident skipped straight to the fallback country.
+  - **Catalog INFO attestation reads Gluetun's 121 s startup log window**
+    (`--since start --until start+121s`), never `--tail`: a restart loop
+    scrolls past the line within minutes, and Docker 26 returns nothing for
+    `--tail` combined with `--until`.
+  - **Polling cost is part of the Pi 4B budget.** Identity `docker inspect`
+    and `docker ps` queries are answered in-process from the Engine socket
+    (`vpn_recovery/docker_api.py`, CLI-identical stdout, CLI fallback for a
+    PATH shim/`DOCKER_HOST`/unreachable socket); root reads tun0 with
+    `nsenter --net ip`; the firewall endpoint parse is cached per generation
+    once two reads agree. Measured 16.7% → 6.1% of a Pi 5 core (controller +
+    containerd + dockerd). Don't add per-tick processes casually.
+  - Never run `scripts/tests` suites that write `/tmp/mdb_*` on a box:
+    `test_gluetun_cascade.py` used to create/delete the real playback-pause
+    marker (it now uses a private `PAUSE_MARKER`).
 - **Legacy gluetun-cascade-restart.service** (unsupported VPN configurations;
   systemd, on Pi host) — long-running watcher subscribed to `docker events --filter container=mdb_gluetun --filter event=start --filter event=health_status`. Four roles:
   - **netns re-link**: On Gluetun `start` events, runs `docker compose restart` then `up -d` on the four netns-sharing dependents (Radarr/Prowlarr/qBit/Byparr) to refresh port-forwarding DNAT rules that get torn down with the old netns. The restart-then-up-d sequence handles both Gluetun-was-just-restarted (dependents still running but disconnected) and Gluetun-was-recreated (dependents crashed with exit 128, need to be brought back up) cases. **Playback-pause aware**: while `/tmp/mdb_playback_services_paused` exists (maintained by `playback_services_pause.sh` during games/movies), the cascade re-links qBittorrent ONLY and enforces `docker stop` on Radarr/Prowlarr/Byparr — pre-fix, the cascade's `up -d` revived the paused three mid-game and defeated the RAM-freeing pause on the 2 GB boxes (observed live 2026-07-31). The paused three re-link via the kiosk's unpause, which falls back to `compose up -d` when plain `docker start` fails (network_mode pins Gluetun's container ID at create time, so a Gluetun RECREATE mid-pause invalidates plain start).
