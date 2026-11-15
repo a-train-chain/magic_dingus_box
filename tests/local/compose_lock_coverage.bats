@@ -3,8 +3,8 @@ load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 
 # Every tracked script that starts, stops, restarts, recreates or removes a
 # container of the Media Browser stack MUST take the shared compose lock
-# (/run/lock/mdb-compose.lock: flock, bounded wait, proceed WITHOUT the lock
-# on timeout — never a deadlock). Two unlocked actors on the same containers
+# (/run/lock/mdb-compose.lock: read-open flock, bounded wait; native recovery
+# defers on timeout/unusable lock). Two unlocked actors on the same containers
 # race: the cascade watcher's `compose restart` + `up -d` against a
 # Reconfigure's `compose up` dies on "Conflict. The container name ... is
 # already in use", and an unlocked `up -d` revives containers a movie or game
@@ -23,15 +23,27 @@ load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 # message text (echo/log/warn/fail/... "...docker compose up -d...") are not
 # commands and are not scanned.
 #
-# Systemd unit files are out of scope here: magic-dingus-services.service's
-# ExecStart/ExecStop run `compose up`/`down` unlocked. Unit edits ride the
-# converge mechanism and its release-compatibility rules, so that one is a
-# separate decision (see CLAUDE.md "System units converge").
+# Systemd unit files are out of scope here: the current services unit delegates
+# to service_stack.sh, whose native path uses the lifecycle lock. Restored
+# package-absent trees retain the legacy unit behavior; see the exact-path
+# compatibility exception below and CLAUDE.md "System units converge".
 
 LOCK_NAME="mdb-compose.lock"
 
 # Deliberate exceptions — path relative to the repo root, with WHY.
 ALLOWLIST=(
+    # The native wrapper execs vpn_recoveryctl.py lifecycle, not Docker.
+    # Its only direct Docker argv is the package-absent rollback compatibility
+    # branch, preserving restored legacy-unit behavior. It cannot bypass a
+    # present but failed package. Behavior: vpn_recovery_delivery.bats, native
+    # boot/stop + rollback-absent-package cases.
+    "magic_dingus_box_cpp/scripts/service_stack.sh"
+    # Paths owns the lock pathname in common.py; manage() bounds BOTH mutation
+    # phases with bounded_lock(paths.compose_lock), releases it for health, then
+    # re-fences. Behavior: test_vpn_recovery_lifecycle.py delayed-health/stop,
+    # final-fence, busy/unusable-lock and no-submission cases. No broad package
+    # exemption: new actor files remain subject to this scanner.
+    "magic_dingus_box_cpp/scripts/vpn_recovery/lifecycle.py"
     # Clone tooling, attended, on the SOURCE box: stops the stack (and then
     # dockerd itself) before imaging. Nothing else may run alongside it.
     "scripts/golden_image/prepare_for_cloning.sh"

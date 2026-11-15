@@ -24,6 +24,27 @@
         box.innerHTML = html;
     }
 
+    function fallbackSelection() {
+        const select = el('mbVpnFallbackSelect');
+        return select ? Array.from(select.selectedOptions, o => o.value) : [];
+    }
+    function rebuildFallback(choices, primary, selected) {
+        const fallback = el('mbVpnFallbackSelect');
+        if (!fallback) return;
+        fallback.replaceChildren();
+        choices.filter(c => c && c !== primary).forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c; opt.textContent = c;
+            opt.selected = selected.includes(c);
+            fallback.appendChild(opt);
+        });
+    }
+    function changed() {
+        const select = el('mbVpnCountrySelect');
+        const fallback = el('mbVpnFallbackSelect');
+        return select && (select.value !== select.dataset.current ||
+            JSON.stringify(fallbackSelection()) !== (fallback ? fallback.dataset.current : '[]'));
+    }
     function render(data) {
         const select = el('mbVpnCountrySelect');
         const apply = el('mbVpnCountryApply');
@@ -50,8 +71,14 @@
         select.value = current;
         select.dataset.current = current;
 
+        const fallback = el('mbVpnFallbackSelect');
+        if (fallback) {
+            rebuildFallback(choices, current, data.fallback_countries || []);
+            fallback.dataset.current = JSON.stringify(fallbackSelection());
+        }
         const running = data.job && data.job.status === 'running';
         select.disabled = !data.editable || running;
+        if (fallback) fallback.disabled = !data.editable || running;
         apply.disabled = true;
         if (!data.editable && note) {
             note.textContent = data.reason || 'The VPN country cannot be changed on this box.';
@@ -63,10 +90,12 @@
         } else if (data.job && data.job.status === 'success') {
             const tail = (data.job.log || []).slice(-1)[0] || 'VPN reconnected.';
             setStatus(escapeHtml(tail.replace(/^\[vpn-country\]\s*/, '')), 'success');
+        } else if (data.job && data.job.status === 'stopped') {
+            setStatus('Settings saved. The VPN remains stopped; start services to apply them.');
         } else if (data.job && data.job.status === 'failed') {
             const tail = (data.job.log || []).slice(-1)[0] || '';
             setStatus('The VPN did not come back yet. ' + escapeHtml(tail.replace(/^\[vpn-country\]\s*/, '')) +
-                      ' It keeps retrying on its own; the Box health check shows how it is doing.', 'error');
+                      ' Refresh service health to see the current state. Cached local movies remain available.', 'error');
         }
     }
 
@@ -93,12 +122,12 @@
         const btn = el('mbVpnCountryApply');
         if (!select || !btn || !currentDevice) return;
         const country = select.value;
-        if (!country || country === select.dataset.current) return;
+        if (!country || !changed()) return;
         // Two-tap inline confirm (iOS home-screen apps can suppress
         // window.confirm — the same reason Reconfigure does this).
         if (btn.dataset.armed !== '1') {
             btn.dataset.armed = '1';
-            btn.textContent = `Reconnect to ${country}?`;
+            btn.textContent = `Apply VPN settings?`;
             setTimeout(() => { btn.dataset.armed = ''; btn.textContent = 'Apply'; }, 6000);
             return;
         }
@@ -108,13 +137,13 @@
         select.disabled = true;
         try {
             if (!csrfToken) await fetchCsrfToken();
-            await apiPost(`${currentDevice.url}/admin/media-browser/vpn-country`, { country });
+            await apiPost(`${currentDevice.url}/admin/media-browser/vpn-country`, { country, fallback_countries: fallbackSelection() });
             setStatus('<span class="loading">Reconnecting the VPN — downloads pause for about a minute…</span>');
             await load();
         } catch (e) {
             setStatus('Could not change the VPN country: ' + escapeHtml(e.message || String(e)), 'error');
             select.disabled = false;
-            btn.disabled = select.value === select.dataset.current;
+            btn.disabled = !changed();
         }
     }
 
@@ -128,10 +157,13 @@
         details.addEventListener('toggle', () => { if (details.open) load(); });
         if (select) {
             select.addEventListener('change', () => {
-                if (btn) btn.disabled = !select.value || select.value === select.dataset.current;
+                rebuildFallback(Array.from(select.options, o => o.value), select.value, fallbackSelection());
+                if (btn) btn.disabled = !select.value || !changed();
                 setStatus('');
             });
         }
+        const fallback = el('mbVpnFallbackSelect');
+        if (fallback) fallback.addEventListener('change', () => { if (btn) btn.disabled = !changed(); setStatus(''); });
         if (btn) btn.addEventListener('click', apply);
     }
 

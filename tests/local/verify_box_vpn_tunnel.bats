@@ -87,3 +87,27 @@ run_block() {
 @test "the VPN section never FAILs a box" {
     ! grep -q 'fail ' <<<"$BLOCK"
 }
+
+@test "native status is authoritative and stale Ready cannot borrow legacy history" {
+    printf 'VPN_PORT_FORWARDING=on\nVPN_COUNTRIES=Canada\n' > "$BASE/services/.env"
+    export MDB_VPN_STATE="$BATS_TEST_TMPDIR/state" MDB_VPN_RUNTIME="$BATS_TEST_TMPDIR/run" MDB_COMPOSE_LOCK="$BATS_TEST_TMPDIR/compose.lock"
+    mkdir -p "$MDB_VPN_STATE"
+    printf '{"checked_at":"2000-01-01T00:00:00+00:00","ready":true,"forwarded_port":1234}\n' > "$MDB_VPN_STATE/status.json"
+    printf '%s watch\n%s healthy\n' $((NOW - 100000)) $((NOW - 10)) > "$MDB_VPN_EVENTS_FILE"
+    run_block
+    [[ "$output" == *"[WARN] VPN state unknown: no fresh recovery observation"* ]]
+    [[ "$output" != *"[PASS]"* ]]
+}
+
+@test "native fresh Ready requires and reports current verified state" {
+    printf 'VPN_PORT_FORWARDING=on\n' > "$BASE/services/.env"
+    export MDB_VPN_STATE="$BATS_TEST_TMPDIR/state" MDB_VPN_RUNTIME="$BATS_TEST_TMPDIR/run" MDB_COMPOSE_LOCK="$BATS_TEST_TMPDIR/compose.lock"
+    mkdir -p "$MDB_VPN_STATE"
+    python3 - "$MDB_VPN_STATE/status.json" <<'PYTHON'
+from datetime import datetime,timezone
+import json,sys
+json.dump({'checked_at':datetime.now(timezone.utc).isoformat(),'ready':True,'traffic_verified':True,'qbit_synced':True,'forwarded_port':1234},open(sys.argv[1],'w'))
+PYTHON
+    run_block
+    [[ "$output" == *"[PASS] VPN Ready: traffic verified, forwarded port and qBittorrent aligned"* ]]
+}

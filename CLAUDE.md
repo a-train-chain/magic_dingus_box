@@ -382,22 +382,14 @@ This guarantees correct compositing without X11/compositor overhead.
   `text_input.buffer` (the live TV keyboard — Wi-Fi password screen
   included) is blanked. Never add a file to the bundle without a redaction
   test; `FORBIDDEN_NAMES` refuses the known credential files outright.
-- **VPN tunnel line** (2026-10, Media Browser boxes only — the section is
-  absent without `services/.env`). The owner's tunnel dropped ~170 times
-  over 2026-10-03/04 and only a manual journal dig found it.
-  `gluetun_cascade_restart.sh` appends `<epoch> watch|unhealthy
-  <portfwd|tunnel>|healthy|restart` to `/var/lib/magic-dingus/vpn_events.log`
-  (root writes, 0644, 7 days / 2000 lines, Docker's event time, a failed
-  write never touches the watcher; `first_boot.sh` wipes it on clones).
-  `scripts/vpn_events_summary.py` (pure, stdlib, `scripts/tests/
-  test_vpn_events_summary.py`) turns it into verify_box's "VPN tunnel"
-  PASS/WARN — WARN at >= 6 drops or >= 30 min down in 24 h, or down right
-  now >= 10 min; never FAIL. verify_box passes gluetun's CURRENT health so
-  an outage whose recovery went unrecorded is not "down right now".
-  `box_health.headline` names an unreliable tunnel ("...but the VPN tunnel
-  is unreliable") and the card opens that section. Down time counts from
-  Docker's unhealthy mark (~5 min after the first failed check), so it
-  understates real outages by up to that much.
+- **VPN tunnel line**: native Proton WireGuard + forwarding uses the
+  fresh sanitized `vpn_recovery/status.json` snapshot through
+  `vpn_recoveryctl.py status --summary`. Ready requires current tunnel
+  generation, verified traffic, a positive forwarded port and qBit readback;
+  stale/missing/future snapshots are unknown. Box Health/Content Manager
+  must not borrow success from old event logs. Unsupported configurations
+  retain `vpn_events_summary.py` and the legacy seven-day/2000-line event
+  log. Recovery/unknown does not disable cached local movie playback.
 
 ## Key Dependencies
 
@@ -827,16 +819,97 @@ series, which would have destroyed already-watched seasons too.
 
 ### Service operations
 
-- **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged. Also hosts the **drive-absent guard** (runs before the port fetch, every tick): while `/mnt/ssd` is not a mountpoint — or is mounted but qBit cannot read a token written on the drive through its `/downloads` bind (stale bind awaiting storage-attach) — it stops every *active* torrent on EVERY tick (the kiosk's `resume_all` at game/movie exit and boot recovery, and newly added downloads, would otherwise write into the SD card until full), records the hashes it stopped in `/var/lib/magic-dingus/drive_guard/stopped_hashes` (persistent — the old tmpfs marker was lost on reboot, stranding torrents stopped), and turns on qBit's add-stopped pref (`add_stopped_enabled` / 4.x `start_paused_enabled`, original saved alongside). Release starts exactly the recorded hashes and restores the pref; operator-stopped torrents are never started. The legacy `/tmp/mdb_drive_guard_paused` marker is folded in as an "ALL" sentinel.
+- **qbit-port-sync.timer** (systemd, on Pi host) — retains the storage guard and 60s safety cadence; native VPN configuration delegates port changes to the same generation-fenced Python writer used by the 10s controller, with cookie-authenticated readback. Legacy configurations retain the shell path. The timer syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged. Also hosts the **drive-absent guard** (runs before the port fetch, every tick): while `/mnt/ssd` is not a mountpoint — or is mounted but qBit cannot read a token written on the drive through its `/downloads` bind (stale bind awaiting storage-attach) — it stops every *active* torrent on EVERY tick (the kiosk's `resume_all` at game/movie exit and boot recovery, and newly added downloads, would otherwise write into the SD card until full), records the hashes it stopped in `/var/lib/magic-dingus/drive_guard/stopped_hashes` (persistent — the old tmpfs marker was lost on reboot, stranding torrents stopped), and turns on qBit's add-stopped pref (`add_stopped_enabled` / 4.x `start_paused_enabled`, original saved alongside). Release starts exactly the recorded hashes and restores the pref; operator-stopped torrents are never started. The legacy `/tmp/mdb_drive_guard_paused` marker is folded in as an "ALL" sentinel.
 - **Gluetun pin: v3.41.3** (`@sha256:fa19cc76…e027`, the multi-arch index digest; `tests/local/compose_image_pins.bats`). Bumped from v3.41.1 on 2026-10-05 after a live capture (18:00–20:15) showed every one of 9 consecutive full-stack restarts was PORT FORWARDING, not the tunnel: Proton's NAT-PMP gateway refused a renewal minutes after granting a port (`[port forwarding] adding port mapping: ... read udp 10.2.0.2:x->10.2.0.1:5351: recvfrom: connection refused`, once `external port changed: 60551 changed to 35802`), v3.41.1's loop logged `[port forwarding] starting` and never obtained a port again, the healthcheck's port clause (`/tmp/.pf_seen`) went unhealthy ~5 min later and the cascade watcher restarted gluetun + 5 dependents ~5 min after that — while in-tunnel traffic (ping 1.1.1.1 ~170 ms, WireGuard handshakes) worked throughout. v3.41.2 "no longer stuck after failed port forwarding" + v3.41.3's deadlock fix let gluetun re-acquire the port itself; the healthcheck's port requirement stays as the backstop. The watcher now records which kind each unhealthy was (`portfwd` = the healthcheck's DNS+TCP+TLS probe still passes inside the tunnel, `tunnel` = it does not) in the VPN event log (Box health above). `WIREGUARD_PERSISTENT_KEEPALIVE_INTERVAL=25s` (Go duration; Proton configs ask for 25, gluetun's default is 0 and it ignores the .conf line).
-- **Gluetun control-server access file** (2026-10): `scripts/ensure_gluetun_auth.sh` writes `services/config/gluetun/auth/config.toml` (gluetun's default path under the `/gluetun` bind) with ONE `auth = "none"` role for `GET /v1/portforward`, `GET /v1/publicip/ip` and the legacy `GET /v1/openvpn/portforwarded` (kept for a box rolled back to an older tree). Current gluetun makes every control-server route private by default, so without it the next pin bump 401s the healthcheck's port clause (unhealthy forever once `/tmp/.pf_seen` exists → full-stack restart every ~10 min), qbit_port_sync and the Content Manager's VPN reads. With a file present even v3.41.x stops applying its built-in public role: every other route (incl. `PUT /v1/vpn/status`) is private — Byparr's browser shares the netns. Delivered by `setup_memory_tuning.sh` step 1f (MB boxes only) and `setup_services.sh --provision` before `compose up`; restarts nothing — gluetun reads it at its next start. **On a bump:** an unknown route in the file makes gluetun REFUSE TO START, so refresh `VALID_ROUTES` in `tests/local/gluetun_auth.bats` from the new version's `auth/settings.go`; that test also fails when the tree calls a `localhost:8000` route the file doesn't list.
-- **VPN server country** (2026-10): `VPN_COUNTRIES` in `services/.env` → `SERVER_COUNTRIES=${VPN_COUNTRIES-}` (`-` not `:-`: `custom` needs it empty). Content Manager → Media Browser → Advanced (`web/vpn_settings.py`, `static/vpn_settings.js`, one `register()` call in admin_media_browser.py): `GET|POST /admin/media-browser/vpn-country`, curated list of `protonvpn` country names with >= 6 port-forwarding WireGuard servers in gluetun v3.41.x's list (Netherlands default). POST rewrites ONLY that line (atomic, mode kept), then runs `scripts/recreate_gluetun.sh` as a detached root job in the shared maintenance slot (kind `vpn-country`, single-flight with OTA/setup): `compose up -d --no-deps gluetun` under the compose lock, lock released before waiting for healthy so the cascade can re-link dependents. A failed launch restores the old line. Read-only for `custom` providers. The setup route keeps the current country on Reconfigure (it used to reset to Netherlands). Existing boxes are unchanged until someone picks a country.
+- **Gluetun control-server access file**: native provisioning generates a
+  per-box 0600 `services/config/gluetun/auth/recovery.key` and scoped API-key
+  role for GET/PUT `/v1/vpn/settings` and `/v1/vpn/status`; only the three
+  existing public GET routes remain unauthenticated. Port 8000 stays
+  unpublished. `ControlClient` uses bounded host Python in the inspected
+  network namespace, stdin-only credentials and generation-fenced partial
+  selection PUTs; never round-trip settings or print complete responses.
+  `setup_memory_tuning.sh` quiesces an old watcher before auth activation
+  and converges the existing watcher unit. Reset/clone remove the local
+  credential, intent/history and fallback policy; rollback converges units
+  against the restored tree. See the
+  [VPN validation runbook](docs/superpowers/validation/2026-11-14-vpn-reliability.md)
+  for the opt-in cached-image/dummy-key contract test and live gates.
+- **VPN server country**: desired primary remains `VPN_COUNTRIES` in
+  `services/.env`; explicitly allowed fallback countries live separately
+  in `config/vpn_recovery.json`. Content Manager Advanced saves both under
+  maintenance/compose fencing. Omission preserves current policy, and
+  other boxes default to no fallback. The approved magicpi5 policy is
+  Canada then United States. Applying settings to an explicitly stopped
+  stack keeps it stopped; apply occurs at the next supported start.
+  Automatic recovery never rewrites desired country settings.
 - **Required Gluetun setup**: WireGuard config from ProtonVPN dashboard MUST have NAT-PMP toggle ON when generated. `FIREWALL_OUTBOUND_SUBNETS` MUST NOT include `10.0.0.0/8` (would block NAT-PMP routing to the VPN gateway at 10.2.0.1).
 - **Active indexers** (Prowlarr → Radarr): TPB, YTS, LimeTorrents, TorrentDownload, Knaben (the latter two with `cloudflare` tag → Byparr, which replaces FlareSolverr for current Cloudflare challenge formats). Plus 5 pre-configured but disabled (Demonoid, EZTV, Internet Archive, Magnetz, Torrent Downloads) for future enable.
 - **qBittorrent auth hardening** (Step 7.5 of `setup_services.sh`): the docker image's "bypass authentication for clients on localhost" preference is disabled programmatically and the WebUI password is set to a random value from `services/.env`. Without this, anything connecting from 127.0.0.1 (Radarr, the kiosk binary, anyone with shell) bypasses auth entirely. Step 7.6 mirrors the password to `MDB_QBIT_PASS=` in `.env` so the kiosk's QbittorrentClient (which reads that var via systemd EnvironmentFile=) keeps authenticating. It restarts the kiosk ONLY when the running kiosk's `MDB_QBIT_PASS` (from `/proc/<MainPID>/environ`; fallback: did this run change the line) is missing or stale — it used to restart on every run, killing a movie/game in progress on each Content Manager Reconfigure.
 - **Gluetun DNS**: `DNS_SERVER=off` in docker-compose.yml (spelled `DOT=off` before 2026-10-04; gluetun v3.40+ deprecated that alias and maps it to `DNS_SERVER=off`) — switches Gluetun from DNS-over-TLS to plain UDP DNS (1.1.1.1). The DoT path maintains a long-lived TLS pipe to the upstream resolver; when that pipe stalls (observed ~daily on this Pi pre-fix), all DNS queries inside the netns time out for hours and Gluetun's internal healthcheck stays green because it queries a cached-IP endpoint that needs no DNS. Plain UDP is stateless — no pipe to wedge.
 - **Gluetun healthcheck**: `wget https://one.one.one.one/cdn-cgi/trace | grep '^ip='` — actually exercises DNS + TCP + TLS through the tunnel. Cloudflare's official `one.one.one.one` hostname never blocks its own infrastructure (no rate-limit flapping). Failure of any layer → unhealthy. Replaces the older `localhost:8000/v1/publicip/ip` check which returned a cached value with no DNS lookup and missed the DNS-wedge state entirely.
-- **gluetun-cascade-restart.service** (systemd, on Pi host) — long-running watcher subscribed to `docker events --filter container=mdb_gluetun --filter event=start --filter event=health_status`. Four roles:
+- **Native VPN recovery**: the existing `gluetun-cascade-restart.service`
+  execs one host stdlib Python controller for Proton WireGuard+forwarding;
+  unsupported configurations alone retain the legacy watcher below.
+  Observe port/qBit every 10s, DNS/TCP/TLS traffic every 30s; first port and
+  candidate grace 120s, established port loss 90s, traffic loss 60s. Try at
+  most two distinct preferred-country hostnames before explicitly allowed
+  fallback; healthy fallback stays selected. Exclusion 1800s, bounded 24h
+  history/newest 256 endpoints, failed-round backoff 120/300/600s and at
+  most one disruptive restart per 600s. API success alone is not Ready.
+  Host WAN classification uses a certificate-verifying stdlib HTTPS child
+  (1.3s parent cap per provider, tighter shared observation deadline), so
+  host wget/curl is not a hidden dependency; subprocess timeout kills and
+  reaps blocked DNS. In-container probes retain pinned GNU wget/BusyBox
+  timeout. Native actions read-open the shared compose lock and defer on
+  unusable/busy locks; no unlocked mutation or health wait under lock.
+  Supported lifecycle commands publish durable intent/inhibition; explicit
+  stop/ambiguous 137 never authorize resurrection. Loaded catalog identity
+  requires a new container-start and INFO file-wins proof, independent of
+  downloaded data. One worker handles bounded actions while polling stays
+  live. Existing playback/SSD/torrent ownership remains authoritative.
+  Hard-won on magicpi5 (2026-11-15), each a live failure first:
+  - **Gluetun restart-loops a dead endpoint every ~6 s inside the SAME
+    container** (new tun0 ifindex each time; 4→30 in 150 s). Only a new
+    container start (id/pid/start) may reset failure clocks or grant a fresh
+    candidate grace; tun0-only changes keep them, ≤30 s of unknown samples
+    keep loss evidence, a tick that misses tun0 within 30 s of seeing one
+    waits a tick instead of spending the container restart, and the rotation
+    PUT is fenced on container identity. Pre-fix the controller sat in
+    "Waiting for candidate" on a dead server forever.
+  - **A round is one incident**: the two-preferred-servers budget closes
+    after 30 min of continuous Ready; a shorter success keeps it so a flapping
+    country still reaches the fallback. Pre-fix it never closed, so every
+    later incident skipped straight to the fallback country.
+  - **Catalog INFO attestation reads Gluetun's 121 s startup log window**
+    (`--since start --until start+121s`), never `--tail`: a restart loop
+    scrolls past the line within minutes, and Docker 26 returns nothing for
+    `--tail` combined with `--until`.
+  - **Polling cost is part of the Pi 4B budget.** Identity `docker inspect`
+    and `docker ps` queries are answered in-process from the Engine socket
+    (`vpn_recovery/docker_api.py`, CLI-identical stdout, CLI fallback for a
+    PATH shim/`DOCKER_HOST`/unreachable socket); root reads tun0 with
+    `nsenter --net ip`; the firewall endpoint parse is cached per generation
+    once two reads agree. Measured 16.7% → 6.1% of a Pi 5 core (controller +
+    containerd + dockerd). Don't add per-tick processes casually.
+  - **Per-server evidence**: a container restart drops `attempted` (Gluetun
+    reverts to `.env`; a healthy restarted server was once rotated away as a
+    "failed attempt"); lease `losses` are cleared on an issued rotation; any
+    intent-revision change (maintenance owners/lifecycle only, never routine
+    ticks) re-evaluates the current selection with first-lease grace.
+  - **The 1.3 s in-tunnel probe takes 650–750 ms idle** and starves under a
+    heavy indexer search. For a tunnel generation our own probe already
+    verified, a Docker in-tunnel healthcheck success ≤45 s old (after that
+    proof, not followed by a failure) counts as traffic; a new candidate never
+    borrows it. Don't "fix" this with a longer in-tick retry: it starves the
+    host-WAN check, and a starved WAN check suppresses real recovery.
+  - **Gluetun v3.41.3 can wedge** after a sub-second startup-check restart
+    loop: the settings PUT blocked 2 min and shutdown timed out. The
+    api_failed → single container restart escalation is what recovers it.
+  - Never run `scripts/tests` suites that write `/tmp/mdb_*` on a box:
+    `test_gluetun_cascade.py` used to create/delete the real playback-pause
+    marker (it now uses a private `PAUSE_MARKER`).
+- **Legacy gluetun-cascade-restart.service** (unsupported VPN configurations;
+  systemd, on Pi host) — long-running watcher subscribed to `docker events --filter container=mdb_gluetun --filter event=start --filter event=health_status`. Four roles:
   - **netns re-link**: On Gluetun `start` events, runs `docker compose restart` then `up -d` on the four netns-sharing dependents (Radarr/Prowlarr/qBit/Byparr) to refresh port-forwarding DNAT rules that get torn down with the old netns. The restart-then-up-d sequence handles both Gluetun-was-just-restarted (dependents still running but disconnected) and Gluetun-was-recreated (dependents crashed with exit 128, need to be brought back up) cases. **Playback-pause aware**: while `/tmp/mdb_playback_services_paused` exists (maintained by `playback_services_pause.sh` during games/movies), the cascade re-links qBittorrent ONLY and enforces `docker stop` on Radarr/Prowlarr/Byparr — pre-fix, the cascade's `up -d` revived the paused three mid-game and defeated the RAM-freeing pause on the 2 GB boxes (observed live 2026-07-31). The paused three re-link via the kiosk's unpause, which falls back to `compose up -d` when plain `docker start` fails (network_mode pins Gluetun's container ID at create time, so a Gluetun RECREATE mid-pause invalidates plain start).
   - **VPN event log** (2026-10): appends every transition to `/var/lib/magic-dingus/vpn_events.log`, probing in-tunnel traffic once per unhealthy event to tag it `portfwd` or `tunnel` (see Box health + diagnostics).
   - **Auto-recover from unhealthy**: On Gluetun `health_status: unhealthy` events, waits 5 minutes for confirmation (transient DNS blips self-recover), then if still unhealthy issues `docker restart mdb_gluetun`. The resulting `start` event re-enters the netns-relink branch above. Event-parsing uses `IFS= read -r line` + `event_action="${event_action// /}"` to normalize whitespace — Docker formats `health_status: healthy` (with space) which would otherwise miss the case-statement match.
