@@ -22,6 +22,13 @@ IFS=. read -r _MAJ _MIN _PAT <<<"$NEW_VER"
 V1="${_MAJ}.${_MIN}.$((_PAT + 1))"     # source-only fake release
 V2="${_MAJ}.${_MIN}.$((_PAT + 2))"     # binary fake release
 V3="${_MAJ}.${_MIN}.$((_PAT + 3))"     # binary fake release
+# v1.11.0 changed four things the original v1.9.14 baseline asserts: the
+# admin answers update jobs from their on-disk record, the box image has
+# gunicorn, the updater no longer prints the Phone Remote bootstrap line,
+# and a TV-off install (kiosk exit 69) is kept, not rolled back.
+old_at_least() {  # <X.Y.Z>: OLD_VER >= X.Y.Z (OLD is always a release tag)
+    python3 -c 'import sys; v=lambda s: tuple(int(x) for x in s.split("-")[0].split(".")); sys.exit(0 if v(sys.argv[1]) >= v(sys.argv[2]) else 1)' "$OLD_VER" "$1"
+}
 src_url() { echo "https://github.com/${SLUG}/releases/download/v$1/magic-dingus-box-$1.tar.gz"; }
 
 : > "$OUT/results.txt"
@@ -333,7 +340,8 @@ check_hooks_ran_old() {  # <stderr> — the hooks the OLD update.sh runs from th
     step "post-install hooks (run by the OLD update.sh from the NEW tree, as root via sudo -n)"
     has "old updater took the pre-compiled binary path" 'Using pre-compiled ARM64 binary' "$1"
     hasnt "no on-box compile" 'Building application from source' "$1"
-    has "Phone Remote bootstrap skipped (box provisioned)" 'deps already provisioned; skipping bootstrap' "$1"
+    if old_at_least 1.11.0; then note "Phone Remote bootstrap line: ${OLD_VER}'s updater no longer prints it (since v1.11.0)"
+    else has "Phone Remote bootstrap skipped (box provisioned)" 'deps already provisioned; skipping bootstrap' "$1"; fi
     has "emulator core bootstrap: all present" 'All referenced emulator cores present' "$1"
     has "network hardening hook ran" 'Applying network hardening' "$1"
     hasnt "network hardening did not fail" 'network hardening install failed' "$1"
@@ -385,6 +393,15 @@ web_checks() {  # import/create the web app with and without gunicorn
     local py='import os; from magic_dingus_box.web import serve; s=serve.choose_server(); app=serve.build_app(); print("server", s, "routes", len(list(app.url_map.iter_rules())))'
     local envs=(HOME=/home/magic PATH=/usr/bin:/bin "PYTHONPATH=$INSTALL" "MAGIC_DATA_DIR=$DATA" "TMPDIR=$INSTALL/tmp")
     local out
+    if python3 -c 'import gunicorn' 2>/dev/null; then
+        # From v1.11.0 the box image (its install_deps) has gunicorn: the
+        # Werkzeug fallback does not apply, and the box state is not ours to purge.
+        note "gunicorn is part of the ${OLD_VER} box: Werkzeug-fallback half not applicable"
+        out=$(cd "$INSTALL" && runuser -u magic -- env -i "${envs[@]}" python3 -c "$py" 2>&1 | grep -v Warning | tail -1)
+        if [[ "$out" == "server gunicorn routes "* ]]; then pass "gunicorn present: create_app ok, serve picks gunicorn ($out)"; else fail "gunicorn present: $out"; fi
+        has "running web (unit command line) serves with gunicorn" 'serving with gunicorn' "$(ls -t "$OUT"/web_*.log | head -1)"
+        return
+    fi
     out=$(cd "$INSTALL" && runuser -u magic -- env -i "${envs[@]}" python3 -c "$py" 2>&1 | grep -v Warning | tail -1)
     if [[ "$out" == "server werkzeug routes "* ]]; then pass "no gunicorn: create_app ok, serve picks werkzeug ($out)"; else fail "no gunicorn: $out"; fi
     out=$(cd "$INSTALL" && runuser -u magic -- env -i "${envs[@]}" python3 -c 'import magic_dingus_box.web.wsgi as w; print(type(w.app).__name__)' 2>&1 | tail -1)
@@ -483,6 +500,19 @@ EOF
     local uo; uo=$(bash "/tmp/rel_${NEW_VER}/magic_dingus_box_cpp/scripts/converge_system_units.sh" --check --tree "$INSTALL" 2>&1 | tr '\n' ' ')
     note "after the OLD updater's rollback the ${NEW_VER} units stay (it predates converge-back; the release changed no unit): ${uo:-none differ}"
 
+    if old_at_least 1.11.0; then
+        step "OLD update.sh install with NO TV connected (kiosk exits 69) — ${OLD_VER} keeps it (no display is not a failed start)"
+        echo nodisplay > "$SHIM/kiosk_mode"
+        snap s2b
+        if run_updater install_tv_off "$SCRIPTS/update.sh" install "$NEW_VER" "$(src_url "$NEW_VER")"; then pass "TV-off install exit 0 (kept)"; else fail "TV-off install failed"; fi
+        hasnt "no rollback on a no-display start" 'rolling back' "$OUT/install_tv_off.stderr"
+        snap s3
+        eq "TV-off install: VERSION" "$(ver)" "$NEW_VER"
+        eq "TV-off install: binary" "$(sha "$BIN")" "$CI_SHA"
+        assert_user_data s0 s3 "after the TV-off install"
+        echo active > "$SHIM/kiosk_mode"
+        return
+    fi
     step "OLD update.sh install with NO TV connected (kiosk exits 69) — expect the documented one-time rollback"
     echo nodisplay > "$SHIM/kiosk_mode"
     snap s2b
@@ -548,7 +578,14 @@ scenario_old_web() {
     # fetches a CSRF token and verifies via /check. The NEW backend must
     # answer the OLD job id with a non-ok 404 (not a 500 / crash).
     local sc; sc=$(curl -s -o "$OUT/web_status_after_restart.json" -w '%{http_code}' "http://127.0.0.1:5000/admin/update/status/$jid")
-    eq "NEW admin answers the OLD job id (old manager.js poll) with 404" "$sc" "404"
+    if old_at_least 1.11.0; then
+        # From v1.11.0 an update is a detached job with its log on disk, so the
+        # NEW admin answers the OLD job id from that record instead of 404.
+        eq "NEW admin answers the OLD job id from its on-disk record" "$sc" "200"
+        eq "...and reports it complete" "$(jq -r '.data.status' "$OUT/web_status_after_restart.json")" "complete"
+    else
+        eq "NEW admin answers the OLD job id (old manager.js poll) with 404" "$sc" "404"
+    fi
     check "NEW admin still serves /admin/csrf-token (old manager.js verify path)" \
         bash -c "curl -fsS http://127.0.0.1:5000/admin/csrf-token | jq -e '.data.token' >/dev/null"
 
