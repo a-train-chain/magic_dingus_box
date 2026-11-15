@@ -4,7 +4,12 @@
 // (TUBE_EFFECT labels + hints, TUBE_GROUPS). One table, read by the TV menu and
 // the web page, so the two cannot disagree about a row's name or its place.
 // Labels and hints are Sound Factory's, with three edits for a TV: the two
-// whole-pixel size rows and RIM say what the kiosk means by them.
+// whole-pixel size rows and RIM say what the kiosk means by them. The six hints
+// that quoted millimetres of a monitor panel (rollWidth, tracking, colorDrift,
+// trackingWidth, flagging, puritySize) were converted for a TV into shares of
+// the picture's width (a millimetre is 1/196.608 of it, kTubeMmAcross). The mask
+// and look words are Sound Factory's CRT_MASK_* / CRT_LOOK_* (slot's second line
+// and the looks' casing reworded for the menu).
 //
 // Pure: standard library only, no I/O. Tables and loops, never a switch.
 #pragma once
@@ -63,19 +68,19 @@ inline constexpr std::array<RowInfo, kEffectCount> kRowInfo{{
 
     {"ROLLING BAND", "a soft dark band rolls down", "0 off · depth up to 44 %"},
     {"BAND SPEED", "how fast the band rolls down", "0: 30 s · 100: 6 s per pass"},
-    {"BAND WIDTH", "the full width of the soft band", "0: 8 mm · 100: 60 mm"},
+    {"BAND WIDTH", "the full width of the soft band", "0: 4 % · 100: 31 % of picture width"},
     {"BAND TINT", "the colour inside the band", "0 warm · 50 neutral · 100 cool"},
-    {"TRACKING SLIP", "a narrow strip slips sideways", "0 off · up to 3.6 mm"},
+    {"TRACKING SLIP", "a narrow strip slips sideways", "0 off · up to 1.8 % of picture width"},
     {"SLIP RATE", "how often a tracking slip occurs", "0: every 60 s · 100: every 4 s"},
-    {"COLOUR DRIFT", "slow red and blue fringing", "0 off · up to 0.75 mm"},
+    {"COLOUR DRIFT", "slow red and blue fringing", "0 off · up to 0.4 % of picture width"},
     {"DRIFT SPEED", "how fast the colours drift", "0: 24 s · 100: 6 s per cycle"},
-    {"TEAR WIDTH", "height of the displaced strip", "0: 2 mm · 100: 32 mm"},
+    {"TEAR WIDTH", "height of the displaced strip", "0: 1 % · 100: 16 % of picture width"},
     {"TEAR RECOVERY", "time for a slip to settle", "0: 0.12 s · 100: 1.12 s"},
-    {"TOP EDGE BEND", "the top of the picture sways", "0 off · up to 4 mm"},
+    {"TOP EDGE BEND", "the top of the picture sways", "0 off · up to 2 % of picture width"},
     {"BEND HEIGHT", "how far down the bend reaches", "0: 5 % · 100: 35 %"},
     {"BEND SPEED", "how fast the top edge sways", "0: 12 s · 100: 2 s"},
     {"COLOUR PATCH", "uneven colour near the edge", "0 off · strong at 100"},
-    {"PATCH SIZE", "radius of the soft colour patch", "0: 10 mm · 100: 70 mm"},
+    {"PATCH SIZE", "radius of the soft colour patch", "0: 5 % · 100: 36 % of picture width"},
     {"PATCH COLOUR", "tint of the discoloured area", "0–100: full colour wheel"},
     {"PATCH POSITION", "move the patch around the edge", "starts top left · clockwise"},
 }};
@@ -96,9 +101,40 @@ constexpr GroupRows rows_of(E... e) noexcept {
     return r;
 }
 
+// Index-aligned with kMasks.
+inline constexpr std::array<RowInfo, 5> kMaskChoices{{
+    {"GRILLE", "aperture grille · default", "the sharpest mask"},
+    {"MAGENTA-GREEN", "magenta and green stripes", "the brightest mask"},
+    {"DOTS", "shadow-mask dots · TV tube", "costs the most light"},
+    {"SLOT", "stripes in staggered slots", "a 1990s TV set"},
+    {"OFF", "no phosphor mask", "scanlines and glass only"},
+}};
+static_assert(kMaskChoices.size() == kMasks.size(), "one set of words per mask");
+
+// Index-aligned with kLooks.
+inline constexpr std::array<RowInfo, 6> kLookChoices{{
+    {"PVM", "the broadcast monitor", "nothing moves · default"},
+    {"Monitor", "a crisp PC monitor", "nothing moves"},
+    {"Trinitron", "a consumer Trinitron", "moves a little"},
+    {"TV", "a 1990s set, slot mask", "some of it moves"},
+    {"Arcade", "a cabinet tube, dots", "some of it moves"},
+    {"Everything", "every effect a tube shows", "all of it moves"},
+}};
+static_assert(kLookChoices.size() == kLooks.size(), "one set of words per look");
+
 }  // namespace detail
 
 constexpr const RowInfo& row_info(Effect e) noexcept { return detail::kRowInfo[index_of(e)]; }
+
+// The word shown for a mask, and two hint lines describing it.
+constexpr const RowInfo& mask_choice(Mask m) noexcept {
+    return detail::kMaskChoices[static_cast<std::size_t>(m)];
+}
+
+// The word shown for a look, and two hint lines describing it.
+constexpr const RowInfo& look_choice(Look l) noexcept {
+    return detail::kLookChoices[static_cast<std::size_t>(l)];
+}
 
 // The MASK row shows a word, not a number; its hints belong to the chosen mask.
 inline constexpr RowInfo kMaskRowInfo{"MASK", "", ""};
