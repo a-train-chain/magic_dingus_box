@@ -16,8 +16,9 @@
 // for a renderer that must upload it again (a rebuilt GL context).
 //
 // Ported from Sound Factory's TubeRenderer.mm (readMean, stepBrightnessLimitTo, the
-// FrameState assembly in encodeTubeInto at lines 937-958, owesSettling, the "moving"
-// test) and crt.metal's maskAt (through the spike's mask_at), commit 4ef74a6. What
+// FrameState assembly in encodeTubeInto at lines 937-958, the settling a tracking slip
+// owes at lines 959-965, owesSettling, the render's settle decrement at lines
+// 1124-1125, the "moving" test) and crt.metal's maskAt (through the spike's mask_at), commit 4ef74a6. What
 // differs, and why:
 //   - The rolling band, colour drift and flagging are drawn at ACCUMULATED phases
 //     (tube_inputs.h, advance_character_phases), advanced by each drawn frame's dt:
@@ -32,6 +33,9 @@
 //     the measured lean set puts only on Rich30 plans). Without it the limiter rests
 //     at its neutral level (ablLevel 0, the shader's no-op) and no mean is asked for,
 //     as Sound Factory's ablLevel reads 0 with no prepass.
+//   - A clock that runs backwards (now before start() or before a degauss) is bounded:
+//     degauss stays in [0, 1] (it is flash-relevant), the warm-up gain is 0 before the
+//     start, and nothing reads a negative elapsed time unclamped.
 //   - on_mean() takes the light already reduced to luma (0.2126 R + 0.7152 G +
 //     0.0722 B, linear): the GL side reads the 1x1 mip and does that sum.
 //
@@ -121,6 +125,14 @@ inline std::array<float, 3> mask_at(Mask mask, float x, float y, float pitch, fl
         case Mask::none: break;
     }
     return {1.0f, 1.0f, 1.0f};
+}
+
+// The mask a still's `maskType` draws: tube_uniforms_for's pattern number back to the
+// enum (none for anything it never writes).
+inline Mask mask_of_type(float type) noexcept {
+    for (const Mask m : kMasks)
+        if (mask_type(m) == type) return m;
+    return Mask::none;
 }
 
 }  // namespace detail
@@ -244,8 +256,10 @@ public:
         DriverFrame out;
 
         // 1. The still: only when the setting or the picture changed.
-        out.still_changed = !have_still_ || still_differs(setting, picture);
-        if (out.still_changed) rebuild_still(setting, picture, now);
+        const bool still_differs_now = !have_still_ || still_differs(setting, picture);
+        if (still_differs_now) rebuild_still(setting, picture, now);
+        out.still_changed = still_differs_now || gpu_lost_;   // gpu_lost(): the targets must be made again
+        gpu_lost_ = false;
 
         // 2. The glass: only for its own inputs.
         const GlassKey glass = glass_key(still_);
@@ -257,8 +271,10 @@ public:
         const MaskKey mask = mask_key(still_);
         out.mask_changed = !have_mask_ || mask != mask_key_;
         if (out.mask_changed) {
-            const Mask kind = picture_.crt_native ? Mask::none : resolved_.mask;   // as tube_uniforms_for
-            mask_ = mask_tile(kind, static_cast<int>(std::lround(still_.maskPitch)), still_.maskStrength);
+            // The kind from the still's own maskType, the same field the key reads, so the
+            // tile and the key cannot disagree (CRT Native's none included).
+            mask_ = mask_tile(detail::mask_of_type(still_.maskType), static_cast<int>(std::lround(still_.maskPitch)),
+                              still_.maskStrength);
             mask_key_ = mask;
             have_mask_ = true;
         }
@@ -276,6 +292,8 @@ public:
 
         // 6. The limiter, and the settle debt it and the still owe (measured before this
         //    frame's step, as Sound Factory's owesSettling is, and counting this frame).
+        // A new mean OVERWRITES the debt rather than adding to it, deliberately, as Sound
+        // Factory's owesSettling: only the limiter's newest target says what is owed.
         if (out.still_changed || mean_new_) settle_debt_ = settle_frames(still_, abl_.distance());
         mean_new_ = false;
         if (plan_.mean_probe) abl_.step(now);
@@ -288,13 +306,23 @@ public:
         fs.motion_amount = (now - start_ - kWarmupMovesSeconds) / 0.5;
         fs.rising_light = plan_.mean_probe ? std::max(0.0, abl_.distance()) : 0.0;
         fs.ablLevel = plan_.mean_probe ? static_cast<float>(abl_.level()) : 0.0f;
+        // motion_amount below 0 (before the warm-up's end, or a clock before start()) is
+        // clamped to [0, 1] by tube_signal_motion (tube_inputs.h). warmup_gain() is 0 for
+        // any elapsed time <= 0.2, a negative one included, and never above 1.
         fs.warmupGain = now - start_ < kWarmupSeconds ? static_cast<float>(warmup_gain(now - start_)) : 1.0f;
-        fs.degauss = static_cast<float>(std::max(0.0, 1.0 - (now - degauss_start_) / kDegaussSeconds));
+        // Clamped both ways: a clock before the degauss start would push it above 1.
+        fs.degauss = static_cast<float>(std::clamp(1.0 - (now - degauss_start_) / kDegaussSeconds, 0.0, 1.0));
         fs.phases = phases_;
         out.u = tube_frame(still_, resolved_, fs);
 
-        // 8. This frame paid one of the debt.
+        // 8. This frame paid one of the debt (Sound Factory decrements as the render
+        //    starts, lines 1124-1125, before encodeTubeInto) ...
         settle_debt_ = std::max(0, settle_debt_ - 1);
+        // ... and a frame that drew a tracking slip owes the frames after it, so the
+        //    afterglow's history decays off the displaced band and at least one clean
+        //    frame follows (lines 959-965: owesSettling, then at least 1). After the
+        //    decrement, as there, so this debt counts frames still to come.
+        if (out.u.trackingOffset != 0.0f) settle_debt_ = std::max(settle_frames(still_, abl_.distance()), 1);
 
         out.resolved = resolved_;
         out.plan = plan_;
@@ -313,6 +341,20 @@ public:
         if (!have_still_ || !plan_.mean_probe) return;
         abl_.on_mean(light);
         mean_new_ = true;
+    }
+
+    // THE GPU STATE WAS LOST (a game took the display; every texture, target and program
+    // is rebuilt on return). The next frame reports:
+    //   - glass_changed: the baked glass texture is gone, so it must be baked again;
+    //   - mask_changed, with the tile's pixels: the mask texture is gone;
+    //   - still_changed: the plan's programs and targets (sizes, the afterglow history)
+    //     must be created again, and still_changed is the one flag the renderer builds
+    //     them on. It also re-arms the settle debt, which an emptied history needs.
+    // No clock, phase or limiter is touched: this is not a tube starting (start()).
+    void gpu_lost() noexcept {
+        have_glass_ = false;
+        have_mask_ = false;
+        gpu_lost_ = true;
     }
 
     // Whether the renderer should run the probe and read a mean this frame: only on a
@@ -376,7 +418,8 @@ private:
                settle_debt_ > 0;
     }
 
-    bool started_ = false, have_still_ = false, have_glass_ = false, have_mask_ = false, mean_new_ = false;
+    bool started_ = false, have_still_ = false, have_glass_ = false, have_mask_ = false, mean_new_ = false,
+         gpu_lost_ = false;
     double start_ = 0.0, last_ = 0.0, tracking_start_ = 0.0;
     double degauss_start_ = -std::numeric_limits<double>::infinity();
     double mean_requested_ = -std::numeric_limits<double>::infinity();

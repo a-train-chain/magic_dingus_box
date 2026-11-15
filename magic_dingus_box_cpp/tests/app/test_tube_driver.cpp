@@ -3,6 +3,8 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstring>
+#include <vector>
 
 #include "tube/tube_driver.h"
 
@@ -250,4 +252,123 @@ TEST_CASE("tube driver: a counter that goes backwards is a new baseline, not a d
     FrameDriver d; TubeSetting s; set_row(s, Effect::afterglow, 0); d.start(0.0, 9);
     REQUIRE(d.frame(s, k1080, 3.0, 2).u.degauss == 0.0f);   // the op log restarted its count
     REQUIRE(d.frame(s, k1080, 4.0, 3).u.degauss == Approx(1.0f));
+}
+
+// ---- Fix round 1 ---------------------------------------------------------------
+
+namespace {
+// PVM, the limiter out of it, TRACKING 50 at AFTERGLOW `afterglow`.
+TubeSetting slipping(int afterglow) {
+    TubeSetting s;
+    set_row(s, Effect::abl, 0); set_row(s, Effect::breathing, 0);
+    set_row(s, Effect::afterglow, afterglow); set_row(s, Effect::tracking, 50);
+    return s;
+}
+// Draws 30 Hz frames from `from` until the slip that starts there has ended; returns
+// the time of the last frame that drew a displaced band.
+double last_slip_frame(FrameDriver& d, const TubeSetting& s, double from) {
+    double last = -1.0;
+    for (int i = 0; i < 60; ++i) {
+        const double now = from + i / 30.0;
+        if (d.frame(s, k1080, now, 0).u.trackingOffset != 0.0f) last = now;
+    }
+    return last;
+}
+}  // namespace
+
+TEST_CASE("tube driver: a tracking slip owes the afterglow's settle frames after it", "[tube]") {
+    const TubeSetting s = slipping(30);
+    FrameDriver d; d.start(0.0, 0);
+    // Past the first slip (0 .. 0.42 s), the start's settling and the warm-up.
+    REQUIRE(last_slip_frame(d, s, 0.0) > 0.0);
+    REQUIRE_FALSE(d.peek(s, k1080, 5.0, 0).moving);
+    TubeSetting again = s; set_row(again, Effect::trackingRate, 30);   // restarts the clock at 5.0
+    const int owed = settle_frames(d.frame(again, k1080, 5.0, 0).u, 0.0);
+    REQUIRE(owed == 6);                                // AFTERGLOW 30
+    // Replay the slip on a twin, frame for frame, to find its last displaced frame.
+    FrameDriver twin = d;
+    const double last = last_slip_frame(twin, again, 5.0 + 1.0 / 30.0);
+    REQUIRE(last > 5.0);
+    double now = 5.0;
+    while (now < last - 1e-9) { now += 1.0 / 30.0; d.frame(again, k1080, now, 0); }
+    // The slip's own clean-frame window (tracking_moving: + 0.05 s) is long gone by
+    // the time the history has decayed; the debt alone keeps the frames coming.
+    for (int i = 1; i < owed; ++i) {
+        now += 1.0 / 30.0;
+        INFO("frame " << i << " after the slip");
+        REQUIRE(d.frame(again, k1080, now, 0).moving);
+    }
+    now += 1.0 / 30.0;
+    REQUIRE_FALSE(d.frame(again, k1080, now, 0).moving);
+}
+
+TEST_CASE("tube driver: a tracking slip owes one clean frame even without afterglow", "[tube]") {
+    TubeSetting s = slipping(0);
+    FrameDriver d; d.start(0.0, 0);
+    last_slip_frame(d, s, 0.0);                        // past the first slip and the warm-up
+    set_row(s, Effect::trackingRate, 30);              // restarts the clock at 5.0
+    double last = -1.0, now = 0.0;
+    for (int i = 0; i < 60; ++i) {
+        now = 5.0 + i / 30.0;
+        if (d.frame(s, k1080, now, 0).u.trackingOffset != 0.0f) { last = now; break; }
+    }
+    REQUIRE(last >= 0.0);
+    // Well past the slip's own window, the frame it owes is still owed.
+    REQUIRE(d.peek(s, k1080, last + 3.0, 0).moving);
+    // Draw on until the slip ends: one more frame after its last displaced one, then rest.
+    double end = last;
+    for (int i = 0; i < 60; ++i) {
+        now += 1.0 / 30.0;
+        if (d.frame(s, k1080, now, 0).u.trackingOffset != 0.0f) end = now;
+        else if (now > end + 0.5) break;
+    }
+    REQUIRE_FALSE(d.peek(s, k1080, now + 0.01, 0).moving);
+}
+
+TEST_CASE("tube driver: a clock that runs backwards keeps degauss and warm-up in range", "[tube]") {
+    FrameDriver d; TubeSetting s; d.start(10.0, 5);
+    const auto in_range = [](const DriverFrame& f) {
+        float fields[sizeof(TubeUniforms) / sizeof(float)];
+        static_assert(sizeof(TubeUniforms) % sizeof(float) == 0, "TubeUniforms is floats");
+        std::memcpy(fields, &f.u, sizeof(fields));
+        for (float v : fields) REQUIRE(std::isfinite(v));
+        REQUIRE(f.u.degauss >= 0.0f); REQUIRE(f.u.degauss <= 1.0f);
+        REQUIRE(f.u.warmupGain >= 0.0f); REQUIRE(f.u.warmupGain <= 1.0f);
+    };
+    in_range(d.frame(s, k1080, 4.0, 5));            // before start()
+    in_range(d.frame(s, k1080, 12.0, 6));           // a degauss starts at 12
+    const DriverFrame back = d.frame(s, k1080, 11.0, 6);   // and the clock steps back past it
+    in_range(back);
+    REQUIRE(back.u.degauss == 1.0f);
+    in_range(d.frame(s, k1080, -100.0, 6));
+}
+
+TEST_CASE("tube driver: the tile follows the still's mask type, CRT Native included", "[tube]") {
+    FrameDriver d; TubeSetting s; set_mask(s, Mask::dots); d.start(0.0, 0);
+    REQUIRE(d.frame(s, k1080, 2.0, 0).mask.rgb == mask_tile(Mask::dots, 3, 60 * 0.008f).rgb);
+    const DriverFrame native = d.frame(s, Picture{1280.0, 720.0, true}, 2.1, 0);
+    REQUIRE(native.u.maskType == 0.0f);
+    REQUIRE(native.mask_changed);
+    REQUIRE(native.mask.w == 1); REQUIRE(native.mask.h == 1);
+    REQUIRE(native.mask.rgb == std::vector<std::uint8_t>{255, 255, 255});
+}
+
+TEST_CASE("tube driver: gpu_lost re-sends the glass, mask and targets and touches no clock", "[tube]") {
+    TubeSetting s; set_row(s, Effect::rollBand, 50);
+    FrameDriver d, twin; d.start(0.0, 0); twin.start(0.0, 0);
+    d.frame(s, k1080, 0.5, 0); twin.frame(s, k1080, 0.5, 0);
+    d.frame(s, k1080, 0.6, 0); twin.frame(s, k1080, 0.6, 0);
+    d.gpu_lost();
+    const DriverFrame f = d.frame(s, k1080, 0.7, 0), g = twin.frame(s, k1080, 0.7, 0);
+    REQUIRE(f.glass_changed); REQUIRE(f.mask_changed); REQUIRE(f.still_changed);
+    REQUIRE_FALSE(f.mask.rgb.empty());
+    REQUIRE(f.mask.rgb == d.mask().rgb);
+    REQUIRE_FALSE(g.glass_changed); REQUIRE_FALSE(g.mask_changed); REQUIRE_FALSE(g.still_changed);
+    REQUIRE(f.u.warmupGain == g.u.warmupGain); REQUIRE(f.u.warmupGain < 1.0f);   // still warming up
+    REQUIRE(f.u.rollPosition == g.u.rollPosition);                               // the phases go on
+    REQUIRE(f.u.ablLevel == g.u.ablLevel);
+    const DriverFrame next = d.frame(s, k1080, 0.8, 0);
+    REQUIRE_FALSE(next.glass_changed); REQUIRE_FALSE(next.mask_changed); REQUIRE_FALSE(next.still_changed);
+    REQUIRE(next.mask.rgb.empty());
+    REQUIRE(next.u.rollPosition == twin.frame(s, k1080, 0.8, 0).u.rollPosition);
 }
