@@ -99,10 +99,9 @@ public:
     // No-op (returns true) if no torrent with that hash exists.
     virtual bool delete_torrent(const std::string& hash, bool delete_files);
 
-    // Pause/resume ALL torrents — used by GameQuietMode on every board,
-    // and by PlaybackScreen on boards WITHOUT trickle_torrents_during_
-    // video (Pi 4B / Unknown; Pi 5 movies use the alt-limits trickle
-    // below instead), to halt disk-write contention. The library lives
+    // Legacy explicit ALL-torrent operations. Kiosk playback/game quieting
+    // uses pause_owned/resume_owned above so an operator's stopped torrents
+    // are never adopted. These generic operations do not track ownership. The library lives
     // on the same medium qBit writes torrent pieces to (typically a
     // single USB flash drive on the Pi), so concurrent read+write
     // hammers the drive's random-IO ceiling and makes playback hitch
@@ -118,6 +117,11 @@ public:
     // Best-effort: a failure here must NOT block playback — the
     // user-visible operation is "play movie", not "manage torrents".
     // Caller logs and proceeds either way.
+    // Quiet executor only: journal exact previously-running hashes / an
+    // alt cap we enabled. Never adopt a legacy bool marker as ownership.
+    bool pause_owned(bool full_pause, const std::string& marker);
+    bool resume_owned(const std::string& marker);
+
     virtual bool pause_all();
     virtual bool resume_all();
 
@@ -131,8 +135,8 @@ public:
     // on 5.0.3): GET /api/v2/transfer/speedLimitsMode returns plain-text
     // "0"/"1" and POST /api/v2/transfer/toggleSpeedLimitsMode flips it.
     // This wrapper reads first and toggles only on mismatch, which makes
-    // it idempotent — safe to call "off" at every kiosk startup as crash
-    // recovery without ever accidentally turning the cap ON.
+    // it idempotent. Startup and playback restoration use resume_owned so
+    // this explicit setter never clears an operator's pre-existing cap.
     //
     // Returns true only when the FINAL state matches the request (the
     // post-toggle state is re-read to verify). An empty or malformed GET
@@ -167,6 +171,9 @@ public:
     std::string last_error_on_this_thread() const { return thread_error_slot(); }
 
 protected:
+    // Worker-side durability boundary. Default performs checked POSIX fsync;
+    // injectable like HTTP so storage failures can be exercised without a Pi.
+    virtual bool sync_owned_record(const std::string& path, bool parent_directory);
     // err_mtx_ is a LEAF mutex: set_error never touches cookie_mtx_, so
     // the call sites that already hold cookie_mtx_ nest it safely.
     void set_error(std::string msg) {
@@ -190,6 +197,8 @@ protected:
     Config cfg_;
 
 private:
+    bool write_owned_record(const std::string& path, const std::string& contents);
+    std::recursive_mutex quiet_mtx_;  // owned journal + alt read/toggle transaction
     std::mutex  cookie_mtx_;
     std::string sid_cookie_;     // contents of "Set-Cookie: SID=..."
     mutable std::mutex err_mtx_;

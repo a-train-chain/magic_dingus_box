@@ -69,6 +69,20 @@ inline bool picture_crop(bool stored_crop, double display_aspect) {
     return stored_crop || is_four_by_three(display_aspect);
 }
 
+// Films always show whole in the guide window; full-screen follows the
+// film's preference without forcing a 4:3 source to crop.
+inline bool picture_crop_for(bool is_movie, bool in_guide_window, bool stored,
+                             double display_aspect) {
+    return is_movie ? !in_guide_window && stored : picture_crop(stored, display_aspect);
+}
+
+// A fill control is useful only for a known film/output shape mismatch.
+inline bool movie_fill_offered(double film_aspect, double output_aspect) {
+    if (!std::isfinite(film_aspect) || !std::isfinite(output_aspect) ||
+        film_aspect <= 0.0 || output_aspect <= 0.0) return false;
+    return std::fabs(film_aspect / output_aspect - 1.0) > 0.02;
+}
+
 // The centred 4:3 rect inside w x h: pillarboxed when w x h is wider than
 // 4:3, letterboxed when taller. Integer-exact: 1280x720 -> 960x720,
 // 1920x1080 -> 1440x1080.

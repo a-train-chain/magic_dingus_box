@@ -63,9 +63,10 @@ void set_overlay_cursor(AppState& state, const OverlayCursor& c) {
 }
 
 bool picture_focus_may_stay(const PictureFacts& f) {
-    const bool known_four_by_three =
-        f.aspect.has_value() && video::is_four_by_three(*f.aspect);
-    return f.owns_pipeline && f.has_key && !known_four_by_three;
+    const bool known_no_control = f.aspect.has_value() &&
+        (f.is_movie ? !video::movie_fill_offered(*f.aspect, f.output_aspect)
+                    : video::is_four_by_three(*f.aspect));
+    return f.owns_pipeline && f.has_key && !known_no_control;
 }
 
 bool picture_control_visible(const PictureFacts& f) {

@@ -1,0 +1,120 @@
+[
+  {
+    "id": 1,
+    "tmdbId": 101,
+    "title": "Toy Tale",
+    "year": 1995,
+    "certification": "G",
+    "genres": [
+      "Animation",
+      "Family"
+    ],
+    "hasFile": true,
+    "monitored": true,
+    "movieFile": {
+      "path": "/library/Toy Tale (1995)/Toy Tale.mp4",
+      "relativePath": "Toy Tale.mp4",
+      "size": 1000000000,
+      "quality": {
+        "quality": {
+          "name": "Bluray-1080p"
+        }
+      },
+      "mediaInfo": {
+        "runTime": "1:21:03",
+        "videoCodec": "x264"
+      }
+    }
+  },
+  {
+    "id": 2,
+    "tmdbId": 102,
+    "title": "Night Things",
+    "year": 1982,
+    "certification": "R",
+    "genres": [
+      "Horror"
+    ],
+    "hasFile": true,
+    "monitored": true,
+    "movieFile": {
+      "path": "/library/Night Things (1982)/Night Things.mp4",
+      "relativePath": "Night Things.mp4",
+      "size": 1000000000,
+      "quality": {
+        "quality": {
+          "name": "Bluray-1080p"
+        }
+      },
+      "mediaInfo": {
+        "runTime": "1:41:00",
+        "videoCodec": "x264"
+      }
+    }
+  },
+  {
+    "id": 3,
+    "tmdbId": 103,
+    "title": "Big Laugh",
+    "year": 2004,
+    "certification": "PG-13",
+    "genres": [
+      "Comedy"
+    ],
+    "hasFile": true,
+    "monitored": true,
+    "movieFile": {
+      "path": "/library/Big Laugh (2004)/Big Laugh.mp4",
+      "relativePath": "Big Laugh.mp4",
+      "size": 1000000000,
+      "quality": {
+        "quality": {
+          "name": "Bluray-1080p"
+        }
+      },
+      "mediaInfo": {
+        "runTime": "1:38:30",
+        "videoCodec": "x265"
+      }
+    }
+  },
+  {
+    "id": 4,
+    "tmdbId": 104,
+    "title": "Old Story",
+    "year": 1955,
+    "certification": "NR",
+    "genres": [
+      "Drama",
+      "Romance"
+    ],
+    "hasFile": true,
+    "monitored": true,
+    "movieFile": {
+      "path": "/library/Old Story (1955)/Old Story.mp4",
+      "relativePath": "Old Story.mp4",
+      "size": 1000000000,
+      "quality": {
+        "quality": {
+          "name": "Bluray-1080p"
+        }
+      },
+      "mediaInfo": {
+        "runTime": "2:01:15",
+        "videoCodec": "h264"
+      }
+    }
+  },
+  {
+    "id": 5,
+    "tmdbId": 105,
+    "title": "Not Yet",
+    "year": 2025,
+    "certification": "PG",
+    "genres": [
+      "Adventure"
+    ],
+    "hasFile": false,
+    "monitored": true
+  }
+]

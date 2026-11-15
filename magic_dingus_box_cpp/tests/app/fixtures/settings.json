@@ -11,6 +11,7 @@
     "enhanced_crt_enabled" : false,
     "flicker_intensity" : 0.0,
     "glow_intensity" : 0.0,
+    "guide_mode" : "live",
     "interlacing_intensity" : 0.0,
     "mb_bloom_intensity" : 0.0,
     "mb_flicker_intensity" : 0.0,

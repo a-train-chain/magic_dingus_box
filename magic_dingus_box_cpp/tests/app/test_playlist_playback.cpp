@@ -20,6 +20,7 @@
 
 #include "app/app_state.h"
 #include "app/auto_tune.h"
+#include "app/off_air.h"
 #include "app/channel_schedule.h"
 #include "app/media_info.h"
 #include "app/playback_reset.h"
@@ -31,8 +32,8 @@ using Catch::Approx;
 namespace {
 
 // A start of channel 01's and channel 02's schedule cycles (600 s and 50 s
-// long in the guide tests below): the epoch plus 1000 x 600 s.
-const double kW0 = app::kScheduleEpochUtc + 600.0 * 1000;
+// long in the guide tests below), at a broadcast-day start.
+const double kW0 = 1767585600.0;  // 2026-01-05 04:00 UTC; Cartoons rotates from a
 
 struct FakeTransport : app::PlaylistTransport {
     std::vector<std::string> calls;
@@ -54,6 +55,9 @@ struct FakeTransport : app::PlaylistTransport {
     // The wall clock behind wall_now_utc() (UTC seconds). advance() moves it
     // with the steady clock; a test may also jump it on its own.
     double wall = kW0;
+    int zone_offset = 0;
+    app::UtcOffsetAt offset_at;
+    int utc_offset_s(double utc) const override { return offset_at ? offset_at(utc) : zone_offset; }
     // load_playlist_item_at's offset_s, and the wall clock at that call.
     std::vector<double> offsets;
     std::vector<double> load_wall;
@@ -93,8 +97,11 @@ struct FakeTransport : app::PlaylistTransport {
         load_at_ms.push_back(elapsed_ms());
         return load_ok ? utils::Result<>::ok() : utils::Result<>::fail("boom");
     }
-    utils::Result<> load_playlist_item_at(app::AppState&, const app::Playlist& pl, int idx,
+    utils::Result<> load_playlist_item_at(app::AppState& state, const app::Playlist& pl, int idx,
                                           const std::string&, double offset_s) override {
+        state.loaded_movie.reset();  // Controller::load_playlist_item clears retained ownership
+        state.loaded_on_demand.reset();
+        state.on_demand = false;
         calls.push_back("load_at " + pl.title + " " + std::to_string(idx));
         load_at_ms.push_back(elapsed_ms());
         offsets.push_back(offset_s);
@@ -1458,7 +1465,7 @@ TEST_CASE("tuning 00 joins the mix: tuned channel 00, the source playlist plays"
     g.pb.tune(0, false);
     run_frames(g.pb, g.t, kSettled);
     REQUIRE(g.t.load_wall.size() == 1);
-    const auto oa = app::on_air(g.channels[0], g.t.load_wall[0]);
+    const auto oa = app::on_air(g.channels[0], g.t.load_wall[0], g.t.zone_offset);
     REQUIRE(oa);
     const app::ScheduledItem& want = g.channels[0].items[oa->index];
 
@@ -1568,7 +1575,7 @@ TEST_CASE("a rebuild that re-phases the tuned channel: the next boundary joins i
           "[playlist_playback][guide]") {
     // An upload to the tuned channel's playlist (media_info.poll() -> a
     // rebuild) changes its cycle: 01 gains d (420 s), 600 s -> 1020 s, and
-    // the epoch-anchored schedule moves every airing. b keeps its index, so
+    // the daily rotation changes when its item count changes. b keeps its index, so
     // only the airing check tells the boundary that "the live airing began
     // before b's old end" is a re-phase, not playback running ahead.
     Guide g;
@@ -1588,13 +1595,13 @@ TEST_CASE("a rebuild that re-phases the tuned channel: the next boundary joins i
     g.pb.set_channels(&rebuilt);
     g.channels.clear();
 
-    // b ends on its old time. New schedule (cycle start kW0 - 240): c airs
-    // 60-360 s, so it is 240.4 s in — not c from its start, out of phase.
+    // b ends on its old time. The four-item rotation starts with d,
+    // which airs 0-420 s: join it 300.4 s in, not its successor.
     g.s.update_playback_state(199.6, 200.0);
     g.t.wall = kW0 + 300.4;
     g.pb.tick_auto_advance();
-    CHECK(g.t.last() == "load_at Cartoons 2");
-    CHECK(g.t.last_offset() == Approx(240.4));
+    CHECK(g.t.last() == "load_at Cartoons 3");
+    CHECK(g.t.last_offset() == Approx(300.4));
 }
 
 TEST_CASE("an identical rebuild (a crop-only media info change) keeps the ahead guard",
@@ -1642,7 +1649,7 @@ TEST_CASE("a rebuilt channel list is used at the next boundary",
     g.playing();
 
     // Mid-item the library changes: c loses its length, so 01 is a, b — a
-    // 300 s cycle. The old list goes away entirely.
+    // 300 s cycle rotated b, a. The old list goes away entirely.
     auto info = guide_lengths();
     info.erase("c.mp4");
     std::vector<app::Channel> rebuilt = app::build_channels(g.s.playlists, info);
@@ -1652,9 +1659,9 @@ TEST_CASE("a rebuilt channel list is used at the next boundary",
     CHECK(g.s.tuned_channel == 1);
 
     g.s.update_playback_state(199.6, 200.0);
-    g.t.wall = kW0 + 300.5;  // old list: c, 0.5 s in; new list: a, 0.5 s in
+    g.t.wall = kW0 + 300.5;  // old list: c, 0.5 s in; new list: b, 0.5 s in
     g.pb.tick_auto_advance();
-    CHECK(g.t.last() == "load_at Cartoons 0");
+    CHECK(g.t.last() == "load_at Cartoons 1");
     CHECK(g.t.last_offset() == Approx(0.5));
 }
 
@@ -2141,9 +2148,18 @@ void nothing_playing_rule(Guide& g) {
     in.last_channel = id.empty()                    ? -1
                       : id == app::kShuffleChannelId ? 0
                                                      : app::find_playlist_by_identity(g.s.playlists, id);
-    for (const auto& ch : g.channels) in.tunable.push_back(!ch.items.empty());
+    for (int row = 0; row < static_cast<int>(g.channels.size()); ++row)
+        in.tunable.push_back(g.pb.channel_on_air(row));
     in.gave_up = g.s.guide_gave_up;
-    if (const auto c = app::decide_auto_tune(in)) g.pb.tune(*c, /*keep_overlay=*/false);
+    in.last_channel_off_air = in.last_channel >= 0 &&
+        app::back_on_air_at(g.channels[in.last_channel], in.now_utc,
+            g.t.utc_offset_s(in.now_utc), [&](double utc) { return g.t.utc_offset_s(utc); }).has_value();
+    if (const auto c = app::decide_auto_tune(in)) {
+        if (*c == 0 && in.last_channel_off_air &&
+            std::find(in.gave_up.begin(), in.gave_up.end(), in.last_channel) == in.gave_up.end())
+            g.s.off_air_return_id = g.s.last_channel_id;
+        g.pb.tune(*c, /*keep_overlay=*/false);
+    }
 }
 
 // main.cpp's per-frame playback ticks, in its order, every 16 ms for `total`
@@ -2619,4 +2635,861 @@ TEST_CASE("a frozen stream that is not a channel load is still restarted with pl
     CHECK(g.t.calls == std::vector<std::string>{"play"});
     CHECK(err.count("restarting playback") == 1);
     CHECK(err.count("PLAYING (SUCCESS)") == 1);
+}
+
+TEST_CASE("a daily cut advances at the cut file position including a start trim", "[playlist_playback][guide]") {
+    Guide g;
+    g.s.playlists[1].items.resize(1);
+    g.s.playlists[1].items[0].start = 10;
+    g.s.playlists[1].items[0].end = 100010;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 86400 - 30;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.offsets.size() == 1);
+    g.playing();
+    g.s.update_playback_state(86409.4, 100010);
+    g.pb.tick_auto_advance();
+    CHECK(g.t.offsets.size() == 1);  // not at cut yet
+    g.s.update_playback_state(86409.6, 100010);
+    g.t.wall = kW0 + 86400 - 0.4;
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == 2);
+    CHECK(g.t.last_offset() == 0);
+}
+
+TEST_CASE("an offset change rejoins live once then protects the next loaded airing", "[playlist_playback][guide]") {
+    Guide g;
+    // +1 h is six whole 600 s passes: the live airing has the same index
+    // and start time, so validating only those would miss the zone change.
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.s.current_item_index == 1);
+    g.playing();
+    g.t.zone_offset = 3600;
+    g.t.wall = kW0 + 150;
+    g.s.update_playback_state(199.6, 200);
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == 2);
+    CHECK(g.s.current_item_index == 1);
+    CHECK(g.t.last_offset() == Approx(50));  // join live, not the old airing's successor
+    g.playing();
+    g.s.last_advanced_item_index = -1;
+    g.t.wall = kW0 + 160;
+    g.s.update_playback_state(199.6, 200);
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == 3);
+    CHECK(g.s.current_item_index == 2);
+    CHECK(g.t.last_offset() == 0);  // same zone now: never reload that airing again
+}
+
+TEST_CASE("the live day boundary cuts once even when a keyframe seek left playback behind", "[playlist_playback][guide]") {
+    Guide g;
+    g.t.wall = kW0 + 86400 - 30;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.offsets.size() == 1);
+    g.playing();
+    // The decoder is eight seconds behind the requested offset, far from EOS.
+    g.s.update_playback_state(292, 300);
+    g.t.wall = kW0 + 86400;
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == 2);
+    CHECK(g.t.last_offset() == 0);
+    g.pb.tick_auto_advance();
+    CHECK(g.t.offsets.size() == 2);
+}
+
+TEST_CASE("movie tunes persist and re-anchor by the canonical channel identity", "[playlist_playback][guide][identity]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 3 * 3600;
+    g.pb.tune(2, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.s.tuned_channel == 2);
+    CHECK(g.s.last_channel_id == "movies:mix");
+    app::Playlist added;
+    added.title = "New";
+    added.path = "/p/new.yaml";
+    added.items = {video_item("a")};
+    g.s.playlists.insert(g.s.playlists.begin() + 2, added);
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    CHECK(g.s.tuned_channel == 3);
+    CHECK(g.s.last_channel_id == "movies:mix");
+}
+
+TEST_CASE("manually constructed channels without identity retain playlist persistence", "[playlist_playback][guide][identity]") {
+    Guide g;
+    for (auto& ch : g.channels) ch.identity.clear();
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.last_channel_id == "path:/p/cartoons.yaml");
+    g.pb.set_channels(&g.channels);
+    CHECK(g.s.tuned_channel == 1);
+}
+
+TEST_CASE("a playing channel keeps both live cut limits when a reload renumbers its row",
+          "[playlist_playback][guide][cut_reload]") {
+    for (bool movie : {false, true}) {
+        for (bool clock_cut : {false, true}) {
+            DYNAMIC_SECTION("movie=" << movie << ", clock_cut=" << clock_cut) {
+                Guide g;
+                g.s.playlists[1].items.resize(1);
+                g.s.playlists[1].items[0].start = 10;
+                g.s.playlists[1].items[0].end = 100010;
+                if (movie) g.s.playlists[1].path = "movies:mix";
+                g.channels = app::build_channels(g.s.playlists, guide_lengths());
+                g.pb.set_channels(&g.channels);
+                const double close = kW0 + (movie ? 21 : 24) * 3600;
+                const double cut_position = 10 + (movie ? 19 : 24) * 3600;
+                g.t.wall = close - 30;
+                g.pb.tune(1, false);
+                run_frames(g.pb, g.t, kSettled);
+                REQUIRE(g.t.offsets.size() == 1);
+                g.playing();
+
+                app::Playlist news;
+                news.title = "News";
+                news.path = "/p/news.yaml";
+                news.items = {video_item("n")};
+                g.s.playlists.insert(g.s.playlists.begin() + 1, news);
+                g.s.current_playlist_index = 2;  // the reload keeps the existing stream
+                // Rebuild in place, as main does. The playing channel moves 01 -> 02.
+                g.channels = app::build_channels(g.s.playlists, guide_lengths());
+                g.pb.set_channels(&g.channels);
+                REQUIRE(g.s.tuned_channel == 2);
+                const auto calls_before_cut = g.t.calls.size();
+                g.s.update_playback_state(cut_position - 8, 100010);
+                g.t.wall = close - 10;
+                g.pb.tick_auto_advance();
+                CHECK(g.t.calls.size() == calls_before_cut);
+
+                if (clock_cut) {  // wall deadline, while the decoder is still eight seconds behind
+                    g.t.wall = close;
+                } else {  // file-position cut just before the clock reaches the boundary
+                    g.t.wall = close - 0.4;
+                    g.s.update_playback_state(cut_position - 0.4, 100010);
+                }
+                if (movie && !clock_cut) {
+                    g.pb.tick_auto_advance();
+                    CHECK(g.t.calls.size() == calls_before_cut); // retain until the exact civil close
+                    g.t.wall = close;
+                }
+                g.pb.tick_auto_advance();
+                const auto cut_calls = calls_before_cut + (movie ? 2 : 1);
+                REQUIRE(g.t.calls.size() == cut_calls);
+                if (movie) {
+                    CHECK(g.s.tuned_channel == 0);
+                    CHECK(g.s.off_air_return_id == "movies:mix");
+                    CHECK(g.s.last_channel_id == "movies:mix");
+                } else {
+                    CHECK(g.t.last() == "load_at Cartoons 0");
+                    CHECK(g.t.last_offset() == 0);
+                    CHECK(g.s.current_playlist_index == 2);
+                }
+                g.pb.tick_auto_advance();
+                CHECK(g.t.calls.size() == cut_calls);  // exactly one cut
+            }
+        }
+    }
+}
+
+TEST_CASE("a removed movie channel retains its film until end then stops exactly once", "[playlist_playback][movie_reload]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.wall = kW0 + 3 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, false);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh;
+    fresh.video = g.s.playlists; fresh.video.erase(fresh.video.begin() + 2);
+    const auto before = g.t.calls.size();
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    CHECK(g.t.calls.size() == before); CHECK(g.s.tuned_channel == -1);
+    CHECK(g.pb.owns_pipeline());
+    g.s.update_playback_state(5, 50); g.pb.tick_auto_advance();
+    CHECK(g.t.calls.size() == before);
+    SECTION("natural end") { g.s.update_playback_state(50, 50); }
+    SECTION("live day deadline still applies to the retained film") {
+        g.t.wall = kW0 + 21 * 3600;
+    }
+    g.pb.tick_auto_advance();
+    REQUIRE(g.t.calls.size() == before + 1); CHECK(g.t.last() == "stop");
+    CHECK_FALSE(g.s.loaded_movie); CHECK_FALSE(g.s.video_active);
+    g.pb.tick_auto_advance(); CHECK(g.t.calls.size() == before + 1);
+}
+
+TEST_CASE("leaving guide style releases a loaded movie immediately", "[playlist_playback][movie_reload]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    g.t.wall = kW0 + 3 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, false);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    REQUIRE(g.s.loaded_movie);
+    const auto before = g.t.calls.size();
+    g.pb.set_channels(nullptr);
+    CHECK(g.t.calls.size() == before + 1); CHECK(g.t.last() == "stop");
+    CHECK_FALSE(g.s.loaded_movie); CHECK_FALSE(g.s.video_active);
+}
+
+TEST_CASE("a returned movie channel reanchors its still-playing retained film", "[playlist_playback][movie_reload]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    const auto original = g.s.playlists;
+    g.t.wall = kW0 + 3 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, false);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    auto replace = [&](std::vector<app::Playlist> rows) {
+        const auto snap = app::snapshot_for_reload(g.s, -1);
+        app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = std::move(rows);
+        app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+        g.channels = app::build_channels(g.s.playlists, guide_lengths());
+        g.pb.set_channels(&g.channels);
+    };
+    auto without = original; without.erase(without.begin() + 2);
+    const auto before = g.t.calls.size();
+    replace(without); REQUIRE(g.s.tuned_channel == -1);
+    replace(original);
+    CHECK(g.s.tuned_channel == 2); CHECK(g.t.calls.size() == before);
+    REQUIRE(g.s.current_playlist_item()); CHECK(g.s.current_playlist_item()->title == "m");
+}
+
+TEST_CASE("a movie refresh reanchors a pending tune by identity before its load", "[playlist_playback][movie_reload]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:mix";
+    g.t.wall = kW0 + 3 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, false);
+    const auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+    app::Playlist added; added.title = "New"; added.path = "/p/new.yaml";
+    fresh.video.insert(fresh.video.begin() + 1, added);
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.t.last() == "load_at Movies 0");
+    CHECK(g.s.tuned_channel == 3); REQUIRE(g.s.loaded_movie);
+    CHECK(g.s.loaded_movie->channel_identity == "movies:mix");
+}
+
+TEST_CASE("row movement keeps the ahead guard when a film ends before its wall slot", "[playlist_playback][airing_reanchor]") {
+    for (bool movie : {false, true}) {
+        DYNAMIC_SECTION("movie=" << movie) {
+            Guide g;
+            auto& source = g.s.playlists[1];
+            source.items.resize(2);
+            source.items[0].end = 120; source.items[1].end = 120;
+            source.items[0].movie_tmdb_id = movie ? 11 : 0;
+            source.items[1].movie_tmdb_id = movie ? 22 : 0;
+            if (movie) source.path = "movies:mix";
+            const double start = kW0 + (movie ? 2 * 3600 : 0);
+            g.t.wall = start + 10;
+            g.channels = app::build_channels(g.s.playlists, guide_lengths());
+            g.pb.set_channels(&g.channels); g.pb.tune(1, false);
+            run_frames(g.pb, g.t, kSettled); g.playing();
+            REQUIRE(g.s.current_playlist_item());
+            const std::string ended = g.s.current_playlist_item()->title;
+            const std::string next = ended == "a" ? "b" : "a";
+            const auto snap = app::snapshot_for_reload(g.s, -1);
+            app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+            app::Playlist added; added.title = "News"; added.path = "/p/news.yaml";
+            fresh.video.insert(fresh.video.begin() + 1, added);
+            const auto calls = g.t.calls.size();
+            app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+            g.channels = app::build_channels(g.s.playlists, guide_lengths());
+            g.pb.set_channels(&g.channels);
+            REQUIRE(g.s.tuned_channel == 2); CHECK(g.t.calls.size() == calls);
+            SECTION("early EOF") { g.t.wall = start + 100; }
+            SECTION("seek to end") { g.t.wall = start + 20; }
+            g.s.update_playback_state(120, 120);
+            g.pb.tick_auto_advance();
+            REQUIRE(g.t.calls.size() == calls + 1);
+            REQUIRE(g.s.current_playlist_item());
+            CHECK(g.s.current_playlist_item()->title == next);
+            CHECK(g.t.last_offset() == 0);
+        }
+    }
+}
+
+TEST_CASE("reanchoring never treats a replacement movie at the same coordinates as the ended film", "[playlist_playback][airing_reanchor]") {
+    Guide g;
+    auto& source = g.s.playlists[1]; source.path = "movies:mix";
+    source.items.resize(2);
+    source.items[0].end = 120; source.items[1].end = 120;
+    source.items[0].movie_tmdb_id = 11; source.items[1].movie_tmdb_id = 22;
+    const double start = kW0 + 2 * 3600;
+    g.t.wall = start + 10;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    const int old_item = g.s.current_item_index;
+    const auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+    fresh.video[1].items[old_item].movie_tmdb_id = 999;
+    fresh.video[1].items[old_item].title = "Replacement";
+    app::Playlist added; added.path = "/p/news.yaml";
+    fresh.video.insert(fresh.video.begin() + 1, added);
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels);
+    g.t.wall = start + 100;
+    SECTION("natural end rejoins the replacement live") {
+        g.s.update_playback_state(120, 120); g.pb.tick_auto_advance();
+        REQUIRE(g.s.current_playlist_item());
+        CHECK(g.s.current_playlist_item()->movie_tmdb_id == 999);
+        CHECK(g.t.last_offset() == Approx(100));
+    }
+    SECTION("failure never skips a replacement at stale coordinates") {
+        g.t.error = true; g.pb.tick_pipeline_error();
+        REQUIRE(g.s.current_playlist_item());
+        CHECK(g.s.current_playlist_item()->movie_tmdb_id == 999);
+        CHECK(g.t.last_offset() == 0);
+    }
+}
+
+TEST_CASE("a failed film starts the next programme immediately from its beginning", "[playlist_playback][movie_failure]") {
+    Guide g;
+    g.s.playlists[1].path = "movies:mix";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 2 * 3600 + 10;
+    int failures = 0;
+    g.pb.set_movie_failure_hook([&] { ++failures; });
+    g.pb.tune(1, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    const int first = g.s.current_item_index;
+    const auto loads = g.t.offsets.size();
+    g.t.error = true; g.pb.tick_pipeline_error();
+    REQUIRE(g.t.offsets.size() == loads + 1);
+    CHECK(g.s.current_item_index != first); CHECK(g.t.last_offset() == 0);
+    CHECK(g.s.guide_wait_until_utc == 0); CHECK(failures == 1);
+    SECTION("duplicate error is not counted again") {
+        g.pb.tick_pipeline_error(); CHECK(failures == 1);
+    }
+    SECTION("three failed films exhaust the channel budget") {
+        for (int i = 0; i < 2; ++i) { ++g.t.generation; g.playing(); g.pb.tick_pipeline_error(); }
+        CHECK(failures == 3); CHECK(g.s.tuned_channel == -1); CHECK_FALSE(g.s.loaded_movie);
+        CHECK_FALSE(g.s.video_active);
+    }
+    SECTION("a synchronous load failure also advances within the same budget") {
+        ++g.t.generation; g.t.load_ok = false; g.playing(); g.pb.tick_pipeline_error();
+        CHECK(failures == 3); CHECK(g.s.tuned_channel == -1);
+    }
+}
+
+TEST_CASE("a failed movie channel remains given up by identity when refresh renumbers rows", "[playlist_playback][movie_failure]") {
+    Guide g; g.s.playlists[2].path = "movies:mix"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 3 * 3600; g.pb.tune(2, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.error = true; g.pb.tick_pipeline_error();
+    REQUIRE(g.s.guide_gave_up == std::vector<int>{2});
+    std::swap(g.s.playlists[1], g.s.playlists[2]);
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    CHECK(g.s.guide_gave_up == std::vector<int>{1});
+}
+
+TEST_CASE("a failed last movie promptly falls back without retuning its failed identity", "[playlist_playback][movie_failure]") {
+    Guide g; g.s.playlists[1].path = "movies:mix";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 90; g.pb.tune(1, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto loads = g.t.offsets.size();
+    g.t.error = true; g.pb.tick_pipeline_error();
+    CHECK(g.t.offsets.size() == loads); CHECK_FALSE(g.s.loaded_movie); CHECK_FALSE(g.s.video_active);
+    CHECK(g.s.guide_wait_until_utc == 0);
+    CHECK(g.s.tuned_channel == -1);
+    CHECK(g.s.last_channel_id == "movies:mix");
+    CHECK(g.s.guide_gave_up == std::vector<int>{1});
+    g.t.error = false;
+    SECTION("another channel plays promptly") {
+        nothing_playing_rule(g); run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 2); CHECK(g.t.offsets.size() == loads + 1);
+    }
+    SECTION("00 is available when no other channel is") {
+        for (std::size_t row = 2; row < g.channels.size(); ++row) g.channels[row].items.clear();
+        nothing_playing_rule(g); run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel == 0); CHECK(g.t.offsets.size() == loads + 1);
+    }
+    SECTION("no playable fallback remains stopped boundedly") {
+        for (std::size_t row = 0; row < g.channels.size(); ++row)
+            if (row != 1) g.channels[row].items.clear();
+        for (int frame = 0; frame < 60; ++frame) nothing_playing_rule(g);
+        CHECK(g.s.tuned_channel == -1); CHECK(g.t.offsets.size() == loads);
+        CHECK_FALSE(g.pb.switch_pending());
+    }
+    SECTION("refresh cannot make the same failed identity eligible again") {
+        std::swap(g.s.playlists[1], g.s.playlists[2]);
+        g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+        CHECK(g.s.guide_gave_up == std::vector<int>{2});
+        nothing_playing_rule(g); run_frames(g.pb, g.t, kSettled);
+        CHECK(g.s.tuned_channel != 2); CHECK(g.t.offsets.size() == loads + 1);
+    }
+}
+
+TEST_CASE("failed-film fallback does not spin on other off-air movie channels", "[playlist_playback][movie_failure]") {
+    Guide g;
+    g.s.playlists[1].path = "movies:mix"; g.s.playlists[2].path = "movies:kids";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.s.playlists[2].items[0].movie_tmdb_id = 99;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 21 * 3600 - 90;
+    g.pb.tune(1, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.error = true; g.pb.tick_pipeline_error();
+    const auto loads = g.t.offsets.size(); const auto calls = g.t.calls.size();
+    g.t.error = false; g.t.wall = kW0 + 21 * 3600;
+    guide_frames(g, std::chrono::seconds(5), true);
+    CHECK(g.s.tuned_channel == -1); CHECK_FALSE(g.pb.switch_pending());
+    CHECK(g.t.offsets.size() == loads); CHECK(g.t.calls.size() == calls);
+}
+
+TEST_CASE("a live film is cut at one and parks on 00 without changing last channel", "[playlist_playback][off_air]") {
+    Guide g;
+    g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.wall = kW0 + 21 * 3600 - 20;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); g.pb.tune(2, true);
+    run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.ui_visible_when_playing = true;
+    const auto loads = g.t.offsets.size();
+    g.t.wall = kW0 + 21 * 3600;
+    g.pb.tick_auto_advance();
+    CHECK(g.s.tuned_channel == 0);
+    CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK(g.s.last_channel_id == "movies:comedy");
+    CHECK(g.t.offsets.size() == loads + 1);
+    CHECK_FALSE(g.s.loaded_movie);
+    CHECK(g.s.ui_visible_when_playing);
+}
+
+TEST_CASE("refresh while parked retains 00 and returns to movie by identity at six", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.wall = kW0 + 21 * 3600 - 20;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.wall = kW0 + 21 * 3600; g.pb.tick_auto_advance(); g.playing();
+    REQUIRE(g.s.tuned_channel == 0);
+    const auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+    std::swap(fresh.video[1], fresh.video[2]);
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.last_channel_id == "movies:comedy");
+    CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK_FALSE(app::off_air_return_row(g.s, 1, g.pb.channel_on_air(1), false));
+    g.t.wall = kW0 + 26 * 3600;
+    const auto row = app::off_air_return_row(g.s, 1, g.pb.channel_on_air(1), false);
+    REQUIRE(row == 1); g.pb.tune(*row, true); run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.tuned_channel == 1); CHECK(g.s.off_air_return_id.empty());
+    CHECK(g.s.last_channel_id == "movies:comedy"); REQUIRE(g.s.loaded_movie);
+    CHECK(g.s.loaded_movie->item.movie_tmdb_id == 42);
+}
+
+TEST_CASE("channel step skips off-air movies", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[1].path = "movies:kids";
+    g.t.wall = kW0 + 23 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(0, false); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.pb.on_next(); CHECK(g.pb.pending_tune() == 2);
+}
+
+TEST_CASE("timezone reload rephases a live channel once across civil boundaries", "[playlist_playback][off_air][timezone_reload]") {
+    Guide g;
+    bool movie = true;
+    SECTION("new zone enters the one AM close") { g.t.wall = kW0 + 20 * 3600; }
+    SECTION("new zone crosses the four AM playlist reset") { movie = false; g.t.wall = kW0 - 3600; }
+    SECTION("new zone crosses the six AM movie start") { g.t.wall = kW0 + 3 * 3600; }
+    if (movie) { g.s.playlists[2].path = "movies:comedy"; g.s.playlists[2].items[0].movie_tmdb_id = 42; }
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto loads = g.t.offsets.size();
+    g.t.zone_offset = g.t.wall < kW0 ? 2 * 3600 : (g.t.wall < kW0 + 5 * 3600 ? -3600 : 2 * 3600);
+    g.pb.on_timezone_reload(); g.pb.tick_auto_advance();
+    REQUIRE(g.t.offsets.size() == loads + 1);
+    CHECK(g.s.tuned_channel == (g.t.wall > kW0 + 5 * 3600 ? 0 : 2));
+    if (g.s.tuned_channel == 2) {
+        const auto oa = app::join_point(g.channels[2], g.t.wall, g.t.zone_offset);
+        REQUIRE(oa); CHECK(g.t.last_offset() == Approx(oa->offset_s));
+    } else CHECK(g.s.off_air_return_id == "movies:comedy");
+    g.playing(); g.pb.tick_auto_advance(); CHECK(g.t.offsets.size() == loads + 1);
+}
+
+TEST_CASE("a live film parks at the first repeated one AM until six after DST", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.offset_at = [](double utc) { return utc < kW0 + 21 * 3600 ? 3600 : 0; };
+    g.t.wall = kW0 + 20 * 3600 - 20;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.wall = kW0 + 20 * 3600; g.pb.tick_auto_advance();
+    REQUIRE(g.s.tuned_channel == 0); CHECK(g.s.off_air_return_id == "movies:comedy");
+    g.t.wall = kW0 + 22 * 3600;
+    CHECK_FALSE(app::off_air_return_row(g.s, 2, g.pb.channel_on_air(2), false));
+    g.t.wall = kW0 + 26 * 3600;
+    CHECK(app::off_air_return_row(g.s, 2, g.pb.channel_on_air(2), false) == 2);
+}
+
+TEST_CASE("overnight power-on preserves the last movie through the 00 load", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:kids"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.s.last_channel_id = "movies:kids"; g.t.wall = kW0 + 23 * 3600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    nothing_playing_rule(g); REQUIRE(g.pb.pending_tune() == 0);
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.last_channel_id == "movies:kids");
+    CHECK(g.s.off_air_return_id == "movies:kids");
+}
+
+TEST_CASE("zone reload replaces a live deadline even when the current offset is unchanged", "[playlist_playback][timezone_reload]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42; g.s.playlists[2].items[0].end = 100000;
+    g.t.wall = kW0 + 19 * 3600; // 23:00 UTC, initially UTC local time
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.update_playback_state(100, 100000);
+    // A replacement named zone has the same offset NOW, but gains an hour
+    // at midnight: its first 1AM is midnight UTC, not the old 01:00 UTC.
+    g.t.offset_at = [](double utc) { return utc < kW0 + 20 * 3600 ? 0 : 3600; };
+    g.pb.on_timezone_reload(); g.pb.tick_auto_advance(); g.playing();
+    const auto loads = g.t.offsets.size();
+    g.t.wall = kW0 + 20 * 3600;
+    g.pb.tick_auto_advance();
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK(g.t.offsets.size() == loads + 1);
+}
+
+TEST_CASE("an overnight park without a 00 schedule stops once and remains bounded", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy"; g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.t.wall = kW0 + 21 * 3600 - 20;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.channels[0].items.clear();
+    g.pb.set_channels(&g.channels); g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto calls = g.t.calls.size();
+    g.t.wall = kW0 + 21 * 3600;
+    for (int frame = 0; frame < 60; ++frame) g.pb.tick_auto_advance();
+    CHECK(g.t.calls.size() == calls + 1); CHECK(g.t.last() == "stop");
+    CHECK(g.s.tuned_channel == 0); CHECK_FALSE(g.s.loaded_movie);
+    CHECK(g.s.off_air_return_id == "movies:comedy"); CHECK(g.s.last_channel_id == "movies:comedy");
+    g.pb.set_channels(nullptr); CHECK(g.s.off_air_return_id.empty());
+}
+
+TEST_CASE("the end tolerance before one AM cannot lose the overnight return", "[playlist_playback][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42; g.s.playlists[2].items[0].end = 100000;
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 30;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto calls = g.t.calls.size();
+    CHECK(g.pb.live_cutoff_utc() == close);
+    g.s.update_playback_state(19 * 3600 - 0.4, 100000); g.t.wall = close - 0.4;
+    g.pb.tick_auto_advance(); nothing_playing_rule(g);
+    CHECK(g.t.calls.size() == calls); CHECK(g.s.loaded_movie); CHECK_FALSE(g.pb.switch_pending());
+    g.t.wall = close; g.pb.tick_auto_advance();
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK(g.s.last_channel_id == "movies:comedy");
+}
+
+TEST_CASE("the final-frame hold cannot strand a programme that ends early", "[playlist_playback][off_air]") {
+    for (double left : {1.0, 60.0, 3600.0}) {
+        DYNAMIC_SECTION("seconds before close " << left) {
+            Guide g; g.s.playlists[2].path = "movies:comedy";
+            g.s.playlists[2].items[0].movie_tmdb_id = 42; g.s.playlists[2].items[0].end = 100000;
+            const double close = kW0 + 21 * 3600;
+            g.t.wall = close - 4000;
+            g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+            g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+            const auto calls = g.t.calls.size();
+            g.t.wall = close - left; g.s.update_playback_state(100000, 100000);
+            g.pb.tick_auto_advance();
+            CHECK(g.t.calls.size() == calls + 1); CHECK(g.t.last() == "stop");
+            CHECK_FALSE(g.s.loaded_movie); CHECK(g.s.off_air_return_id.empty());
+        }
+    }
+}
+
+TEST_CASE("overnight parking gives 00 its full failure budget after a late movie failure", "[playlist_playback][off_air][movie_failure]") {
+    Guide g;
+    g.s.playlists[1].path = "movies:comedy";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 2 * 3600 + 10;
+    g.pb.tune(1, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    // The decoder fails just before close, after the film has lagged its
+    // schedule. Advance starts the next scheduled film from its beginning.
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 2; g.t.error = true;
+    g.pb.tick_pipeline_error();
+    REQUIRE(g.s.tuned_channel == 1); REQUIRE(g.s.loaded_movie);
+    g.t.error = false; ++g.t.generation; g.t.position = 0; g.playing();
+    g.pb.tick_pipeline_error(); // fewer than three healthy seconds: old failure is outstanding
+    g.t.wall = close; g.pb.tick_auto_advance();
+    REQUIRE(g.s.tuned_channel == 0); REQUIRE_FALSE(g.s.loaded_movie);
+    REQUIRE(g.pb.failure_budget() == 10);
+    for (int failure = 1; failure <= 10; ++failure) {
+        INFO("00 failure " << failure);
+        if (failure > 1) {
+            g.t.error = false; g.pb.tune(0, true); run_frames(g.pb, g.t, kSettled);
+        }
+        ++g.t.generation; g.t.position = 0; g.t.error = true; g.playing();
+        g.pb.tick_pipeline_error();
+        if (failure < 10) {
+            REQUIRE(g.s.tuned_channel == 0);
+            CHECK(g.s.guide_gave_up.empty());
+        } else {
+            CHECK(g.s.tuned_channel == -1);
+            CHECK(g.s.guide_gave_up == std::vector<int>{0});
+        }
+    }
+}
+
+TEST_CASE("on-demand selection settles before loading the chosen programme from zero", "[playlist_playback][on_demand]") {
+    Guide g; g.t.wall = kW0 + 130;
+    const auto selected = app::on_air(g.channels[1], kW0 + 310, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected);
+    CHECK(g.t.calls == std::vector<std::string>{"stop"});
+    g.pb.tune(2, true); // pending selection owns the switch
+    g.pb.play_on_demand(2, *app::on_air(g.channels[2], g.t.wall, 0));
+    run_frames(g.pb, g.t, kSettled);
+    CHECK(g.t.last() == "load_at Cartoons 2"); CHECK(g.t.last_offset() == 0);
+    CHECK(g.s.on_demand); CHECK(g.s.tuned_channel == 1);
+    CHECK_FALSE(g.s.ui_visible_when_playing);
+}
+
+TEST_CASE("on-demand end rejoins another live programme or skips the watched live item", "[playlist_playback][on_demand]") {
+    Guide g; g.t.wall = kW0 + 130;
+    bool same = false;
+    SECTION("live is another programme") {}
+    SECTION("live is the chosen programme") { same = true; }
+    const auto selected = app::on_air(g.channels[1], kW0 + (same ? 130 : 310), 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.update_playback_state(same ? 200 : 300, same ? 200 : 300);
+    g.pb.tick_auto_advance();
+    CHECK_FALSE(g.s.on_demand);
+    CHECK(g.t.last() == (same ? "load_at Cartoons 2" : "load_at Cartoons 1"));
+    CHECK(g.t.last_offset() == Approx(same ? 0 : 30.3).margin(0.03));
+}
+
+TEST_CASE("channel step leaves on-demand playback for live", "[playlist_playback][on_demand]") {
+    Guide g; g.t.wall = kW0 + 130;
+    auto selected = app::on_air(g.channels[1], kW0 + 310, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.pb.on_next(); run_frames(g.pb, g.t, kSettled);
+    CHECK_FALSE(g.s.on_demand); CHECK(g.s.tuned_channel == 2);
+    CHECK(g.t.last_offset() > 0);
+}
+
+TEST_CASE("a selected movie survives live cuts and timezone reload until its own end", "[playlist_playback][on_demand]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.s.playlists[2].items[0].end = 100000;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 30;
+    auto selected = app::on_air(g.channels[2], g.t.wall, 0); REQUIRE(selected);
+    g.pb.play_on_demand(2, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto loads = g.t.offsets.size();
+    CHECK(g.pb.live_cutoff_utc() == 0);
+    g.s.update_playback_state(19 * 3600, 100000); g.t.wall = close - 0.3;
+    g.pb.tick_auto_advance(); CHECK(g.t.offsets.size() == loads); CHECK(g.s.on_demand);
+    g.t.wall = close + 10; g.pb.tick_auto_advance();
+    CHECK(g.t.offsets.size() == loads); CHECK(g.s.on_demand);
+    g.t.zone_offset = 3600; g.pb.on_timezone_reload(); g.pb.tick_auto_advance();
+    CHECK(g.t.offsets.size() == loads); CHECK(g.s.on_demand);
+    // Row and item removed while playing: actual retained film owns EOF.
+    g.s.playlists[2].items.clear(); g.channels = app::build_channels(g.s.playlists, guide_lengths());
+    g.pb.set_channels(&g.channels); REQUIRE(g.s.current_playlist_item());
+    g.s.update_playback_state(100000, 100000); g.pb.tick_auto_advance();
+    CHECK_FALSE(g.s.on_demand); CHECK(g.s.tuned_channel == 0);
+    CHECK(g.s.off_air_return_id == "movies:comedy");
+}
+
+TEST_CASE("tomorrow's selected programme ends by joining today's live schedule", "[playlist_playback][on_demand]") {
+    Guide g; g.t.wall = kW0 + 130;
+    const auto selected = app::on_air(g.channels[1], kW0 + 86400 + 310, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.update_playback_state(1000, 1000); g.pb.tick_auto_advance();
+    CHECK_FALSE(g.s.on_demand);
+    CHECK(g.t.last() == "load_at Cartoons 1");
+    CHECK(g.t.last_offset() == Approx(30.3).margin(0.03));
+}
+
+TEST_CASE("pending selected programme follows media identity through refresh", "[playlist_playback][on_demand]") {
+    Guide g; g.t.wall = kW0 + 130;
+    const auto selected = app::on_air(g.channels[1], kW0 + 310, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected);
+    bool removed = false;
+    SECTION("reordered item is found") { std::swap(g.s.playlists[1].items[0], g.s.playlists[1].items[2]); }
+    SECTION("replacement at old coordinate is never loaded") { removed = true; g.s.playlists[1].items[2] = video_item("replacement"); }
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    run_frames(g.pb, g.t, kSettled);
+    if (removed) { CHECK(g.t.offsets.empty()); CHECK_FALSE(g.s.on_demand); }
+    else { CHECK(g.t.last() == "load_at Cartoons 0"); CHECK(g.s.on_demand); }
+}
+
+TEST_CASE("selected final movie parks promptly without bouncing back before six", "[playlist_playback][on_demand][off_air]") {
+    Guide g; g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42;
+    g.s.playlists[2].items[0].end = 100000;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 30;
+    auto selected = app::on_air(g.channels[2], g.t.wall, 0); REQUIRE(selected);
+    g.pb.play_on_demand(2, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.wall = close - 0.3; // bypass live's half-second final-frame hold
+    g.s.update_playback_state(100000, 100000); g.pb.tick_auto_advance();
+    REQUIRE(g.s.tuned_channel == 0); CHECK_FALSE(g.s.on_demand);
+    CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK_FALSE(app::off_air_return_row(g.s, 2, true, false, g.t.wall));
+    g.t.wall = close; CHECK_FALSE(app::off_air_return_row(g.s, 2, g.pb.channel_on_air(2), false, g.t.wall));
+    bool zone_change = false;
+    SECTION("normal six AM return") {}
+    SECTION("new zone's six AM ignores obsolete suppression deadline") { zone_change = true; }
+    if (zone_change) { g.t.zone_offset = 12 * 3600; g.pb.on_timezone_reload(); }
+    g.t.wall = kW0 + 26 * 3600 - g.t.zone_offset;
+    auto row = app::off_air_return_row(g.s, 2, g.pb.channel_on_air(2), false, g.t.wall);
+    REQUIRE(row == 2); g.playing(); g.pb.tune(*row, true); run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.tuned_channel == 2); CHECK(g.s.off_air_return_id.empty()); CHECK_FALSE(g.s.on_demand);
+}
+
+TEST_CASE("explicit on-demand on 00 cancels an armed movie return", "[playlist_playback][on_demand][off_air]") {
+    Guide g; g.t.wall = kW0 + 130;
+    g.s.tuned_channel = 0; g.s.off_air_return_id = "movies:comedy";
+    g.s.off_air_return_after_utc = g.t.wall + 100;
+    const auto selected = app::on_air(g.channels[0], g.t.wall + 300, 0); REQUIRE(selected);
+    g.pb.play_on_demand(0, *selected); run_frames(g.pb, g.t, kSettled);
+    CHECK(g.s.on_demand); CHECK(g.s.off_air_return_id.empty()); CHECK(g.s.off_air_return_after_utc == 0);
+    CHECK_FALSE(app::off_air_return_row(g.s, 2, true, false, g.t.wall + 1000));
+}
+
+TEST_CASE("near-boundary live join never returns to the programme just watched", "[playlist_playback][on_demand]") {
+    Guide g; g.t.wall = kW0 + 299;
+    const auto selected = app::on_air(g.channels[1], kW0 + 310, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.update_playback_state(300, 300); g.pb.tick_auto_advance();
+    CHECK(g.t.last() == "load_at Cartoons 0"); CHECK(g.t.last_offset() == 0);
+}
+
+TEST_CASE("on-demand end skips adjacent copies across a shuffle pass seam", "[playlist_playback][on_demand]") {
+    Guide g;
+    const auto airings = app::lineup(g.channels[0], kW0, kW0 + 24 * 3600, 0);
+    auto seam = airings.end();
+    for (auto it = airings.begin(); it + 1 != airings.end(); ++it) {
+        if (it->index == (it + 1)->index) { seam = it; break; }
+    }
+    REQUIRE(seam != airings.end());
+    const auto watched = g.channels[0].items[seam->index];
+    g.t.wall = seam->starts_at + 5;
+    g.pb.play_on_demand(0, *seam); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.update_playback_state(1000, 1000); g.pb.tick_auto_advance();
+    CHECK_FALSE((g.s.current_playlist_index == watched.playlist && g.s.current_item_index == watched.item));
+    CHECK(g.t.last_offset() == 0); CHECK_FALSE(g.s.on_demand);
+}
+
+TEST_CASE("an exhausted single-item schedule stops boundedly and allows a viewer retry", "[playlist_playback][on_demand]") {
+    Guide g; g.s.playlists[1].items.clear();
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    const auto selected = app::on_air(g.channels[2], kW0 + 10, 0); REQUIRE(selected);
+    g.t.wall = kW0 + 10; g.pb.play_on_demand(2, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto loads = g.t.offsets.size();
+    g.s.update_playback_state(50, 50); g.pb.tick_auto_advance();
+    for (int frame = 0; frame < 60; ++frame) { nothing_playing_rule(g); g.pb.tick_auto_advance(); }
+    CHECK(g.t.offsets.size() == loads); CHECK_FALSE(g.pb.switch_pending());
+    CHECK(g.s.current_playlist_item() == nullptr); CHECK_FALSE(g.s.on_demand);
+    CHECK(std::find(g.s.guide_gave_up.begin(), g.s.guide_gave_up.end(), 0) != g.s.guide_gave_up.end());
+    CHECK(std::find(g.s.guide_gave_up.begin(), g.s.guide_gave_up.end(), 2) != g.s.guide_gave_up.end());
+    g.pb.tune(2, true); run_frames(g.pb, g.t, kSettled); g.playing();
+    CHECK(g.t.offsets.size() == loads + 1); CHECK(g.s.current_playlist_index == 2);
+    g.s.update_playback_state(50, 50); g.pb.tick_auto_advance();
+    CHECK(g.s.guide_gave_up.empty()); // a viewer-chosen programme reached its natural end
+}
+
+TEST_CASE("a final selected movie with no 00 schedule cannot auto-tune into replay", "[playlist_playback][on_demand]") {
+    Guide g; g.s.playlists[1].items.clear(); g.s.playlists[2].path = "movies:comedy";
+    g.s.playlists[2].items[0].movie_tmdb_id = 42; g.s.playlists[2].items[0].end = 100000;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 21 * 3600 - 30;
+    const auto selected = app::on_air(g.channels[2], g.t.wall, 0); REQUIRE(selected);
+    g.pb.play_on_demand(2, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.s.update_playback_state(100000, 100000); g.pb.tick_auto_advance();
+    nothing_playing_rule(g);
+    CHECK_FALSE(g.pb.switch_pending()); CHECK(g.s.current_playlist_item() == nullptr);
+    CHECK(std::find(g.s.guide_gave_up.begin(), g.s.guide_gave_up.end(), 2) != g.s.guide_gave_up.end());
+}
+
+TEST_CASE("a loaded selected regular programme keeps its metadata through refresh", "[playlist_playback][on_demand][playlist_reload]") {
+    Guide g; g.s.playlists[1].items[0].start = 10; g.s.playlists[1].items[0].end = 600;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    g.t.wall = kW0 + 20;
+    const auto selected = app::on_air(g.channels[1], g.t.wall, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    const auto loads = g.t.offsets.size();
+    auto snap = app::snapshot_for_reload(g.s, -1);
+    app::PlaylistLoader::UiPlaylistSplit fresh; fresh.video = g.s.playlists;
+    bool removed_channel = false;
+    SECTION("selected item removed and a shorter replacement remains") {
+        fresh.video[1].items = {video_item("replacement")}; fresh.video[1].items[0].end = 60;
+    }
+    SECTION("same path metadata edited") {
+        fresh.video[1].items[0].title = "edited"; fresh.video[1].items[0].start = 30; fresh.video[1].items[0].end = 60;
+    }
+    SECTION("whole selected channel removed") { removed_channel = true; fresh.video.erase(fresh.video.begin() + 1); }
+    app::apply_reloaded_playlists(g.s, std::move(fresh), snap, [&] { g.t.stop(); });
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    REQUIRE(g.s.current_playlist_item());
+    CHECK(g.s.current_playlist_item()->title == "a"); CHECK(g.s.current_playlist_item()->start == 10);
+    CHECK(g.s.current_playlist_item()->end == 600); CHECK(g.s.on_demand); CHECK(g.s.video_active);
+    g.s.update_playback_state(120, 800); g.pb.tick_auto_advance();
+    CHECK(g.t.offsets.size() == loads); REQUIRE(g.s.current_playlist_item());
+    CHECK(g.s.current_playlist_item()->title == "a");
+    // Repeated refresh must not capture the replacement row as the source.
+    snap = app::snapshot_for_reload(g.s, -1); CHECK(snap.playing_item_title == "a");
+    g.s.update_playback_state(600, 800); g.pb.tick_auto_advance();
+    CHECK_FALSE(g.s.on_demand);
+    CHECK(g.t.offsets.size() == loads + 1);
+    REQUIRE(g.s.current_playlist_item()); CHECK(g.s.current_playlist_item()->title != "a");
+    if (removed_channel) CHECK(g.s.tuned_channel == 0);
+}
+
+TEST_CASE("explicit playback exits release a selected regular programme", "[playlist_playback][on_demand][playback_reset]") {
+    Guide g; g.t.wall = kW0 + 20;
+    const auto selected = app::on_air(g.channels[1], g.t.wall, 0); REQUIRE(selected);
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    SECTION("live tune replaces it") {
+        g.t.wall = kW0 + 130; g.pb.tune(1, true); run_frames(g.pb, g.t, kSettled);
+        REQUIRE(g.s.current_playlist_item()); CHECK(g.s.current_playlist_item()->title == "b");
+    }
+    SECTION("List style stops it") { g.pb.set_channels(nullptr); CHECK_FALSE(g.s.video_active); CHECK(g.s.current_playlist_item() == nullptr); }
+    SECTION("stop-to-menu releases it") { app::stop_to_menu(g.s); CHECK(g.s.current_playlist_item() == nullptr); }
+    SECTION("Media Browser handover releases it") { app::reset_main_ui_for_media_browser(g.s); CHECK(g.s.current_playlist_item() == nullptr); }
+    SECTION("game handover clear releases ownership") { app::clear_now_playing(g.s); }
+    CHECK_FALSE(g.s.loaded_on_demand);
+    CHECK_FALSE(g.s.on_demand);
+}
+
+TEST_CASE("a next-day selected movie failing after close parks instead of playing its future successor", "[playlist_playback][on_demand][movie_failure][final_fix]") {
+    Guide g; g.s.playlists[1].path = "movies:comedy";
+    for (int i = 0; i < 3; ++i) g.s.playlists[1].items[i].movie_tmdb_id = i + 1;
+    g.channels = app::build_channels(g.s.playlists, guide_lengths()); g.pb.set_channels(&g.channels);
+    const double close = kW0 + 21 * 3600;
+    g.t.wall = close - 30;
+    const auto selected = app::on_air(g.channels[1], kW0 + 26 * 3600, 0); REQUIRE(selected);
+    REQUIRE(app::airing_after(g.channels[1], *selected, 0));
+    int revalidations = 0; g.pb.set_movie_failure_hook([&] { ++revalidations; });
+    g.pb.play_on_demand(1, *selected); run_frames(g.pb, g.t, kSettled); g.playing();
+    g.t.wall = close + 1800; g.t.error = true;
+    g.pb.tick_pipeline_error();
+    CHECK(revalidations == 1);
+    CHECK_FALSE(g.s.on_demand); CHECK_FALSE(g.s.loaded_movie);
+    CHECK(g.s.tuned_channel == 0); CHECK(g.s.off_air_return_id == "movies:comedy");
+    CHECK(g.pb.failure_budget() == 10);
 }

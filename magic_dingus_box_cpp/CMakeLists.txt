@@ -302,6 +302,9 @@ if(BUILD_KIOSK)
             # undefined LibraryDb::*/WatchStore::*.
             src/media_browser/library/library_db.cpp
             src/media_browser/library/watch_store.cpp
+            src/media_browser/channels/movie_library.cpp
+            src/media_browser/channels/movie_library_store.cpp
+            src/media_browser/channels/movie_channels.cpp
             # The one libcurl transport every MB HTTP call goes through
             # (dual-listed: also in MEDIA_BROWSER_SOURCES for the tests).
             src/media_browser/http/http_request.cpp
@@ -463,6 +466,15 @@ file(COPY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
 # Copy data directory structure but EXCLUDE large user data (roms, media)
 # These are user files that shouldn't be copied during build
 file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
+    # Private owner movie titles and device pause ownership are runtime-only.
+    PATTERN "movie_library.json" EXCLUDE
+    PATTERN "movie_library.json.tmp" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.tmp" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.services" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.services.tmp" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.services.claims" EXCLUDE
+    PATTERN "qbit_paused_by_kiosk.services.claims.tmp" EXCLUDE
     PATTERN "roms" EXCLUDE
     PATTERN "media" EXCLUDE
     PATTERN "*.chd" EXCLUDE
@@ -477,6 +489,15 @@ file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
 # dev_data only needed for local development, skip in production builds
 if(EXISTS ${CMAKE_SOURCE_DIR}/dev_data)
     file(COPY ${CMAKE_SOURCE_DIR}/dev_data DESTINATION ${CMAKE_BINARY_DIR}
+        # Private owner movie titles and device pause ownership are runtime-only.
+        PATTERN "movie_library.json" EXCLUDE
+        PATTERN "movie_library.json.tmp" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.tmp" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.services" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.services.tmp" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.services.claims" EXCLUDE
+        PATTERN "qbit_paused_by_kiosk.services.claims.tmp" EXCLUDE
         PATTERN "roms" EXCLUDE
         PATTERN "media" EXCLUDE
         PATTERN "*.chd" EXCLUDE
@@ -523,6 +544,11 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/sonarr/sonarr_mock.cpp
         src/media_browser/library/library_db.cpp
         src/media_browser/library/watch_store.cpp
+        src/media_browser/channels/movie_library.cpp
+        src/media_browser/channels/movie_library_store.cpp
+        # Snapshot durable-write sink; the kiosk gets this from APP_SOURCES.
+        src/app/media_info.cpp
+        src/media_browser/channels/movie_channels.cpp
         src/media_browser/tmdb_client.cpp
         src/media_browser/torrent/torrent_session.cpp
         src/media_browser/radarr/radarr_parsers.cpp
@@ -572,6 +598,9 @@ if(ENABLE_MEDIA_BROWSER)
     set(MEDIA_BROWSER_TEST_SOURCES
         tests/media_browser/test_smoke.cpp
         tests/media_browser/test_movie_drive.cpp
+        tests/media_browser/test_movie_library.cpp
+        tests/media_browser/test_movie_library_store.cpp
+        tests/media_browser/test_movie_channels.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_watch_store.cpp
         tests/media_browser/test_tmdb_client.cpp
@@ -598,6 +627,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_prowlarr_client.cpp
         tests/media_browser/test_release_picker.cpp
         tests/media_browser/test_download_watchdog.cpp
+        tests/media_browser/test_qbit_quiet_ownership.cpp
         tests/media_browser/test_qbit_alt_speed.cpp
         tests/media_browser/test_vpn_health_monitor.cpp
         tests/media_browser/test_mb_ui_utils.cpp

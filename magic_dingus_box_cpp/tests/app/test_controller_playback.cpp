@@ -579,6 +579,7 @@ struct ControllerAdapter final : app::PlaylistTransport {
     std::chrono::steady_clock::time_point now() const override {
         return std::chrono::steady_clock::time_point{std::chrono::hours(1000)};
     }
+    int utc_offset_s(double) const override { return 0; }
     double wall_now_utc() const override { return 0.0; }  // no schedule in this rig
 };
 
@@ -792,4 +793,99 @@ TEST_CASE("current_media_key names the loaded video inside the data directory",
     CHECK(r.controller.current_media_key().empty());
 }
 
+
+TEST_CASE("movie media key stays with the actual loaded film across refresh", "[controller][media_info]") {
+    Rig r;
+    const int pl = r.add_playlist("MOVIE MIX", 1);
+    r.state.playlists[pl].items[0].movie_tmdb_id = 603;
+    r.playing(pl, 0);
+    REQUIRE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
+    CHECK(r.controller.current_media_key() == "movie:603");
+    r.state.loaded_movie = app::AppState::LoadedMovie{"movies:mix", r.state.playlists[pl].items[0]};
+    r.state.playlists[pl].items[0].movie_tmdb_id = 604;
+    CHECK(r.controller.current_media_key() == "movie:603");
+    r.state.current_playlist_index = -1;
+    r.state.current_item_index = -1;
+    CHECK(r.controller.current_media_key() == "movie:603");
+
+    SECTION("an invalid relative movie path preserves the old stream and its key") {
+        auto absent = r.video("absent", false);
+        absent.movie_tmdb_id = 605;
+        absent.path = "relative-movie.mkv";
+        r.state.playlists[pl].items = {absent};
+        CHECK_FALSE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
+        CHECK(r.controller.current_media_key() == "movie:603");
+    }
+    SECTION("a player load failure clears the film key") {
+        r.player.fail_paths.insert(r.state.playlists[pl].items[0].path);
+        CHECK_FALSE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
+        CHECK(r.controller.current_media_key().empty());
+    }
+    SECTION("a successful nonmovie load resumes ordinary path keys") {
+        r.controller.set_media_data_dir(r.dir.string());
+        r.state.playlists[pl].items[0].movie_tmdb_id = 0;
+        REQUIRE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, ""));
+        CHECK(r.controller.current_media_key() == "MOVIE MIX0.mp4");
+    }
+    SECTION("a direct Media Browser load clears the film key") {
+        REQUIRE(r.controller.load_file_with_resolution(r.state.playlists[pl].items[0].path, ""));
+        CHECK(r.controller.current_media_key().empty());
+    }
+}
+
+TEST_CASE("movie load consumes the published absolute path without a filesystem preflight or settle", "[controller][movie_direct][final_fix]") {
+    Rig r;
+    const int pl = r.add_playlist("MOVIE MIX", 1, {0});
+    auto& item = r.state.playlists[pl].items[0];
+    item.movie_tmdb_id = 603; item.start = 12; item.end = 7200;
+    // The worker saw this file earlier. A removed file must reach the player,
+    // whose async error is handled by PlaylistPlayback, without any stat here.
+    r.playing(pl, 0);
+    REQUIRE(r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, "", {}, 34));
+    CHECK(r.last_loaded() == "MOVIE MIX0.mp4");
+    CHECK(r.player.last_start == 46); CHECK(r.player.last_end == 7200);
+    CHECK(r.player.last_path == item.path);
+    CHECK(r.controller.current_media_key() == "movie:603");
+    CHECK(count("settle") == 0);
+    CHECK(count("play") == 1);
+    ControllerAdapter transport(r.controller, r.player);
+    const std::string directory;
+    app::PlaylistPlayback playback(r.state, transport, directory);
+    int revalidations = 0; playback.set_movie_failure_hook([&] { ++revalidations; });
+    r.player.error = true;
+    playback.tick_pipeline_error();
+    CHECK(revalidations == 1);
+    CHECK_FALSE(r.state.current_playlist_item());
+}
+
 }  // namespace
+
+TEST_CASE("a new controller load releases selected metadata only when it takes the stream", "[controller][on_demand]") {
+    Rig r; const int pl = r.add_playlist("new", 1);
+    auto selected = r.video("selected"); selected.end = 600;
+    r.state.loaded_on_demand = app::AppState::LoadedOnDemand{"channel", "source", selected};
+    r.state.on_demand = true;
+    auto next = r.state.playlists[pl];
+    SECTION("missing media leaves selected ownership intact") {
+        next.items[0] = r.video("absent", false);
+        CHECK_FALSE(r.controller.load_playlist_item(r.state, next, 0, ""));
+        REQUIRE(r.state.retained_playlist_item()); CHECK(r.state.retained_playlist_item()->title == "selected");
+        CHECK(r.state.on_demand);
+    }
+    SECTION("a real load clears selected ownership") {
+        REQUIRE(r.controller.load_playlist_item(r.state, next, 0, ""));
+        CHECK(r.state.retained_playlist_item() == nullptr); CHECK_FALSE(r.state.on_demand);
+    }
+}
+
+TEST_CASE("a retained selected regular stream keeps its published title without source rows", "[controller][on_demand]") {
+    Rig r; auto selected = r.video("selected"); selected.end = 600;
+    r.state.loaded_on_demand = app::AppState::LoadedOnDemand{"channel", "source", selected};
+    r.state.on_demand = true; r.state.current_playlist_index = -1; r.state.current_item_index = -1;
+    r.state.video_active = true; r.state.now_playing_title = "selected";
+    r.player.duration = 0; r.player.position = 0; r.player.playing = false;
+    for (int frame = 0; frame < 4; ++frame) r.controller.update_state(r.state);
+    CHECK_FALSE(r.state.video_active);
+    CHECK(r.state.now_playing_title == "selected"); REQUIRE(r.state.current_playlist_item());
+    CHECK(r.state.current_playlist_item()->end == 600);
+}

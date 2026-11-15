@@ -289,6 +289,14 @@ fi
 echo -e "${CYAN}[4/9] Removing device identity...${NC}"
 
 di_count=0
+# Private owner movie titles and source-device pause ownership never survive cloning.
+for d in "$DATA_DIR" "${CPP_DIR}/build/data"; do
+    rm -f "${d}/movie_library.json" "${d}/movie_library.json.tmp" \
+          "${d}/qbit_paused_by_kiosk" "${d}/qbit_paused_by_kiosk.tmp" \
+          "${d}/qbit_paused_by_kiosk.services" "${d}/qbit_paused_by_kiosk.services.tmp" \
+          "${d}/qbit_paused_by_kiosk.services.claims" "${d}/qbit_paused_by_kiosk.services.claims.tmp"
+done
+
 while IFS= read -r -d '' di_file; do
     rm -f "$di_file"
     echo -e "  ${RED}Removed${NC} ${di_file}"

@@ -472,16 +472,16 @@ pause_services_for_build() {
     [ -n "$script" ] || return 1
     log "Pausing Media Browser services to free memory for the build"
     OTA_SERVICES_PAUSED_BY_US="true"
-    bash "$script" pause 9>&- >&2 || log_warn "playback_services_pause.sh pause reported a failure"
+    bash "$script" pause "ota:$$" 9>&- >&2 || log_warn "playback_services_pause.sh pause reported a failure"
 }
 
 # Undo pause_services_for_build — and ONLY that (consent record, like the
 # kiosk's own pause): idempotent, so it is safe on every exit path. Called
 # after the compile, from fail_install, and from the EXIT trap the install
 # dispatcher sets (killed job, set -e abort). A SIGKILL skips even the
-# trap; then the next kiosk start's crash-recovery unpause, or the next
-# boot (magic-dingus-services runs compose up -d; /tmp is tmpfs, so the
-# marker is gone too), brings them back.
+# trap; the script's PID/birth-time lease then expires. The next kiosk
+# startup recovers that dead lease, preserving a live updater or kiosk's
+# separate claim and restoring only the services actually stopped.
 resume_build_paused_services() {
     [ "$OTA_SERVICES_PAUSED_BY_US" = "true" ] || return 0
     OTA_SERVICES_PAUSED_BY_US="false"
@@ -489,7 +489,7 @@ resume_build_paused_services() {
     script="$(playback_pause_script)"
     [ -n "$script" ] || return 0
     log "Resuming the Media Browser services paused for the build"
-    bash "$script" unpause 9>&- >&2 || log_warn "playback_services_pause.sh unpause reported a failure"
+    bash "$script" unpause "ota:$$" 9>&- >&2 || log_warn "playback_services_pause.sh unpause reported a failure"
 }
 
 # Stop the kiosk for the swap + restart. Exactly once per install: the
@@ -1870,7 +1870,14 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json.tmp' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude 'magic_dingus_box_cpp/build.prev.*' \
@@ -1960,6 +1967,9 @@ install_update() {
     #                       - Transient kiosk<->web runtime files;
     #                          excluded so an OTA can't yank them out
     #                          from under the running web admin.
+    #   - data/movie_library.json and .tmp: private owner movie titles
+    #   - data/qbit_paused_by_kiosk{,.tmp,.services{,.tmp,.claims{,.tmp}}}:
+    #     device-owned pause/cap recovery journals, preserved locally
     #   - data/media_info.json, data/media_info.json.lock
     #                       - Per-video info (each video's Crop setting and
     #                          probed length/shape; the lock is its writers'
@@ -2070,7 +2080,14 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json.tmp' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
@@ -2537,7 +2554,14 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json.tmp' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
@@ -2701,7 +2725,14 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json' \
+        --exclude 'magic_dingus_box_cpp/data/movie_library.json.tmp' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.tmp' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims' \
+        --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk.services.claims.tmp' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \

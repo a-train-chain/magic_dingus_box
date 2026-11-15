@@ -32,6 +32,12 @@ struct InputEvent {
     // encoder switch, default false for all other sources.
     bool is_from_rotary = false;
 #endif
+    // Physical EV_REL/REL_X rotation; directional X events/repeats stay false.
+    // Appended so legacy aggregate initializers retain their existing meaning.
+    bool rotary_encoder = false;
+    // 0 is the fixed GPIO source. Every evdev open gets a new nonzero id,
+    // including reconnects onto the same node; independent of MB support.
+    uint64_t source_id = 0;
 };
 
 // One raw, unmapped evdev event from a joystick, surfaced only while
@@ -117,6 +123,15 @@ public:
     
     // Poll for input events (non-blocking)
     std::vector<InputEvent> poll();
+
+    // Source-specific Select interruptions: removal, cleanup, or a kernel-
+    // generated/ambiguous release packet. Drain before dispatch/timer ticks;
+    // cancellation never manufactures a release or closes a healthy device.
+    std::vector<uint64_t> take_select_cancellations() {
+        std::vector<uint64_t> sources;
+        sources.swap(select_cancellations_);
+        return sources;
+    }
     
     // Cleanup
     void cleanup();
@@ -155,6 +170,8 @@ private:
     InputProbeCache phone_probe_cache_;
     struct Device;
     std::vector<std::unique_ptr<Device>> devices_;
+    uint64_t next_source_id_ = 1;  // never reset by cleanup/reinitialize
+    std::vector<uint64_t> select_cancellations_;
     
     bool open_joystick_devices();
     bool open_keyboard_devices();

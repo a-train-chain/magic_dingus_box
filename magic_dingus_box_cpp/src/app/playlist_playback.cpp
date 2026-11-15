@@ -32,8 +32,7 @@ PlaylistPlayback::PlaylistPlayback(AppState& state, PlaylistTransport& transport
 // ── Failed-item handling (main playlist / Master Shuffle) ────────────────
 
 bool PlaylistPlayback::owns_pipeline() const {
-    bool owns = state_.current_playlist_index >= 0 &&
-                state_.current_item_index >= 0 &&
+    bool owns = state_.current_playlist_item() != nullptr &&
                 state_.intro_complete && !state_.showing_intro_video &&
                 !state_.is_switching_playlist && !state_.is_loading_game;
 #ifdef MEDIA_BROWSER_ENABLED
@@ -44,7 +43,7 @@ bool PlaylistPlayback::owns_pipeline() const {
 }
 
 bool PlaylistPlayback::channel_load_live() const {
-    bool live = state_.current_playlist_index >= 0 && state_.current_item_index >= 0 &&
+    bool live = state_.current_playlist_item() != nullptr &&
                 state_.intro_complete && !state_.showing_intro_video &&
                 !state_.is_loading_game;
 #ifdef MEDIA_BROWSER_ENABLED
@@ -78,11 +77,65 @@ int PlaylistPlayback::failure_budget() const {
         size, state_.master_shuffle_active);
 }
 
+void PlaylistPlayback::exclude_failed_channel() {
+    const int channel = state_.tuned_channel;
+    auto& gave_up = state_.guide_gave_up;
+    if (channel >= 0 && std::find(gave_up.begin(), gave_up.end(), channel) == gave_up.end())
+        gave_up.push_back(channel);
+    const auto id = channel_identity(channel);
+    if (!id.empty() && std::find(gave_up_identities_.begin(), gave_up_identities_.end(), id) == gave_up_identities_.end())
+        gave_up_identities_.push_back(id);
+    state_.tuned_channel = -1;
+    state_.guide_wait_until_utc = 0.0;
+}
+
 void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d,
                                           const char* why) {
     using Decision = video::PlaybackErrorPolicy::Decision;
+    if (d != Decision::None) state_.on_demand = false;
     // Counted (or handed on): a channel load's bound must not count it again.
     channel_load_at_.reset();
+    const auto* failed = state_.current_playlist_item();
+    const bool movie = failed && failed->movie_tmdb_id > 0;
+    if (movie && d != Decision::None && movie_failure_hook_) movie_failure_hook_();
+    if (movie && d == Decision::Advance && guide_style()) {
+        const int channel = state_.tuned_channel;
+        // A selected future film may finish/fail after today's close. Only
+        // that chosen film has permission to run overnight, never its next
+        // scheduled programme. Parking keeps the normal return identity and
+        // gives 00 its own failure budget.
+        if (park_off_air(channel)) return;
+        const Channel* ch = channel_at(channel);
+        const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+        std::optional<OnAir> next;
+        if (ch && loaded_airing_ && loaded_airing_->channel == channel) {
+            const auto& held = loaded_airing_->airing;
+            const auto still = on_air(*ch, held.starts_at, offset(held.starts_at), offset);
+            // Rebuilds may re-phase or replace media. Only the original
+            // stable airing may advance; stale numeric coordinates cannot.
+            if (still && held.index >= 0 && still->index == held.index &&
+                same_airing(held, LoadedAiring{still->index, ch->items[still->index],
+                                              still->starts_at, still->ends_at, held.utc_offset_s}) &&
+                std::fabs(still->ends_at - held.ends_at) <= 0.5 &&
+                (!held.utc_offset_s || *held.utc_offset_s == offset(transport_.wall_now_utc()))) {
+                next = airing_after(*ch, *still, offset(still->ends_at), offset);
+            } else {
+                next = join_point(*ch, transport_.wall_now_utc(), offset(transport_.wall_now_utc()), offset);
+            }
+        }
+        transport_.stop();
+        if (next) {
+            next->offset_s = 0;
+            load_on_air(channel, *next, true);
+        } else {
+            stop_to_menu(state_);
+            // No later movie exists tonight: let the same-frame auto-tune
+            // choose another live channel/00. Exclude this stable identity
+            // so it cannot immediately retune the failed final airing.
+            exclude_failed_channel();
+        }
+        return;
+    }
     if (d == Decision::Advance && guide_style()) {
         // Live TV does not jump ahead to the next programme: the channel
         // stays dark until this item's slot ends, then main.cpp's
@@ -125,14 +178,7 @@ void PlaylistPlayback::act_on_failed_item(video::PlaybackErrorPolicy::Decision d
             // Re-tuning the channel that just failed repeatedly would loop:
             // note it, and leave nothing tuned for the nothing-playing rule
             // to move on from.
-            auto& gave_up = state_.guide_gave_up;
-            if (state_.tuned_channel >= 0 &&
-                std::find(gave_up.begin(), gave_up.end(), state_.tuned_channel) ==
-                    gave_up.end()) {
-                gave_up.push_back(state_.tuned_channel);
-            }
-            state_.tuned_channel = -1;
-            state_.guide_wait_until_utc = 0.0;
+            exclude_failed_channel();
         }
     }
 }
@@ -361,12 +407,86 @@ const Channel* PlaylistPlayback::channel_at(int c) const {
     return &(*channels_)[c];
 }
 
+bool PlaylistPlayback::channel_on_air(int channel) const {
+    const auto* ch = channel_at(channel);
+    if (!ch) return false;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    return join_point(*ch, now, offset(now), offset).has_value();
+}
+
+std::string PlaylistPlayback::channel_identity(int c) const {
+    const Channel* channel = channel_at(c);
+    if (!channel) return {};
+    if (!channel->identity.empty()) return channel->identity;
+    // Keep hand-built channels useful; build_channels always fills identity.
+    if (c == 0) return kShuffleChannelId;
+    return c < static_cast<int>(state_.playlists.size())
+        ? playlist_identity(state_.playlists[c]) : std::string{};
+}
+
+void PlaylistPlayback::reanchor_airing(std::optional<ChannelAiring>& held) {
+    if (!held) return;
+    held->channel = -1;
+    held->airing.index = -1;  // absent/replaced media must not validate by stale coordinates
+    if (!channels_) return;
+    for (int row = 0; row < static_cast<int>(channels_->size()); ++row) {
+        if (channel_identity(row) != held->identity) continue;
+        held->channel = row;
+        const auto& items = (*channels_)[row].items;
+        for (int index = 0; index < static_cast<int>(items.size()); ++index) {
+            const auto& scheduled = items[index];
+            if (scheduled.playlist < 0 || scheduled.playlist >= static_cast<int>(state_.playlists.size())) continue;
+            const auto& source = state_.playlists[scheduled.playlist];
+            if (playlist_identity(source) != held->source_identity || scheduled.item < 0 ||
+                scheduled.item >= static_cast<int>(source.items.size())) continue;
+            const auto& item = source.items[scheduled.item];
+            if (item.path != held->source_path || item.movie_tmdb_id != held->source_tmdb_id ||
+                item.start != held->source_start) continue;
+            held->airing.index = index;
+            held->airing.item.playlist = scheduled.playlist;
+            held->airing.item.item = scheduled.item;
+            return;
+        }
+        return;
+    }
+}
+
 void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
     channels_ = channels;
+    // Reload can renumber a tune during its cooperative settle. Its target
+    // is the channel chosen at the press, independent of the new row order.
+    if (switch_pending() && pending_.tune && state_.is_switching_playlist &&
+        !state_.is_loading_game && !state_.showing_intro_video) {
+        int row = -1;
+        if (channels_) {
+            for (int c = 0; c < static_cast<int>(channels_->size()); ++c) {
+                if (channel_identity(c) == pending_.identity) { row = c; break; }
+            }
+        }
+        reanchor_airing(pending_.selected);
+        if (row < 0 || (pending_.selected && pending_.selected->airing.index < 0)) {
+            pending_ = PendingSwitch{};
+            transport_.stop();
+            stop_to_menu(state_);
+        } else {
+            pending_.target = row;
+            state_.current_playlist_index = row;
+        }
+    }
     if (!guide_style()) {
+        state_.on_demand = false;
+        state_.off_air_return_after_utc = 0;
+        if (state_.retained_playlist_item()) {
+            transport_.stop();
+            stop_to_menu(state_);
+        }
         // List style: nothing is tuned, and nothing is owed a retry.
         state_.tuned_channel = -1;
+        state_.off_air_return_id.clear();
+        timezone_reload_pending_ = false;
         state_.guide_gave_up.clear();
+        gave_up_identities_.clear();
         state_.guide_wait_until_utc = 0.0;
         channel_progress_ = {};
         channel_load_at_.reset();
@@ -374,19 +494,58 @@ void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
         stall_reloaded_.reset();
         return;
     }
+    // Remap only coordinates. boundary_join still revalidates the original
+    // start/end against the new schedule, so a re-phase invalidates its guard.
+    reanchor_airing(loaded_airing_);
+    reanchor_airing(stall_reloaded_);
     // Given-up rows stay until a channel proves it plays; only rows the new
     // list no longer has are dropped.
     auto& gave_up = state_.guide_gave_up;
+    if (!gave_up_identities_.empty()) {
+        gave_up.clear();
+        for (int row = 0; row < static_cast<int>(channels_->size()); ++row) {
+            if (std::find(gave_up_identities_.begin(), gave_up_identities_.end(), channel_identity(row)) != gave_up_identities_.end())
+                gave_up.push_back(row);
+        }
+    }
     gave_up.erase(std::remove_if(gave_up.begin(), gave_up.end(),
                                  [this](int c) { return channel_at(c) == nullptr; }),
                   gave_up.end());
-    if (state_.tuned_channel < 0) return;
+    if (state_.tuned_channel < 0 && !state_.retained_playlist_item()) return;
     // A reload renumbers the rows: re-find the tuned channel by the identity
     // it was tuned under rather than keep an index into the old list.
-    const std::string& id = state_.last_channel_id;
-    int row = id == kShuffleChannelId ? 0 : find_playlist_by_identity(state_.playlists, id);
-    if (!channel_at(row)) row = -1;
+    const std::string id = state_.loaded_movie
+        ? state_.loaded_movie->channel_identity
+        : state_.loaded_on_demand ? state_.loaded_on_demand->channel_identity
+        : (!state_.off_air_return_id.empty() && state_.tuned_channel == 0
+               ? kShuffleChannelId : state_.last_channel_id);
+    int row = -1;
+    for (int c = 0; c < static_cast<int>(channels_->size()); ++c) {
+        if (channel_identity(c) == id) { row = c; break; }
+    }
     state_.tuned_channel = row;
+}
+
+void PlaylistPlayback::play_on_demand(int channel, const OnAir& oa) {
+    const auto* ch = channel_at(channel);
+    if (!ch || oa.index < 0 || oa.index >= static_cast<int>(ch->items.size())) return;
+    const auto& si = ch->items[oa.index];
+    if (si.playlist < 1 || si.playlist >= static_cast<int>(state_.playlists.size())) return;
+    const auto& pl = state_.playlists[si.playlist];
+    if (si.item < 0 || si.item >= static_cast<int>(pl.items.size())) return;
+    const auto& item = pl.items[si.item];
+    const ChannelAiring selected{channel,
+        LoadedAiring{oa.index, si, oa.starts_at, oa.ends_at, std::nullopt},
+        channel_identity(channel), playlist_identity(pl), item.path, item.movie_tmdb_id, item.start};
+    // A rejected re-entrant press must not replace the pending selection.
+    if (switch_pending() || state_.is_switching_playlist || state_.showing_intro_video ||
+        transport_.now() < timeout_settle_until_) return;
+    tune(channel, false);
+    if (switch_pending()) {
+        pending_.selected = selected;
+        state_.off_air_return_id.clear();
+        state_.off_air_return_after_utc = 0;
+    }
 }
 
 void PlaylistPlayback::tune(int channel, bool keep_overlay) {
@@ -404,6 +563,9 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     switch_start_generation_ = transport_.stream_generation();
     state_.playlist_switch_start_time = transport_.now();
     channel_load_at_.reset();  // the tune takes the pipeline over
+    state_.loaded_movie.reset();
+    state_.loaded_on_demand.reset();
+    state_.on_demand = false;
     // Point at the channel's row before the stop, as SELECT does: it keeps
     // the indexes through the stop, and the pending switch's "re-pointed"
     // check covers a tune too. The on-air item replaces it at the load.
@@ -418,6 +580,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     pending_.next_check = transport_.now() + kSwitchSettle;
     pending_.repolls = 0;
     pending_.tune = true;
+    pending_.identity = channel_identity(channel);
     pending_.keep_overlay = keep_overlay;
 }
 
@@ -431,7 +594,7 @@ void PlaylistPlayback::on_channel_step(int delta) {
     for (int i = 0; i < n; ++i) {
         c = ((c + step) % n + n) % n;
         if (c == from) return;  // no other channel has a schedule
-        if (!(*channels_)[c].items.empty()) {
+        if (channel_on_air(c)) {
             // keep_overlay: the load leaves the overlay alone, so it is as
             // it stands THEN — `tune(c, ui_visible_when_playing)` froze it as
             // it stood at the press, and a guide opened during the ~200 ms
@@ -447,10 +610,11 @@ void PlaylistPlayback::land_on_channel(int channel) {
     // resume (act_on_failed_item), and a give-up must name this channel,
     // not the one tuned before it.
     state_.tuned_channel = channel;
-    if (channel == 0) {
-        state_.last_channel_id = kShuffleChannelId;
-    } else if (channel > 0 && channel < static_cast<int>(state_.playlists.size())) {
-        state_.last_channel_id = playlist_identity(state_.playlists[channel]);
+    if (channel != 0 || state_.off_air_return_id.empty())
+        state_.last_channel_id = channel_identity(channel);
+    if (channel != 0) {
+        state_.off_air_return_id.clear();
+        state_.off_air_return_after_utc = 0;
     }
 }
 
@@ -458,8 +622,11 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     warn_if_still_playing();
     // On air NOW, not at the press: the wait must not put playback behind.
     const Channel* ch = channel_at(channel);
-    const auto oa = ch ? join_point(*ch, transport_.wall_now_utc()) : std::nullopt;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    const auto oa = ch ? join_point(*ch, now, offset(now), offset) : std::nullopt;
     if (!oa) {
+        if (park_off_air(channel)) return;
         // The list was rebuilt during the wait and the channel lost its
         // schedule (or the style went back to List).
         std::cerr << "Tune to channel " << channel << " failed: nothing scheduled"
@@ -498,19 +665,123 @@ void PlaylistPlayback::prove_channel() {
                   << " plays — the channels given up on may be tried again" << std::endl;
         state_.guide_gave_up.clear();
     }
+    gave_up_identities_.clear();
 }
 
-void PlaylistPlayback::rejoin_schedule() {
-    prove_channel();  // the item played to its natural end
+bool PlaylistPlayback::park_off_air(int channel) {
+    const auto* ch = channel_at(channel);
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    if (!ch || !back_on_air_at(*ch, now, offset(now), offset)) return false;
+    park_on_mix(channel_identity(channel));
+    return true;
+}
+
+bool PlaylistPlayback::park_on_mix(const std::string& return_id, double not_before) {
+    if (state_.off_air_return_id.empty()) state_.off_air_return_id = return_id;
+    state_.off_air_return_after_utc = not_before;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    const auto* mix = channel_at(0);
+    const auto live = mix ? join_point(*mix, now, offset(now), offset) : std::nullopt;
+    transport_.stop();
+    if (live) {
+        if (state_.tuned_channel != 0) error_policy_ = video::PlaybackErrorPolicy{};
+        load_on_air(0, *live, /*keep_overlay=*/true);
+    } else {
+        state_.on_demand = false;
+        land_on_channel(0);
+        stop_to_menu(state_);
+    }
+    return live.has_value();
+}
+
+void PlaylistPlayback::finish_on_demand() {
+    prove_channel();
+    state_.on_demand = false;
     const int channel = state_.tuned_channel;
+    const auto* ch = channel_at(channel);
+    if (park_off_air(channel)) return;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    auto live = ch ? on_air(*ch, now, offset(now), offset) : std::nullopt;
+    const auto watched = [&](const ScheduledItem& si) {
+        if (!loaded_airing_ || si.playlist < 1 || si.playlist >= static_cast<int>(state_.playlists.size()))
+            return false;
+        const auto& pl = state_.playlists[si.playlist];
+        if (si.item < 0 || si.item >= static_cast<int>(pl.items.size())) return false;
+        const auto& item = pl.items[si.item];
+        const auto& held = *loaded_airing_;
+        return playlist_identity(pl) == held.source_identity && item.path == held.source_path &&
+            item.movie_tmdb_id == held.source_tmdb_id && item.start == held.source_start;
+    };
+    const auto distinct = [&](const Channel& schedule, std::optional<OnAir> candidate) {
+        return skip_matching_programmes(schedule, candidate, watched, offset(now), offset);
+    };
+    const bool watched_live = live && watched(ch->items[live->index]);
+    const auto candidate = watched_live ? airing_after(*ch, *live, offset(live->ends_at), offset)
+        : (ch ? join_point(*ch, now, offset(now), offset) : std::nullopt);
+    const auto next = ch ? distinct(*ch, candidate) : std::nullopt;
+    if (next) {
+        auto oa = *next;
+        if (watched_live) oa.offset_s = 0;
+        load_on_air(channel, oa, true);
+    } else if (state_.loaded_movie) {
+        // Movie sources never enter 00's mix, so its candidate is distinct.
+        // A final/sole film parks promptly for the rest of this broadcast
+        // day. A removed movie row also gets a playable 00 fallback.
+        if (!park_on_mix(state_.loaded_movie->channel_identity,
+                         live && (watched_live || candidate) ? live->day_ends_at : 0)) {
+            // No playable 00 exists: do not let auto-tune immediately return
+            // to the exhausted film while its row is technically on air.
+            state_.tuned_channel = channel;
+            exclude_failed_channel();
+            state_.off_air_return_id.clear();
+            state_.off_air_return_after_utc = 0;
+        }
+    } else {
+        // Exhaustion is not a decoder failure, but it uses the same stable
+        // exclusion so the nothing-playing rule cannot immediately replay.
+        exclude_failed_channel();
+        const auto* mix = channel_at(0);
+        const auto fallback = mix ? distinct(*mix, join_point(*mix, now, offset(now), offset)) : std::nullopt;
+        if (fallback) {
+            load_on_air(0, *fallback, true);
+        } else {
+            if (mix) {
+                state_.tuned_channel = 0;
+                exclude_failed_channel();
+            }
+            transport_.stop();
+            stop_to_menu(state_);
+        }
+    }
+}
+
+void PlaylistPlayback::rejoin_schedule(bool programme_ended) {
+    if (programme_ended) prove_channel();  // the item played to its natural end
+    const int channel = state_.tuned_channel;
+    if (park_off_air(channel)) return;
     const Channel* ch = channel_at(channel);
     // Never back to the airing that just ended (playback can be ahead of
     // the schedule here — boundary_join): only an airing loaded on THIS
     // channel counts.
     std::optional<LoadedAiring> last;
-    if (loaded_airing_ && loaded_airing_->channel == channel) last = loaded_airing_->airing;
-    const auto oa = ch ? boundary_join(*ch, transport_.wall_now_utc(), last) : std::nullopt;
+    if (programme_ended && loaded_airing_ && loaded_airing_->channel == channel) last = loaded_airing_->airing;
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    const auto oa = ch ? boundary_join(*ch, now, last, offset(now), offset) : std::nullopt;
     if (!oa) {
+        // The EOF tolerance may fire a fraction before the civil close.
+        // Keep the final picture until that deadline instead of exposing
+        // a nothing-playing frame that could forget the movie identity.
+        const auto ending = ch ? on_air(*ch, now, offset(now), offset) : std::nullopt;
+        if (ending && ending->day_ends_at > now &&
+            ending->day_ends_at - now <= 0.5 &&
+            back_on_air_at(*ch, ending->day_ends_at, offset(ending->day_ends_at), offset)) {
+            guide_day_ends_at_ = ending->day_ends_at;
+            return;
+        }
         // Not on a channel (a List-style item still playing when the style
         // changed) or the channel lost its schedule: end here, and the
         // nothing-playing rule tunes live from the menu.
@@ -524,7 +795,9 @@ void PlaylistPlayback::rejoin_schedule() {
     load_on_air(channel, *oa, /*keep_overlay=*/true);
 }
 
-bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay) {
+bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand) {
+    state_.on_demand = on_demand;
+    timezone_reload_pending_ = false;  // this load uses the current zone rules
     land_on_channel(channel);
     channel_progress_ = {};
     const ScheduledItem& si = (*channels_)[channel].items[oa.index];
@@ -547,17 +820,35 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     state_.current_item_index = si.item;
     guide_item_ends_at_ = oa.ends_at;
     guide_item_length_ = si.length_s;
+    guide_item_end_position_ = on_demand ? 0 : pl.items[si.item].start + (oa.ends_at - oa.starts_at);
+    guide_day_ends_at_ = on_demand ? 0 : oa.day_ends_at;
     LoadedAiring airing;
     airing.index = oa.index;
     airing.item = si;
     airing.starts_at = oa.starts_at;
     airing.ends_at = oa.ends_at;
-    loaded_airing_ = ChannelAiring{channel, airing};
+    airing.utc_offset_s = transport_.utc_offset_s(transport_.wall_now_utc());
+    loaded_airing_ = ChannelAiring{channel, airing, channel_identity(channel),
+        playlist_identity(pl), pl.items[si.item].path, pl.items[si.item].movie_tmdb_id,
+        pl.items[si.item].start};
 
     std::cout << "Channel " << channel << ": joining " << pl.title << " item " << si.item
               << " at " << oa.offset_s << "s" << std::endl;
+    state_.loaded_movie.reset();
+    if (is_movie_playlist(pl))
+        state_.loaded_movie = AppState::LoadedMovie{channel_identity(channel), pl.items[si.item]};
+    state_.loaded_on_demand.reset();
+    if (on_demand && !is_movie_playlist(pl))
+        state_.loaded_on_demand = AppState::LoadedOnDemand{channel_identity(channel), playlist_identity(pl), pl.items[si.item]};
+    const auto selected = state_.loaded_on_demand;
+    const auto movie = state_.loaded_movie;
     auto result = transport_.load_playlist_item_at(state_, pl, si.item,
                                                    playlist_directory_, oa.offset_s);
+    // Controller clears the retained item when starting any new load. Both
+    // success and synchronous failure still belong to this attempted programme.
+    state_.loaded_movie = movie;
+    state_.loaded_on_demand = selected;
+    state_.on_demand = on_demand;
     if (!result) {
         std::cerr << "Failed to load channel item: " << result.error() << std::endl;
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
@@ -637,7 +928,14 @@ void PlaylistPlayback::advance_pending_switch() {
     const PendingSwitch done = pending_;
     pending_ = PendingSwitch{};
     if (done.tune) {
-        finish_tune(done.target, done.keep_overlay);
+        if (done.selected) {
+            if (done.target != state_.tuned_channel) error_policy_ = video::PlaybackErrorPolicy{};
+            const auto& a = done.selected->airing;
+            load_on_air(done.target, OnAir{a.index, 0, a.starts_at, a.ends_at, 0},
+                        done.keep_overlay, /*on_demand=*/true);
+        } else {
+            finish_tune(done.target, done.keep_overlay);
+        }
     } else {
         finish_switch(done.target);
     }
@@ -826,6 +1124,25 @@ void PlaylistPlayback::tick_pipeline_error() {
 }
 
 void PlaylistPlayback::tick_auto_advance() {
+    if (!state_.on_demand && timezone_reload_pending_ && guide_style() && loaded_airing_ && owns_pipeline()) {
+        timezone_reload_pending_ = false;
+        rejoin_schedule(/*programme_ended=*/false);
+        return;
+    }
+    const bool owns_cut = !state_.on_demand && guide_style() && loaded_airing_ &&
+        !loaded_airing_->identity.empty() &&
+        (loaded_airing_->identity == channel_identity(state_.tuned_channel) ||
+         (state_.loaded_movie && loaded_airing_->identity == state_.loaded_movie->channel_identity));
+    // Live programmes cut at the civil day boundary even if a keyframe seek
+    // or pause has left the file position behind. A load records a new day
+    // deadline and clears playback_started_, so this cannot fire twice.
+    // Whole selected programmes bypass both this deadline and the file cut.
+    if (owns_cut && owns_pipeline() && state_.video_active &&
+        state_.playback_started_ &&
+        guide_day_ends_at_ > 0 && transport_.wall_now_utc() >= guide_day_ends_at_) {
+        rejoin_schedule();
+        return;
+    }
     // Auto-advance to next item in playlist when current video ends.
     // "Ends" honors the item's `end:` trim (decide_auto_advance) — the
     // old full-file comparison played every trimmed item to EOF.
@@ -837,23 +1154,21 @@ void PlaylistPlayback::tick_auto_advance() {
     // A pending switch has stopped the old stream and already points the
     // indexes at the new playlist: there is no item to advance (and the old
     // code never ran this inside the switch's wait).
-    if (!switch_pending() && state_.video_active && state_.current_playlist_index >= 0 &&
-        state_.current_item_index >= 0) {
+    if (!switch_pending() && state_.video_active && state_.current_playlist_item()) {
         // Snapshot the (position, duration) pair so the whole advance
         // decision sees a consistent view rather than reading the
         // mutex-protected fields multiple times.
         app::AutoAdvanceInput adv;
         adv.position = state_.get_position();
         adv.duration = state_.get_duration();
-        if (state_.current_playlist_index < static_cast<int>(state_.playlists.size())) {
-            const auto& adv_pl = state_.playlists[state_.current_playlist_index];
-            if (state_.current_item_index < static_cast<int>(adv_pl.items.size())) {
-                adv.item_end = adv_pl.items[state_.current_item_index].end;
-            }
+        adv.item_end = state_.current_playlist_item()->end;
+        if (owns_cut && guide_item_end_position_ > 0) {
+            adv.item_end = adv.item_end > 0 ? std::min(adv.item_end, guide_item_end_position_)
+                                          : guide_item_end_position_;
         }
         adv.playback_started = state_.playback_started_;
         adv.master_shuffle = state_.master_shuffle_active;
-        adv.current_item = state_.current_item_index;
+        adv.current_item = state_.retained_playlist_item() ? 0 : state_.current_item_index;
         adv.last_advanced_item = state_.last_advanced_item_index;
 
         switch (app::decide_auto_advance(adv)) {
@@ -870,7 +1185,8 @@ void PlaylistPlayback::tick_auto_advance() {
                 if (guide_style()) {
                     // Live: whatever is on the tuned channel now, at its
                     // scheduled offset — drift is corrected here.
-                    rejoin_schedule();
+                    if (state_.on_demand) finish_on_demand();
+                    else rejoin_schedule();
                 } else if (state_.master_shuffle_active) {
                     // Saves the current item to the shuffle history first
                     // (virtual row excluded — see on_next()).
@@ -966,7 +1282,7 @@ void PlaylistPlayback::tick_stall_watchdog(double now_sec) {
 
 bool PlaylistPlayback::stall_is_channels() const {
     const Channel* ch = channel_at(state_.tuned_channel);
-    return ch && !ch->items.empty() && channel_progress_.loaded && owns_pipeline();
+    return !state_.on_demand && ch && !ch->items.empty() && channel_progress_.loaded && owns_pipeline();
 }
 
 void PlaylistPlayback::on_channel_stall(const std::string& pipeline_note) {
@@ -985,8 +1301,10 @@ void PlaylistPlayback::on_channel_stall(const std::string& pipeline_note) {
             "stalled");
         return;
     }
-    const auto oa = join_point(*channel_at(channel), transport_.wall_now_utc());
-    if (!oa) return;  // not reached: stall_is_channels() saw a schedule
+    const double now = transport_.wall_now_utc();
+    const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
+    const auto oa = join_point(*channel_at(channel), now, offset(now), offset);
+    if (!oa) return;  // off air: the live day-boundary tick handles stopping
     std::cerr << "Playback stalled at " << state_.get_position()
               << "s while reported playing" << pipeline_note << " — reloading channel "
               << channel << " at its live point" << std::endl;

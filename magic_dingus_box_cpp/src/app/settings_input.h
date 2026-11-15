@@ -55,6 +55,8 @@ struct SettingsInputContext {
     // dispatch has stopped playback and closed the Settings menu.
     std::function<void()> enter_media_browser;
 #endif
+    // Short menu press: exit a picked guide row before opening Settings.
+    std::function<bool()> guide_back = {};
 };
 
 // BTN4 (InputAction::SETTINGS_MENU) and, while it is held, the rotary /

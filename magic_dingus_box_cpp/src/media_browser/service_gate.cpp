@@ -30,7 +30,7 @@ GateResult wait_for_service(const ServiceGateHooks& hooks,
         return hooks.cancelled && hooks.cancelled();
     };
 
-    const auto deadline = now() + timing.deadline;
+    auto deadline = now() + timing.deadline;
     const auto remaining = [&] {
         return std::chrono::duration_cast<Ms>(deadline - now());
     };
@@ -38,34 +38,49 @@ GateResult wait_for_service(const ServiceGateHooks& hooks,
 
     if (cancelled()) return GateResult::Cancelled;
 
-    // Phase 1: the quiet-mode executor. Sliced at <= 1 s so cancellation
-    // stays prompt even though wait_until_idle_for itself is not
-    // cancellable.
-    if (hooks.wait_quiet_idle) {
-        for (;;) {
-            const Ms left = remaining();
-            if (left <= Ms::zero()) return GateResult::TimedOut;
-            if (hooks.wait_quiet_idle(std::min(left, Ms(1000)))) break;
-            if (cancelled()) return GateResult::Cancelled;
-        }
-    }
-
-    // Phase 2: poll the service. A ping is attempted before the deadline
-    // check on each round, so a service that answers on the very edge of
-    // the window still counts.
+    const auto paused = [&hooks] { return hooks.paused && hooks.paused(); };
+    bool need_quiet_wait = true;
     for (;;) {
         if (cancelled()) return GateResult::Cancelled;
-        if (hooks.ping()) return GateResult::Ready;
+        if (paused()) {
+            // An owner can acquire the services after polling has already
+            // begun. Keep this worker alive, without pinging stopped
+            // services or charging that ownership time to their startup.
+            do {
+                if (cancelled()) return GateResult::Cancelled;
+                sleep(slice);
+            } while (paused());
+            deadline = now() + timing.deadline;
+            need_quiet_wait = true;
+            continue;
+        }
+
+        // Quiet work is checked again after every ownership release: its
+        // resume must finish before a ping can observe transient readiness.
+        if (need_quiet_wait && hooks.wait_quiet_idle) {
+            const Ms left = remaining();
+            if (left <= Ms::zero()) return GateResult::TimedOut;
+            if (hooks.wait_quiet_idle(std::min(left, Ms(1000))))
+                need_quiet_wait = false;
+            continue;
+        }
+        need_quiet_wait = false;
+
+        // A claim beginning during the request wins over readiness or an
+        // elapsed deadline. The next iteration waits for its eventual
+        // release and gives service startup a fresh bound.
+        const bool ready = hooks.ping();
+        if (paused()) continue;
+        if (ready) return GateResult::Ready;
         if (remaining() <= Ms::zero()) return GateResult::TimedOut;
-        // Sleep out the poll interval in slices, re-checking cancellation
-        // and the deadline between them.
+
         Ms waited{0};
         while (waited < timing.poll_interval) {
             if (cancelled()) return GateResult::Cancelled;
+            if (paused()) break;
             const Ms left = remaining();
             if (left <= Ms::zero()) return GateResult::TimedOut;
-            const Ms step =
-                std::min({slice, timing.poll_interval - waited, left});
+            const Ms step = std::min({slice, timing.poll_interval - waited, left});
             sleep(step);
             waited += step;
         }
@@ -76,7 +91,7 @@ DeferredBatchAction decide_deferred_batch(GateResult gate,
                                           bool full_pause_active,
                                           bool session_began_during_gate) {
     if (gate == GateResult::Cancelled) return DeferredBatchAction::Abandon;
-    if (full_pause_active) return DeferredBatchAction::Requeue;
+    if (full_pause_active) return DeferredBatchAction::Regate;
     if (gate == GateResult::Ready) return DeferredBatchAction::Add;
     if (session_began_during_gate) return DeferredBatchAction::Regate;
     return DeferredBatchAction::Drop;

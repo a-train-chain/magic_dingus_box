@@ -147,6 +147,8 @@ public:
     // Unrecognized paths pass through unchanged with a warn-level log.
     std::string resolve_host_path(const std::string& container_path) const;
 
+    const std::string& host_library_prefix() const { return cfg_.host_library_prefix; }
+
     // Trailing-slash normalization for path prefixes — exposed so main.cpp
     // can normalize env-var-supplied overrides at the same boundary the
     // constructor uses internally. Empty input passes through unchanged

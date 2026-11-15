@@ -1,10 +1,13 @@
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/http/http_request.h"
+#include "utils/fsync_util.h"
 
 #include <curl/curl.h>
 #include <json/json.h>
 #include <spdlog/spdlog.h>
 
+#include <filesystem>
+#include <fstream>
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -336,6 +339,130 @@ bool QbittorrentClient::delete_torrent(const std::string& hash,
 // last_error_ (transport failure or 4xx) try legacy_path. Returns
 // true if either call cleared the error. Defined as a private
 // member to access protected http_post.
+namespace {
+Json::Value empty_owned() {
+    Json::Value value(Json::objectValue); value["version"] = 2;
+    value["alt"] = false; value["hashes"] = Json::Value(Json::arrayValue); return value;
+}
+bool read_owned(const std::string& path, Json::Value& value, bool allow_legacy = false) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) { value = empty_owned(); return !ec; }
+    std::ifstream in(path); Json::CharReaderBuilder b; std::string error;
+    if (!in || !Json::parseFromStream(b, in, &value, &error)) return false;
+    if (allow_legacy && value.isInt() && value.asInt() == 1) {
+        // A fresh pause can safely record only CURRENTLY active torrents;
+        // legacy-stopped torrents remain unowned and are never restarted.
+        value = empty_owned();
+    }
+    if (!value.isObject() || value.get("version", 0) != 2 ||
+        !value["alt"].isBool() || !value["hashes"].isArray()) return false;
+    for (const auto& h : value["hashes"]) {
+        if (!h.isString() || h.asString().empty() ||
+            h.asString().find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) return false;
+    }
+    return true;
+}
+std::string owned_hashes(const Json::Value& hashes) {
+    std::string joined;
+    for (const auto& h : hashes) { if (!joined.empty()) joined += "%7C"; joined += h.asString(); }
+    return joined;
+}
+}
+
+bool QbittorrentClient::sync_owned_record(const std::string& path, bool parent_directory) {
+    return parent_directory ? utils::fsync_parent_dir(path) : utils::fsync_file(path);
+}
+
+bool QbittorrentClient::write_owned_record(const std::string& path, const std::string& contents) {
+    // Exact existing private .tmp family. These fences run on the quiet
+    // executor's worker, never the render thread. A failed fence forbids the
+    // subsequent remote mutation and leaves exact recovery authority intact.
+    std::ofstream out(path + ".tmp", std::ios::trunc);
+    if (!out) return false;
+    out << contents;
+    out.flush();
+    if (!out) return false;
+    out.close();
+    if (!out || !sync_owned_record(path + ".tmp", false)) return false;
+    std::error_code ec;
+    std::filesystem::rename(path + ".tmp", path, ec);
+    return !ec && sync_owned_record(path, true);
+}
+
+bool QbittorrentClient::pause_owned(bool full, const std::string& marker) {
+    std::lock_guard<std::recursive_mutex> guard(quiet_mtx_);
+    Json::Value owned;
+    // Legacy stopped torrents are not adopted; a fresh pause only owns
+    // changes made against the current checked snapshot.
+    if (!read_owned(marker, owned, true)) return false;
+    if (!full) {
+        set_error({});
+        auto mode = http_get("/api/v2/transfer/speedLimitsMode");
+        while (!mode.empty() && std::isspace(static_cast<unsigned char>(mode.back()))) mode.pop_back();
+        if (mode != "0" || !last_error_on_this_thread().empty()) return false;
+        // Persist intent before the request: an ambiguous transport failure
+        // or crash can only restore a cap that was observed OFF here.
+        owned["alt"] = true;
+        if (!write_owned_record(marker, owned.toStyledString())) return false;
+        return set_alt_speed_limits_enabled(true);
+    }
+    set_error({});
+    const auto body = http_get("/api/v2/torrents/info");
+    if (!last_error_on_this_thread().empty()) return false;
+    Json::Value torrents; Json::CharReaderBuilder b; std::string error; std::istringstream in(body);
+    if (!Json::parseFromStream(b, in, &torrents, &error) || !torrents.isArray()) return false;
+    Json::Value active(Json::arrayValue);
+    for (const auto& torrent : torrents) {
+        if (!torrent["hash"].isString() || !torrent["state"].isString()) return false;
+        const auto hash = torrent["hash"].asString(), state = torrent["state"].asString();
+        if (hash.empty() || hash.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) return false;
+        if (state.rfind("stopped", 0) == 0 || state.rfind("paused", 0) == 0 ||
+            state == "error" || state == "missingFiles" || state.empty()) continue;
+        active.append(hash);
+        bool exists = false; for (const auto& h : owned["hashes"]) if (h.asString() == hash) exists = true;
+        if (!exists) owned["hashes"].append(hash);
+    }
+    if (active.empty()) return false;
+    if (!write_owned_record(marker, owned.toStyledString())) return false;
+    const auto payload = "hashes=" + owned_hashes(active);
+    set_error({}); http_post("/api/v2/torrents/stop", payload);
+    if (!last_error_on_this_thread().empty()) { set_error({}); http_post("/api/v2/torrents/pause", payload); }
+    return last_error_on_this_thread().empty();
+}
+
+bool QbittorrentClient::resume_owned(const std::string& marker) {
+    std::lock_guard<std::recursive_mutex> guard(quiet_mtx_);
+    Json::Value owned;
+    if (!read_owned(marker, owned)) return false;
+    // Retry a previously interrupted publication/deletion fence before any
+    // external restoration. Missing records never invent ownership.
+    std::error_code exists_error;
+    const bool exists = std::filesystem::exists(marker, exists_error);
+    if (exists_error || (exists && !sync_owned_record(marker, false)) ||
+        !sync_owned_record(marker, true)) return false;
+    if (owned["alt"].asBool()) {
+        if (!set_alt_speed_limits_enabled(false)) return false;
+        owned["alt"] = false;
+        if (!write_owned_record(marker, owned.toStyledString())) return false;
+    }
+    if (!owned["hashes"].empty()) {
+        const auto payload = "hashes=" + owned_hashes(owned["hashes"]);
+        set_error({}); http_post("/api/v2/torrents/start", payload);
+        if (!last_error_on_this_thread().empty()) { set_error({}); http_post("/api/v2/torrents/resume", payload); }
+        if (!last_error_on_this_thread().empty()) return false;
+    }
+    // Checkpoint completed hashes before deletion. Even if unlink's parent
+    // fence fails (or power dies), the old durable record is already empty,
+    // so retry/restart cannot replay restored effects on an operator pause.
+    if (!owned["hashes"].empty()) {
+        owned["hashes"] = Json::Value(Json::arrayValue);
+        if (!write_owned_record(marker, owned.toStyledString())) return false;
+    }
+    std::error_code ec;
+    std::filesystem::remove(marker, ec);
+    return !ec && sync_owned_record(marker, true);
+}
+
 bool QbittorrentClient::pause_all() {
     {
         std::lock_guard<std::mutex> lk(cookie_mtx_);
@@ -381,6 +508,7 @@ bool QbittorrentClient::resume_all() {
 }
 
 bool QbittorrentClient::set_alt_speed_limits_enabled(bool on) {
+    std::lock_guard<std::recursive_mutex> guard(quiet_mtx_);
     // Read-then-toggle (qBit has no explicit-set endpoint — see header).
     //
     // Deliberately NO explicit lazy-login block here, unlike pause_all():

@@ -289,3 +289,79 @@ TEST_CASE("no open game list: nothing to re-find", "[playlist_reload]") {
     const auto r = app::remap_open_game_list(s.game_playlists, snap.open_game_id, 0);
     CHECK(r.action == app::OpenGameListRemap::Action::Exit);
 }
+
+TEST_CASE("movie rows merge idempotently after real rows and disappear together", "[playlist_reload]") {
+    auto rows = app::split_for_ui_with_master_shuffle(disk_v1()).video;
+    auto kids = playlist("Kids", {item("film")}); kids.path = "movies:kids";
+    auto comedy = kids; comedy.path = "movies:comedy";
+    rows.insert(rows.begin() + 1, kids);
+    app::merge_movie_playlists(rows, {comedy, kids});
+    app::merge_movie_playlists(rows, {comedy, kids});
+    REQUIRE(rows.size() == 5);
+    CHECK(rows[1].title == "cartoons"); CHECK(rows[2].title == "movies");
+    CHECK(rows[3].path == "movies:comedy"); CHECK(rows[4].path == "movies:kids");
+    CHECK(app::playlist_identity(rows[4]) == "movies:kids");
+    app::merge_movie_playlists(rows, {}); CHECK(rows.size() == 3);
+}
+
+TEST_CASE("movie refresh preserves the actual film through reorder and removal", "[playlist_reload]") {
+    stops = 0;
+    app::AppState s; boot(s, disk_v1());
+    auto kids = playlist("Kids", {item("first"), item("playing")}); kids.path = "movies:kids";
+    kids.items[1].movie_tmdb_id = 42; kids.items[1].end = 7200;
+    auto comedy = kids; comedy.path = "movies:comedy";
+    app::merge_movie_playlists(s.playlists, {kids, comedy});
+    s.current_playlist_index = 3; s.current_item_index = 1; s.video_active = true;
+    s.now_playing_title = "playing";
+    auto snap = app::snapshot_for_reload(s, -1);
+    auto fresh = app::split_for_ui_with_master_shuffle(disk_v1());
+    int expected_row = -1;
+    SECTION("reordered rows and item metadata") {
+        expected_row = 4;
+        kids.items[1].title = "edited"; kids.items[1].movie_tmdb_id = 99;
+        app::merge_movie_playlists(fresh.video, {comedy, kids});
+    }
+    SECTION("film removed") {
+        expected_row = 3;
+        kids.items = {item("replacement")};
+        app::merge_movie_playlists(fresh.video, {kids});
+    }
+    SECTION("whole channel removed") { }
+    app::apply_reloaded_playlists(s, std::move(fresh), snap, kStop);
+    CHECK(stops == 0); CHECK(s.video_active);
+    REQUIRE(s.current_playlist_item());
+    CHECK(s.current_playlist_item()->title == "playing");
+    CHECK(s.current_playlist_item()->movie_tmdb_id == 42);
+    CHECK(s.current_playlist_item()->end == 7200);
+    CHECK(s.now_playing_title == "playing");
+    CHECK(s.loaded_movie->channel_identity == "movies:kids");
+    CHECK(s.current_playlist_index == expected_row);
+    // A second refresh must snapshot the retained film, never a replacement row.
+    snap = app::snapshot_for_reload(s, -1);
+    CHECK(snap.playing_id == "movies:kids"); CHECK(snap.playing_item_title == "playing");
+    fresh = app::split_for_ui_with_master_shuffle(disk_v1());
+    app::apply_reloaded_playlists(s, std::move(fresh), snap, kStop, false);
+    CHECK(stops == 1); CHECK_FALSE(s.video_active); CHECK_FALSE(s.loaded_movie);
+}
+
+TEST_CASE("selected regular programme reload retains actual item through removal and repeated refresh", "[playlist_reload][on_demand]") {
+    stops = 0;
+    app::AppState s; boot(s, disk_v1());
+    s.current_playlist_index = 1; s.current_item_index = 0; s.video_active = true; s.on_demand = true;
+    s.playlists[1].items[0].start = 10; s.playlists[1].items[0].end = 600;
+    bool removed_channel = false;
+    auto fresh = disk_v1();
+    SECTION("item removed") { fresh[0].items = {item("replacement")}; fresh[0].items[0].end = 60; }
+    SECTION("metadata replaced") { fresh[0].items[0].title = "edited"; fresh[0].items[0].start = 30; fresh[0].items[0].end = 60; }
+    SECTION("whole channel removed") { removed_channel = true; fresh.erase(fresh.begin()); }
+    reload(s, fresh);
+    CHECK(stops == 0); CHECK(s.video_active); REQUIRE(s.current_playlist_item());
+    CHECK(s.current_playlist_item()->title == "a"); CHECK(s.current_playlist_item()->start == 10);
+    CHECK(s.current_playlist_item()->end == 600); CHECK_FALSE(s.loaded_movie);
+    CHECK(s.current_item_index == -1);
+    if (removed_channel) CHECK(s.current_playlist_index == -1);
+    const auto snap = app::snapshot_for_reload(s, -1);
+    CHECK(snap.playing_id == "path:/data/playlists/cartoons.yaml"); CHECK(snap.playing_item_title == "a");
+    reload(s, fresh);
+    REQUIRE(s.current_playlist_item()); CHECK(s.current_playlist_item()->title == "a");
+}

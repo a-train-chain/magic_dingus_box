@@ -240,23 +240,6 @@ double Controller::get_volume() const {
 
 namespace {
 
-// The PlaylistItem currently playing, or nullptr if the indices do not point at
-// one. Both indices are free-running ints that are legitimately -1 between
-// items and during a playlist switch, so every access needs the same bounds
-// check used further down in this file rather than trusting them.
-const PlaylistItem* current_item(const AppState& state) {
-    if (state.current_playlist_index < 0 ||
-        state.current_playlist_index >= static_cast<int>(state.playlists.size())) {
-        return nullptr;
-    }
-    const auto& pl = state.playlists[state.current_playlist_index];
-    if (state.current_item_index < 0 ||
-        state.current_item_index >= static_cast<int>(pl.items.size())) {
-        return nullptr;
-    }
-    return &pl.items[state.current_item_index];
-}
-
 // The resolved path of a local video item whose file does not exist, or
 // nullopt (file present, or not a file-backed video item). The same
 // resolution + existence check load_file_with_resolution makes, done BEFORE
@@ -358,7 +341,7 @@ void Controller::update_state(AppState& state) {
     // auto-advance uses (see auto_advance.h), so "ended" means one thing.
     double effective_duration = cur_duration;
     {
-        const PlaylistItem* cur = current_item(state);
+        const PlaylistItem* cur = state.current_playlist_item();
         if (cur) effective_duration = effective_end(cur_duration, cur->end);
     }
     if (state.video_active && effective_duration > 0.0) {
@@ -384,7 +367,7 @@ void Controller::update_state(AppState& state) {
     if (was_active && !state.video_active && !video_ended) {
         // Only reset if we don't have a valid playlist index set
         // This prevents resetting during playlist switches
-        if (state.current_playlist_index < 0) {
+        if (state.current_playlist_index < 0 && !state.retained_playlist_item()) {
             state.current_item_index = -1;
             // Clear the published now-playing info too, so the phone
             // remote doesn't keep showing a track that has stopped.
@@ -463,16 +446,23 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
     const auto& item = playlist.items[item_index];
 
-    // A missing file is refused before anything is torn down: the stream
+    // Ordinary playlists refuse a missing file before anything is torn down:
+    // the stream
     // that is playing keeps playing (and keeps its now-playing info), and
     // no stop() + 200 ms settle is paid for an item that cannot load.
-    if (const auto missing = missing_video_file(item, playlist_directory)) {
+    const bool movie = item.movie_tmdb_id > 0;
+    if (movie && (item.source_type != "local" || item.path.empty() || item.path.front() != '/'))
+        return utils::Result<>::fail("Movie requires a worker-published absolute local path");
+    if (const auto missing = movie ? std::nullopt : missing_video_file(item, playlist_directory)) {
         std::string error = "Failed to load playlist item: " + item.path +
                             " (Video file does not exist: " + *missing + ")";
         std::cerr << "Error: " << error << std::endl;
         return utils::Result<>::fail(error);
     }
 
+    state.loaded_movie.reset();
+    state.loaded_on_demand.reset();
+    state.on_demand = false;
     // Publish "what is playing" for StatusWriter -> kiosk_status.json ->
     // the phone remote. These AppState fields were declared and
     // serialized but never assigned anywhere, so remote.js's
@@ -497,8 +487,22 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         return utils::Result<>::ok();
     }
 
-    return load_item_media(state, item, playlist_directory, progress_callback,
-                           start_offset_s);
+    if (movie) {
+        // MovieLibraryStore already resolved and validated this absolute path
+        // on its worker. Never stat/resolve/canonicalize the removable drive
+        // here: an unplugged/stalled disk must reach the asynchronous player
+        // error path, whose failure hook asks that worker to revalidate.
+        current_media_key_.clear();
+        if (!player_) return utils::Result<>::fail("Player not initialized");
+        stop();
+        if (!player_->load_file(item.path, item.start + start_offset_s, item.end, false))
+            return utils::Result<>::fail("Failed to load movie: " + item.path);
+        player_->set_volume(current_system_volume_);
+        current_media_key_ = movie_media_key(item.movie_tmdb_id);
+        play();
+        return utils::Result<>::ok();
+    }
+    return load_item_media(state, item, playlist_directory, progress_callback, start_offset_s);
 }
 
 void Controller::load_next_item(AppState& state, const std::string& playlist_directory) {

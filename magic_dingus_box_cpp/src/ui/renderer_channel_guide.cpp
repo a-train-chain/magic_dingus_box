@@ -504,6 +504,12 @@ void Renderer::GuidePainter::grid() {
              tone(row.name_tone));
 
         const float cells_x = gx + col_w + 3.0f;
+        if (row.off_air) {
+            fill(cells_x, ry, gx + g.rect.w - cells_x, rh, t_.bg_lift);
+            text(row.off_air_text, cells_x + m_.cell_pad,
+                 baseline_in(ry, rh, row.off_air_text_px, false), row.off_air_text_px, t_.dim);
+            continue;
+        }
         if (row.no_schedule) {
             fill(cells_x, ry, gx + g.rect.w - cells_x, rh, t_.bg_lift);
             text(gp::kNoSchedule, cells_x + m_.cell_pad, baseline_in(ry, rh, gp::kBody, false),
@@ -515,9 +521,22 @@ void Renderer::GuidePainter::grid() {
             const float cw = static_cast<float>(c.w);
             fill(cx, ry, cw, rh, t_.bg_lift);
             if (c.ring) frame(cx, ry, cw, rh, 2.0f, t_.accent);
-            if (!c.show_text) continue;
             const Color& ink = tone(c.tone);
-            const float tx = cx + m_.cell_pad;
+            // Small edge chevrons remain visible even when no title fits.
+            // The view reserves their space before fitting either text line.
+            const float chevron_w = std::min(3.0f, (cw - 2.0f) / 4.0f);
+            const float cy = ry + rh / 2.0f;
+            const auto chevron = [&](float tip, float inner) {
+                r_.draw_line(inner, cy - 3.0f, tip, cy, 1.0f, ink, alpha_);
+                r_.draw_line(tip, cy, inner, cy + 3.0f, 1.0f, ink, alpha_);
+            };
+            if (chevron_w > 0.0f && c.continues_before)
+                chevron(cx + 2.0f, cx + 2.0f + chevron_w);
+            if (chevron_w > 0.0f && c.continues_after)
+                chevron(cx + cw - 2.0f, cx + cw - 2.0f - chevron_w);
+            if (!c.show_text) continue;
+            const float tx = cx + m_.cell_pad +
+                             (c.continues_before ? guide_detail::kContinuationW : 0);
             float b1 = baseline_in(ry, rh, gp::kBody, false);
             if (c.show_artist && !c.artist.empty()) {
                 // Title over artist, the pair centred in the cell. Both at the
@@ -535,7 +554,7 @@ void Renderer::GuidePainter::grid() {
     }
 
     // Now line: 2 px red down every row, a 10 x 6 marker in the header.
-    if (!g.rows.empty()) {
+    if (!g.rows.empty() && g.now_x >= g.column_w && g.now_x + 2 <= g.rect.w) {
         const float nx = gx + g.now_x;
         const float rows_h = static_cast<float>(g.rows.size()) * g.row_h - 3.0f;
         fill(nx, gy + g.header_h, 2.0f, rows_h, t_.highlight2);

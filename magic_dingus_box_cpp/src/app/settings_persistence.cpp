@@ -74,6 +74,8 @@ std::string SettingsPersistence::serialize(const AppState& state) {
     // Display settings
     Json::Value display;
     display["mode"] = (state.display_settings.mode == DisplayMode::CRT_NATIVE) ? "crt_native" : "modern_tv";
+    display["guide_mode"] = state.display_settings.guide_mode == app::GuideMode::PickAhead
+        ? "pick_ahead" : "live";
     display["menu_style"] =
         (state.display_settings.menu_style == app::MenuStyle::ChannelGuide) ? "channel_guide"
                                                                            : "list";
@@ -375,6 +377,10 @@ utils::Result<> SettingsPersistence::load_settings_unguarded(AppState& state) {
         std::string mode = display.get("mode", "crt_native").asString();
         state.display_settings.mode = (mode == "modern_tv") ? DisplayMode::MODERN_TV : DisplayMode::CRT_NATIVE;
 
+        const auto& guide_mode = display["guide_mode"];
+        state.display_settings.guide_mode =
+            guide_mode.isString() && guide_mode.asString() == "pick_ahead"
+                ? app::GuideMode::PickAhead : app::GuideMode::Live;
         state.display_settings.menu_style =
             (display.get("menu_style", "list").asString() == "channel_guide")
                 ? MenuStyle::ChannelGuide : MenuStyle::List;

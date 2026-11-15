@@ -49,6 +49,7 @@ enum class PiModel {
 //   unsupported_game_systems       POLICY    CPU/GPU quality bar (N64/DC)
 //   unsupported_emulator_cores     POLICY    same gate keyed on the core
 //   artwork_cache_budget_bytes     POLICY    RAM reservation for posters
+//   movie_channel_codecs           POLICY    movie-channel decode budget
 //   policy_override*               META      override bookkeeping
 //
 // A new POLICY field MUST also be copied in apply_policy_override() and
@@ -162,6 +163,10 @@ struct PlatformProfile {
     // Movie playback still trims to 32 MB and a game launch frees it all
     // (main.cpp), independent of this ceiling.
     std::size_t artwork_cache_budget_bytes = 128u * 1024u * 1024u;
+
+    // Movie-channel codec allowlist: empty accepts any codec. Pi 4B
+    // admits only hardware-decodable H.264; Pi 5 and Unknown accept all.
+    std::vector<std::string> movie_channel_codecs;
 
     // --- TEST-ONLY policy override bookkeeping (see apply_policy_override)
     // "pi4" while this profile carries the Pi 4B's POLICY fields on top of

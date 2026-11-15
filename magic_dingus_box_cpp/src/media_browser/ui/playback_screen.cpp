@@ -22,6 +22,7 @@
 #include "ui/toast.h"
 #include "utils/config.h"
 #include "utils/result.h"
+#include "utils/services_env.h"
 #include "video/playback_error_policy.h"
 
 namespace media_browser::ui {
@@ -35,67 +36,38 @@ app::MovieQuietMode::Actions PlaybackScreen::make_quiet_actions(
         QbittorrentClient* qbit, std::function<void()> barrier) {
     using Mode = app::MovieQuietMode::Mode;
     using Consent = app::MovieQuietMode::Consent;
-    app::MovieQuietMode::Actions a;
-    // Runs on the MovieQuietMode worker thread — never the render thread.
-    a.pause = [qbit, barrier](Mode mode) -> Consent {
+    const std::string marker = config::get_data_path() + "/qbit_paused_by_kiosk";
+    app::MovieQuietMode::Actions actions;
+    actions.pause = [qbit, marker, barrier](Mode mode) {
         if (barrier) barrier();
         Consent c;
-        if (qbit != nullptr) {
-            if (mode == Mode::Trickle) {
-                c.alt_limited = qbit->set_alt_speed_limits_enabled(true);
-                if (!c.alt_limited) {
-                    spdlog::warn("[playback] qbit trickle cap failed; "
-                                 "downloads run uncapped during playback");
-                }
-            } else {
-                c.qbit_paused = qbit->pause_all();
-                if (c.qbit_paused) {
-                    app::mark_torrents_paused_by_kiosk(
-                        config::get_data_path() + "/qbit_paused_by_kiosk", true);
-                }
-                if (!c.qbit_paused) {
-                    spdlog::warn("[playback] qbit pause_all failed; "
-                                 "playback may stutter on USB-flash media");
-                }
-            }
+        if (!std::filesystem::exists(utils::kServicesEnvPath)) return c;
+        if (qbit) {
+            // The durable journal also covers ambiguous transport failures:
+            // resume_owned restores only state observed active before us.
+            if (!qbit->pause_owned(mode == Mode::FullPause, marker))
+                spdlog::debug("[playback] qBit pause made no owned change or was unavailable");
+            c.qbit_paused = true;
         }
         if (mode == Mode::FullPause) {
-            // Best-effort; fixed path, no user input in the command. The
-            // script is idempotent (no-op without Docker/containers).
-            (void)std::system(
-                "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
+            (void)std::system("/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
             c.services_paused = true;
         }
         return c;
     };
-    // Undo ONLY what the pause reported — the consent records: never
-    // resume a torrent the operator had stopped, never clear an alt-limits
-    // cap the operator engaged, never start containers we did not stop.
-    // (A cap WE set that fails to clear is additionally covered by the
-    // unconditional clear at kiosk startup; stranded containers by the
-    // startup unpause — both crash recovery in main.cpp.)
-    a.resume = [qbit, barrier](const Consent& c) {
+    actions.resume = [qbit, marker, barrier](const Consent& c) {
         if (barrier) barrier();
-        if (qbit != nullptr && c.alt_limited &&
-            !qbit->set_alt_speed_limits_enabled(false)) {
-            spdlog::warn("[playback] qbit trickle cap clear failed; "
-                         "downloads stay capped until the next kiosk start");
-        }
-        if (qbit != nullptr && c.qbit_paused) {
-            if (qbit->resume_all()) {
-                app::mark_torrents_paused_by_kiosk(
-                    config::get_data_path() + "/qbit_paused_by_kiosk", false);
-            } else {
-                spdlog::warn("[playback] qbit resume_all failed; retried at "
-                             "next kiosk start");
-            }
-        }
-        if (c.services_paused) {
-            (void)std::system(
-                "/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1");
-        }
+        if (c.services_paused)
+            (void)std::system("/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1");
+        if (qbit && c.qbit_paused && !qbit->resume_owned(marker))
+            spdlog::warn("[playback] owned qBit recovery pending; journal retained");
     };
-    return a;
+    actions.recover = [qbit, marker] {
+        const bool services_ok = std::system("/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1") == 0;
+        const bool qbit_ok = !qbit || qbit->resume_owned(marker);
+        return services_ok && qbit_ok;
+    };
+    return actions;
 }
 
 void PlaybackScreen::bump_hud_visibility() {
@@ -233,7 +205,7 @@ void PlaybackScreen::enter() {
     //   instead of stopping the swarm — downloads keep progressing
     //   through a movie and couch-queueing keeps working.
     //
-    //   FullPause: pause_all() torrents and stop the service containers.
+    //   FullPause: stop active torrents and journal running service containers.
     //   On USB-flash media (the typical Pi 4 setup), concurrent random
     //   read+write tanks throughput to single-digit MB/s; on ANY board
     //   short on MemAvailable, the resident stack swap-thrashes the
@@ -256,34 +228,19 @@ void PlaybackScreen::enter() {
     // MemAvailable at this instant is below the floor (the 2026-08-11
     // zram freeze history lives in platform_profile.h). The 20-40s
     // container restart on exit is the known cost of a FullPause session.
-    const long mem_avail_kib = platform::read_mem_available_kib();
-    const auto quiet_mode = platform::service_quiet_mode(
-        state_.platform_profile, mem_avail_kib);
-    if (quiet_mode == platform::ServiceQuietMode::FullPause) {
-        if (state_.platform_profile.pause_services_during_movie) {
-            spdlog::info("[playback] full service pause (profile)");
-        } else {
-            spdlog::info("[playback] full service pause (low memory: "
-                         "{} MiB available < {} MiB floor)",
-                         mem_avail_kib / 1024,
-                         platform::kServiceQuietMemFloorKiB / 1024);
-        }
-    } else {
-        spdlog::info("[playback] trickle (no service pause; memory "
-                     "headroom: {} MiB available)",
-                     mem_avail_kib / 1024);
-    }
     if (quiet_ != nullptr && !quiet_requested_) {
-        quiet_->request_pause(quiet_mode == platform::ServiceQuietMode::Trickle
-                                  ? app::MovieQuietMode::Mode::Trickle
-                                  : app::MovieQuietMode::Mode::FullPause);
+        const auto profile = state_.platform_profile;
+        quiet_->request_pause([profile] {
+            return platform::service_quiet_mode(profile, platform::read_mem_available_kib()) ==
+                       platform::ServiceQuietMode::Trickle
+                ? app::MovieQuietMode::Mode::Trickle : app::MovieQuietMode::Mode::FullPause;
+        });
         quiet_requested_ = true;
     }
-    // Radarr's container is stopped for this whole session exactly when a
-    // FullPause was requested — the overlay's quick-add then defers to
-    // after the movie instead of firing into it (see DeferredAdd).
-    session_full_pause_ =
-        quiet_ != nullptr && quiet_mode == platform::ServiceQuietMode::FullPause;
+    // Pending selection is conservative. No worker publishes into this
+    // screen/session; each frame reads the aggregate queue's current state,
+    // so an old completion cannot overwrite a later session's policy.
+    session_full_pause_ = quiet_ && quiet_->effective_full_pause();
     session_deferred_adds_.clear();
     if (session_full_pause_) {
         // Tell a deferred-add worker still gating on the PREVIOUS movie's
@@ -414,9 +371,9 @@ void PlaybackScreen::leave() {
     // resume was queued, so the gate's quiet-idle wait covers it. Never
     // blocks: the worker waits on the gate, not this thread.
     // Lower the session flag FIRST: start_deferred_adds() then takes the
-    // worker mutex, so a worker that requeued its batch because this
-    // session was active is restarted here (it also runs with nothing new
-    // queued this session — the queue may hold such a requeued batch).
+    // worker mutex, so a surviving worker sees this release before taking
+    // its next batch. start_deferred_adds() also starts a worker when new
+    // additions were queued and none is running.
     full_pause_session_active_.store(false, std::memory_order_release);
     start_deferred_adds();
     session_full_pause_ = false;
@@ -449,6 +406,7 @@ void PlaybackScreen::leave() {
 
 Screen PlaybackScreen::handle_input(
         const std::vector<platform::InputEvent>& events) {
+    refresh_quiet_policy();
     // First: if an armed exit is pending, honor it. Fires every frame even
     // with empty events because the dispatcher always calls handle_input.
     // Movies arm this at natural EOS; TV sessions only via the end-overlay's
@@ -701,7 +659,17 @@ Screen PlaybackScreen::handle_input(
     return Screen::Playback;
 }
 
+void PlaybackScreen::refresh_quiet_policy() {
+    if (!quiet_requested_ || !quiet_) return;
+    const bool full = quiet_->effective_full_pause();
+    if (full && !session_full_pause_)
+        full_pause_sessions_started_.fetch_add(1, std::memory_order_acq_rel);
+    session_full_pause_ = full;
+    full_pause_session_active_.store(full, std::memory_order_release);
+}
+
 void PlaybackScreen::update() {
+    refresh_quiet_policy();
     // Quick-add outcome from the worker (see handle_input's SELECT
     // branch). Toast state is render-thread-only, hence the drain here.
     if (quickadd_done_.exchange(false, std::memory_order_acq_rel)) {
@@ -1228,7 +1196,7 @@ void PlaybackScreen::start_deferred_adds() {
         std::lock_guard<std::mutex> lk(deferred_add_mtx_);
         for (auto& d : session_deferred_adds_) {
             const int id = d.tmdb_id;
-            // A batch requeued by the worker may already hold this film.
+            // A batch retained by the waiting worker may already hold this film.
             const bool dup = std::any_of(
                 deferred_add_queue_.begin(), deferred_add_queue_.end(),
                 [id](const DeferredAdd& q) { return q.tmdb_id == id; });
@@ -1287,7 +1255,8 @@ void PlaybackScreen::run_deferred_adds() {
                 return q->wait_until_idle_for(d);
             };
         }
-        hooks.ping = [this] { return radarr_.get_status().has_value(); };
+        hooks.paused = [this] { return quiet_ && quiet_->effective_full_pause(); };
+        hooks.ping = [this] { return (!quiet_ || !quiet_->effective_full_pause()) && radarr_.get_status().has_value(); };
         hooks.cancelled = [this] {
             return shutting_down_.load(std::memory_order_acquire);
         };
@@ -1297,10 +1266,11 @@ void PlaybackScreen::run_deferred_adds() {
         DeferredBatchAction action = DeferredBatchAction::Abandon;
         {
             std::lock_guard<std::mutex> lk(deferred_add_mtx_);
-            // Read under the mutex — leave() lowers the flag before taking
-            // it, so a Requeue here is always seen by that leave().
+            // A claim may begin after the gate returned. Retain the batch
+            // and worker; channel/game releases have no leave() callback.
             const bool active =
-                full_pause_session_active_.load(std::memory_order_acquire);
+                full_pause_session_active_.load(std::memory_order_acquire) ||
+                (quiet_ && quiet_->effective_full_pause());
             const bool began =
                 full_pause_sessions_started_.load(std::memory_order_acquire) !=
                 sessions_at_gate_start;
@@ -1310,22 +1280,13 @@ void PlaybackScreen::run_deferred_adds() {
                 deferred_add_running_ = false;
                 return;
             }
-            if (action == DeferredBatchAction::Requeue) {
-                // The next movie stopped Radarr again: keep the batch
-                // queued; that session's leave() restarts this worker.
-                spdlog::info("[playback] deferred quick-add: {} item(s) "
-                             "requeued — another movie paused the services",
-                             deferred_add_queue_.size());
-                deferred_add_running_ = false;
-                return;
-            }
             if (action != DeferredBatchAction::Regate) {
                 batch.swap(deferred_add_queue_);
             }
         }
         if (action == DeferredBatchAction::Regate) {
-            spdlog::info("[playback] deferred quick-add: a movie paused the "
-                         "services during the gate — waiting again");
+            spdlog::info("[playback] deferred quick-add: services were claimed "
+                         "during the gate — waiting again");
             continue;
         }
         for (std::size_t i = 0; i < batch.size(); ++i) {

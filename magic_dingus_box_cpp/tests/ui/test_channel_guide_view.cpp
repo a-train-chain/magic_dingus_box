@@ -20,7 +20,7 @@ using app::Playlist;
 using app::PlaylistItem;
 using app::ScheduledItem;
 
-constexpr double E = app::kScheduleEpochUtc;
+constexpr double E = 1767225600.0;  // 2026-01-01 00:00 UTC
 constexpr double kNow = E + 8 * 3600 + 14 * 60 + 30;  // local 8:14:30 AM
 
 struct Fixture {
@@ -32,6 +32,8 @@ struct Fixture {
             p.title = n == 0 ? "Master Shuffle" : "Chan " + std::to_string(n);
             channels.push_back(Channel{});
             channels.back().number = n;
+            channels.back().identity = "view5";  // day 20454 starts at item 0
+            channels.back().day_start_h = 0;  // geometry fixtures start at midnight
             if (n == 7) {  // empty channel
                 playlists.push_back(p);
                 continue;
@@ -64,7 +66,7 @@ struct Fixture {
 
 }  // namespace
 
-TEST_CASE("TV geometry, ticks, now line and cells", "[guide_view]") {
+TEST_CASE("TV geometry, ticks, now line and cells", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto v = ui::layout_channel_guide(f.in());
     REQUIRE(v.grid.ticks.size() == 4);
@@ -90,7 +92,7 @@ TEST_CASE("TV geometry, ticks, now line and cells", "[guide_view]") {
     CHECK(v.grid.date_label == "THU JAN 1");
 }
 
-TEST_CASE("a programme that began before the window starts with an arrow", "[guide_view]") {
+TEST_CASE("a programme that began before the window has a separate continuation marker", "[guide_view][channel_guide_view]") {
     Fixture f;
     f.channels[1].items.clear();
     f.channels[1].items.push_back(ScheduledItem{1, 0, 8 * 3600.0 + 5 * 60});  // ends 8:05
@@ -99,11 +101,12 @@ TEST_CASE("a programme that began before the window starts with an arrow", "[gui
     auto v = ui::layout_channel_guide(f.in());
     auto& c = v.grid.rows[1].cells;
     REQUIRE(!c.empty());
-    CHECK(c[0].label.rfind("\xE2\x97\x82 ", 0) == 0);
+    CHECK(c[0].continues_before);
+    CHECK(c[0].label == "Show 1-1");
     CHECK(c[0].x == 199);
 }
 
-TEST_CASE("narrow cells drop text then artist", "[guide_view]") {
+TEST_CASE("narrow cells drop text then artist", "[guide_view][channel_guide_view]") {
     Fixture f;
     f.channels[1].items.clear();
     const double base = 8 * 3600.0 + 10 * 60;  // the window starts here
@@ -124,10 +127,10 @@ TEST_CASE("narrow cells drop text then artist", "[guide_view]") {
     CHECK(c[2].show_artist);
 }
 
-TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_view]") {
+TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_view][channel_guide_view]") {
     // Just over the 30 px text threshold a label truncates to "…" alone,
     // which reads as a stray dash on the TV (Pi 5 test, 2026-11-13); with the
-    // began-before arrow, "◂…" / "◂ …". A label keeps its text only when at
+    // reserved continuation marker. A label keeps its text only when at
     // least one character of the title fits.
     Fixture f;
     const double base = 8 * 3600.0 + 10 * 60;  // the window starts here
@@ -136,7 +139,7 @@ TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_
                            ScheduledItem{1, 2, 76}, ScheduledItem{1, 3, 600}};
     f.channels[1].total_s = base + 62 + 76 + 600;
     // 02-04: a programme that began 30 s before the window, its cell 40, 48
-    // and 56 px wide (2, 3, 4 chars with the arrow).
+    // and 56 px wide (1, 2, 3 chars after reserving the marker).
     const double lens[] = {76, 90, 104};
     for (int n = 2; n <= 4; ++n) {
         const double l = lens[n - 2];
@@ -153,21 +156,21 @@ TEST_CASE("a cell whose label would be only an ellipsis shows no text", "[guide_
     CHECK(r1[1].w == 40);
     CHECK(r1[1].label == "S\xE2\x80\xA6");  // "S…": a letter of the title
     CHECK(r1[1].show_text);
-    const char* arrow_labels[] = {"\xE2\x97\x82\xE2\x80\xA6", "\xE2\x97\x82 \xE2\x80\xA6",
-                                  "\xE2\x97\x82 S\xE2\x80\xA6"};
+    const char* labels[] = {"…", "S…", "Sh…"};
     const int widths[] = {40, 48, 56};
     for (int n = 2; n <= 4; ++n) {
         const auto& c = v.grid.rows[n].cells;
         REQUIRE_FALSE(c.empty());
         INFO("channel " << n);
         CHECK(c[0].w == widths[n - 2]);
-        CHECK(c[0].label == arrow_labels[n - 2]);
-        CHECK(c[0].show_text == (n == 4));
+        CHECK(c[0].continues_before);
+        CHECK(c[0].label == labels[n - 2]);
+        CHECK(c[0].show_text == (n >= 3));
     }
 }
 
 TEST_CASE("a label or artist line with no character of its text is not shown",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     namespace d = ui::guide_detail;
     CHECK_FALSE(d::has_text_chars(""));
     CHECK_FALSE(d::has_text_chars("\xE2\x80\xA6"));                 // …
@@ -182,7 +185,7 @@ TEST_CASE("a label or artist line with no character of its text is not shown",
     CHECK(d::has_text_chars(d::fit("Artist 1", 5)));
 }
 
-TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view]") {
+TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view][channel_guide_view]") {
     Fixture f;
     // A 338 px cell -> floor((338 - 20) / 8.428) = 37 characters.
     f.channels[1].items.clear();
@@ -207,7 +210,7 @@ TEST_CASE("long titles truncate by character with an ellipsis", "[guide_view]") 
     }());
 }
 
-TEST_CASE("cursor row: bar, ring on the on-now cell", "[guide_view]") {
+TEST_CASE("cursor row: bar, ring on the on-now cell", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.cursor.row = 2;
@@ -225,7 +228,7 @@ TEST_CASE("cursor row: bar, ring on the on-now cell", "[guide_view]") {
     CHECK(v.panel.join_note == "joins at 4:30");
 }
 
-TEST_CASE("shuffle tuned row is green", "[guide_view]") {
+TEST_CASE("shuffle tuned row is green", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 0;
@@ -239,7 +242,7 @@ TEST_CASE("shuffle tuned row is green", "[guide_view]") {
     CHECK(v.grid.rows[1].num_tone != ui::GuideTone::Green);
 }
 
-TEST_CASE("the picture control shows on the tuned row when available", "[guide_view]") {
+TEST_CASE("the picture control shows on the tuned row when available", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 1;
@@ -258,7 +261,7 @@ TEST_CASE("the picture control shows on the tuned row when available", "[guide_v
     CHECK_FALSE(v.grid.rows[0].cursor_bar);
 }
 
-TEST_CASE("an empty channel has no schedule and no cells", "[guide_view]") {
+TEST_CASE("an empty channel has no schedule and no cells", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.cursor.scroll = 3;
@@ -273,7 +276,7 @@ TEST_CASE("an empty channel has no schedule and no cells", "[guide_view]") {
     CHECK_FALSE(v.grid.down_arrow);
 }
 
-TEST_CASE("nothing tuned: no green, no bug, press to watch", "[guide_view]") {
+TEST_CASE("nothing tuned: no green, no bug, press to watch", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = -1;
@@ -289,7 +292,7 @@ TEST_CASE("nothing tuned: no green, no bug, press to watch", "[guide_view]") {
     CHECK(v.panel.eyebrow == "ON CH 00 NOW");
 }
 
-TEST_CASE("panel: clock, item, progress, next", "[guide_view]") {
+TEST_CASE("panel: clock, item, progress, next", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto v = ui::layout_channel_guide(f.in());
     CHECK(v.panel.clock_hm == "8:14");
@@ -304,7 +307,7 @@ TEST_CASE("panel: clock, item, progress, next", "[guide_view]") {
     CHECK(v.panel.show_artist);
 }
 
-TEST_CASE("local time follows the utc offset", "[guide_view]") {
+TEST_CASE("local time follows the utc offset", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.utc_offset_s = -5 * 3600;  // 8:14 UTC is 3:14 local
@@ -313,7 +316,7 @@ TEST_CASE("local time follows the utc offset", "[guide_view]") {
     CHECK(v.grid.ticks[0].label == "3:10 AM");
 }
 
-TEST_CASE("CRT drops ticks, artists, next and the source label", "[guide_view]") {
+TEST_CASE("CRT drops ticks, artists, next and the source label", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in(true);
     in.picture_available = true;
@@ -338,7 +341,7 @@ TEST_CASE("CRT drops ticks, artists, next and the source label", "[guide_view]")
     CHECK(v.hints.size() == 2);
 }
 
-TEST_CASE("TV hints", "[guide_view]") {
+TEST_CASE("TV hints", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto v = ui::layout_channel_guide(f.in());
     REQUIRE(v.hints.size() == 3);
@@ -347,7 +350,7 @@ TEST_CASE("TV hints", "[guide_view]") {
     CHECK(v.hints[2].label == "on green to hide guide");
 }
 
-TEST_CASE("the bottom row: None on a tuned 4:3 row and on a no-schedule row", "[guide_view]") {
+TEST_CASE("the bottom row: None on a tuned 4:3 row and on a no-schedule row", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 1;
@@ -365,7 +368,7 @@ TEST_CASE("the bottom row: None on a tuned 4:3 row and on a no-schedule row", "[
     CHECK(v.panel.bottom == ui::GuideBottom::None);
 }
 
-TEST_CASE("the view carries the canvas and the Picture control's state", "[guide_view]") {
+TEST_CASE("the view carries the canvas and the Picture control's state", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 1;
@@ -387,7 +390,7 @@ TEST_CASE("the view carries the canvas and the Picture control's state", "[guide
 }
 
 TEST_CASE("the source label names the playing aspect only when the name is true",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     using ui::guide_source_label;
     SECTION("common aspects, within 2 %") {
         CHECK(guide_source_label(16.0 / 9.0) == "16:9 SOURCE");
@@ -428,7 +431,7 @@ TEST_CASE("the source label names the playing aspect only when the name is true"
 }
 
 TEST_CASE("the panel carries the source label beside the Picture control only",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = f.in();
     in.tuned = 1;
@@ -461,7 +464,7 @@ TEST_CASE("the panel carries the source label beside the Picture control only",
     }
 }
 
-TEST_CASE("the video window in framebuffer px", "[guide_view]") {
+TEST_CASE("the video window in framebuffer px", "[guide_view][channel_guide_view]") {
     const ui::GuideRect tv{40, 40, 384, 288};
     const ui::GuideRect crt{24, 24, 224, 168};
     // Modern TV at 1920x1080: the 960x720 canvas is the 1440x1080 4:3 area
@@ -497,7 +500,7 @@ TEST_CASE("the video window in framebuffer px", "[guide_view]") {
     CHECK(w.h == 0);
 }
 
-TEST_CASE("channel names truncate to the column's real width", "[guide_view]") {
+TEST_CASE("channel names truncate to the column's real width", "[guide_view][channel_guide_view]") {
     Fixture f;
     f.playlists[1].title = std::string(40, 'a');
     auto v = ui::layout_channel_guide(f.in());
@@ -543,7 +546,7 @@ ui::GuideViewInput tuned_one(const Fixture& f, int item, double position_s,
 }  // namespace
 
 TEST_CASE("a tuned item paused past its slot: the panel describes what plays",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     // Show 1-0 (scheduled 8:00-8:10) is still playing, 9:50 in.
     auto v = ui::layout_channel_guide(tuned_one(f, 0, 590.0));
@@ -565,7 +568,7 @@ TEST_CASE("a tuned item paused past its slot: the panel describes what plays",
 }
 
 TEST_CASE("a tuned item ahead of its slot: the panel describes what plays",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     // Show 1-2 (scheduled 8:20-8:30) started 5 s ago, ahead of schedule.
     auto v = ui::layout_channel_guide(tuned_one(f, 2, 5.0));
@@ -580,7 +583,7 @@ TEST_CASE("a tuned item ahead of its slot: the panel describes what plays",
     CHECK(v.panel.next_title == "Show 1-3");
 }
 
-TEST_CASE("the on-air item playing: the panel follows its real position", "[guide_view]") {
+TEST_CASE("the on-air item playing: the panel follows its real position", "[guide_view][channel_guide_view]") {
     // Pi 5 test, 2026-11-13: a join's KEY_UNIT seek lands on the keyframe
     // BEFORE its target, so the picture runs up to a GOP behind the schedule
     // while the panel's bar and times ran on the schedule's. When the playing
@@ -662,7 +665,7 @@ TEST_CASE("the on-air item playing: the panel follows its real position", "[guid
 }
 
 TEST_CASE("another channel's panel, or nothing known playing: the schedule",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     SECTION("the cursor on another channel") {
         auto in = tuned_one(f, 0, 590.0);
@@ -688,7 +691,7 @@ TEST_CASE("another channel's panel, or nothing known playing: the schedule",
 }
 
 TEST_CASE("on the Picture control the tuned panel describes what plays too",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = tuned_one(f, 0, 590.0);
     in.cursor = app::GuideCursor{0, 0, true};
@@ -699,7 +702,7 @@ TEST_CASE("on the Picture control the tuned panel describes what plays too",
 }
 
 TEST_CASE("a playing item the channel does not schedule: its own trimmed length",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     Fixture f;
     // Chan 2's first item, trimmed 1:40-6:40 (300 s), 2:30 into the trim.
     f.playlists[2].items[0].start = 100.0;
@@ -725,7 +728,7 @@ TEST_CASE("a playing item the channel does not schedule: its own trimmed length"
     CHECK(v.panel.item_title == "Show 1-1");
 }
 
-TEST_CASE("CRT: the playing item's panel keeps the CRT's drops", "[guide_view]") {
+TEST_CASE("CRT: the playing item's panel keeps the CRT's drops", "[guide_view][channel_guide_view]") {
     Fixture f;
     auto in = tuned_one(f, 0, 590.0);
     in.crt = true;
@@ -736,7 +739,7 @@ TEST_CASE("CRT: the playing item's panel keeps the CRT's drops", "[guide_view]")
     CHECK_FALSE(v.panel.show_next);
 }
 
-TEST_CASE("joins at m:ss is the tune's own join point", "[guide_view]") {
+TEST_CASE("joins at m:ss is the tune's own join point", "[guide_view][channel_guide_view]") {
     // With under 2 s of the on-air item left a tune starts the next item at
     // 0:00 (app::join_point); the note must say so, not 9:59.
     Fixture f;
@@ -750,7 +753,7 @@ TEST_CASE("joins at m:ss is the tune's own join point", "[guide_view]") {
     CHECK(v.panel.join_note == "joins at 9:58");
 }
 
-TEST_CASE("CRT geometry: ticks, now line and cells in exact px", "[guide_view]") {
+TEST_CASE("CRT geometry: ticks, now line and cells in exact px", "[guide_view][channel_guide_view]") {
     // 640x480: grid x24 w592, channel column 132, a 15-minute window.
     // px per second = (592 - 132 - 3) / 900 = 0.50778; cells start at 135.
     Fixture f;
@@ -782,7 +785,7 @@ TEST_CASE("CRT geometry: ticks, now line and cells in exact px", "[guide_view]")
 }
 
 TEST_CASE("the next item loaded in the on-air one's last 2 s keeps the schedule's times",
-          "[guide_view]") {
+          "[guide_view][channel_guide_view]") {
     // A boundary (or a tune) in the on-air item's last kMinJoinLeftS loads
     // the next item from its start: that IS the schedule's next airing, so
     // the panel keeps its exact times rather than ones derived from a
@@ -803,4 +806,419 @@ TEST_CASE("the next item loaded in the on-air one's last 2 s keeps the schedule'
     v = ui::layout_channel_guide(in);
     CHECK(v.panel.item_title == "Show 1-1");
     CHECK(v.panel.start_hm == "8:10");
+}
+
+TEST_CASE("guide NEXT follows the daily rotation at a broadcast boundary", "[guide_view][channel_guide_view]") {
+    Fixture f;
+    auto& ch = f.channels[1];
+    ch.day_start_h = 4;
+    ch.identity = "fixture3";
+    ch.items = {{1, 0, 100000}, {1, 1, 100000}, {1, 2, 100000}};
+    ch.total_s = 300000;
+    auto in = f.in();
+    in.cursor.row = 1;
+    in.now_utc = E + 86400 + 4 * 3600 - 60;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Show 1-0");
+    CHECK(v.panel.end_hm == "4:00");
+    // Jan 2's first item for fixture3 is index 2 (the fresh day's rotation).
+    CHECK(v.panel.next_title == "Show 1-2");
+}
+
+TEST_CASE("guide uses future zone offsets for schedule and time labels", "[guide_view][channel_guide_view]") {
+    Fixture f;
+    auto& ch = f.channels[1];
+    ch.day_start_h = 4;
+    ch.items = {{1, 0, 200000}};
+    ch.total_s = 200000;
+    const double spring = E + 86400 + 2 * 3600;
+    auto in = f.in();
+    in.cursor.row = 1;
+    in.now_utc = spring - 60;
+    in.utc_offset_at = [=](double utc) { return utc < spring ? 0 : 3600; };
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.start_hm == "4:00");
+    CHECK(v.panel.end_hm == "4:00");
+    CHECK(v.grid.ticks[1].label == "3:00");
+}
+
+TEST_CASE("the tuned movie panel describes the loaded film after its row is replaced", "[guide_view][movie_reload]") {
+    Fixture f;
+    auto in = f.in(); in.tuned = 1; in.cursor.row = 1;
+    app::PlaylistItem loaded; loaded.title = "Film actually on screen";
+    loaded.movie_tmdb_id = 42; loaded.end = 7200;
+    in.playing.playlist = 1; in.playing.item = 0;
+    in.playing.position_s = 60; in.playing.duration_s = 7200;
+    in.playing.retained_item = &loaded;
+    const auto view = ui::layout_channel_guide(in);
+    CHECK(view.panel.item_title == "Film actually on screen");
+}
+
+TEST_CASE("an off-air movie has no watch action or programme cells", "[channel_guide_view][off_air]") {
+    Fixture f;
+    f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+    auto in = f.in(true); in.now_utc = E + 3 * 3600; in.cursor.row = 1;
+    const auto view = ui::layout_channel_guide(in);
+    REQUIRE(view.grid.rows.size() > 1);
+    CHECK(view.grid.rows[1].cells.empty());
+    CHECK(view.grid.rows[1].name_tone == ui::GuideTone::Dim);
+    CHECK(view.panel.bottom == ui::GuideBottom::None);
+}
+
+TEST_CASE("off-air row shows the next six AM in its own zone and fits CRT", "[channel_guide_view][off_air]") {
+    for (int offset : {-8 * 3600, 3600}) {
+        DYNAMIC_SECTION("offset " << offset) {
+            Fixture f; f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+            auto in = f.in(true); in.now_utc = E + 3 * 3600 - offset;
+            in.utc_offset_s = offset; in.cursor.row = 1;
+            const auto v = ui::layout_channel_guide(in);
+            const auto& row = v.grid.rows[1];
+            CHECK(row.off_air); CHECK(row.off_air_text == "OFF THE AIR · BACK AT 6:00 AM");
+            CHECK(row.cells.empty()); CHECK_FALSE(row.no_schedule);
+            CHECK(row.name_tone == ui::GuideTone::Dim);
+            CHECK(ui::guide_detail::kMonoAdvanceEm * row.off_air_text_px * 29 <=
+                  v.grid.rect.w - v.grid.column_w - 3 - 2 * ui::guide_detail::kCellPadX);
+        }
+    }
+    SECTION("back time uses post-DST offset") {
+        Fixture f; f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+        auto in = f.in(true); in.now_utc = E + 3600;
+        in.utc_offset_at = [](double utc) { return utc < E + 2 * 3600 ? 0 : 3600; };
+        const auto v = ui::layout_channel_guide(in);
+        CHECK(v.grid.rows[1].off_air_text == "OFF THE AIR · BACK AT 6:00 AM");
+    }
+}
+
+TEST_CASE("on-demand eyebrow belongs only to the tuned panel", "[channel_guide_view]") {
+    Fixture f;
+    for (bool crt : {false, true}) {
+        auto in = f.in(crt); in.on_demand = true;
+        CHECK(ui::layout_channel_guide(in).panel.eyebrow == "ON DEMAND");
+        in.cursor.row = 2;
+        CHECK(ui::layout_channel_guide(in).panel.eyebrow == "ON CH 02 NOW");
+    }
+}
+
+TEST_CASE("a selected movie panel follows its picture through the overnight gap", "[channel_guide_view][on_demand]") {
+    Fixture f; f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+    app::PlaylistItem retained; retained.title = "Chosen film"; retained.artist = "Director";
+    retained.start = 60; retained.end = 7260;
+    for (bool crt : {false, true}) {
+        auto in = f.in(crt); in.now_utc = E + 86400 + 2 * 3600;
+        in.on_demand = true; in.tuned = 1; in.cursor.row = 1;
+        in.playing.retained_item = &retained; in.playing.position_s = 3660; in.playing.duration_s = 8000;
+        auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.eyebrow == "ON DEMAND"); CHECK(v.panel.item_title == "Chosen film");
+        CHECK(v.panel.progress == 0.5); CHECK(v.panel.start_hm == "1:00"); CHECK(v.panel.end_hm == "3:00");
+        CHECK(v.grid.rows[1].off_air); CHECK(v.grid.rows[1].cells.empty());
+        in.cursor.row = 2; v = ui::layout_channel_guide(in);
+        CHECK(v.panel.eyebrow == "ON CH 02 NOW"); CHECK(v.panel.item_title != "Chosen film");
+        CHECK(v.panel.bottom == ui::GuideBottom::PressToWatch);
+    }
+}
+
+TEST_CASE("on-demand NEXT does not promise an adjacent repeat or an exhausted programme", "[channel_guide_view][on_demand]") {
+    Fixture f;
+    SECTION("adjacent repeat across shuffled passes") {
+        f.channels[0].order = app::LineupOrder::Shuffle;
+        const auto airings = app::lineup(f.channels[0], E, E + 86400, 0);
+        auto seam = airings.end();
+        for (auto it = airings.begin(); it + 1 != airings.end(); ++it)
+            if (it->index == (it + 1)->index) { seam = it; break; }
+        REQUIRE(seam != airings.end());
+        const auto watched = f.channels[0].items[seam->index];
+        auto in = f.in(); in.on_demand = true; in.now_utc = seam->starts_at + 5;
+        in.playing.playlist = watched.playlist; in.playing.item = watched.item;
+        in.playing.position_s = 590; in.playing.duration_s = 600;
+        const auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.item_title == f.playlists[0].items[watched.item].title);
+        REQUIRE(v.panel.show_next);
+        CHECK(v.panel.next_title != v.panel.item_title);
+    }
+    SECTION("one scheduled item has no distinct NEXT") {
+        f.channels[1].items.resize(1); f.channels[1].total_s = 600;
+        auto in = f.in(); in.tuned = 1; in.cursor.row = 1; in.on_demand = true;
+        in.playing.playlist = 1; in.playing.item = 0; in.playing.position_s = 590; in.playing.duration_s = 600;
+        const auto v = ui::layout_channel_guide(in);
+        CHECK(v.panel.item_title == "Show 1-0"); CHECK(v.panel.next_title.empty()); CHECK_FALSE(v.panel.show_next);
+    }
+}
+
+TEST_CASE("selected regular panel uses retained title and trim after source replacement", "[channel_guide_view][on_demand]") {
+    Fixture f;
+    app::AppState state;
+    app::PlaylistItem selected; selected.title = "Selected original"; selected.path = "a.mp4";
+    selected.start = 10; selected.end = 600;
+    state.loaded_on_demand = app::AppState::LoadedOnDemand{"channel", "source", selected};
+    f.playlists[1].items[0].title = "Replacement"; f.playlists[1].items[0].start = 30; f.playlists[1].items[0].end = 60;
+    auto in = f.in(); in.tuned = 1; in.cursor.row = 1; in.on_demand = true;
+    in.playing.retained_item = state.retained_playlist_item();
+    in.playing.playlist = 1; in.playing.item = -1; in.playing.position_s = 120; in.playing.duration_s = 800;
+    auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.item_title == "Selected original"); CHECK(v.panel.eyebrow == "ON DEMAND");
+    CHECK(std::fabs(v.panel.progress - 0.18644) < 0.0001);
+    CHECK(v.panel.start_hm == "8:12"); CHECK(v.panel.end_hm == "8:22");
+}
+
+
+TEST_CASE("Pick Ahead rings a programme six hours ahead on the fixed timeline", "[channel_guide_view][pick_ahead]") {
+    Fixture f;
+    for (bool crt : {false, true}) {
+        for (double length : {600.0, 10800.0}) {
+            INFO("CRT " << crt << " length " << length);
+            auto in = f.in(crt); in.pick_ahead = true;
+            in.cursor.row = 1; in.tuned = 1;
+            in.cursor.pick_at = kNow + 6 * 3600;
+            auto& ch = f.channels[1]; ch.identity = "view5"; ch.items.clear();
+            // A single programme before the chosen one fixes the expected UTC start.
+            ch.items = {{1, 0, kNow + 6 * 3600 - E}, {1, 1, length}, {1, 2, 600}, {1, 3, 600}};
+            ch.total_s = kNow + 6 * 3600 - E + length + 1200;
+            // Existing on-demand playback must not override a future picked panel.
+            in.on_demand = true; in.playing = {1, 0, 200, 1000};
+            const auto v = ui::layout_channel_guide(in);
+            int rings = 0;
+            for (const auto& row : v.grid.rows) for (const auto& c : row.cells) {
+                if (!c.ring) continue;
+                ++rings;
+                CHECK(c.x >= v.grid.column_w + 3);
+                CHECK(c.x + c.w <= v.grid.rect.w);
+                CHECK(c.label.find("Show 1-1") != std::string::npos);
+                CHECK(c.label.find("◂") == std::string::npos);
+                CHECK_FALSE(c.continues_before);
+                CHECK(c.continues_after == (length > 600));
+            }
+            CHECK(rings == 1);
+            CHECK(v.panel.item_title == "Show 1-1");
+            CHECK(v.panel.start_hm == "2:14");
+            CHECK(v.panel.eyebrow == "ON DEMAND");
+            CHECK(v.panel.bottom == ui::GuideBottom::PressToWatch);
+            CHECK(v.grid.now_x < v.grid.column_w);
+            CHECK(v.grid.ticks.size() == (crt ? 3 : 4));
+            CHECK(v.grid.ticks[0].label == "2:10 PM");
+            CHECK(v.grid.ticks[1].label == "2:15");
+            CHECK(v.grid.ticks[1].x - v.grid.ticks[0].x == (crt ? 152 : 170));
+            // Neighbouring ten-minute playlist clips retain their live scale.
+            CHECK(v.grid.rows[2].cells[0].w == (crt ? 302 : 338));
+            in.cursor.pick_at.reset();
+            const auto live = ui::layout_channel_guide(in);
+            CHECK(live.grid.ticks[0].label == "8:10 AM");
+            for (size_t n = 1; n < v.grid.ticks.size(); ++n)
+                CHECK(v.grid.ticks[n].x - v.grid.ticks[n-1].x >= 90);
+        }
+    }
+}
+
+TEST_CASE("a picked airing that has started uses the live window and actual panel", "[channel_guide_view][pick_ahead]") {
+    Fixture f;
+    auto in = f.in(); in.pick_ahead = true; in.cursor.pick_at = E + 8 * 3600 + 10 * 60;
+    const auto v = ui::layout_channel_guide(in);
+    CHECK(v.grid.ticks[0].label == "8:10 AM");
+    CHECK(v.grid.rows[0].cells[0].ring);
+    CHECK(v.panel.eyebrow == "NOW PLAYING");
+}
+
+TEST_CASE("Pick Ahead future programme clocks preserve injected DST offsets", "[channel_guide_view][pick_ahead]") {
+    Fixture f;
+    auto in = f.in(); in.pick_ahead = true; in.cursor.row = 1;
+    in.cursor.pick_at = kNow + 6 * 3600;
+    auto& ch = f.channels[1]; ch.identity = "view5";
+    ch.items = {{1, 0, kNow + 6 * 3600 - E}, {1, 1, 600}, {1, 2, 600}, {1, 3, 600}};
+    ch.total_s = kNow + 6 * 3600 - E + 1800;
+    in.utc_offset_at = [](double t) { return t >= kNow + 3 * 3600 ? 3600 : 0; };
+    const auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.start_hm == "3:14");
+    CHECK(v.grid.ticks[0].label == "3:10 PM");
+    CHECK(v.grid.ticks[1].label == "3:15");
+}
+
+TEST_CASE("retained live film panel ends at closing while selected film keeps whole duration", "[channel_guide_view][final_fix]") {
+    Fixture f; f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+    app::PlaylistItem held; held.title = "Midnight film"; held.end = 7200; held.movie_tmdb_id = 42;
+    for (bool selected : {false, true}) {
+        auto in = f.in(); in.now_utc = E + 86400 + 1800; in.tuned = 1; in.cursor.row = 1;
+        in.on_demand = selected; in.playing.retained_item = &held;
+        in.playing.position_s = 1800; in.playing.duration_s = 7200;
+        in.playing.live_cutoff_utc = E + 86400 + 3600;
+        const auto view = ui::layout_channel_guide(in);
+        CHECK(view.panel.start_hm == "12:00");
+        CHECK(view.panel.end_hm == (selected ? "2:00" : "1:00"));
+        CHECK(view.panel.progress == (selected ? 0.25 : 0.5));
+    }
+}
+
+
+TEST_CASE("movie closure fills the visible gap without closing playlist rows", "[channel_guide_view][timeline_refine]") {
+    Fixture f;
+    f.channels[1].day_start_h = 6; f.channels[1].on_air_h = 19;
+    for (bool crt : {false, true}) {
+        for (int minute : {50, 55}) {
+            auto in = f.in(crt); in.cursor.row = 1;
+            in.now_utc = E + 86400 + 50 * 60 + (minute - 50) * 60;
+            const auto v = ui::layout_channel_guide(in);
+            const auto& cells = v.grid.rows[1].cells;
+            REQUIRE_FALSE(cells.empty());
+            const auto& gap = cells.back();
+            // At 12:50 CRT leaves five minutes; at 12:55 TV/CRT leave 15/10.
+            const bool full = !crt || minute == 55;
+            CHECK(gap.label == (full ? "OFF AIR · BACK AT 6:00 AM" : "OFF AIR"));
+            CHECK(gap.off_air);
+            CHECK(gap.tone == ui::GuideTone::Dim);
+            CHECK_FALSE(gap.ring); CHECK_FALSE(gap.bold); CHECK_FALSE(gap.show_artist);
+            CHECK(gap.x + gap.w == v.grid.rect.w - 3);
+            CHECK(gap.show_text);
+            for (const auto& c : v.grid.rows[2].cells)
+                CHECK(c.label.find("OFF AIR") == std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("last live and future movie panel forecasts the actual next morning film", "[channel_guide_view][timeline_refine]") {
+    Fixture f;
+    auto& ch = f.channels[1]; ch.day_start_h = 6; ch.on_air_h = 19;
+    ch.identity = "fixture3";
+    ch.items = {{1, 0, 100000}, {1, 1, 100000}, {1, 2, 100000}};
+    ch.total_s = 300000;
+    for (bool crt : {false, true}) {
+        for (bool future : {false, true}) {
+            for (int zone : {0, 1, 2}) {
+                INFO("CRT " << crt << " future " << future << " zone " << zone);
+                auto in = f.in(crt); in.cursor.row = 1;
+                // Jan 1's final film crosses midnight; Jan 2 rotates to item 2.
+                in.now_utc = E + 86400 + 50 * 60;
+                if (future) {
+                    // Browse from the previous broadcast day into Jan 1's 6 AM slot.
+                    in.now_utc = E + 30 * 60;
+                    in.cursor.pick_at = E + 6 * 3600; in.pick_ahead = true;
+                }
+                if (zone == 1) {
+                    in.utc_offset_s = -8 * 3600; in.now_utc += 8 * 3600;
+                    if (future) *in.cursor.pick_at += 8 * 3600;
+                } else if (zone == 2) {
+                    in.utc_offset_at = [](double utc) { return utc < E + 86400 + 2 * 3600 ? 0 : 3600; };
+                }
+                const auto v = ui::layout_channel_guide(in);
+                CHECK(v.panel.end_hm == "1:00");
+                CHECK(v.panel.next_hm == "6:00");
+                CHECK(v.panel.next_title == "Show 1-2");
+                CHECK(v.panel.show_next == !crt);
+            }
+        }
+    }
+}
+
+
+TEST_CASE("Pick Ahead footer names the current row or programme actions and clears logo", "[channel_guide_view][timeline_refine]") {
+    Fixture f;
+    for (bool crt : {false, true}) {
+        for (bool programmes : {false, true}) {
+            auto in = f.in(crt); in.pick_ahead = true;
+            if (programmes) in.cursor.pick_at = E + 8 * 3600 + 20 * 60;
+            const auto v = ui::layout_channel_guide(in);
+            REQUIRE(v.hints.size() == 3);
+            CHECK(v.hints[0].label == (programmes ? "programmes" : "channels"));
+            CHECK(v.hints[1].key == "PRESS"); CHECK(v.hints[1].label == "watch");
+            CHECK(v.hints[2].key == (programmes ? "BACK" : "HOLD"));
+            CHECK(v.hints[2].label == (programmes ? "channels" : "pick ahead"));
+            // Match the existing painter's mono advances/icon/key/label gaps.
+            double right = v.grid.rect.x;
+            for (const auto& h : v.hints) {
+                right += 22 + h.key.size() * 13 * 0.602 + h.key.size() - 1 + 7;
+                right += h.label.size() * 13 * 0.602;
+                CHECK(right + 12 <= v.logo.x);
+                right += 24;
+            }
+        }
+    }
+}
+
+
+TEST_CASE("continuation markers describe either clipped edge even without title room", "[channel_guide_view][timeline_refine]") {
+    Fixture f;
+    const double base = 8 * 3600 + 10 * 60;
+    for (int n = 1; n <= 4; ++n) {
+        const double starts = n == 2 || n == 4 ? base + 300 : base - 300;
+        const double length = n == 1 || n == 4 ? 600 : 3600;
+        f.channels[n].items = {{n, 0, starts}, {n, 1, length}, {n, 2, 3600}};
+        f.channels[n].total_s = starts + length + 3600;
+    }
+    for (bool crt : {false, true}) {
+        auto in = f.in(crt);
+        const auto v = ui::layout_channel_guide(in);
+        for (int n = 1; n <= 4; ++n) {
+            const auto& cells = v.grid.rows[n].cells;
+            // The programme under test starts after item 0 (its long prelude).
+            const auto& c = cells[n == 2 || n == 4 ? 1 : 0];
+            CHECK(c.continues_before == (n == 1 || n == 3));
+            CHECK(c.continues_after == (n == 2 || n == 3));
+            CHECK_FALSE(c.off_air);
+            CHECK(c.label.find("◂") == std::string::npos);
+            // Markers reserve ten pixels at each clipped edge before fitting.
+            const int markers = (n == 1 || n == 3) + (n == 2 || n == 3);
+            CHECK(ui::guide_detail::utf8_len(c.label) * 14 * 0.602 <= c.w - 20 - 10 * markers);
+        }
+        // A tiny clipped tail still advertises continuation while hiding text.
+        f.channels[1].items = {{1, 0, base - 300}, {1, 1, 330}, {1, 2, 3600}};
+        f.channels[1].total_s = base + 30 + 3600;
+        const auto narrow = ui::layout_channel_guide(in);
+        REQUIRE_FALSE(narrow.grid.rows[1].cells.empty());
+        const auto& c = narrow.grid.rows[1].cells[0];
+        CHECK(c.continues_before); CHECK_FALSE(c.continues_after);
+        CHECK_FALSE(c.show_text);
+        const double right_start = base + (crt ? 900 : 1200) - 30;
+        f.channels[2].items = {{2, 0, right_start}, {2, 1, 600}, {2, 2, 3600}};
+        f.channels[2].total_s = right_start + 4200;
+        const auto right_view = ui::layout_channel_guide(in);
+        const auto& right = right_view.grid.rows[2].cells.back();
+        CHECK_FALSE(right.continues_before); CHECK(right.continues_after);
+        CHECK_FALSE(right.show_text);
+        f.channels[2].items = {{2, 0, base + 300}, {2, 1, 3600}, {2, 2, 3600}};
+        f.channels[2].total_s = base + 7500;
+        // Restore the left-only case for the second canvas.
+        f.channels[1].items = {{1, 0, base - 300}, {1, 1, 600}, {1, 2, 3600}};
+        f.channels[1].total_s = base + 300 + 3600;
+    }
+}
+
+TEST_CASE("retained films forecast the genuine morning opener even when it repeats", "[channel_guide_view][morning_return]") {
+    Fixture f;
+    auto& ch = f.channels[1]; ch.day_start_h = 6; ch.on_air_h = 19;
+    ch.items = {{1, 0, 7200}}; ch.total_s = 7200;
+    auto& film = f.playlists[1].items[0];
+    film.path = "only-film.mp4"; film.movie_tmdb_id = 42; film.end = 7200;
+    const auto retained = film;
+    for (bool crt : {false, true}) {
+        for (bool selected : {false, true}) {
+            INFO("CRT " << crt << " on demand " << selected);
+            auto in = f.in(crt); in.now_utc = E + 86400 + 1800;
+            in.tuned = 1; in.cursor.row = 1; in.on_demand = selected;
+            in.playing.playlist = 1; in.playing.item = 0;
+            in.playing.retained_item = &retained;
+            in.playing.position_s = 1800; in.playing.duration_s = 7200;
+            in.playing.live_cutoff_utc = E + 86400 + 3600;
+            const auto v = ui::layout_channel_guide(in);
+            CHECK(v.panel.item_title == "Show 1-0");
+            CHECK(v.panel.end_hm == (selected ? "2:00" : "1:00"));
+            CHECK(v.panel.next_title == "Show 1-0");
+            CHECK(v.panel.next_hm == "6:00");
+            CHECK(v.panel.show_next == !crt);
+        }
+    }
+}
+
+TEST_CASE("retained film replay suppression reaches morning after the final same-day candidate", "[channel_guide_view][morning_return]") {
+    Fixture f;
+    auto& ch = f.channels[1]; ch.day_start_h = 6; ch.on_air_h = 19;
+    ch.items = {{1, 0, 7200}}; ch.total_s = 7200;
+    auto& film = f.playlists[1].items[0];
+    film.path = "only-film.mp4"; film.movie_tmdb_id = 42; film.end = 7200;
+    const auto retained = film;
+    auto in = f.in(); in.now_utc = E + 23 * 3600 + 1800;
+    in.tuned = 1; in.cursor.row = 1; in.on_demand = true;
+    in.playing.playlist = 1; in.playing.item = 0; in.playing.retained_item = &retained;
+    // This copy ends at midnight: today's final matching slot is suppressed,
+    // but the next broadcast day's first film really does play at 6 AM.
+    in.playing.position_s = 5400; in.playing.duration_s = 7200;
+    const auto v = ui::layout_channel_guide(in);
+    CHECK(v.panel.next_title == "Show 1-0");
+    CHECK(v.panel.next_hm == "6:00");
 }

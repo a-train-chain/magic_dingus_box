@@ -40,10 +40,12 @@
 #include "media_browser/mb_entry_gate.h"
 #include "media_browser/mb_host.h"
 #include "media_browser/mb_services.h"
+#include "media_browser/channels/movie_channels.h"
 #endif
 #include "app/app_state.h"
 #include "app/audio_router.h"
 #include "app/auto_tune.h"
+#include "app/off_air.h"
 #include "app/bezel_catalog.h"
 #include "app/channel_schedule.h"
 #include "app/game_quiet_mode.h"
@@ -51,12 +53,14 @@
 #include "app/game_handoff_kiosk.h"
 #include "app/guide_clock.h"
 #include "app/guide_nav.h"
+#include "app/guide_select_hold.h"
 #include "app/intro_sequence.h"
 #include "app/intro_sequence_kiosk.h"
 #include "app/media_info.h"
 #include "app/overlay_nav.h"
 #include "app/settings_input.h"
 #include "app/movie_quiet_mode.h"
+#include "app/movie_channel_quiet.h"
 #include "app/playlist_loader.h"
 #include "app/controller.h"
 #include "app/controller_transport.h"
@@ -685,6 +689,22 @@ int main(int /* argc */, char* /* argv */[]) {
     app::PlaylistPlayback playlist_playback(state, playlist_transport,
                                             playlist_directory);
     
+#ifdef MEDIA_BROWSER_ENABLED
+    // Shared clients outlive the library worker and Media Browser screens.
+    media_browser::MbServiceClients mb_clients =
+        media_browser::make_service_clients();
+    app::MovieLibraryStore movie_library(
+        config::get_data_path() + "/movie_library.json",
+        media_browser::make_movie_library_fetch(*mb_clients.radarr),
+        [](const std::string& path) { std::error_code ec; return std::filesystem::exists(path, ec); },
+        nullptr, nullptr,
+        [radarr = mb_clients.radarr.get()] {
+            return media_browser::movie_drive_ready(radarr->host_library_prefix());
+        });
+    movie_library.start();
+    bool channels_mb_unlocked = state.media_browser_unlocked;
+#endif
+
     // Channel Guide (app/channel_schedule.h): one live channel per main-menu
     // row, held by playlist_playback through a pointer. rebuild_channels()
     // is the ONE place the list is built and handed over — in List style
@@ -701,7 +721,28 @@ int main(int /* argc */, char* /* argv */[]) {
     std::vector<app::Channel> channels;
     uint64_t channels_generation = 0;
     auto rebuild_channels = [&state, &media_info, &channels, &playlist_playback,
-                             &channels_generation]() {
+                             &channels_generation, &controller
+#ifdef MEDIA_BROWSER_ENABLED
+                             , &movie_library
+#endif
+                             ]() {
+        const auto snap = app::snapshot_for_reload(state, -1);
+        app::PlaylistLoader::UiPlaylistSplit rows{state.playlists, state.game_playlists};
+        bool movie_channels_on = false;
+        std::vector<app::Playlist> movies;
+#ifdef MEDIA_BROWSER_ENABLED
+        movie_channels_on = state.display_settings.menu_style == app::MenuStyle::ChannelGuide &&
+                            state.media_browser_unlocked;
+        if (movie_channels_on)
+            movies = app::build_movie_playlists(movie_library.movies(), state.platform_profile.movie_channel_codecs);
+#endif
+        if (!movie_channels_on) {
+            state.off_air_return_id.clear();
+            state.off_air_return_after_utc = 0;
+        }
+        app::merge_movie_playlists(rows.video, std::move(movies));
+        app::apply_reloaded_playlists(state, std::move(rows), snap,
+            [&controller] { controller.stop(); }, movie_channels_on);
         if (state.display_settings.menu_style == app::MenuStyle::ChannelGuide) {
             channels = app::build_channels(state.playlists, media_info.map());
             playlist_playback.set_channels(&channels);
@@ -751,85 +792,17 @@ int main(int /* argc */, char* /* argv */[]) {
     state.settings_menu = &settings_menu;
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // Task 17: service clients for the Media Browser (the screens and
-    // their dispatcher live in MediaBrowserHost, constructed below).
-    // Radarr / Sonarr / TMDB / Prowlarr / qBittorrent, in that order, with
-    // the mock fallbacks for a box without keys — see
-    // media_browser/mb_services.h for the key chains and path prefixes.
-    media_browser::MbServiceClients mb_clients =
-        media_browser::make_service_clients();
-
-    // Trickle-limit bootstrap: converge qBit's alt-limit rates and clear a
-    // crash-stranded cap. Best-effort, gated on the provisioning marker.
+    // Converge qBit's alt-limit rates. Owned crash recovery runs on the
+    // quiet worker; an operator's existing cap is never blindly cleared.
     media_browser::bootstrap_qbit_alt_limits(*mb_clients.qbit,
                                              utils::kServicesEnvPath);
 
-    // Torrents the kiosk paused (movie FullPause / game quiet mode) and
-    // never resumed — kiosk crashed, was stopped mid-movie, or an OTA
-    // restarted it. Resumed in the background with retries, never on the
-    // render thread; an operator's manual pause is never undone. See
-    // app::TorrentResumeRecovery.
-    const std::string kTorrentPauseMarker =
-        config::get_data_path() + "/qbit_paused_by_kiosk";
-    std::function<bool()> qbit_pause_all;
-    std::function<bool()> qbit_resume_all;
-    if (auto* qbit = mb_clients.qbit.get(); qbit != nullptr) {
-        qbit_pause_all = [qbit]() { return qbit->pause_all(); };
-        qbit_resume_all = [qbit]() { return qbit->resume_all(); };
-    }
-    app::TorrentResumeRecovery torrent_resume_recovery;
-    torrent_resume_recovery.start_if_needed(kTorrentPauseMarker, qbit_resume_all);
-
-    // Track-1 quiet mode: silence the torrent/media stack for the whole
-    // game session, mirroring PlaybackScreen's movie behavior. Gated on
-    // the provisioning marker so unprovisioned Pis do exactly nothing
-    // (no docker errors, no qBit timeouts in the log).
-    //
-    // Cross-ordering with the MOVIE executor (MovieQuietMode, below): the
-    // two run on separate workers, so each action first waits (bounded)
-    // for the other to be idle — a game launched seconds after leaving a
-    // movie must not have its docker-stop race that movie's docker-start,
-    // and vice versa. Bounded on both sides so two workers each waiting on
-    // the other can only ever stall 20 s, never deadlock.
-    std::atomic<app::MovieQuietMode*> movie_quiet_ptr{nullptr};
-    auto wait_movie_quiet = [&movie_quiet_ptr]() {
-        if (auto* mq = movie_quiet_ptr.load()) {
-            (void)mq->wait_until_idle_for(std::chrono::seconds(20));
-        }
-    };
-    app::GameQuietMode game_quiet_mode(app::make_game_quiet_actions({
-        /*services_env_path=*/"/opt/magic_dingus_box/services/.env",
-        /*torrent_pause_marker=*/kTorrentPauseMarker,
-        /*wait_for_movie_quiet=*/wait_movie_quiet,
-        /*pause_torrents=*/qbit_pause_all,
-        /*resume_torrents=*/qbit_resume_all,
-        /*run_command=*/[](const char* cmd) { return std::system(cmd); },
-    }));
-
-    // Movie playback contention guard executor. PlaybackScreen::enter()/
-    // leave() only QUEUE pause/resume here; the qBit round-trips and the
-    // docker stop/start script run on this worker, never on the render
-    // thread (WatchdogSec=10). See app/movie_quiet_mode.h.
+    // One ownership queue covers MB playback, movie-channel grace and games.
+    // Startup recovery runs on that same worker before any pause can start.
     app::MovieQuietMode movie_quiet_mode(
-        media_browser::ui::PlaybackScreen::make_quiet_actions(
-            mb_clients.qbit.get(),
-            /*barrier=*/[&game_quiet_mode]() {
-                (void)game_quiet_mode.wait_until_idle_for(
-                    std::chrono::seconds(20));
-            }));
-    movie_quiet_ptr.store(&movie_quiet_mode);
-    // Unpublish before movie_quiet_mode is destroyed (only reachable on an
-    // early-return path; the normal exit is _exit): after this, no game
-    // action can start waiting on it, and waiting for the game worker to
-    // go idle guarantees none is mid-wait on it.
-    struct MovieQuietUnpublish {
-        std::atomic<app::MovieQuietMode*>& ptr;
-        app::GameQuietMode& game;
-        ~MovieQuietUnpublish() {
-            ptr.store(nullptr);
-            game.wait_until_idle();
-        }
-    } movie_quiet_unpublish{movie_quiet_ptr, game_quiet_mode};
+        media_browser::ui::PlaybackScreen::make_quiet_actions(mb_clients.qbit.get()));
+    app::MovieChannelQuiet movie_channel_quiet;
+    playlist_playback.set_movie_failure_hook([&movie_library] { movie_library.request_drive_check(); });
 
     // Watch-state store (Phase 3): resume positions + watched flags for
     // movies and TV, in the media_browser.db SQLite file. Its API is
@@ -893,18 +866,19 @@ int main(int /* argc */, char* /* argv */[]) {
     // Quiet the media stack for the whole session (async — never delays
     // launch) and drop poster textures while the GL context is still
     // current; the reverse on the way out.
-    game_session_ops.quiet_media_stack = [&game_quiet_mode, &ui_renderer]() {
-        game_quiet_mode.request_pause();
+    game_session_ops.quiet_media_stack = [&movie_quiet_mode, &ui_renderer]() {
+        movie_quiet_mode.request_pause(app::MovieQuietMode::Mode::FullPause,
+                                       app::MovieQuietMode::Claimant::Game);
         if (ui_renderer.artwork_cache_initialized()) {
             ui_renderer.artwork_cache().pause();
             ui_renderer.artwork_cache().clear_textures();
         }
     };
-    game_session_ops.restore_media_stack = [&game_quiet_mode, &ui_renderer]() {
+    game_session_ops.restore_media_stack = [&movie_quiet_mode, &ui_renderer]() {
         if (ui_renderer.artwork_cache_initialized()) {
             ui_renderer.artwork_cache().resume();
         }
-        game_quiet_mode.request_resume();
+        movie_quiet_mode.request_resume(app::MovieQuietMode::Claimant::Game);
     };
 #endif
     game_session_ops.poll_gpio = [&gpio]() { (void)gpio.poll(); };
@@ -1072,6 +1046,15 @@ int main(int /* argc */, char* /* argv */[]) {
     // its game browser, Controller Setup wizard and pairing screen. `mode`
     // and `playlist_directory` are borrowed live.
     app::MenuButtonHold menu_hold;
+    app::GuideSelectInput guide_select_hold;
+    app::GuideCursor guide_select_cursor;
+    bool guide_select_shown = false;
+    bool guide_select_tunable = false;
+    int guide_select_tuned = -1;
+    std::optional<int> guide_select_pending;
+    uint64_t guide_select_generation = 0;
+    app::DisplayMode guide_select_display_mode{};
+    std::optional<double> guide_select_ends_at;
     app::SettingsInputContext settings_input{
         state,
         settings_menu,
@@ -1092,6 +1075,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // only when its id or the channel list changes.
     app::AutoTuneInput auto_tune;
     app::LastChannelRowCache auto_tune_last_row;
+    app::LastChannelRowCache off_air_return_cache;
     // Times a stream no channel owns (app::OrphanStreamGuard), guide style.
     app::OrphanStreamGuard orphan_stream_guard;
 
@@ -1443,6 +1427,16 @@ int main(int /* argc */, char* /* argv */[]) {
             auto gpio_events = gpio.poll();
             input_events.insert(input_events.end(), gpio_events.begin(), gpio_events.end());
         }
+        // Device loss or an ambiguous kernel key-up packet cancels Select.
+        // Drop this poll's Select events from that source before dispatch so
+        // an earlier down in the same poll cannot revive the canceled hold.
+        const auto canceled_sources = input.take_select_cancellations();
+        for (const auto source : canceled_sources) guide_select_hold.source_lost(source);
+        input_events.erase(std::remove_if(input_events.begin(), input_events.end(),
+            [&](const platform::InputEvent& ev) {
+                return ev.action == InputAction::SELECT &&
+                    std::find(canceled_sources.begin(), canceled_sources.end(), ev.source_id) != canceled_sources.end();
+            }), input_events.end());
         // For the redraw gate: ANY input draws this iteration. Captured
         // before the unlock-sequence detector and the MB dispatcher
         // consume events, so a swallowed press still counts.
@@ -1479,6 +1473,15 @@ int main(int /* argc */, char* /* argv */[]) {
         // way out — hands control back to MainMenu. It also evicts the MB
         // first if the display mode can no longer host it. See
         // MediaBrowserHost::handle_input.
+        if (state.current_screen == app::AppScreen::MediaBrowser) {
+            guide_select_hold.cancel();
+            input_events.erase(std::remove_if(input_events.begin(), input_events.end(),
+                [&](const platform::InputEvent& ev) {
+                    if (ev.action != InputAction::SELECT || !guide_select_hold.owns(ev.source_id)) return false;
+                    if (!ev.pressed) guide_select_hold.release(ev.source_id, std::chrono::steady_clock::now());
+                    return true;
+                }), input_events.end());
+        }
         mb_host.handle_input(input_events, mode.width, mode.height);
 #endif
 
@@ -1488,27 +1491,89 @@ int main(int /* argc */, char* /* argv */[]) {
         // it hands back. `on_screen` is app::guide_visible when the event
         // arrived — for NEXT/PREV, before the step ran.
         auto apply_guide_input = [&state, &playlist_playback, &playlist_transport,
-                                  &channels](app::GuideEvent event, int delta,
+                                  &channels, &zone_offset](app::GuideEvent event, int delta,
                                              bool on_screen) {
             app::GuideFacts f;
             f.on_screen = on_screen;
+            f.pick_ahead = state.display_settings.guide_mode == app::GuideMode::PickAhead;
+            f.now_utc = playlist_transport.wall_now_utc();
             f.rows = static_cast<int>(channels.size());
             f.pending_tune = playlist_playback.pending_tune();
-            const int row = state.guide_cursor.row;
+            // Hidden holds open on the tuned channel, never the old cursor.
+            const int row = !on_screen && event == app::GuideEvent::PickAhead
+                ? f.pending_tune.value_or(state.tuned_channel) : state.guide_cursor.row;
             f.cursor_row_tunable =
-                row >= 0 && row < f.rows && !channels[row].items.empty();
+                playlist_playback.channel_on_air(row);
+            if (f.pick_ahead && (on_screen || event == app::GuideEvent::PickAhead) && f.cursor_row_tunable &&
+                row >= 0 && row < f.rows) {
+                f.row_airings = app::lineup(channels[row], f.now_utc, f.now_utc + 24 * 3600,
+                                           zone_offset(f.now_utc), zone_offset);
+            }
             f.owns_pipeline = playlist_playback.owns_pipeline();
             f.now = std::chrono::steady_clock::now();
             const app::GuideCommand cmd = app::guide_input(state, event, delta, f);
+            if (cmd.on_demand) {
+                playlist_playback.play_on_demand(row, *cmd.on_demand);
+                app::guide_tune_taken(state, row, playlist_playback.pending_tune() == row);
+            }
             if (cmd.tune >= 0) {
                 playlist_playback.tune(cmd.tune, /*keep_overlay=*/false);
                 app::guide_tune_taken(state, cmd.tune,
                                       playlist_playback.pending_tune() == cmd.tune);
             }
             if (cmd.toggle_picture) playlist_transport.toggle_picture_crop();
+            return cmd.consumed;
+        };
+        settings_input.guide_back = [&state, &playlist_playback, apply_guide_input] {
+            if (!playlist_playback.guide_style() || !app::guide_visible(state) ||
+                state.display_settings.guide_mode != app::GuideMode::PickAhead) return false;
+            return apply_guide_input(app::GuideEvent::Back, 0, true);
+        };
+
+        const auto guide_select_context = [&] {
+            return playlist_playback.guide_style() &&
+                state.display_settings.guide_mode == app::GuideMode::PickAhead &&
+                !settings_menu.is_active() && !settings_menu.is_opening() &&
+                !settings_menu.is_closing() && !keyboard.is_active() &&
+                !state.showing_intro_video && !state.is_loading_game &&
+                post_game_gate.accepts_input() && !menu_hold.button_held
+#ifdef MEDIA_BROWSER_ENABLED
+                && state.current_screen != app::AppScreen::MediaBrowser
+#endif
+                ;
+        };
+        const auto guide_select_unchanged = [&] {
+            const int row = guide_select_shown ? state.guide_cursor.row
+                : playlist_playback.pending_tune().value_or(state.tuned_channel);
+            return guide_select_context() &&
+                guide_select_shown == app::guide_visible(state) &&
+                guide_select_cursor.row == state.guide_cursor.row &&
+                guide_select_cursor.on_picture == state.guide_cursor.on_picture &&
+                guide_select_cursor.pick_at == state.guide_cursor.pick_at &&
+                guide_select_tuned == state.tuned_channel &&
+                guide_select_pending == playlist_playback.pending_tune() &&
+                guide_select_generation == channels_generation &&
+                guide_select_display_mode == state.display_settings.mode &&
+                guide_select_tunable == playlist_playback.channel_on_air(row) &&
+                (!guide_select_ends_at || playlist_transport.wall_now_utc() < *guide_select_ends_at);
+        };
+        const auto apply_guide_select = [&](app::GuideSelectHold::Action action) {
+            if (action == app::GuideSelectHold::Action::None) return;
+            apply_guide_input(action == app::GuideSelectHold::Action::Hold
+                ? app::GuideEvent::PickAhead : app::GuideEvent::Select,
+                0, app::guide_visible(state));
         };
 
         for (const auto& ev : input_events) {
+            if (guide_select_hold.pending() &&
+                (!guide_select_unchanged() || ev.action != InputAction::SELECT))
+                guide_select_hold.cancel();
+            if (ev.action == InputAction::SELECT && guide_select_hold.owns(ev.source_id)) {
+                if (!ev.pressed) {
+                    apply_guide_select(guide_select_hold.release(ev.source_id, std::chrono::steady_clock::now()));
+                }
+                continue;
+            }
             // A game session ended inside an earlier event of THIS batch:
             // the remaining events were pressed before the game ran, and
             // the screen they were aimed at is gone (app/post_game_gate.h).
@@ -1546,7 +1611,12 @@ int main(int /* argc */, char* /* argv */[]) {
                         // Channel Guide open: the cursor (one channel row per
                         // turn; up from 00 onto the Picture control). Hidden:
                         // the seek below, as in the List style.
-                        apply_guide_input(app::GuideEvent::Rotate, ev.delta, true);
+                        const auto event = ev.action == InputAction::ROTATE
+                            ? app::guide_rotation_event(
+                                state.display_settings.guide_mode == app::GuideMode::PickAhead,
+                                ev.rotary_encoder)
+                            : app::GuideEvent::Rotate;
+                        apply_guide_input(event, ev.delta, true);
                     } else if (!guide_style && ui_available && !state.playlists.empty()) {
                         // Only allow navigation when UI is available
                         // One row per turn, clamped at both ends; from the
@@ -1585,6 +1655,34 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                 case InputAction::SELECT:
                     if (!ev.pressed) break; // Only trigger on press
+                    if (guide_select_context()) {
+                        guide_select_cursor = state.guide_cursor;
+                        guide_select_shown = guide_shown;
+                        guide_select_tuned = state.tuned_channel;
+                        guide_select_pending = playlist_playback.pending_tune();
+                        guide_select_generation = channels_generation;
+                        guide_select_display_mode = state.display_settings.mode;
+                        const int row = guide_shown ? state.guide_cursor.row
+                            : guide_select_pending.value_or(state.tuned_channel);
+                        guide_select_tunable = playlist_playback.channel_on_air(row);
+                        guide_select_ends_at.reset();
+                        // Retain programme identity across the gesture. If it
+                        // expires before release, discard rather than retarget.
+                        if (guide_shown && guide_select_cursor.pick_at &&
+                            row >= 0 && row < static_cast<int>(channels.size())) {
+                            const double now = playlist_transport.wall_now_utc();
+                            for (const auto& airing : app::lineup(channels[row], now,
+                                     now + 24 * 3600, zone_offset(now), zone_offset)) {
+                                if (airing.starts_at == *guide_select_cursor.pick_at) {
+                                    guide_select_ends_at = airing.ends_at;
+                                    break;
+                                }
+                            }
+                            if (!guide_select_ends_at) break;
+                        }
+                        guide_select_hold.press(ev.source_id, std::chrono::steady_clock::now());
+                        break;
+                    }
                     if (guide_style) {
                         // Channel Guide: hidden, SELECT opens it on the tuned
                         // channel; open, it acts on the cursor — tune another
@@ -1639,10 +1737,21 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
 
+        if (guide_select_hold.pending()) {
+            if (!guide_select_unchanged()) guide_select_hold.cancel();
+            else apply_guide_select(guide_select_hold.tick(std::chrono::steady_clock::now()));
+        }
+
         // Settings → Display → Menu Style may have flipped the style in the
         // dispatch above: rebuild the channels for it (List: none) before
         // anything below reads guide_style(). An enum compare per frame.
         sync_menu_style();
+#ifdef MEDIA_BROWSER_ENABLED
+        if (channels_mb_unlocked != state.media_browser_unlocked) {
+            channels_mb_unlocked = state.media_browser_unlocked;
+            rebuild_channels();
+        }
+#endif
 
         // Update player state (polls GStreamer pipeline state)
         player.update_state();
@@ -1690,6 +1799,26 @@ int main(int /* argc */, char* /* argv */[]) {
         // (honoring the item's `end:` trim). See
         // PlaylistPlayback::tick_auto_advance.
         playlist_playback.tick_auto_advance();
+#ifdef MEDIA_BROWSER_ENABLED
+        const auto* channel_item = state.current_playlist_item();
+        const bool channel_movie_playing = playlist_playback.guide_style() && state.video_active &&
+            !state.is_loading_game && state.current_screen != app::AppScreen::MediaBrowser &&
+            channel_item && channel_item->movie_tmdb_id > 0;
+        const double quiet_now_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const auto quiet_cmd = movie_channel_quiet.tick(channel_movie_playing, quiet_now_s);
+        if (quiet_cmd == app::MovieChannelQuiet::Cmd::Claim) {
+            const auto profile = state.platform_profile;
+            movie_quiet_mode.request_pause([profile] {
+                return platform::service_quiet_mode(profile, platform::read_mem_available_kib()) ==
+                           platform::ServiceQuietMode::Trickle
+                    ? app::MovieQuietMode::Mode::Trickle : app::MovieQuietMode::Mode::FullPause;
+            }, app::MovieQuietMode::Claimant::MovieChannel);
+        } else if (quiet_cmd == app::MovieChannelQuiet::Cmd::Release) {
+            movie_quiet_mode.request_resume(app::MovieQuietMode::Claimant::MovieChannel);
+        }
+#endif
+
         
         // Channel Guide: nothing playing is never a resting state. One rule,
         // every frame, after the ticks above — it covers power-on (all four
@@ -1706,6 +1835,9 @@ int main(int /* argc */, char* /* argv */[]) {
             // trimmed items' lengths and could tune — and save as the last
             // channel — the wrong one. A failed read lifts it too.
             auto_tune.media_info_read = media_info.first_read_finished();
+#ifdef MEDIA_BROWSER_ENABLED
+            auto_tune.movie_library_read = !state.media_browser_unlocked || movie_library.first_load_finished();
+#endif
             // Not under Settings (its game browser, Controller Setup wizard
             // and pairing screen included), the Wi-Fi keyboard or the Media
             // Browser: the video comes back once they close.
@@ -1727,8 +1859,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 orphan.intro_complete = state.intro_complete;
                 orphan.on_main_screen = on_main_screen;
                 orphan.video_active = state.video_active;
-                orphan.indexes_set = state.current_playlist_index >= 0 &&
-                                     state.current_item_index >= 0;
+                orphan.indexes_set = state.current_playlist_item() != nullptr;
                 orphan.playing = playlist_transport.is_playing();
                 orphan.switch_pending =
                     playlist_playback.switch_pending() || state.is_switching_playlist;
@@ -1753,7 +1884,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // playing" — re-tuning there would stop every item boundary.
             auto_tune.video_active =
                 state.video_active ||
-                (state.current_playlist_index >= 0 && state.current_item_index >= 0);
+                (state.current_playlist_item() != nullptr);
             // After a tune's load runs, switch_pending() is false but the
             // stream is not up until is_switching_playlist clears.
             auto_tune.switch_pending =
@@ -1762,6 +1893,23 @@ int main(int /* argc */, char* /* argv */[]) {
             auto_tune.post_game_pending = post_game_gate.settling();
             auto_tune.now_utc = playlist_transport.wall_now_utc();
             auto_tune.wait_until_utc = state.guide_wait_until_utc;
+            // Overnight return uses the actual tuned row, not the persisted
+            // last movie identity: library refreshes keep 00 on screen.
+            if (!state.off_air_return_id.empty() && on_main_screen &&
+                state.intro_complete && !state.is_loading_game && !post_game_gate.settling()) {
+                const int row = off_air_return_cache.get(
+                    state.off_air_return_id, channels_generation,
+                    [&state](const std::string& id) {
+                        return app::find_playlist_by_identity(state.playlists, id);
+                    });
+                if (const auto target = app::off_air_return_row(
+                        state, row, playlist_playback.channel_on_air(row), auto_tune.switch_pending,
+                        playlist_transport.wall_now_utc())) {
+                    playlist_playback.tune(*target, /*keep_overlay=*/true);
+                    auto_tune.switch_pending =
+                        playlist_playback.switch_pending() || state.is_switching_playlist;
+                }
+            }
             // The target only matters once every gate is open. Resolving it
             // scans the playlists building an identity string per row, so
             // it is skipped on the frames a video plays (nearly all of them)
@@ -1777,9 +1925,13 @@ int main(int /* argc */, char* /* argv */[]) {
                         if (last_id == app::kShuffleChannelId) return 0;
                         return app::find_playlist_by_identity(state.playlists, last_id);
                     });
+                const int last = auto_tune.last_channel;
+                auto_tune.last_channel_off_air = last >= 0 && last < static_cast<int>(channels.size()) &&
+                    app::back_on_air_at(channels[last], auto_tune.now_utc,
+                        zone_offset(auto_tune.now_utc), zone_offset).has_value();
                 auto_tune.tunable.assign(channels.size(), false);
                 for (size_t c = 0; c < channels.size(); ++c) {
-                    auto_tune.tunable[c] = !channels[c].items.empty();
+                    auto_tune.tunable[c] = playlist_playback.channel_on_air(static_cast<int>(c));
                 }
                 auto_tune.gave_up = state.guide_gave_up;
                 if (const auto channel = app::decide_auto_tune(auto_tune)) {
@@ -1787,6 +1939,10 @@ int main(int /* argc */, char* /* argv */[]) {
                     // viewer does not own when it RUNS (the video simply
                     // comes back) and keeps a guide the viewer owns then —
                     // AppState::guide_opened_by_viewer, app/guide_nav.h.
+                    if (*channel == 0 && auto_tune.last_channel_off_air &&
+                        std::find(auto_tune.gave_up.begin(), auto_tune.gave_up.end(),
+                                  auto_tune.last_channel) == auto_tune.gave_up.end())
+                        state.off_air_return_id = state.last_channel_id;
                     playlist_playback.tune(*channel, /*keep_overlay=*/false);
                     // tune() drops a call it cannot take yet (the stuck-switch
                     // timeout's 200 ms settle); log only one it took.
@@ -1825,9 +1981,9 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // The overlay's Picture (crop) control (app/overlay_nav.h), decided
         // after this frame's loads (auto-advance, NEXT/PREV) so it follows
-        // the video now playing. Shown while a playlist video whose display
-        // aspect is not 4:3 plays under the overlay — for a 4:3 video crop
-        // and whole frame draw the same picture. The aspect the web admin
+        // the video now playing. Playlist controls compare the source to
+        // 4:3; film controls compare to the output's display shape. The aspect
+        // the web admin
         // recorded wins; until it has one, the last decoded frame's (which
         // may still be the previous video's for the frames before the new
         // one's first). A cursor on the control stays through the load gap
@@ -1838,6 +1994,10 @@ int main(int /* argc */, char* /* argv */[]) {
         {
             const std::string& media_key = controller.current_media_key();
             app::PictureFacts picture;
+            const auto* playing_item = state.current_playlist_item();
+            picture.is_movie = playing_item && playing_item->movie_tmdb_id > 0;
+            picture.output_aspect = state.display_settings.mode == app::DisplayMode::CRT_NATIVE
+                ? 4.0 / 3.0 : mode.width / double(mode.height);
             picture.owns_pipeline = playlist_playback.owns_pipeline();
             picture.has_key = !media_key.empty();
             if (picture.has_key) {
@@ -1865,6 +2025,9 @@ int main(int /* argc */, char* /* argv */[]) {
             // List style: cursor and focus untouched. No allocation.
             app::GuideFrameFacts guide_frame_facts;
             guide_frame_facts.guide_style = playlist_playback.guide_style();
+            guide_frame_facts.pick_ahead = state.display_settings.guide_mode == app::GuideMode::PickAhead;
+            guide_frame_facts.cursor_row_tunable = !state.guide_cursor.pick_at ||
+                playlist_playback.channel_on_air(state.guide_cursor.row);
             guide_frame_facts.rows = static_cast<int>(channels.size());
             guide_frame_facts.pending_tune = playlist_playback.pending_tune();
             guide_frame_facts.picture_may_stay = app::picture_focus_may_stay(picture);
@@ -1916,15 +2079,23 @@ int main(int /* argc */, char* /* argv */[]) {
             guide_now_utc = playlist_transport.wall_now_utc();
             guide_offset_s = guide_clock.offset(guide_now_utc, zone_offset);
             guide_source_aspect = playing_display_aspect();
-            if (state.video_active && !playlist_playback.switch_pending() &&
-                state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+            if (state.video_active && !playlist_playback.switch_pending() && state.current_playlist_item()) {
+                guide_playing.retained_item = state.retained_playlist_item();
                 guide_playing.playlist = state.current_playlist_index;
                 guide_playing.item = state.current_item_index;
                 guide_playing.position_s = state.get_position();
                 guide_playing.duration_s = state.get_duration();
+                if (state.loaded_movie)
+                    guide_playing.live_cutoff_utc = playlist_playback.live_cutoff_utc();
             }
+            guide_inputs.add(static_cast<uint64_t>(guide_playing.live_cutoff_utc));
             guide_inputs.add(static_cast<uint64_t>(state.display_settings.mode));
             guide_inputs.add(channels_generation);
+            guide_inputs.add(static_cast<uint64_t>(state.on_demand));
+            guide_inputs.add(static_cast<uint64_t>(state.display_settings.guide_mode));
+            guide_inputs.add(static_cast<uint64_t>(state.guide_cursor.pick_at.has_value()));
+            guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(
+                state.guide_cursor.pick_at.value_or(0) * 1000)));
             guide_inputs.add(static_cast<uint64_t>(state.playlists.size()));
             guide_inputs.add(static_cast<uint64_t>(static_cast<int64_t>(guide_tuned)));
             guide_inputs.add(static_cast<uint64_t>(state.guide_cursor.row));
@@ -2186,9 +2357,12 @@ int main(int /* argc */, char* /* argv */[]) {
                 guide_in.cursor = state.guide_cursor;
                 guide_in.picture_available = state.picture_control_available;
                 guide_in.picture_crop = state.picture_crop;
+                guide_in.on_demand = state.on_demand;
+                guide_in.pick_ahead = state.display_settings.guide_mode == app::GuideMode::PickAhead;
                 guide_in.source_aspect = guide_source_aspect;
                 guide_in.now_utc = guide_now_utc;
                 guide_in.utc_offset_s = guide_offset_s;
+                guide_in.utc_offset_at = zone_offset;
                 guide_in.playing = guide_playing;
                 const uint64_t revision = guide_view.revision + 1;
                 guide_view = ui::layout_channel_guide(guide_in);
@@ -2219,21 +2393,23 @@ int main(int /* argc */, char* /* argv */[]) {
             glClear(GL_COLOR_BUFFER_BIT);
         }
         
-        // Calculate 4:3 viewport for Modern TV mode
-        // This is used for both video and UI rendering
+        // Modern TV uses a 4:3 area for the playlist/guide UI and the whole
+        // output for a full-screen film. Video and UI share the content rect.
         bool use_letterbox = (state.display_settings.mode == app::DisplayMode::MODERN_TV);
+        const bool movie_full_screen_now = app::movie_full_screen(state);
 
         // Media Browser content is modern 16:9 (movie posters, movie
         // playback) — skip the 4:3 pillarbox viewport that wraps the
-        // main UI's 4:3 playlist videos. Both the per-screen layouts
+        // main UI's 4:3 playlist videos. Full-screen guide films also use
+        // the whole output, with no bezel. Both the per-screen layouts
         // and ad-hoc movie playback assume the full 1280x720 viewport.
         // Same gating idea as the bezel skip below (kept as a separate
         // flag so future tweaks to either don't have to touch the other).
 #ifdef MEDIA_BROWSER_ENABLED
-        bool letterbox_active = use_letterbox &&
+        bool letterbox_active = use_letterbox && !movie_full_screen_now &&
             state.current_screen != app::AppScreen::MediaBrowser;
 #else
-        bool letterbox_active = use_letterbox;
+        bool letterbox_active = use_letterbox && !movie_full_screen_now;
 #endif
         // The 4:3 content rect exists in TWO coordinate spaces and they
         // are no longer the same thing:
@@ -2306,15 +2482,15 @@ int main(int /* argc */, char* /* argv */[]) {
         // their existing draw order and are unaffected by CRT effects.
         bool scene_fbo_used = ui_renderer.begin_scene_fbo(state);
 
-        // Render video. It draws only its own rect (in Modern TV the 4:3
-        // area, never the whole framebuffer), so the bars are whatever the
+        // Render video. It draws only its own rect (the whole output for
+        // full-screen films, otherwise the 4:3 area), so bars are whatever the
         // clear above left there — and that clear runs on every frame once
         // the intro is complete.
         // This handles both intro video and regular video playback
         if (should_render_video) {
             // Playlist and intro video draw through the picture placement
-            // into the 4:3 area: `content` is exactly that outside the
-            // Media Browser — the centred 4:3 rect in Modern TV, the whole
+            // into `content`: the whole output for full-screen guide films,
+            // otherwise the centred 4:3 rect in Modern TV or the whole
             // framebuffer (shown as 4:3) in CRT Native. The Media Browser
             // keeps its own aspect-preserve + inset paths below.
 #ifdef MEDIA_BROWSER_ENABLED
@@ -2339,23 +2515,19 @@ int main(int /* argc */, char* /* argv */[]) {
                             app::kBezelImageWidth, app::kBezelImageHeight, fb_w, fb_h),
                         content);
                 }
-                // The playing video's own setting (app/media_info.h):
-                // cropped unless the operator chose to see it whole. The
-                // intro, and anything without a key, is cropped. A source
-                // known to be 4:3 is always cropped (video::picture_crop):
-                // no control is offered for one, so a stored "not cropped"
-                // could never be undone. Its aspect is the one placement
-                // uses — the frame being drawn — else the store's
-                // (playing_display_aspect).
-                const bool crop = video::picture_crop(
+                // Films follow their own preference full screen, and show
+                // whole while the guide window is painted (fade included).
+                // Resolve the actual retained film, not refreshed row indexes.
+                const auto* playing_item = state.current_playlist_item();
+                const bool is_movie = playing_item && playing_item->movie_tmdb_id > 0;
+                const bool crop = video::picture_crop_for(
+                    is_movie, guide_frame_view != nullptr,
                     media_info.crop_for(controller.current_media_key()),
                     playing_display_aspect());
-                // Channel Guide painted (on screen, or fading out): the same
-                // picture, crop setting and all, inside the guide's 4:3 video
-                // window — the view's window on the logical canvas mapped to
-                // framebuffer px (ui::guide_rect_to_fb; non-uniform in CRT
-                // Native). No bezel opening inside the window: fit uses the
-                // window. The whole picture once the guide is gone.
+                // Full-screen Modern TV films use the output's display shape;
+                // guide windows and CRT Native retain their 4:3 display shape.
+                const double target_aspect = movie_full_screen_now && use_letterbox
+                    ? content.w / double(content.h) : 4.0 / 3.0;
                 video::IRect picture_target = content;
                 if (guide_frame_view != nullptr) {
                     const ui::GuideRect w = ui::guide_rect_to_fb(
@@ -2364,7 +2536,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     picture_target = video::IRect{w.x, w.y, w.w, w.h};
                     opening = picture_target;
                 }
-                gst_renderer.set_picture(picture_target, crop, opening);
+                gst_renderer.set_picture(picture_target, crop, opening, target_aspect);
             } else {
                 gst_renderer.clear_picture();
             }
@@ -2620,6 +2792,9 @@ int main(int /* argc */, char* /* argv */[]) {
         // map can bring video lengths (the first read after boot, a new
         // upload, the back-fill): in Channel Guide style the channels are
         // rebuilt from it — the boot build had only trimmed items' lengths.
+#ifdef MEDIA_BROWSER_ENABLED
+        if (movie_library.poll(state.media_browser_vpn_healthy)) rebuild_channels();
+#endif
         if (media_info.poll() && playlist_playback.guide_style()) {
             rebuild_channels();
         }
@@ -2686,7 +2861,8 @@ int main(int /* argc */, char* /* argv */[]) {
         // settings poke above, and the same accepted cost: one unlink and
         // one zoneinfo read per web-admin action, never per tick. The guide
         // looks its UTC offset up again on the next frame it paints
-        // (GuideClock::invalidate).
+        // (GuideClock::invalidate); the same hook rephases owned live
+        // playback once so a captured civil deadline cannot stay stale.
         {
             static int timezone_reload_check = 0;
             if (++timezone_reload_check >= 60) {
@@ -2698,6 +2874,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     fs::remove(tz_marker, rm_ec);
                     tzset();
                     guide_clock.invalidate();
+                    playlist_playback.on_timezone_reload();
                     LOG_INFO("Time zone reloaded (web-admin poke)");
                 }
             }
@@ -2797,12 +2974,15 @@ int main(int /* argc */, char* /* argv */[]) {
                             // is re-anchored, never interrupted — unless its
                             // playlist is gone (then controller.stop() +
                             // stop_to_menu).
+                            auto fresh_playlists = app::split_for_ui_with_master_shuffle(
+                                PlaylistLoader::filter_for_platform(
+                                    PlaylistLoader::load_playlists(playlist_directory), state.platform_profile));
+                            std::vector<app::Playlist> current_movie_rows;
+                            for (const auto& row : state.playlists)
+                                if (app::is_movie_playlist(row)) current_movie_rows.push_back(row);
+                            app::merge_movie_playlists(fresh_playlists.video, std::move(current_movie_rows));
                             app::apply_reloaded_playlists(
-                                state,
-                                app::split_for_ui_with_master_shuffle(
-                                    PlaylistLoader::filter_for_platform(
-                                        PlaylistLoader::load_playlists(playlist_directory),
-                                        state.platform_profile)),
+                                state, std::move(fresh_playlists),
                                 reload_snap,
                                 [&controller]() { controller.stop(); });
 
@@ -3082,6 +3262,9 @@ int main(int /* argc */, char* /* argv */[]) {
                      "the last crop change may be lost");
         }
 #ifdef MEDIA_BROWSER_ENABLED
+        if (!movie_library.flush_until(persist_deadline)) {
+            LOG_WARN("Shutdown: movie_library.json write did not finish in time");
+        }
         if (!watch_store.flush_until(persist_deadline)) {
             LOG_WARN("Shutdown: watch history write did not finish in time — "
                      "resume falls back to the last checkpoint on disk");
@@ -3115,20 +3298,12 @@ int main(int /* argc */, char* /* argv */[]) {
     // kernel reclaims the rest, exactly as it would after the SIGKILL this
     // replaces.
 #ifdef MEDIA_BROWSER_ENABLED
-    // The game-end hook restores the services it quieted (docker start of
-    // the arr containers, then qBit resume) asynchronously. A stop mid-game
-    // — or the display-lost exit — reaches here right after the game, and
-    // KillMode=mixed SIGKILLs whatever is still running once main exits:
-    // measured on a Pi 5, the stop killed the in-flight `docker start`.
-    // Bounded so the whole shutdown stays inside TimeoutStopSec (20 s);
-    // anything slower is still recovered at the next start.
-    (void)game_quiet_mode.wait_until_idle_for(std::chrono::seconds(10));
-    // A movie resume queued by leave() (above, or a user exit moments
-    // before the stop) runs asynchronously; give it a bounded window so
-    // the qBit resume / cap clear land. Bounded well inside
-    // TimeoutStopSec (20 s) — anything left is covered at the next start:
-    // the startup unpause (containers), the alt-limit clear (cap) and the
-    // qbit_paused_by_kiosk marker recovery (paused torrents).
+    // Release every surviving owner, including a channel's grace, before
+    // the bounded drain. Slow restorations retain their durable journals
+    // for the next startup on this same ownership executor.
+    movie_quiet_mode.request_resume(app::MovieQuietMode::Claimant::Game);
+    movie_quiet_mode.request_resume(app::MovieQuietMode::Claimant::MovieChannel);
+    movie_quiet_mode.request_resume();
     (void)movie_quiet_mode.wait_until_idle_for(std::chrono::seconds(3));
 #endif
     std::fflush(nullptr);

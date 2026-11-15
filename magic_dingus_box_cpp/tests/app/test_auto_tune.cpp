@@ -10,6 +10,7 @@
 #include "app/app_state.h"
 #include "app/auto_tune.h"
 #include "app/playback_reset.h"
+#include "app/playlist_reload.h"
 
 using app::AutoTuneInput;
 using app::decide_auto_tune;
@@ -326,4 +327,29 @@ TEST_CASE("orphan stream: the guard's stop lets the nothing-playing rule tune",
     CHECK(decide_auto_tune(in) == std::optional<int>(2));
     CHECK(state.get_duration() == 0.0);
     CHECK(state.get_position() == 0.0);
+}
+
+TEST_CASE("auto-tune waits for movie snapshot before resolving last movie row", "[auto_tune]") {
+    auto in = ready(); in.movie_library_read = false;
+    CHECK_FALSE(app::auto_tune_gates_open(in)); CHECK_FALSE(decide_auto_tune(in));
+    app::Playlist kids; kids.path = "movies:kids";
+    app::Playlist comedy; comedy.path = "movies:comedy";
+    in.last_channel = app::find_playlist_by_identity({kids, comedy}, "movies:comedy");
+    in.movie_library_read = true;
+    CHECK(app::auto_tune_gates_open(in)); CHECK(decide_auto_tune(in) == 1);
+}
+
+TEST_CASE("power-on with an overnight last movie parks on 00", "[auto_tune][off_air]") {
+    auto in = ready();
+    in.last_channel = 2; in.last_channel_off_air = true; in.tunable[2] = false;
+    CHECK(decide_auto_tune(in) == 0);
+    SECTION("00 given up cannot spin back into the failed channel") {
+        in.gave_up = {0, 2}; CHECK(decide_auto_tune(in) == 3);
+    }
+    SECTION("00 without a schedule falls back to something playable") {
+        in.tunable[0] = false; CHECK(decide_auto_tune(in) == 1);
+    }
+    SECTION("a given-up movie uses ordinary failure fallback") {
+        in.gave_up = {2}; CHECK(decide_auto_tune(in) == 3);
+    }
 }

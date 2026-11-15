@@ -3,6 +3,7 @@
 #include "udev_wake.h"
 #include "input_mapping.h"
 #include "input_device_info.h"
+#include "select_release_packet.h"
 
 #include <libevdev/libevdev.h>
 #include <linux/input-event-codes.h>
@@ -69,6 +70,8 @@ std::string node_name(const std::string& path) {
 }  // namespace
 
 struct InputManager::Device {
+    SelectReleasePacket select_packet;
+    uint64_t source_id = 0;
     int fd;
     struct libevdev* dev;
     std::string name;
@@ -363,6 +366,7 @@ bool InputManager::open_joystick_devices() {
             }
             
             std::string device_name = device->name;  // Save name before move
+            device->source_id = next_source_id_++;
             devices_.push_back(std::move(device));
             found = true;
             std::cout << "  Found joystick: " << device_name << " at " << path << std::endl;
@@ -416,6 +420,7 @@ void InputManager::reprobe_phone_remote() {
                 // know if the dying device was the one holding a direction.
                 dpad_held_x_ = 0;
                 dpad_held_y_ = 0;
+                select_cancellations_.push_back(d->source_id);
                 it = devices_.erase(it);  // ~Device closes fd + frees libevdev
                 continue;
             }
@@ -470,6 +475,7 @@ void InputManager::reprobe_phone_remote() {
                 std::cerr << "  Warning: could not grab reopened phone remote"
                           << std::endl;
             }
+            device->source_id = next_source_id_++;
             devices_.push_back(std::move(device));
             std::cout << "  Reopened phone remote at " << path << std::endl;
             closedir(dir);
@@ -542,6 +548,7 @@ bool InputManager::open_keyboard_devices() {
             }
             
             std::string device_name = device->name;  // Save name before move
+            device->source_id = next_source_id_++;
             devices_.push_back(std::move(device));
             found = true;
             std::cout << "  Found keyboard: " << device_name << " at " << path << std::endl;
@@ -603,6 +610,7 @@ bool InputManager::open_rotary_devices() {
             }
             
             std::string device_name = device->name;
+            device->source_id = next_source_id_++;
             devices_.push_back(std::move(device));
             found = true;
             std::cout << "  Found rotary encoder: " << device_name << " at " << path << std::endl;
@@ -628,6 +636,7 @@ std::vector<InputEvent> InputManager::poll() {
 
         while (rc == LIBEVDEV_READ_STATUS_SYNC || rc == LIBEVDEV_READ_STATUS_SUCCESS) {
             InputEvent input_ev;
+            input_ev.source_id = device->source_id;
             input_ev.action = InputAction::NONE;
             input_ev.delta = 0;
             input_ev.pressed = false;
@@ -650,12 +659,19 @@ std::vector<InputEvent> InputManager::poll() {
                                            LIBEVDEV_READ_FLAG_SYNC, &ev)
                        == LIBEVDEV_READ_STATUS_SYNC) {
                 }
+                device->select_packet.discard();
+                select_cancellations_.push_back(device->source_id);
                 dpad_held_x_ = 0;
                 dpad_held_y_ = 0;
                 device->menu_sticks.clear();
                 device->dpad_x_8bit_last = device->dpad_y_8bit_last = 0;
                 rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                 continue;
+            }
+
+            if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                if (device->select_packet.finish(ev.value, events))
+                    select_cancellations_.push_back(device->source_id);
             }
 
             // RAW CAPTURE (Controller Setup wizard). While enabled, a REAL
@@ -820,7 +836,8 @@ std::vector<InputEvent> InputManager::poll() {
                         }
                         rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                         if (input_ev.action != InputAction::NONE) {
-                            events.push_back(input_ev);
+                            if (device->select_packet.append(input_ev, events))
+                                select_cancellations_.push_back(device->source_id);
                         }
                         continue;
                     }
@@ -841,7 +858,8 @@ std::vector<InputEvent> InputManager::poll() {
                         }
                         rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                         if (input_ev.action != InputAction::NONE) {
-                            events.push_back(input_ev);
+                            if (device->select_packet.append(input_ev, events))
+                                select_cancellations_.push_back(device->source_id);
                         }
                         continue;
                     }
@@ -994,6 +1012,7 @@ std::vector<InputEvent> InputManager::poll() {
 
                     if (std::abs(rotary_accumulator_) >= THRESHOLD) {
                         input_ev.action = InputAction::ROTATE;
+                        input_ev.rotary_encoder = true;
                         // Clockwise (positive) = down/next (positive delta)
                         // Counterclockwise (negative) = up/previous (negative delta)
                         input_ev.delta = (rotary_accumulator_ > 0) ? 1 : -1;
@@ -1015,8 +1034,13 @@ std::vector<InputEvent> InputManager::poll() {
                 }
             }
             
+            // EV_KEY value 2 is autorepeat, not release. Select consumers
+            // time the real down/up gesture; never manufacture an up edge.
+            if (ev.type == EV_KEY && ev.value == 2 && input_ev.action == InputAction::SELECT)
+                input_ev.action = InputAction::NONE;
             if (input_ev.action != InputAction::NONE) {
-                events.push_back(input_ev);
+                if (device->select_packet.append(input_ev, events))
+                    select_cancellations_.push_back(device->source_id);
             }
             
             rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
@@ -1038,6 +1062,7 @@ std::vector<InputEvent> InputManager::poll() {
 
     if (!dead_devices.empty()) {
         for (Device* d : dead_devices) {
+            select_cancellations_.push_back(d->source_id);
             std::cout << "  Input device disconnected, dropping: " << d->name << std::endl;
         }
         // A device that vanishes mid-hold never delivers its release event,
@@ -1277,6 +1302,7 @@ std::optional<retroarch::CaptureDeviceCaps> InputManager::device_caps(uint16_t v
 
 void InputManager::cleanup() {
     for (auto& device : devices_) {
+        select_cancellations_.push_back(device->source_id);
         if (device->dev) {
             libevdev_grab(device->dev, LIBEVDEV_UNGRAB);
         }

@@ -23,9 +23,10 @@ namespace media_browser {
 // slices, so a ping can never land in the window where a PAUSE is still
 // executing and see the service up a moment before docker stop takes it
 // down; (2) poll the service's cheap status endpoint until it answers.
-// Both phases share ONE wall-clock deadline (a refused request that burns
-// its own 5 s curl timeout counts against it), and `cancelled` is checked
-// at least every `slice` so a screen destructor never sits out a deadline.
+// Both phases share one service-start deadline (a refused request's own
+// curl timeout counts). An optional aggregate owner pause suspends polling
+// and starts a fresh deadline/quiet wait after release. Cancellation remains
+// sliced throughout, so shutdown never waits out a movie or service deadline.
 struct ServiceGateHooks {
     // Optional. Bounded wait for the movie quiet-mode executor to be idle
     // (app::MovieQuietMode::wait_until_idle_for); true = idle. Unset = no
@@ -40,6 +41,9 @@ struct ServiceGateHooks {
     // Test seams; default to steady_clock::now / this_thread::sleep_for.
     std::function<std::chrono::steady_clock::time_point()> now;
     std::function<void(std::chrono::milliseconds)> sleep;
+    // Optional aggregate ownership state. Owner-held time is not a service
+    // startup failure; after release, retry with a fresh deadline.
+    std::function<bool()> paused{};
 };
 
 struct ServiceGateTiming {
@@ -61,17 +65,13 @@ GateResult wait_for_service(const ServiceGateHooks& hooks,
 // the gate has answered. Pure, so the lifecycle rules are unit-tested.
 //
 //   Add      — Radarr answered and no FullPause session is running.
-//   Requeue  — a FullPause session is active NOW: Radarr is (or is about
-//              to be) stopped for that whole movie. Put the batch back and
-//              exit; that session's leave() restarts the worker. Before
-//              this, a quick second movie made the gate idle out and the
-//              batch was dropped with "Radarr didn't come back".
-//   Regate   — the gate timed out, but a FullPause session began (and has
-//              since ended) during it: the timeout was that movie's pause,
-//              not a dead Radarr. Gate again with a fresh deadline.
+//   Regate   — any FullPause owner is active, or a FullPause session began
+//              during a timed-out gate: retain the batch and keep this
+//              worker waiting/regating. Channel/game releases have no
+//              PlaybackScreen::leave() callback to restart another worker.
 //   Drop     — a genuine timeout: tell the user to add it from Browse.
 //   Abandon  — cancelled (screen shutting down): stop, no toasts.
-enum class DeferredBatchAction { Add, Requeue, Regate, Drop, Abandon };
+enum class DeferredBatchAction { Add, Regate, Drop, Abandon };
 
 DeferredBatchAction decide_deferred_batch(GateResult gate,
                                           bool full_pause_active,

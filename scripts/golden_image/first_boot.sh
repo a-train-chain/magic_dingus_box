@@ -1082,6 +1082,14 @@ fi
 # source operator's TV: personal content. prepare_for_cloning.sh strips them
 # from the image; this is the on-unit safety net, same as the watch db below.
 step_wipe_personal_data() {
+# Private owner movie titles and source-device pause ownership never survive cloning.
+for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
+    rm -f "${d}/movie_library.json" "${d}/movie_library.json.tmp" \
+          "${d}/qbit_paused_by_kiosk" "${d}/qbit_paused_by_kiosk.tmp" \
+          "${d}/qbit_paused_by_kiosk.services" "${d}/qbit_paused_by_kiosk.services.tmp" \
+          "${d}/qbit_paused_by_kiosk.services.claims" "${d}/qbit_paused_by_kiosk.services.claims.tmp"
+done
+
 for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
     [[ -d "$d" ]] || continue
     if [[ -d "${d}/screenshots" ]]; then

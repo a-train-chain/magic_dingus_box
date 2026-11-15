@@ -28,6 +28,9 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <vector>
+
+#include "channel_airing.h"
 
 namespace app {
 
@@ -37,6 +40,7 @@ struct GuideCursor {
     int row = 0;     // channel row (= UI playlist row; 00 = Master Shuffle)
     int scroll = 0;  // first channel row in the grid's window
     bool on_picture = false;
+    std::optional<double> pick_at = std::nullopt;  // selected airing start UTC; nullopt outside a row
 };
 
 // Channel rows on screen at once, at 960x720 and at 640x480 alike.
@@ -124,6 +128,10 @@ bool guide_visible(const AppState& s);
 // the Media Browser.
 bool guide_painted(const AppState& s);
 
+// A guide film outside its picture window uses the whole output. The
+// retained actual film wins over coordinates changed by a library refresh.
+bool movie_full_screen(const AppState& s);
+
 // Saving the channel last tuned (AppState::last_channel_id, persisted as
 // playback.last_channel) when it changes. The id is compared only on a
 // frame where tuned_channel moved — a tune's load ran, or a rebuild
@@ -138,13 +146,23 @@ struct LastChannelWatch {
 };
 
 enum class GuideEvent {
+    Horizontal,   // directional LEFT / RIGHT (delta)
+    Back,         // short menu press leaves a picked row
     Rotate,       // encoder turn / D-pad up-down (delta)
-    Select,       // encoder press / SELECT (press edge)
+    Select,       // completed short tap (press edge outside Pick Ahead)
+    PickAhead,    // explicit Select hold: enter on-now without playing
     ChannelStep,  // NEXT / PREV (press edge), after on_next() / on_prev() ran
 };
 
+inline GuideEvent guide_rotation_event(bool pick_ahead, bool rotary_encoder) {
+    return pick_ahead && !rotary_encoder ? GuideEvent::Horizontal : GuideEvent::Rotate;
+}
+
 // What main.cpp knows when an input is decided, besides AppState.
 struct GuideFacts {
+    bool pick_ahead = false;
+    double now_utc = 0;
+    std::vector<OnAir> row_airings;  // input only: now through the next 24 hours
     // guide_visible(state) in guide style when the event arrived —
     // ChannelStep: BEFORE on_next() / on_prev() ran (a step out of nothing
     // playing makes the guide's state "loading").
@@ -158,13 +176,26 @@ struct GuideFacts {
 };
 
 // The calls main.cpp makes for an input.
+// on_demand: play_on_demand(cursor.row, airing), then guide_tune_taken as for Tune.
 struct GuideCommand {
+    std::optional<OnAir> on_demand;
+    bool consumed = false;  // Back leaves a picked row instead of opening Settings
     // PlaylistPlayback::tune(tune, /*keep_overlay=*/false), then
     // guide_tune_taken(state, tune, pending_tune() == tune). -1: none.
     int tune = -1;
     bool toggle_picture = false;  // the transport's toggle_picture_crop()
 };
 
+// Pick Ahead: PickAhead/RIGHT enters a tunable row on now; in the row,
+// turns/LEFT/RIGHT walk programmes through the exclusive 24-hour horizon.
+// Before on-now leaves the row; Back leaves it and returns consumed. Select
+// on-now uses the Live Tune/Close rules; a future choice emits on_demand.
+// An unpicked row uses the same Tune/Close rules on its first Select.
+// PickAhead does nothing in Live; hidden, it opens on the tuned row and
+// enters on-now using facts gathered for that tuned row. An existing
+// picked programme stays selected through another hold.
+// Horizontal/Back do nothing in Live.
+//
 // One input in Channel Guide style (the intro ignores SELECT, as on_select):
 //   Rotate       shown: the cursor moves and the guide is the viewer's.
 //                Hidden: nothing (main.cpp seeks, as in the List style).
@@ -177,6 +208,8 @@ struct GuideCommand {
 //                press RETRIES the channel (Tune; None without a
 //                schedule); TogglePicture (when owns_pipeline) and None:
 //                the viewer's.
+//   Tune or ChannelStep cancels a pending overnight return to a movie;
+//   Close, opening, rotating and picture changes leave it alone.
 //   ChannelStep  shown: the viewer's, the cursor onto the pending tune.
 // During a viewer's Tune wait (guide_viewer_tune is the pending tune) the
 // guide is not taken back: Rotate does nothing at all, and ChannelStep —
@@ -195,6 +228,8 @@ void guide_tune_taken(AppState& s, int row, bool taken);
 
 // What main.cpp knows once per frame, besides AppState.
 struct GuideFrameFacts {
+    bool pick_ahead = false;
+    bool cursor_row_tunable = false;
     bool guide_style = false;  // PlaylistPlayback::guide_style()
     int rows = 0;
     std::optional<int> pending_tune;

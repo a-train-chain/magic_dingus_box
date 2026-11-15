@@ -5,6 +5,8 @@
 // a recording fake instead. See app/playlist_playback.h.
 
 #include <chrono>
+#include <cmath>
+#include <ctime>
 #include <functional>
 #include <utility>
 
@@ -73,6 +75,15 @@ public:
         return std::chrono::duration<double>(
                    std::chrono::system_clock::now().time_since_epoch())
             .count();
+    }
+
+    int utc_offset_s(double utc) const override {
+        // main initializes TZ with tzset before the render loop and repeats
+        // it only for the existing timezone-reload marker. localtime_r uses
+        // those already loaded rules for both live and future instants.
+        const std::time_t t = static_cast<std::time_t>(std::floor(utc));
+        std::tm local{};
+        return localtime_r(&t, &local) ? static_cast<int>(local.tm_gmtoff) : 0;
     }
 
 private:

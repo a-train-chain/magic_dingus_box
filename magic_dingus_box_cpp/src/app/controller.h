@@ -57,7 +57,9 @@ public:
     utils::Result<> load_file_with_resolution(const std::string& path, const std::string& playlist_dir, double start = 0.0, double end = 0.0, bool loop = false);
 
     // The loaded video's key in the per-video media info store
-    // (app/media_info.h): its path relative to the data directory. Set by
+    // (app/media_info.h): movie:<tmdb_id> for a loaded channel film, otherwise
+    // its path relative to the data directory. Movie identity survives row
+    // refresh/removal. Path keys are set by
     // every successful load_file_with_resolution; "" for the boot intro
     // (<data>/intro is not a library video), for a file outside the data
     // directory (Media Browser movies), and after a failed load.

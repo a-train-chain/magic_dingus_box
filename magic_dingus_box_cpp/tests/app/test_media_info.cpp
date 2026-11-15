@@ -743,3 +743,45 @@ TEST_CASE("media_info store: poll retries stranded work, at most every 30 s",
         CHECK(sink.call_count() == 0);  // reads never write
     }
 }
+
+TEST_CASE("media_info: movie fill is opt-in and survives serialization", "[media_info]") {
+    CHECK_FALSE(app::crop_for({}, "movie:603"));
+    MediaInfoMap map;
+    map["movie:603"].crop = true;
+    const auto parsed = app::parse_media_info(app::serialize_media_info(map));
+    REQUIRE(parsed);
+    CHECK(app::crop_for(*parsed, "movie:603"));
+}
+
+TEST_CASE("media_info: movie edits store fill and erase whole while keeping metadata", "[media_info]") {
+    Sandbox box;
+    MediaInfoStore store(box.file.string());
+    CHECK_FALSE(store.crop_for("movie:603"));
+    store.set_crop("movie:603", true);
+    CHECK(store.crop_for("movie:603"));
+    settle(store);
+    CHECK(read_json(box.file)["videos"]["movie:603"]["crop"].asBool());
+    store.set_crop("movie:603", false);
+    CHECK_FALSE(store.crop_for("movie:603"));
+    settle(store);
+    CHECK_FALSE(read_json(box.file)["videos"].isMember("movie:603"));
+    CHECK(store.map().count("movie:603") == 0);
+
+    write_file(box.file, R"({"videos":{"movie:603":{"duration_s":8160,"crop":true,"owner":"kept"}}})");
+    store.request_reload();
+    settle(store);
+    store.set_crop("movie:603", false);
+    settle(store);
+    const auto entry = read_json(box.file)["videos"]["movie:603"];
+    CHECK_FALSE(entry.isMember("crop"));
+    CHECK(entry["duration_s"].asInt() == 8160);
+    CHECK(entry["owner"].asString() == "kept");
+    CHECK_FALSE(store.crop_for("movie:603"));
+}
+
+TEST_CASE("media_info: film identity has a whole-picture default", "[media_info]") {
+    CHECK(app::movie_media_key(603) == "movie:603");
+    CHECK_FALSE(app::crop_default_for("movie:603"));
+    CHECK(app::crop_default_for("media/movie.mp4"));
+    CHECK(app::crop_default_for(""));
+}

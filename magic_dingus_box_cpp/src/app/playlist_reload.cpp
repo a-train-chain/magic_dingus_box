@@ -2,8 +2,10 @@
 
 #include "overlay_nav.h"
 #include "playback_reset.h"
+#include "channel_schedule.h"
 
 #include <utility>
+#include <algorithm>
 
 namespace app {
 
@@ -19,10 +21,10 @@ PlaylistLoader::UiPlaylistSplit split_for_ui_with_master_shuffle(
     return split;
 }
 
-std::string playlist_identity(const Playlist& p) {
-    // path is the playlist's file on disk and is unique; only the virtual
-    // Master Shuffle row has none.
-    return p.path.empty() ? ("title:" + p.title) : ("path:" + p.path);
+void merge_movie_playlists(std::vector<Playlist>& playlists, std::vector<Playlist> movie_playlists) {
+    playlists.erase(std::remove_if(playlists.begin(), playlists.end(), is_movie_playlist),
+                    playlists.end());
+    for (auto& playlist : movie_playlists) playlists.push_back(std::move(playlist));
 }
 
 int find_playlist_by_identity(const std::vector<Playlist>& v, const std::string& id) {
@@ -61,13 +63,37 @@ PlaylistReloadSnapshot snapshot_for_reload(const AppState& state,
         open_game_playlist_index < static_cast<int>(state.game_playlists.size())) {
         snap.open_game_id = playlist_identity(state.game_playlists[open_game_playlist_index]);
     }
+    snap.loaded_movie = state.loaded_movie;
+    if (!snap.loaded_movie && state.video_active && !state.is_switching_playlist &&
+        state.current_playlist_index >= 0 &&
+        state.current_playlist_index < static_cast<int>(state.playlists.size()) &&
+        is_movie_playlist(state.playlists[state.current_playlist_index])) {
+        if (const auto* item = state.current_playlist_item())
+            snap.loaded_movie = AppState::LoadedMovie{snap.playing_id, *item};
+    }
+    if (snap.loaded_movie) {
+        snap.playing_id = snap.loaded_movie->channel_identity;
+        snap.playing_item_path = snap.loaded_movie->item.path;
+        snap.playing_item_title = snap.loaded_movie->item.title;
+    }
+    snap.loaded_on_demand = state.loaded_on_demand;
+    if (!snap.loaded_on_demand && !snap.loaded_movie && state.on_demand &&
+        state.video_active && !state.is_switching_playlist) {
+        if (const auto* item = state.current_playlist_item())
+            snap.loaded_on_demand = AppState::LoadedOnDemand{state.last_channel_id, snap.playing_id, *item};
+    }
+    if (snap.loaded_on_demand) {
+        snap.playing_id = snap.loaded_on_demand->source_identity;
+        snap.playing_item_path = snap.loaded_on_demand->item.path;
+        snap.playing_item_title = snap.loaded_on_demand->item.title;
+    }
     return snap;
 }
 
 void apply_reloaded_playlists(AppState& state,
                               PlaylistLoader::UiPlaylistSplit reloaded,
                               const PlaylistReloadSnapshot& snap,
-                              const std::function<void()>& stop_playback) {
+                              const std::function<void()>& stop_playback, bool preserve_movie) {
     state.playlists = std::move(reloaded.video);
     // main.cpp's game_playlists is a REFERENCE to this member: the Settings
     // browser's ROM launch and the renderer read the same vector, so they
@@ -87,7 +113,42 @@ void apply_reloaded_playlists(AppState& state,
     // ── Playback is never interrupted, only re-anchored ──
     // Explicit decision: whatever is on screen keeps playing to its natural
     // end. Only the coordinates describing what comes NEXT are repaired.
-    if (!snap.playing_id.empty()) {
+    if (snap.loaded_on_demand) {
+        state.loaded_on_demand = snap.loaded_on_demand;
+        state.current_playlist_index = find_playlist_by_identity(state.playlists, snap.playing_id);
+        state.current_item_index = -1;
+        if (state.current_playlist_index >= 0) {
+            const auto& items = state.playlists[state.current_playlist_index].items;
+            const auto& held = snap.loaded_on_demand->item;
+            for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+                if (items[i].path == held.path && items[i].start == held.start && items[i].end == held.end) {
+                    state.current_item_index = i;
+                    break;
+                }
+            }
+        }
+        state.last_advanced_item_index = -1;
+        state.last_advanced_duration = 0;
+    } else if (snap.loaded_movie && preserve_movie) {
+        state.loaded_movie = snap.loaded_movie;
+        state.current_playlist_index = find_playlist_by_identity(state.playlists, snap.playing_id);
+        state.current_item_index = -1;
+        if (state.current_playlist_index >= 0) {
+            const auto& items = state.playlists[state.current_playlist_index].items;
+            for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+                if (items[i].movie_tmdb_id == snap.loaded_movie->item.movie_tmdb_id &&
+                    items[i].path == snap.playing_item_path) {
+                    state.current_item_index = i;
+                    break;
+                }
+            }
+        }
+        state.last_advanced_item_index = -1;
+        state.last_advanced_duration = 0;
+    } else if (snap.loaded_movie) {
+        if (stop_playback) stop_playback();
+        stop_to_menu(state);
+    } else if (!snap.playing_id.empty()) {
         const int new_pl = find_playlist_by_identity(state.playlists, snap.playing_id);
         if (new_pl >= 0) {
             state.current_playlist_index = new_pl;

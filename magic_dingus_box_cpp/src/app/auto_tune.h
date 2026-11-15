@@ -35,6 +35,7 @@ struct AutoTuneInput {
     // it too (the pre-gate behaviour), so an unreadable file never stops
     // the box tuning on its own.
     bool media_info_read = false;
+    bool movie_library_read = true;  // compiled out / movie channels off: no gate
     bool on_main_screen = false;     // no Media Browser, Settings or keyboard up
     bool video_active = false;       // a video plays, or the next item loads
     bool switch_pending = false;     // a switch or tune has not got its stream up
@@ -42,12 +43,13 @@ struct AutoTuneInput {
     bool post_game_pending = false;  // the post-game display restore is not done
     double now_utc = 0.0;            // wall clock, UTC seconds
     double wait_until_utc = 0.0;     // a failed item's slot ends (0 = no wait)
+    bool last_channel_off_air = false; // last identity has an overnight gap
     int last_channel = -1;           // the last channel watched; -1 = none
     std::vector<bool> tunable;       // per channel (= UI row): has a schedule
     std::vector<int> gave_up;        // channels given up on, newest last
 };
 
-// The gates alone: guide style, the intro over, the media info store read,
+// The gates alone: guide style, the intro over, both library stores read,
 // on the main screen, no video, no switch pending, no game loading, the
 // post-game restore done, and now_utc >= wait_until_utc. Reads only those
 // fields, so main.cpp fills
@@ -58,6 +60,7 @@ bool auto_tune_gates_open(const AutoTuneInput& in);
 // The channel to tune now, or nullopt. Tunes only when auto_tune_gates_open.
 // A channel can be picked when it has a schedule and was not given up on.
 // The target, in order:
+//   - 00 while the remembered last channel is off air (unless given up);
 //   - the last channel watched;
 //   - after a give-up, the next channel up from the most recent given-up one,
 //     wrapping (re-tuning the channel that just failed repeatedly would loop);

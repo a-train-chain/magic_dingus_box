@@ -32,7 +32,13 @@ PlaylistLoader::UiPlaylistSplit split_for_ui_with_master_shuffle(
 
 // A playlist's identity across a reload. path is the playlist's file on disk
 // and is unique; only the virtual Master Shuffle row has none.
-std::string playlist_identity(const Playlist& p);
+inline std::string playlist_identity(const Playlist& p) {
+    if (p.path.rfind("movies:", 0) == 0) return p.path;
+    return p.path.empty() ? ("title:" + p.title) : ("path:" + p.path);
+}
+// Keep every real row in order; replace all synthetic movie rows at the end.
+void merge_movie_playlists(std::vector<Playlist>& playlists, std::vector<Playlist> movie_playlists);
+
 // Index of the playlist with that identity, or -1.
 int find_playlist_by_identity(const std::vector<Playlist>& v, const std::string& id);
 
@@ -41,6 +47,8 @@ int find_playlist_by_identity(const std::vector<Playlist>& v, const std::string&
 // replaced, and importing one playlist renumbers every playlist after it.
 // So re-find things by identity, not index. Taken BEFORE the swap.
 struct PlaylistReloadSnapshot {
+    std::optional<AppState::LoadedMovie> loaded_movie;
+    std::optional<AppState::LoadedOnDemand> loaded_on_demand;
     std::string playing_id;
     std::string playing_item_path;
     std::string playing_item_title;
@@ -59,10 +67,16 @@ PlaylistReloadSnapshot snapshot_for_reload(const AppState& state,
 // never interrupted, only re-anchored — except when the playlist that owned
 // the playing video is gone (or Master Shuffle has no pool left), where
 // `stop_playback` (controller.stop()) runs followed by stop_to_menu.
+// Movie refreshes retain the immutable loaded film until end even if its row
+// disappears. Explicit lock/style changes pass preserve_movie=false to leave
+// it immediately. Selected regular programmes separately retain their loaded
+// metadata through refresh; List-style exit ends that ownership. Both use
+// current_playlist_item() without requiring row indexes.
 void apply_reloaded_playlists(AppState& state,
                               PlaylistLoader::UiPlaylistSplit reloaded,
                               const PlaylistReloadSnapshot& snap,
-                              const std::function<void()>& stop_playback);
+                              const std::function<void()>& stop_playback,
+                              bool preserve_movie = true);
 
 // What the Settings game browser must do with its open game list after the
 // reload (only meaningful while it is viewing one).

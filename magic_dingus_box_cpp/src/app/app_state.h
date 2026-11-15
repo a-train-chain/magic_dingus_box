@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <optional>
 #include <sstream>
 #include <vector>
 #include <deque>
@@ -27,6 +28,8 @@ enum class MenuStyle {
     List,
     ChannelGuide
 };
+
+enum class GuideMode { Live, PickAhead };
 
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
 // ALSA `amixer numid=3` method — see app/audio_router.h. Sink names are
@@ -113,6 +116,7 @@ struct PlaylistItem {
     // loses a meaningful value by using 0 as the sentinel.
     double start = 0.0;
     double end = 0.0;
+    int movie_tmdb_id = 0;  // 0 for ordinary playlist items
 };
 
 struct Playlist {
@@ -243,6 +247,33 @@ struct AppState {
 
     double original_volume;  // Stream level when the current video started (intro fade-out ramps from it)
     std::string current_file;
+    // Immutable facts of the movie actually loaded, independent of library rows.
+    // Cleared on stop/handover/new load; refresh may remove its coordinates.
+    struct LoadedMovie {
+        std::string channel_identity;
+        PlaylistItem item;
+    };
+    std::optional<LoadedMovie> loaded_movie;
+    // The regular programme selected in Pick Ahead. It remains the actual
+    // playing item when an ordinary playlist refresh removes/replaces it.
+    struct LoadedOnDemand {
+        std::string channel_identity;
+        std::string source_identity;
+        PlaylistItem item;
+    };
+    std::optional<LoadedOnDemand> loaded_on_demand;
+    const PlaylistItem* retained_playlist_item() const {
+        if (loaded_movie) return &loaded_movie->item;
+        return loaded_on_demand ? &loaded_on_demand->item : nullptr;
+    }
+    const PlaylistItem* current_playlist_item() const {
+        if (const auto* retained = retained_playlist_item()) return retained;
+        if (current_playlist_index < 0 ||
+            current_playlist_index >= static_cast<int>(playlists.size())) return nullptr;
+        const auto& items = playlists[current_playlist_index].items;
+        return current_item_index >= 0 && current_item_index < static_cast<int>(items.size())
+            ? &items[current_item_index] : nullptr;
+    }
     int current_playlist_index;  // Index of playlist currently playing (-1 if none)
     int current_item_index;  // Index of item currently playing (-1 if none)
     int last_advanced_item_index;  // Last item index we advanced from (to prevent multiple advances)
@@ -289,6 +320,10 @@ public:
     // Channel Guide: the channel last tuned, as a playlist_identity() string
     // ("shuffle" = channel 00, "" = none). Persisted as playback.last_channel.
     std::string last_channel_id;
+    bool on_demand = false;  // selected whole programme; render-thread only
+    // Overnight parking destination and early-EOF return suppression; transient.
+    std::string off_air_return_id;
+    double off_air_return_after_utc = 0;
     // Channel Guide, written by PlaylistPlayback (render thread only):
     // tuned_channel: the channel (= UI row) on screen, or waiting for its
     //   next item after a failed one; -1 = none. 00 stays 00 while the
@@ -491,6 +526,7 @@ public:
     // Display settings for CRT effects and display mode
     struct DisplaySettings {
         DisplayMode mode = DisplayMode::CRT_NATIVE;
+        GuideMode guide_mode = GuideMode::Live;
         MenuStyle menu_style = MenuStyle::List;  // display.menu_style
         int bezel_index = 0;  // Index into bezels array (0 = procedural/none)
         

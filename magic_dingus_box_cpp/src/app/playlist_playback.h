@@ -61,8 +61,8 @@
 // runs. NEXT/PREV change channel. An item's natural end loads what is on the
 // tuned channel NOW instead of the next index — never the airing that just
 // ended, when playback ran ahead of it (app::boundary_join: the next one,
-// from its start). A failed item is not skipped
-// ahead: playback stops until its scheduled slot ends
+// from its start). A failed movie starts its next scheduled programme now,
+// from zero; a failed playlist item waits until its scheduled slot ends
 // (AppState::guide_wait_until_utc), and a give-up marks the channel in
 // guide_gave_up — cleared only once a channel PLAYS (kChannelPlaysS), so a
 // library that loads but never decodes runs out of channels; main.cpp's
@@ -73,6 +73,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -137,6 +138,8 @@ public:
     // Wall-clock UTC seconds (system_clock in the kiosk; hand-set in the
     // tests). Only the Channel Guide schedule reads it; waits stay steady.
     virtual double wall_now_utc() const = 0;
+    // In-memory local zone rules for any UTC instant, including lookahead.
+    virtual int utc_offset_s(double utc) const = 0;
 };
 
 class PlaylistPlayback {
@@ -166,13 +169,27 @@ public:
     // boundary, so a rebuilt list takes effect at the next one. Call it
     // again after EVERY rebuild (even into the same vector): a reload
     // renumbers the rows, so the tuned channel is re-found by
-    // AppState::last_channel_id (-1 when its playlist is gone). The
-    // guide_gave_up rows are NOT re-anchored — a reload can shift them —
-    // and live until a channel proves it plays (kChannelPlaysS); only rows
-    // past the new list's end are dropped. nullptr also forgets the tuned /
-    // given-up channels.
+    // AppState::last_channel_id (-1 when its channel is gone); overnight
+    // parking retains channel 00 independently of the remembered movie. The
+    // guide_gave_up rows are re-anchored by stable channel identity, including
+    // an absent channel returning later, until a channel proves it plays
+    // (kChannelPlaysS). nullptr also forgets the tuned /
+    // given-up channels. A loaded movie survives ordinary rebuild/removal via
+    // AppState::loaded_movie; selected regular programmes similarly retain
+    // loaded_on_demand. nullptr explicitly leaves either immediately.
     void set_channels(const std::vector<Channel>* channels);
+    void set_movie_failure_hook(std::function<void()> hook) { movie_failure_hook_ = std::move(hook); }
     bool guide_style() const { return channels_ != nullptr; }
+    // Pure schedule eligibility for auto-tune, including movie off-air gaps.
+    bool channel_on_air(int channel) const;
+    // main.cpp calls this immediately after the timezone_reload_request
+    // tzset/invalidate hook. Rephase once at the next owned live frame;
+    // a pending tune already reads the new rules when its load runs.
+    // Task9 selected whole programmes must defer/bypass this live rule.
+    void on_timezone_reload() {
+        timezone_reload_pending_ = true;
+        state_.off_air_return_after_utc = 0;  // old zone deadline cannot delay a new-zone return
+    }
     // Tune `channel` live. The playlist switch above, unchanged — stop now,
     // then the settle / re-poll wait per frame, then the load — except that
     // the load joins whatever is on air when it RUNS (on_air at
@@ -187,11 +204,17 @@ public:
     // Dropped (like SELECT) in List style, for a channel with no schedule,
     // during the intro, and while a switch is pending or in flight.
     void tune(int channel, bool keep_overlay);
+    // Select a whole programme, including tomorrow's lineup. Captures media
+    // identity now; settle/reloads may remap it or cancel, never replace it.
+    void play_on_demand(int channel, const OnAir& airing);
     // Channel up (+1) / down (-1): the next channel with a schedule,
     // wrapping (from nothing tuned, up starts at 00 and down at the last
     // channel). The overlay stays as it is — as it is when the load runs,
     // so a guide the viewer opens during the wait stays open.
     void on_channel_step(int delta);
+    // Active load's civil cut, retained across library refresh. Zero for a
+    // chosen whole programme; the guide uses the same deadline as playback.
+    double live_cutoff_utc() const { return state_.on_demand ? 0.0 : guide_day_ends_at_; }
     // The channel a tune() (or channel up/down) will load, from its stop
     // until the load runs; nullopt otherwise (no switch pending, or a List
     // SELECT's). tuned_channel only changes at the load, ~200 ms after the
@@ -273,7 +296,8 @@ public:
 
     // ── Who owns the pipeline ────────────────────────────────────────────
     // True while a main-menu playlist item owns the shared pipeline (not
-    // the intro, a switch, a game launch, or Media Browser playback). Also
+    // the intro, a switch, a game launch, or Media Browser playback). A retained
+    // movie still owns it when a refresh removed its row/item indexes. Also
     // read by main.cpp each frame for the overlay's Picture control
     // (app/overlay_nav.h, PictureFacts::owns_pipeline).
     bool owns_pipeline() const;
@@ -288,6 +312,18 @@ private:
     const std::string& playlist_directory_;
     const std::vector<Channel>* channels_ = nullptr;
 
+    struct ChannelAiring {
+        int channel = -1;
+        LoadedAiring airing;
+        std::string identity;
+        // Stable media facts distinguish row movement from a different film
+        // taking over the same numeric source/slot coordinates.
+        std::string source_identity;
+        std::string source_path;
+        int source_tmdb_id = 0;
+        double source_start = 0;
+    };
+
     // A mid-playback switch between its stop() and its load.
     enum class SwitchPhase { Idle, Settling, Polling };
     struct PendingSwitch {
@@ -295,8 +331,10 @@ private:
         int target = -1;  // the selected_index SELECT was pressed on (a tune: the channel)
         std::chrono::steady_clock::time_point next_check{};
         int repolls = 0;  // 50 ms re-polls used so far
+        std::string identity;       // pending channel survives row renumbering
         bool tune = false;          // a Channel Guide tune, not a SELECT
         bool keep_overlay = false;  // tune(): leave the overlay as it is
+        std::optional<ChannelAiring> selected;  // whole programme, anchored by media identity
     };
     PendingSwitch pending_;
     // The player's stream generation when the switching flag was raised.
@@ -319,32 +357,39 @@ private:
     // ── Channel Guide ────────────────────────────────────────────────────
     // Channel `c` of the current list (nullptr in List style / out of range).
     const Channel* channel_at(int c) const;
+    std::string channel_identity(int c) const;
     // A tune's load, once its switch wait is over.
     void finish_tune(int channel, bool keep_overlay);
     // An item's natural end: load what is on the tuned channel now — but
     // never the airing just loaded again (app::boundary_join).
-    void rejoin_schedule();
+    void rejoin_schedule(bool programme_ended = true);
+    // True if the channel is in its overnight gap; load 00 immediately,
+    // preserving both the remembered movie identity and overlay state.
+    bool park_off_air(int channel);
+    bool park_on_mix(const std::string& return_id, double not_before = 0);
+    void finish_on_demand();
     // tuned_channel + last_channel_id, set when a tune's load runs.
     void land_on_channel(int channel);
     // Load channel `channel`'s scheduled item `oa` at its offset; true when
     // the load returned OK.
-    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay);
+    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand = false);
+    bool timezone_reload_pending_ = false;
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
     // the channel picks up again from there — but no later than its length
     // from the failure (a wall clock that jumped back must not stretch the
     // wait).
     double guide_item_ends_at_ = 0.0;
     double guide_item_length_ = 0.0;
+    double guide_item_end_position_ = 0.0;  // item.start + the (possibly cut) airing length
+    double guide_day_ends_at_ = 0.0;  // live civil boundary, even when the seek landed behind
     // The airing the last channel load loaded, and on which channel: the
     // next boundary on that channel never rejoins it (boundary_join). Kept
     // across set_channels; boundary_join itself drops the guard for that
-    // one boundary when a rebuild made it stale — the channel renumbered
-    // (channel or scheduled item no longer match) or re-phased (its cycle
-    // changed, so the item no longer airs at that time: join it live).
-    struct ChannelAiring {
-        int channel = -1;
-        LoadedAiring airing;
-    };
+    // one boundary when a rebuild changed the media or re-phased its slot.
+    // Row renumbering alone remaps by channel/source/media identity; the
+    // original airing timestamps and cut deadlines stay unchanged.
+    void reanchor_airing(std::optional<ChannelAiring>& held);
+    void exclude_failed_channel();
     std::optional<ChannelAiring> loaded_airing_;
     // The airing a stall last reloaded (on_channel_stall): ONE free reload
     // per airing. Any later stall on it — right after the reload or minutes
@@ -403,6 +448,8 @@ private:
     // playlist where EVERY item is broken shows the UI instead of
     // spinning); act_on_failed_item executes the decision.
     video::PlaybackErrorPolicy error_policy_;
+    std::function<void()> movie_failure_hook_;
+    std::vector<std::string> gave_up_identities_;
 
     // Watches for the pipeline stalling while the kiosk thinks it is playing.
     PlaybackStallWatchdog stall_watchdog_;

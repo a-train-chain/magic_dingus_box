@@ -216,6 +216,18 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                  }),
     };
     
+    if (settings.menu_style == app::MenuStyle::ChannelGuide) {
+        items.emplace_back(std::string("Guide Mode: ") +
+                               (settings.guide_mode == app::GuideMode::Live ? "Live" : "Pick Ahead"),
+                           MenuSection::TOGGLE_GUIDE_MODE, "Live / Pick Ahead",
+                           [&]() {
+                               settings.guide_mode = settings.guide_mode == app::GuideMode::Live
+                                   ? app::GuideMode::PickAhead : app::GuideMode::Live;
+                               rebuild_current_submenu();
+                               app::SettingsPersistence::save_settings(*app_state_);
+                           });
+    }
+
     // Show bezel option only in Modern TV mode
     if (settings.mode == app::DisplayMode::MODERN_TV) {
         items.emplace_back("Bezel: " + bezel_name, MenuSection::CYCLE_BEZEL, "Overlay frame",

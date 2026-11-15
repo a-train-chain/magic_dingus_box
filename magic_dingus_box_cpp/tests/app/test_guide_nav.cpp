@@ -15,7 +15,9 @@
 
 #include "app/app_state.h"
 #include "app/guide_nav.h"
+#include "app/guide_select_hold.h"
 #include "app/playback_reset.h"
+#include "platform/input_manager.h"
 
 namespace {
 
@@ -290,7 +292,7 @@ app::GuideCommand input(app::AppState& s, app::GuideEvent e, int delta = 0,
     return app::guide_input(s, e, delta, facts(s, 8, pending, tunable));
 }
 
-bool no_calls(const app::GuideCommand& c) { return c.tune == -1 && !c.toggle_picture; }
+bool no_calls(const app::GuideCommand& c) { return c.tune == -1 && !c.toggle_picture && !c.on_demand; }
 
 app::GuideFrameFacts frame_facts(std::optional<int> pending = std::nullopt,
                                  bool may_stay = false, int rows = 8) {
@@ -906,4 +908,417 @@ TEST_CASE("entering guide style with a List playlist playing tunes its channel l
         CHECK_FALSE(app::guide_entry_tune(s).has_value());
     }
 #endif
+}
+
+TEST_CASE("only a full-screen guide film uses the whole output", "[guide_nav]") {
+    app::AppState s;
+    s.display_settings.menu_style = app::MenuStyle::ChannelGuide;
+    s.playlists.resize(2);
+    s.playlists[1].items.resize(1);
+    s.playlists[1].items[0].movie_tmdb_id = 603;
+    put_playing(s);
+    CHECK(app::movie_full_screen(s));
+
+    SECTION("List style keeps existing framing") {
+        s.display_settings.menu_style = app::MenuStyle::List;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+    SECTION("the guide and its fade keep the movie in the window") {
+        s.ui_visible_when_playing = true;
+        CHECK_FALSE(app::movie_full_screen(s));
+        s.ui_visible_when_playing = false;
+        s.is_fading = true;
+        s.fade_target_ui_visible = false;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+    SECTION("an ordinary playlist item keeps existing framing") {
+        s.playlists[1].items[0].movie_tmdb_id = 0;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+    SECTION("no playing item is safe") {
+        s.current_playlist_index = -1;
+        s.current_item_index = -1;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+    SECTION("the retained actual film wins over replacement rows and invalid coordinates") {
+        s.loaded_movie = app::AppState::LoadedMovie{"movies:mix", s.playlists[1].items[0]};
+        s.playlists[1].items[0].movie_tmdb_id = 0;
+        CHECK(app::movie_full_screen(s));
+        s.current_playlist_index = -1;
+        s.current_item_index = -1;
+        CHECK(app::movie_full_screen(s));
+        s.ui_visible_when_playing = true;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+#ifdef MEDIA_BROWSER_ENABLED
+    SECTION("the Media Browser owns its own framing") {
+        s.current_screen = app::AppScreen::MediaBrowser;
+        CHECK_FALSE(app::movie_full_screen(s));
+    }
+#endif
+}
+
+TEST_CASE("viewer channel choices cancel overnight return but closing 00 keeps it", "[guide_nav][off_air]") {
+    app::AppState s;
+    s.off_air_return_id = "movies:comedy"; s.tuned_channel = 0;
+    s.off_air_return_after_utc = 123456;
+    s.current_playlist_index = 1; s.current_item_index = 0; s.video_active = true;
+    s.ui_visible_when_playing = true;
+    app::GuideFacts f; f.on_screen = true; f.rows = 3; f.cursor_row_tunable = true;
+    SECTION("Tune") {
+        s.guide_cursor.row = 1;
+        CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == 1);
+        CHECK(s.off_air_return_id.empty());
+        CHECK(s.off_air_return_after_utc == 0);
+    }
+    SECTION("ChannelStep with guide shown") {
+        app::guide_input(s, app::GuideEvent::ChannelStep, 1, f);
+        CHECK(s.off_air_return_id.empty());
+        CHECK(s.off_air_return_after_utc == 0);
+    }
+    SECTION("ChannelStep with guide hidden") {
+        f.on_screen = false;
+        app::guide_input(s, app::GuideEvent::ChannelStep, 1, f);
+        CHECK(s.off_air_return_id.empty());
+        CHECK(s.off_air_return_after_utc == 0);
+    }
+    SECTION("Close") {
+        s.guide_cursor.row = 0;
+        CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == -1);
+        CHECK(s.off_air_return_id == "movies:comedy");
+        CHECK(s.off_air_return_after_utc == 123456);
+    }
+    SECTION("off-air row press is not a Tune") {
+        s.guide_cursor.row = 1; f.cursor_row_tunable = false;
+        CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == -1);
+        CHECK(s.off_air_return_id == "movies:comedy");
+        CHECK(s.off_air_return_after_utc == 123456);
+    }
+}
+
+
+namespace {
+app::GuideFacts pick_facts(const app::AppState& s) {
+    auto f = facts(s);
+    f.pick_ahead = true;
+    f.now_utc = 1000;
+    f.row_airings = {{0, 100, 900, 1500, 90000}, {1, 0, 1500, 2100, 90000},
+                     {2, 0, 2100, 2700, 90000}, {3, 0, 87000, 87600, 90000},
+                     {4, 0, 87400, 88000, 90000}};
+    return f;
+}
+}
+
+TEST_CASE("Pick Ahead hold enters a tunable row before selecting its on-now programme", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s, 1); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 2;
+    auto f = pick_facts(s);
+    const auto enter = app::guide_input(s, app::GuideEvent::PickAhead, 0, f);
+    CHECK(enter.tune == -1); CHECK_FALSE(enter.on_demand);
+    CHECK(s.guide_cursor.pick_at == 900);
+    CHECK(s.guide_opened_by_viewer);
+    CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == 2);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+    CHECK_FALSE(s.guide_opened_by_viewer);
+}
+
+TEST_CASE("Pick Ahead horizontal enters only right and steps programmes with a 24 hour clamp", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.guide_cursor.row = 1;
+    auto f = pick_facts(s);
+    app::guide_input(s, app::GuideEvent::Horizontal, -1, f);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+    app::guide_input(s, app::GuideEvent::Horizontal, 1, f);
+    CHECK(s.guide_cursor.pick_at == 900);
+    app::guide_input(s, app::GuideEvent::Horizontal, 7, f);
+    CHECK(s.guide_cursor.pick_at == 1500);
+    app::guide_input(s, app::GuideEvent::Rotate, 1, f);
+    CHECK(s.guide_cursor.pick_at == 2100); CHECK(s.guide_cursor.row == 1);
+    app::guide_input(s, app::GuideEvent::Rotate, 1, f);
+    CHECK(s.guide_cursor.pick_at == 87000);
+    app::guide_input(s, app::GuideEvent::Horizontal, 1, f);
+    CHECK(s.guide_cursor.pick_at == 87000);  // 87400 is exactly now+24h
+}
+
+TEST_CASE("Pick Ahead turning backwards before on-now leaves the row", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.guide_cursor.row = 1;
+    auto f = pick_facts(s); s.guide_cursor.pick_at = 1500;
+    app::guide_input(s, app::GuideEvent::Rotate, -1, f);
+    CHECK(s.guide_cursor.pick_at == 900);
+    app::guide_input(s, app::GuideEvent::Rotate, -1, f);
+    CHECK_FALSE(s.guide_cursor.pick_at); CHECK(s.guide_cursor.row == 1);
+    app::guide_input(s, app::GuideEvent::Rotate, 1, f);
+    CHECK(s.guide_cursor.row == 2);
+}
+
+TEST_CASE("Pick Ahead selects a future programme and gives its tune ownership", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500; s.guide_opened_by_viewer = true;
+    s.off_air_return_id = "movies:mix"; s.off_air_return_after_utc = 90000;
+    auto f = pick_facts(s);
+    const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
+    REQUIRE(cmd.on_demand); CHECK(cmd.on_demand->starts_at == 1500); CHECK(cmd.on_demand->index == 1);
+    CHECK(cmd.tune == -1); CHECK_FALSE(s.guide_opened_by_viewer); CHECK_FALSE(s.guide_cursor.pick_at);
+    CHECK(s.off_air_return_id.empty()); CHECK(s.off_air_return_after_utc == 0);
+}
+
+TEST_CASE("a picked programme becoming on-now uses ordinary tune and close rules", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    auto f = pick_facts(s); f.now_utc = 1600; f.row_airings.erase(f.row_airings.begin());
+    const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
+    CHECK_FALSE(cmd.on_demand); CHECK(cmd.tune == -1); CHECK_FALSE(s.ui_visible_when_playing);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("Pick Ahead Back consumes a row exit but Live ignores horizontal and Back", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    auto f = pick_facts(s);
+    CHECK(app::guide_input(s, app::GuideEvent::Back, 0, f).consumed);
+    CHECK_FALSE(s.guide_cursor.pick_at); CHECK(s.ui_visible_when_playing);
+    CHECK_FALSE(app::guide_input(s, app::GuideEvent::Back, 0, f).consumed);
+    f.pick_ahead = false;
+    CHECK_FALSE(app::guide_input(s, app::GuideEvent::Horizontal, 1, f).consumed);
+    CHECK_FALSE(s.guide_cursor.pick_at); CHECK(s.guide_cursor.row == 1);
+    CHECK_FALSE(app::guide_input(s, app::GuideEvent::Back, 0, f).consumed);
+}
+
+TEST_CASE("Pick Ahead clears a selection on close, mode exit, row closure and channel step", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.display_settings.guide_mode = app::GuideMode::PickAhead;
+    app::guide_frame(s, frame_facts());
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    auto f = frame_facts(); f.pick_ahead = true; f.cursor_row_tunable = true;
+    SECTION("mode changes") { f.pick_ahead = false; app::guide_frame(s, f); }
+    SECTION("row goes off air") { f.cursor_row_tunable = false; app::guide_frame(s, f); }
+    SECTION("guide closes") { s.ui_visible_when_playing = false; app::guide_frame(s, f); }
+    SECTION("style changes") { f.guide_style = false; app::guide_frame(s, f); }
+    SECTION("channel step") { auto i = pick_facts(s); i.pending_tune = 2; app::guide_input(s, app::GuideEvent::ChannelStep, 1, i); }
+    CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("a still-playing selected programme can close its off-air row", "[guide_nav][pick_ahead][off_air]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.on_demand = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    auto f = pick_facts(s); f.cursor_row_tunable = false; f.row_airings.clear();
+    CHECK(app::guide_input(s, app::GuideEvent::Select, 0, f).tune == -1);
+    CHECK_FALSE(s.ui_visible_when_playing); CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("Pick Ahead never enters off-air rows or steals a waiting viewer tune", "[guide_nav][pick_ahead]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.guide_cursor.row = 2;
+    auto f = pick_facts(s);
+    SECTION("off air") { f.cursor_row_tunable = false; f.row_airings.clear(); }
+    SECTION("waiting tune") { s.guide_viewer_tune = 2; f.pending_tune = 2; }
+    app::guide_input(s, app::GuideEvent::Horizontal, 1, f);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("Pick Ahead routing distinguishes directional input from physical encoder", "[guide_nav][pick_ahead]") {
+    CHECK(app::guide_rotation_event(true, false) == app::GuideEvent::Horizontal);
+    CHECK(app::guide_rotation_event(true, true) == app::GuideEvent::Rotate);
+    CHECK(app::guide_rotation_event(false, false) == app::GuideEvent::Rotate);
+    CHECK(app::guide_rotation_event(false, true) == app::GuideEvent::Rotate);
+}
+
+
+TEST_CASE("directional input defaults preserve legacy event velocity and cannot inherit encoder origin", "[guide_nav][pick_ahead]") {
+    const platform::InputEvent direction{platform::InputAction::ROTATE, 1, true, 1};
+    CHECK_FALSE(direction.rotary_encoder);
+    CHECK(direction.velocity == 1.0f);
+    CHECK(app::guide_rotation_event(true, direction.rotary_encoder) == app::GuideEvent::Horizontal);
+    auto encoder = direction; encoder.rotary_encoder = true;
+    const auto copied_encoder = encoder;
+    CHECK(app::guide_rotation_event(true, copied_encoder.rotary_encoder) == app::GuideEvent::Rotate);
+    const platform::InputEvent repeat{};
+    CHECK_FALSE(repeat.rotary_encoder);
+}
+
+TEST_CASE("selecting on now from the tuned on-demand row explicitly tunes live", "[guide_nav][pick_ahead][final_fix]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true; s.on_demand = true;
+    s.guide_cursor.row = 1;
+    auto f = pick_facts(s);
+    CHECK(app::guide_input(s, app::GuideEvent::PickAhead, 0, f).tune == -1);
+    REQUIRE(s.guide_cursor.pick_at == 900);
+    const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
+    CHECK(cmd.tune == 1); CHECK_FALSE(cmd.on_demand);
+    CHECK_FALSE(s.guide_cursor.pick_at); CHECK_FALSE(s.guide_opened_by_viewer);
+}
+
+TEST_CASE("Pick Ahead short tap watches another visible row immediately", "[guide_nav][pick_ahead][select_hold]") {
+    app::AppState s; put_playing(s, 1); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 2;
+    const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, pick_facts(s));
+    CHECK(cmd.tune == 2);
+    CHECK_FALSE(cmd.on_demand);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+    CHECK_FALSE(s.guide_opened_by_viewer);
+}
+
+TEST_CASE("guide Select separates a tap from a single hold at the deadline", "[guide_nav][select_hold]") {
+    app::GuideSelectHold hold;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    using namespace std::chrono_literals;
+    CHECK(hold.release(start) == Action::None);
+    CHECK(hold.tick(start + 1s) == Action::None);
+    hold.press(start);
+    REQUIRE(hold.pending());
+    SECTION("release at 499 milliseconds is a tap") {
+        CHECK(hold.tick(start + 499ms) == Action::None);
+        CHECK(hold.release(start + 499ms) == Action::Tap);
+    }
+    SECTION("the 500 millisecond tick emits once and consumes release") {
+        CHECK(hold.tick(start + 500ms) == Action::Hold);
+        CHECK(hold.tick(start + 1s) == Action::None);
+        CHECK(hold.release(start + 1s) == Action::None);
+    }
+    SECTION("release at the deadline emits the unticked hold") {
+        CHECK(hold.release(start + 500ms) == Action::Hold);
+    }
+    SECTION("a duplicate press keeps the original deadline") {
+        hold.press(start + 400ms);
+        CHECK(hold.tick(start + 500ms) == Action::Hold);
+        CHECK(hold.release(start + 501ms) == Action::None);
+    }
+    SECTION("cancel discards an uncompleted gesture") {
+        hold.cancel();
+        CHECK(hold.tick(start + 1s) == Action::None);
+        CHECK(hold.release(start + 1s) == Action::None);
+    }
+    SECTION("cancel after a hold still discards the release") {
+        CHECK(hold.tick(start + 500ms) == Action::Hold);
+        hold.cancel();
+        CHECK(hold.release(start + 1s) == Action::None);
+    }
+    CHECK_FALSE(hold.pending());
+    CHECK(hold.release(start + 2s) == Action::None);
+    hold.press(start + 3s);
+    CHECK(hold.release(start + 3100ms) == Action::Tap);
+}
+
+TEST_CASE("hidden Pick Ahead hold opens the tuned row and ignores the stale cursor", "[guide_nav][pick_ahead][select_hold]") {
+    app::AppState s; put_playing(s, 3);
+    s.guide_cursor = {6, 2, true, 1500};
+    auto f = pick_facts(s);
+    REQUIRE_FALSE(f.on_screen);
+    SECTION("tap opens only") {
+        const auto cmd = app::guide_input(s, app::GuideEvent::Select, 0, f);
+        CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand);
+        CHECK_FALSE(s.guide_cursor.pick_at);
+    }
+    SECTION("hold opens and enters on now") {
+        const auto cmd = app::guide_input(s, app::GuideEvent::PickAhead, 0, f);
+        CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand);
+        CHECK(s.guide_cursor.pick_at == 900);
+        app::guide_input(s, app::GuideEvent::Rotate, 1, pick_facts(s));
+        const auto play = app::guide_input(s, app::GuideEvent::Select, 0, pick_facts(s));
+        REQUIRE(play.on_demand); CHECK(play.on_demand->starts_at == 1500);
+    }
+    CHECK(s.guide_cursor.row == 3);
+}
+
+TEST_CASE("Pick Ahead hold cannot tune invalid off-air Picture or Live rows", "[guide_nav][pick_ahead][select_hold]") {
+    app::AppState s; put_playing(s, 1); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 2;
+    auto f = pick_facts(s);
+    SECTION("invalid row") { s.guide_cursor.row = 99; }
+    SECTION("off air") { f.cursor_row_tunable = false; f.row_airings.clear(); }
+    SECTION("Picture control") { s.guide_cursor.on_picture = true; }
+    SECTION("Live mode") { f.pick_ahead = false; }
+    SECTION("intro") { s.showing_intro_video = true; }
+    SECTION("viewer tune waiting") { s.guide_viewer_tune = 2; f.pending_tune = 2; }
+    const auto cmd = app::guide_input(s, app::GuideEvent::PickAhead, 0, f);
+    CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand); CHECK_FALSE(cmd.toggle_picture);
+    CHECK_FALSE(s.guide_cursor.pick_at);
+}
+
+TEST_CASE("holding Select again preserves a selected future programme", "[guide_nav][pick_ahead][select_hold]") {
+    app::AppState s; put_playing(s); s.ui_visible_when_playing = true;
+    s.guide_cursor.row = 1; s.guide_cursor.pick_at = 1500;
+    const auto cmd = app::guide_input(s, app::GuideEvent::PickAhead, 0, pick_facts(s));
+    CHECK(cmd.tune == -1); CHECK_FALSE(cmd.on_demand);
+    CHECK(s.guide_cursor.pick_at == 1500);
+}
+
+TEST_CASE("lost Select source abandons timing and ownership without a tap", "[guide_nav][select_source_loss]") {
+    using namespace std::chrono_literals;
+    app::GuideSelectInput select;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    select.press(11, start);
+    REQUIRE(select.owns(11));
+    SECTION("loss during a short press") {
+        select.source_lost(11);
+    }
+    SECTION("loss after ordinary context cancellation") {
+        select.cancel();
+        REQUIRE(select.owns(11));  // still-live stale release remains guarded
+        select.source_lost(11);
+    }
+    SECTION("loss after a hold has fired") {
+        REQUIRE(select.tick(start + 500ms) == Action::Hold);
+        select.source_lost(11);
+    }
+    CHECK_FALSE(select.owns(11));
+    CHECK_FALSE(select.pending());
+    CHECK(select.tick(start + 1s) == Action::None);
+    CHECK(select.release(11, start + 1100ms) == Action::None);
+    // A reconnect has a fresh source identity; its first gesture works.
+    select.press(12, start + 2s);
+    REQUIRE(select.owns(12));
+    CHECK(select.release(12, start + 2100ms) == Action::Tap);
+    CHECK_FALSE(select.owns(12));
+}
+
+TEST_CASE("Select sources cannot release or cancel another live gesture", "[guide_nav][select_source_loss]") {
+    using namespace std::chrono_literals;
+    app::GuideSelectInput select;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    select.press(21, start);
+    select.source_lost(99);
+    CHECK(select.release(99, start + 100ms) == Action::None);
+    CHECK(select.pending()); CHECK(select.owns(21));
+    select.press(21, start + 400ms); // repeats do not restart the clock
+    CHECK(select.tick(start + 500ms) == Action::Hold);
+    CHECK(select.tick(start + 1s) == Action::None);
+    CHECK(select.release(21, start + 1100ms) == Action::None);
+    CHECK_FALSE(select.owns(21));
+    select.press(21, start + 2s);
+    CHECK(select.release(21, start + 2100ms) == Action::Tap);
+}
+
+TEST_CASE("a canceled still-live source release cannot finish a fresh Select gesture", "[guide_nav][select_source_loss]") {
+    using namespace std::chrono_literals;
+    app::GuideSelectInput select;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    select.press(31, start);
+    select.cancel(); // navigation/menu change: keep old release ownership
+    REQUIRE(select.owns(31));
+    select.press(32, start + 1s);
+    REQUIRE(select.owns(32));
+    REQUIRE(select.owns(31));
+    CHECK(select.release(31, start + 1100ms) == Action::None);
+    CHECK_FALSE(select.owns(31));
+    CHECK(select.owns(32)); CHECK(select.pending());
+    CHECK(select.release(32, start + 1200ms) == Action::Tap);
+    CHECK_FALSE(select.owns(32));
+    CHECK(select.tick(start + 2s) == Action::None);
+}
+
+TEST_CASE("a fresh Select source supersedes a pending one without accepting its stale release", "[guide_nav][select_source_loss]") {
+    using namespace std::chrono_literals;
+    app::GuideSelectInput select;
+    using Action = app::GuideSelectHold::Action;
+    const app::GuideSelectHold::Clock::time_point start{};
+    const platform::InputEvent gpio{};
+    platform::InputEvent pad{}; pad.source_id = 41;
+    select.press(gpio.source_id, start); // GPIO is independent of evdev identities
+    select.press(pad.source_id, start + 400ms);
+    CHECK(select.tick(start + 500ms) == Action::None);
+    CHECK(select.release(0, start + 600ms) == Action::None);
+    CHECK(select.pending());
+    CHECK(select.release(41, start + 700ms) == Action::Tap);
 }

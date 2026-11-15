@@ -603,6 +603,21 @@ no_store_stragglers() {
     [ "$status" -eq 0 ]
 }
 
+@test "live clone removes movie records from image and restores exact source quiet ownership" {
+    if ! "${MDB_TEST_BASH:-bash}" -c '(( BASH_VERSINFO[0] >= 4 ))'; then
+        skip "live-clone production pass needs Bash 4+ (set MDB_TEST_BASH or PATH)"
+    fi
+    python3 "$BATS_TEST_DIRNAME/../lib/movie_privacy_checks.py" clone "$TESTS_REPO_ROOT"
+}
+
+@test "first boot wipes movie records from runtime and stale build copies" {
+    python3 "$BATS_TEST_DIRNAME/../lib/movie_privacy_checks.py" first_boot "$TESTS_REPO_ROOT"
+}
+
+@test "destructive golden prep wipes movie records from runtime and stale build copies" {
+    python3 "$BATS_TEST_DIRNAME/../lib/movie_privacy_checks.py" golden "$TESTS_REPO_ROOT"
+}
+
 @test "VPN source intent survives clone stop while auth history and policy leave artifact" {
     state="$T/root/var/lib/magic-dingus/vpn_recovery"
     auth="$T/root/opt/services/config/gluetun/auth"

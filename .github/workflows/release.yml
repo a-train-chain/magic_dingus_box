@@ -175,6 +175,7 @@ jobs:
 
       - name: Create source archive
         run: |
+          # Private owner movie titles and device pause ownership never ship.
           # Create tarball in /tmp first to avoid "file changed as we read it" error
           tar -czvf /tmp/magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz \
             --exclude='.git' \
@@ -193,6 +194,14 @@ jobs:
             --exclude='data/roms/*' \
             --exclude='data/media_info.json' \
             --exclude='data/media_info.json.lock' \
+            --exclude='data/movie_library.json' \
+            --exclude='data/movie_library.json.tmp' \
+            --exclude='data/qbit_paused_by_kiosk' \
+            --exclude='data/qbit_paused_by_kiosk.tmp' \
+            --exclude='data/qbit_paused_by_kiosk.services' \
+            --exclude='data/qbit_paused_by_kiosk.services.tmp' \
+            --exclude='data/qbit_paused_by_kiosk.services.claims' \
+            --exclude='data/qbit_paused_by_kiosk.services.claims.tmp' \
             --exclude='dev_data' \
             --exclude='test_files' \
             --exclude='*.service.bak' \

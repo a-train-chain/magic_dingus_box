@@ -1,5 +1,7 @@
 #pragma once
 
+#include "media_browser/channels/movie_library_store.h"
+
 // Media Browser service-client setup — the part of main() that used to
 // build the Radarr / Sonarr / TMDB / Prowlarr / qBittorrent clients, start
 // the Layer 3 VPN health monitor and run qBit's boot-time alt-limit
@@ -88,16 +90,23 @@ MbServiceClients make_service_clients(
 // Production overload: std::getenv + utils::kServicesEnvPath.
 MbServiceClients make_service_clients();
 
+// Invoked only by MovieLibraryStore's worker: checked failures keep the snapshot.
+app::MovieLibraryStore::Fetch make_movie_library_fetch(RadarrClient& radarr);
+// Linux mountinfo gate: a real non-root mount must own the configured library.
+// Worker only: opens mountinfo, never called directly from the render loop.
+bool movie_drive_ready(const std::string& host_library_prefix,
+                      const std::string& mountinfo_path = "/proc/self/mountinfo");
+
 // Trickle-limit bootstrap (movie playback contention guard): converge the
-// alt-limit RATES and clear a crash-stranded alt-limit cap. Best-effort
+// alt-limit RATES. Owned cap recovery belongs to MovieQuietMode. Best-effort
 // and gated on `services_env_path` existing (unprovisioned Pis and dev
 // machines do nothing). Does network I/O against qBit when provisioned.
 void bootstrap_qbit_alt_limits(QbittorrentClient& qbit,
                                const std::string& services_env_path);
 
 // Layer 3 monitor, started only when Layers 1+2 already pass (unlocked AND
-// VPN configured); otherwise nullptr. When started it also kicks the
-// backgrounded `playback_services_pause.sh unpause` startup safety net.
+// VPN configured); otherwise nullptr. Quiet recovery is serialized by
+// MovieQuietMode rather than an independent startup unpause.
 // The returned monitor's destructor stops its worker thread.
 std::unique_ptr<VpnHealthMonitor> start_vpn_health_monitor(app::AppState& state);
 

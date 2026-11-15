@@ -71,6 +71,13 @@ TEST_CASE("Unknown profile is conservative: no analog audio, tries all known lab
                       "pinctrl-bcm2711") != p.gpiochip_labels.end());
 }
 
+TEST_CASE("movie channel codecs restrict Pi 4 to hardware-decodable films") {
+    REQUIRE(profile_for(PiModel::Pi4).movie_channel_codecs ==
+            std::vector<std::string>{"x264", "h264", "avc"});
+    REQUIRE(profile_for(PiModel::Pi5).movie_channel_codecs.empty());
+    REQUIRE(profile_for(PiModel::Unknown).movie_channel_codecs.empty());
+}
+
 // ---------------------------------------------------------------
 // detect_platform (file-based)
 // ---------------------------------------------------------------
@@ -137,6 +144,7 @@ void require_same_policy(const PlatformProfile& a, const PlatformProfile& b) {
     REQUIRE(a.unsupported_game_systems == b.unsupported_game_systems);
     REQUIRE(a.unsupported_emulator_cores == b.unsupported_emulator_cores);
     REQUIRE(a.artwork_cache_budget_bytes == b.artwork_cache_budget_bytes);
+    REQUIRE(a.movie_channel_codecs == b.movie_channel_codecs);
 }
 PlatformProfile real_pi5() {
     PlatformProfile p = profile_for(PiModel::Pi5);
@@ -175,6 +183,8 @@ TEST_CASE("policy override pi4 on a Pi 5 switches exactly the policy fields") {
     REQUIRE(p.artwork_cache_budget_bytes == 64u * 1024u * 1024u);
     REQUIRE(p.pause_services_during_movie);
     REQUIRE_FALSE(p.trickle_torrents_during_video);
+    REQUIRE(p.movie_channel_codecs ==
+            std::vector<std::string>{"x264", "h264", "avc"});
 
     REQUIRE(p.policy_override == "pi4");
     REQUIRE(p.policy_override_ignored_reason.empty());
