@@ -67,6 +67,26 @@ const std::vector<std::string> kTodaysSublabels{
     "Warm tone + gamma", "Vignette + RGB convergence", "Subpixel R/G/B stripes",
     "Phosphor halation", "Alternate-line darken", "Brightness wobble", ""};
 
+// The same page in Modern TV mode before Tube, taken from the code as it was
+// before this branch (6455cbf): the Bezel row sits above the CRT rows.
+const std::vector<std::string> kTodaysModernTvLabels{
+    "Mode: Modern TV", "Menu Style: List", "Bezel: None", "CRT Engine: Classic",
+    "Scanlines: Low (10%)", "Color Warmth: OFF", "Phosphor Glow: OFF", "RGB Mask: OFF",
+    "Screen Bloom: OFF", "Interlacing: OFF", "Flicker: OFF", "Back"};
+const std::vector<std::string> kTodaysModernTvSublabels{
+    "Cycle modes", "List / Channel guide", "Overlay frame", "Classic / Enhanced",
+    "Horizontal CRT lines", "Warm tone + gamma", "Vignette + RGB convergence",
+    "Subpixel R/G/B stripes", "Phosphor halation", "Alternate-line darken",
+    "Brightness wobble", ""};
+
+// kTodaysLabels with the engine row reading `engine_label`.
+std::vector<std::string> todays_labels_with_engine(const std::string& engine_label) {
+    std::vector<std::string> out = kTodaysLabels;
+    for (std::string& label : out)
+        if (label.rfind("CRT Engine: ", 0) == 0) label = engine_label;
+    return out;
+}
+
 // The not-offered cases share one walk: Classic → Enhanced → Classic, no Tube rows.
 void check_not_offered_cycle(app::AppState& state) {
     SettingsMenuManager sm{&state};
@@ -128,6 +148,46 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
         sm.enter_submenu(MenuSection::DISPLAY);
         CHECK(labels(sm) == kTodaysLabels);
         CHECK(sublabels(sm) == kTodaysSublabels);
+    }
+    SECTION("Modern TV (the bezel row above the CRT rows), both profiles") {
+        for (const bool pi5 : {false, true}) {
+            ui_test::fake_reset();
+            app::AppState state{};
+            state.platform_profile.tube_crt_engine = pi5;
+            REQUIRE_FALSE(state.tube_renderer_ready);
+            state.display_settings.mode = app::DisplayMode::MODERN_TV;
+            SettingsMenuManager sm{&state};
+            sm.enter_submenu(MenuSection::DISPLAY);
+            CHECK(labels(sm) == kTodaysModernTvLabels);
+            CHECK(sublabels(sm) == kTodaysModernTvSublabels);
+        }
+    }
+    SECTION("a saved Tube reads and steps exactly as a saved Enhanced") {
+        for (const bool pi5 : {false, true}) {
+            std::vector<std::string> before[2], after[2];
+            app::CrtEngine stepped[2]{};
+            const app::CrtEngine saved[2]{app::CrtEngine::Enhanced, app::CrtEngine::Tube};
+            for (int i = 0; i < 2; ++i) {
+                ui_test::fake_reset();
+                app::AppState state{};
+                state.platform_profile.tube_crt_engine = pi5;
+                REQUIRE_FALSE(state.tube_renderer_ready);
+                state.display_settings.set_crt_engine(saved[i]);
+                SettingsMenuManager sm{&state};
+                sm.enter_submenu(MenuSection::DISPLAY);
+                before[i] = labels(sm);
+                CHECK(sublabels(sm) == kTodaysSublabels);
+                press(sm, "CRT Engine: ");
+                stepped[i] = state.display_settings.crt_engine;
+                after[i] = labels(sm);
+            }
+            CHECK(before[1] == todays_labels_with_engine("CRT Engine: Enhanced"));
+            CHECK(before[1] == before[0]);
+            CHECK(stepped[1] == app::CrtEngine::Classic);
+            CHECK(stepped[0] == app::CrtEngine::Classic);
+            CHECK(after[1] == kTodaysLabels);
+            CHECK(after[1] == after[0]);
+        }
     }
 }
 
@@ -514,4 +574,41 @@ TEST_CASE("Tube menu: a row that turns n/a mid-edit ends its edit", "[settings_m
     const int rim = tube::resolve(state.display_settings.tube).effects[tube::index_of(tube::Effect::rim)];
     sm.step_tube_edit(+1);
     CHECK(tube::resolve(state.display_settings.tube).effects[tube::index_of(tube::Effect::rim)] == rim);
+}
+
+TEST_CASE("Tube menu: exit_tube_group does nothing outside a group", "[settings_menu][tube]") {
+    ui_test::fake_reset(); app::AppState state{}; offer_tube(state);
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    SettingsMenuManager sm{&state}; sm.open();
+    sm.enter_submenu(MenuSection::DISPLAY);
+    sm.navigate(+2);
+    const int cursor = sm.get_selected_index();
+    const std::vector<std::string> page = labels(sm);
+    sm.exit_tube_group();
+    CHECK(sm.get_current_submenu() == MenuSection::DISPLAY);
+    CHECK(sm.get_selected_index() == cursor);
+    CHECK(labels(sm) == page);
+    sm.enter_submenu(MenuSection::AUDIO);
+    const int audio_cursor = sm.get_selected_index();
+    sm.exit_tube_group();
+    CHECK(sm.get_current_submenu() == MenuSection::AUDIO);
+    CHECK(sm.get_selected_index() == audio_cursor);
+    CHECK(ui_test::fake_settings_saves() == 0);
+}
+
+TEST_CASE("Tube menu: only the Display page and a group show Tube state", "[settings_menu][tube]") {
+    ui_test::fake_reset(); app::AppState state{}; offer_tube(state);
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    SettingsMenuManager sm{&state}; sm.open();
+    CHECK_FALSE(sm.page_shows_tube_state());                    // the top level
+    for (const MenuSection section : {MenuSection::VIDEO_GAMES, MenuSection::AUDIO, MenuSection::SYSTEM,
+                                      MenuSection::WIFI, MenuSection::WIFI_NETWORKS}) {
+        sm.enter_submenu(section);
+        CHECK_FALSE(sm.page_shows_tube_state());
+    }
+    sm.enter_submenu(MenuSection::DISPLAY);
+    CHECK(sm.page_shows_tube_state());
+    press(sm, "Supply");
+    REQUIRE(sm.get_current_submenu() == MenuSection::TUBE_GROUP);
+    CHECK(sm.page_shows_tube_state());
 }

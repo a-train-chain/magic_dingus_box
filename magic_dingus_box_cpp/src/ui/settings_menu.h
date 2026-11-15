@@ -149,6 +149,7 @@ public:
     void enter_tube_group(std::size_t group);
     // Back from a group to the Display page, on the group's own row; ends (and
     // saves) any open edit first.
+    // Does nothing unless a group is the open page.
     void exit_tube_group();
     std::size_t tube_group_index() const { return tube_group_index_; }
 
@@ -183,6 +184,11 @@ public:
     void set_max_visible_items(int n) { max_visible_items_ = std::max(1, n); }
     int get_max_visible_items() const { return max_visible_items_; }
     MenuSection get_current_submenu() const { return current_submenu_; }
+    // The open page draws Tube state (the Display page or a Tube group): the
+    // only pages a web-applied Tube change needs rebuilt.
+    bool page_shows_tube_state() const {
+        return current_submenu_ == MenuSection::DISPLAY || current_submenu_ == MenuSection::TUBE_GROUP;
+    }
     bool is_game_browser_active() const { return game_browser_active_; }
     bool is_viewing_games_in_playlist() const { return viewing_games_in_playlist_; }
     int get_game_browser_selected() const { return game_browser_selected_; }

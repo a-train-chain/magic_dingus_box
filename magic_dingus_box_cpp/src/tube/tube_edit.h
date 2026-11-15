@@ -27,11 +27,14 @@ struct Edit {
 };
 
 // Open an edit on a value row, or on the MASK row when `effect` is nullopt.
+// A fresh edit starts unchanged. Opened over an edit that is still active, it
+// moves to the new row but KEEPS `changed`, so a pending save is never dropped:
+// the next end_edit still asks for it (callers that save per row settle first).
 inline void begin_edit(Edit& edit, std::optional<Effect> effect) noexcept {
+    edit.changed = edit.active && edit.changed;
     edit.active = true;
     edit.mask = !effect.has_value();
     edit.effect = effect.value_or(Effect::brightness);
-    edit.changed = false;
 }
 
 // Which way a turn goes. The knob and left/right: the sign of `delta`. Up/down

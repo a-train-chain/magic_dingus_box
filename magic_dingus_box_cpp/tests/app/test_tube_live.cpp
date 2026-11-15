@@ -5,16 +5,20 @@
 
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include "app/app_state.h"
 #include "app/redraw_gate.h"
@@ -252,7 +256,7 @@ TEST_CASE("tube live: an unreadable file is skipped and the next good one applie
     REQUIRE(hum(state) == 20);
 }
 
-TEST_CASE("tube live: a file over the size cap is refused unread", "[tube]") {
+TEST_CASE("tube live: a file over the size cap is read to the cap and refused", "[tube]") {
     LogCapture log;
     LiveDir d; const fs::path& path = d.path;
     app::AppState state; offered(state);
@@ -279,21 +283,74 @@ TEST_CASE("tube live: the file going away and coming back", "[tube]") {
     REQUIRE(hum(state) == 30); REQUIRE(state.tube_live.handled_seq == 2);
 }
 
-TEST_CASE("tube live: not offered, ops are consumed and nothing changes", "[tube]") {
+TEST_CASE("tube live: not offered, the poller does no filesystem work at all", "[tube]") {
     SaveCounter saves;
     LiveDir d; const fs::path& path = d.path;
+    // A log a looking poller would read and adopt (handled_seq 9) at once.
+    write_log(path, R"({"seq":9,"op":"engine","engine":"tube"})");
     app::AppState state;
     state.platform_profile.tube_crt_engine = true;
     state.tube_renderer_ready = false;
     app::TubeRequestPoller poller(path.string());
-    REQUIRE_FALSE(poller.poll(state, T0));
-    write_log(path, R"({"seq":1,"op":"engine","engine":"tube"})");
-    REQUIRE_FALSE(poller.poll(state, T0 + 100ms));
+    for (auto t = T0; t <= T0 + 2s; t += 100ms) REQUIRE_FALSE(poller.poll(state, t));
+    REQUIRE(poller.reads() == 0);
+    REQUIRE_FALSE(state.tube_live.adopted);                // never looked
+    REQUIRE(state.tube_live.handled_seq == 0);
     REQUIRE(state.display_settings.crt_engine == app::CrtEngine::Classic);
-    REQUIRE(state.tube_live.handled_seq == 1);
-    poller.poll(state, T0 + 5s);
-    poller.flush(state);
+    poller.flush(state);                                   // nothing armed
     REQUIRE(saves.count() == 0);
+}
+
+TEST_CASE("tube live: a directory at the path is warned about once and never opened", "[tube]") {
+    LogCapture log;
+    LiveDir d; const fs::path& path = d.path;
+    fs::create_directory(path);
+    app::AppState state; offered(state);
+    app::TubeRequestPoller poller(path.string());
+    for (auto t = T0; t <= T0 + 1s; t += 100ms) REQUIRE_FALSE(poller.poll(state, t));
+    REQUIRE(poller.reads() == 0);
+    REQUIRE(log.warnings() == 1);
+    REQUIRE(state.tube_live.adopted);                      // adopted as for a missing file
+    REQUIRE(state.tube_live.handled_seq == 0);
+    fs::remove(path);                                      // a real log replaces it later
+    write_log(path, row_op(1, 20));
+    REQUIRE(poller.poll(state, T0 + 2s));
+    REQUIRE(hum(state) == 20);
+}
+
+TEST_CASE("tube live: a FIFO at the path never blocks the loop", "[tube]") {
+    LogCapture log;
+    LiveDir d;
+    REQUIRE(::mkfifo(d.path.c_str(), 0600) == 0);
+    // Shared, so a regressed poll stuck in open() never outlives what it uses.
+    auto state = std::make_shared<app::AppState>(); offered(*state);
+    auto poller = std::make_shared<app::TubeRequestPoller>(d.path.string());
+    auto done = std::make_shared<std::promise<void>>();
+    std::future<void> finished = done->get_future();
+    std::thread worker([state, poller, done] {
+        poller->poll(*state, T0);
+        poller->poll(*state, T0 + 100ms);
+        done->set_value();
+    });
+    const bool prompt = finished.wait_for(1s) == std::future_status::ready;
+    if (!prompt) {
+        // A regression blocks in open() waiting for a writer: be that writer so
+        // the test fails instead of hanging the suite.
+        bool released = false;
+        for (int i = 0; i < 100 && !released; ++i) {
+            const int fd = ::open(d.path.c_str(), O_WRONLY | O_NONBLOCK);
+            if (fd >= 0) { ::close(fd); released = true; }
+            else std::this_thread::sleep_for(10ms);
+        }
+        if (released && finished.wait_for(1s) == std::future_status::ready) worker.join();
+        else worker.detach();
+    } else {
+        worker.join();
+    }
+    REQUIRE(prompt);
+    REQUIRE(poller->reads() == 0);
+    REQUIRE(log.warnings() == 1);
+    REQUIRE(state->tube_live.adopted);
 }
 
 TEST_CASE("tube live: any tube change moves the redraw signature", "[tube]") {

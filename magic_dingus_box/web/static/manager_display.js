@@ -244,6 +244,12 @@ function tubeNotice(available, answered, status) {
 // ===== DOM (thin) =====
 
 const CRT_LOOK_POLL_MS = 1000;
+/** While the kiosk's status is stale (boot, a kiosk restart, right after an
+    update) the tab's visibility is asked again this often, until the answer
+    is anything else or the device changes. Any other "not offered" answer
+    (not_ready, needs_pi5, kiosk_too_old, rows_unavailable) and a box that
+    does not answer at all are never asked again on their own. */
+const CRT_LOOK_RECHECK_MS = 30000;
 
 let _crtLook = null;  // per device: see crtLookState()
 
@@ -251,9 +257,10 @@ function crtLookState() {
     const url = currentDevice ? currentDevice.url : null;
     if (!_crtLook || _crtLook.deviceUrl !== url) {
         if (_crtLook && _crtLook.timer) clearTimeout(_crtLook.timer);
+        if (_crtLook && _crtLook.recheckTimer) clearTimeout(_crtLook.recheckTimer);
         const st = {
             deviceUrl: url, rows: null, kiosk: null, available: false, answered: false,
-            running: false, timer: null, held: null, els: null,
+            running: false, timer: null, recheckTimer: null, held: null, els: null,
         };
         st.sender = makeOpSender(
             // apiRequest = apiPost plus the sender's abort signal (the wait is bounded).
@@ -289,10 +296,13 @@ function setCrtLookTabShown(shown) {
     stopCrtLookTab();
 }
 
-/** Show the tab only where the kiosk offers Tube. Called on every device change. */
+/** Show the tab only where the kiosk offers Tube. Called on every device
+    change, and every CRT_LOOK_RECHECK_MS while the answer is kiosk_not_running. */
 async function checkCrtLookVisibility() {
     if (!currentDevice) return false;
     const st = crtLookState();
+    if (st.recheckTimer) clearTimeout(st.recheckTimer);
+    st.recheckTimer = null;
     let data = null;
     try {
         data = await apiGet(crtLookTabUrl(true));
@@ -300,6 +310,12 @@ async function checkCrtLookVisibility() {
         data = null;
     }
     if (_crtLook !== st) return false;  // the device changed while we asked
+    if (data && data.available !== true && data.reason === 'kiosk_not_running') {
+        st.recheckTimer = setTimeout(() => {
+            st.recheckTimer = null;
+            if (_crtLook === st) checkCrtLookVisibility();
+        }, CRT_LOOK_RECHECK_MS);
+    }
     const available = !!(data && data.available === true);
     const section = document.getElementById('crtlook');
     const open = section && section.classList.contains('active');

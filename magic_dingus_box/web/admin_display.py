@@ -9,8 +9,10 @@ operations (app/tube_ops.h). This module is that log's ONLY writer:
   (static/tube_rows.json) and the kiosk's tube block; `?state_only=1` leaves
   the rows out (the page polls). Not offered: `available: false` and why —
   kiosk_not_running (status missing, unreadable or older than 10 s),
-  kiosk_too_old (a kiosk without the feature publishes no "tube" key), or the
-  kiosk's own reason (needs_pi5 / not_ready). The page hides itself then.
+  kiosk_too_old (a kiosk without the feature publishes no "tube" key), the
+  kiosk's own reason (needs_pi5 / not_ready), or rows_unavailable (the row
+  file is missing or unreadable — a bad merge, a tree caught mid-update; the
+  rest of the Content Manager keeps running). The page hides itself then.
 * POST /admin/display/tube — 1..64 ops, validated all-or-nothing against the
   row file, then numbered from max(top seq in the file, the kiosk's
   handled_seq) + 1. Ops the kiosk has handled are dropped and only the newest
@@ -27,6 +29,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -57,6 +60,21 @@ def load_rows() -> dict:
     return json.loads(ROWS_PATH.read_text("utf-8"))
 
 
+def _load_rows_checked() -> Optional[dict]:
+    """load_rows(), or None (logged once) when the file is missing, unreadable,
+    not JSON, or not the shape validation reads. Never raises: register() runs
+    inside create_app(), and an exception there takes down every route."""
+    try:
+        rows = load_rows()
+        _op_rules(rows)  # every field validation reads, with the right types
+        if not (_is_int(rows["row_min"]) and _is_int(rows["row_max"])):
+            raise ValueError("row_min/row_max are not integers")
+        return rows
+    except (OSError, ValueError, LookupError, TypeError, AttributeError) as e:
+        print(f"WARNING: Tube controls off: {ROWS_PATH.name} unusable: {e!r}", file=sys.stderr)
+        return None
+
+
 def _is_int(value) -> bool:
     # bool is a subclass of int; the kiosk refuses true/false (and 20.0).
     return type(value) is int
@@ -81,11 +99,17 @@ def kiosk_tube_status(data_dir: Path, now: Optional[float] = None) -> tuple:
     if not isinstance(status, dict):
         return None, "kiosk_not_running", None
     ts = status.get("ts")
-    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or not math.isfinite(ts):
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return None, "kiosk_not_running", None
+    try:
+        ts_s = float(ts)  # an int too large for a float raises OverflowError
+    except OverflowError:
+        return None, "kiosk_not_running", None
+    if not math.isfinite(ts_s):
         return None, "kiosk_not_running", None
     # Both directions: the Pi has no RTC, so the clock can step BACK after a
     # kiosk dies, which would leave its last status "fresh" for the step's size.
-    if abs((time.time() if now is None else now) - ts) > STATUS_MAX_AGE_S:
+    if abs((time.time() if now is None else now) - ts_s) > STATUS_MAX_AGE_S:
         return None, "kiosk_not_running", None
     tube = status.get("tube")
     if not isinstance(tube, dict):
@@ -222,10 +246,12 @@ def _replace_atomically(data_dir: Path, text: bytes) -> bool:
 def register(app, ctx) -> None:
     data_dir = Path(ctx.data_dir)
     require_csrf = ctx.require_csrf
-    rows = load_rows()
+    rows = _load_rows_checked()  # None: the routes answer rows_unavailable
 
     @app.get("/admin/display/tube")
     def tube_state():  # type: ignore[no-redef]
+        if rows is None:
+            return success_response({"available": False, "reason": "rows_unavailable"})
         tube, reason, ts = kiosk_tube_status(data_dir)
         if tube is None:
             return success_response({"available": False, "reason": reason})
@@ -237,6 +263,9 @@ def register(app, ctx) -> None:
     @app.post("/admin/display/tube")
     @require_csrf
     def tube_ops():  # type: ignore[no-redef]
+        if rows is None:
+            return error_response("TUBE_UNAVAILABLE", "The TV is not offering the Tube engine",
+                                  409, details={"reason": "rows_unavailable"})
         ops, problem = validate_ops(request.get_json(silent=True), rows)
         if ops is None:
             return error_response("VALIDATION_ERROR", "Invalid Tube operation", 400, details=problem)

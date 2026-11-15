@@ -476,3 +476,94 @@ def test_manager_js_guards_the_calls_into_this_later_file():
     src = (STATIC / "manager.js").read_text(encoding="utf-8")
     for name in ("checkCrtLookVisibility", "startCrtLookTab", "stopCrtLookTab"):
         assert f"typeof {name} === 'function'" in src
+
+
+# --- the tab's visibility check, with the DOM stubbed out ----------------------
+
+VISIBILITY_HARNESS = """
+    const timers = [];
+    globalThis.setTimeout = (fn, ms) => { timers.push({fn, ms, cleared: false}); return timers.length; };
+    globalThis.clearTimeout = id => { if (id && timers[id - 1]) timers[id - 1].cleared = true; };
+    globalThis.document = {getElementById: () => null, querySelector: () => null, visibilityState: 'visible'};
+    const answers = [];
+    let asked = 0;
+    globalThis.apiGet = async () => { asked += 1; return answers.shift(); };
+    let box = 0;
+    const newBox = () => { box += 1; globalThis.currentDevice = {url: 'http://box-' + box}; };
+    const live = () => timers.filter(t => !t.cleared);
+    const fire = t => { t.cleared = true; t.fn(); };  // a timer that ran is no longer pending
+"""
+
+
+def test_a_box_not_offering_tube_is_asked_once_and_never_polled():
+    result = run_js(VISIBILITY_HARNESS + """
+        const out = {};
+        for (const reason of ['not_ready', 'needs_pi5', 'kiosk_too_old', 'rows_unavailable']) {
+            newBox();
+            answers.push({available: false, reason});
+            out[reason] = await checkCrtLookVisibility();
+        }
+        newBox();
+        answers.push(undefined);  // the web admin did not answer (an older box: no route)
+        out.unreachable = await checkCrtLookVisibility();
+        await settle();
+        return {out, timers: timers.length, asked};
+    """)
+    assert result["out"] == {"not_ready": False, "needs_pi5": False, "kiosk_too_old": False,
+                             "rows_unavailable": False, "unreachable": False}
+    assert result["timers"] == 0   # no timer of any kind: nothing polls
+    assert result["asked"] == 5
+
+
+def test_a_stale_kiosk_is_asked_again_slowly_until_the_answer_changes():
+    result = run_js(VISIBILITY_HARNESS + """
+        newBox();
+        answers.push({available: false, reason: 'kiosk_not_running'});
+        await checkCrtLookVisibility();
+        const first = live().map(t => t.ms);
+        answers.push({available: false, reason: 'kiosk_not_running'});
+        fire(live()[0]);
+        await settle();
+        const second = live().map(t => t.ms);
+        answers.push({available: false, reason: 'not_ready'});  // the kiosk is back, not offering
+        fire(live()[0]);
+        await settle();
+        return {first, second, after: live().length, asked, period: CRT_LOOK_RECHECK_MS};
+    """)
+    assert result["first"] == [result["period"]] and result["second"] == [result["period"]]
+    assert 10000 <= result["period"] <= 60000   # tens of seconds, never one
+    assert result["after"] == 0 and result["asked"] == 3
+
+
+def test_the_slow_recheck_shows_the_tab_once_the_kiosk_offers_it():
+    result = run_js(VISIBILITY_HARNESS + """
+        newBox();
+        answers.push({available: false, reason: 'kiosk_not_running'});
+        const before = await checkCrtLookVisibility();
+        answers.push({available: true, state: {handled_seq: 0}});
+        fire(live()[0]);
+        await settle();
+        return {before, after: live().length, asked};
+    """)
+    assert result == {"before": False, "after": 0, "asked": 2}
+
+
+def test_a_device_change_stops_the_slow_recheck():
+    result = run_js(VISIBILITY_HARNESS + """
+        newBox();
+        answers.push({available: false, reason: 'kiosk_not_running'});
+        await checkCrtLookVisibility();
+        const armed = live().length;
+        newBox();
+        answers.push({available: false, reason: 'needs_pi5'});
+        await checkCrtLookVisibility();
+        const afterChange = live().length;
+        newBox();
+        answers.push({available: false, reason: 'kiosk_not_running'});
+        await checkCrtLookVisibility();
+        globalThis.currentDevice = null;           // no box selected
+        fire(live()[0]);
+        await settle();
+        return {armed, afterChange, asked, left: live().length};
+    """)
+    assert result == {"armed": 1, "afterChange": 0, "asked": 3, "left": 0}

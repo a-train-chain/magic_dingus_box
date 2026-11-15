@@ -790,6 +790,8 @@ void SettingsMenuManager::enter_tube_group(std::size_t group) {
 }
 
 void SettingsMenuManager::exit_tube_group() {
+    // Only from a group: elsewhere it would re-enter Display and move the cursor.
+    if (current_submenu_ != MenuSection::TUBE_GROUP) return;
     settle_tube_edit();
     enter_submenu(MenuSection::DISPLAY);
     // Back on the group's own row (found by its label: the cursor that opened
@@ -813,7 +815,8 @@ void SettingsMenuManager::exit_tube_group() {
 
 void SettingsMenuManager::begin_tube_edit(std::optional<tube::Effect> effect) {
     if (!app_state_ || current_submenu_ != MenuSection::TUBE_GROUP) return;
-    // tube::begin_edit resets `changed`: an edit already open is saved first.
+    // An edit already open is saved first (tube::begin_edit would carry its
+    // change over, but each row's edit saves on its own).
     settle_tube_edit();
     tube::begin_edit(tube_edit_, effect);
     rebuild_current_submenu();

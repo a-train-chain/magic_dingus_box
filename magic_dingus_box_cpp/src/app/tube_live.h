@@ -6,10 +6,18 @@
 //
 // It runs on the render loop, which pings a 10 s systemd watchdog, and an SD
 // card saturated by an upload can make one file operation take seconds. So:
-//   - the steady state is ONE ::stat every kPollPeriod and nothing else;
-//   - the file is read only when its version (inode, mtime, size) changed —
-//     the web replaces it with os.replace, which always brings a new inode, so
-//     two writes inside one coarse mtime tick are still told apart;
+//   - where Tube is not offered (app::tube_offered: every Pi 4B, and every box
+//     until the renderer ships) poll() returns at once and touches nothing;
+//   - otherwise the steady state is ONE ::stat every kPollPeriod and nothing else;
+//   - the file is read only when its version (inode, mtime, size) changed.
+//     The web replaces it with os.replace, whose new inode differs from the
+//     file it REPLACED — but the poller compares with the version it last READ,
+//     which can be two replaces back, so an inode can in theory come round
+//     again. With the size and the nanosecond mtime also in the key a miss is
+//     negligible, and the next write recovers it;
+//   - anything at the path that is not a regular file (a directory, a FIFO) is
+//     never opened: warned once per version and treated as no file. The open
+//     is O_NONBLOCK as well, so a FIFO slipped in after the stat cannot block;
 //   - the read is bounded by kTubeOpsMaxBytes before anything is allocated;
 //   - the op log is never written, renamed, truncated or deleted here;
 //   - settings are saved only through SettingsPersistence::save_settings
@@ -39,7 +47,8 @@ public:
 
     explicit TubeRequestPoller(std::string path);
 
-    // Every call: saves when a debounced save is due. At most every
+    // Not offered (app::tube_offered false): returns false and does nothing.
+    // Otherwise every call: saves when a debounced save is due. At most every
     // kPollPeriod: stats the log, and on the first look or a new version reads
     // and parses it. The first look since boot adopts the file (marks its ops
     // handled, applies none); later looks apply the new ops. Returns true when
@@ -53,6 +62,10 @@ public:
     // settings.json was just replaced and reloaded (the web admin's restore):
     // a save armed before it must not follow it.
     void forget_pending_save() noexcept { save_due_.reset(); }
+
+    // How many times the log was opened for reading (tests: proves a look
+    // that must not read, did not).
+    std::uint64_t reads() const noexcept { return reads_; }
 
 private:
     // What identifies one version of the file. `exists` false: no file.
@@ -73,6 +86,7 @@ private:
     std::optional<Clock::time_point> last_look_;
     std::optional<Version> seen_;            // the version last read (or found absent)
     std::optional<Clock::time_point> save_due_;
+    std::uint64_t reads_ = 0;
 };
 
 // The tube state the screen shows (engine, look, mask and row overrides,

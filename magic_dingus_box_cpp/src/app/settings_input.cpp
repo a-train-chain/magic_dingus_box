@@ -325,7 +325,13 @@ bool dispatch_overlay_input(SettingsInputContext& ctx,
                     break;
                 case InputAction::SELECT:
                 case InputAction::QUIT:
-                    if (ev.pressed) settings_menu.end_tube_edit();   // QUIT (keyboard) leaves edit mode, not the menu
+                    // QUIT (keyboard) leaves edit mode, not the menu: it ends on
+                    // the release, so no QUIT is left over to close the menu.
+                    if (tube_edit_ends_on(ev.action == InputAction::SELECT ? TubeEditKey::Select
+                                                                           : TubeEditKey::Quit,
+                                          ev.pressed)) {
+                        settings_menu.end_tube_edit();
+                    }
                     break;
                 default: break;
             }

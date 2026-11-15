@@ -23,9 +23,12 @@ namespace {
 // so an over-long file reaches the parser as over-long and is refused there).
 // nullopt when it cannot be opened or read — the web's replace can leave the
 // path missing for an instant; the caller tries again on a later look.
+// O_NONBLOCK: the caller has checked for a regular file, but if a FIFO is put
+// there between its stat and this open, the open must still not wait for a
+// writer on the render loop.
 std::optional<std::string> read_capped(const std::string& path) noexcept {
     try {
-        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
         if (fd < 0) return std::nullopt;
         std::string text(kTubeOpsMaxBytes + 1, '\0');
         std::size_t got = 0;
@@ -54,6 +57,10 @@ std::optional<std::string> read_capped(const std::string& path) noexcept {
 TubeRequestPoller::TubeRequestPoller(std::string path) : path_(std::move(path)) {}
 
 bool TubeRequestPoller::poll(AppState& state, Clock::time_point now) {
+    // The gate cannot change while the kiosk runs: a box that does not offer
+    // Tube (every Pi 4B; every box until the renderer ships) does no work here.
+    // Nothing is ever armed then (only applied ops arm a save).
+    if (!tube_offered(state)) return false;
     bool changed = false;
     if (!last_look_ || now - *last_look_ >= kPollPeriod) {
         last_look_ = now;
@@ -75,9 +82,11 @@ void TubeRequestPoller::flush(AppState& state) {
 bool TubeRequestPoller::look(AppState& state, Clock::time_point now) {
     // One stat: the whole steady-state cost.
     Version version;
+    bool regular = false;
     struct stat st {};
     if (::stat(path_.c_str(), &st) == 0) {
         version.exists = true;
+        regular = S_ISREG(st.st_mode);
         version.inode = static_cast<std::uint64_t>(st.st_ino);
 #if defined(__APPLE__)
         const struct timespec& mtime = st.st_mtimespec;  // the Mac's name (tests)
@@ -92,7 +101,13 @@ bool TubeRequestPoller::look(AppState& state, Clock::time_point now) {
     if (seen_ && *seen_ == version) return false;
 
     std::optional<std::vector<TubeOp>> ops;
-    if (version.exists) {
+    if (version.exists && !regular) {
+        // A directory, FIFO, socket or device: never opened (a FIFO's open
+        // would wait for a writer and stall the loop into the watchdog). A bad
+        // version like any other: warned once, adopted as no file.
+        LOG_WARN("tube_request.json ignored: not a regular file");
+    } else if (version.exists) {
+        ++reads_;
         const std::optional<std::string> text = read_capped(path_);
         if (!text) return false;  // gone or unreadable just now: next look retries
         TubeOpsParse parsed = parse_tube_ops(*text);

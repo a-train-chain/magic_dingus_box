@@ -2793,9 +2793,12 @@ int main(int /* argc */, char* /* argv */[]) {
         controller.poll_text_input_queue(state);
         {
             const auto tube_seq_before = state.tube_live.handled_seq;
+            // New values on a page that shows them (Display, a Tube group; a
+            // group the engine change ended goes back to Display). Wi-Fi,
+            // Audio and the rest are left alone.
             if (tube_requests.poll(state, std::chrono::steady_clock::now()) &&
-                settings_menu.is_active()) {
-                settings_menu.rebuild_current_submenu();  // new values; off a Tube page
+                settings_menu.is_active() && settings_menu.page_shows_tube_state()) {
+                settings_menu.rebuild_current_submenu();
             }
             // The web page waits on handled_seq: publish it now, not at the next 5 Hz tick.
             if (state.tube_live.handled_seq != tube_seq_before) status_writer.write_now(state);

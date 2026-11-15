@@ -373,3 +373,52 @@ def test_get_and_post_carry_the_times_the_page_compares(client, temp_data_dir):
     assert before <= accepted["accepted_at"] <= time.time()
     write_status(temp_data_dir, {"gate": False, "reason": "not_ready"})
     assert "status_ts" not in client.get("/admin/display/tube").get_json()["data"]
+
+
+# --- a missing or corrupt row file (bad merge, partial tree mid-update) -------
+
+def _bad_rows(tmp_path: Path, kind: str) -> Path:
+    path = tmp_path / "tube_rows.json"
+    if kind == "corrupt":
+        path.write_text("{not json")
+    elif kind == "bad_utf8":
+        path.write_bytes(b"\xff\xfe{")
+    elif kind == "wrong_shape":
+        path.write_text(json.dumps({"rows": "nope"}))
+    elif kind == "list":
+        path.write_text("[]")
+    elif kind == "string_bounds":
+        rows = dict(ROWS, row_min="0")
+        path.write_text(json.dumps(rows))
+    return path  # "missing": never written
+
+
+@pytest.mark.parametrize("kind", ["missing", "corrupt", "bad_utf8", "wrong_shape", "list",
+                                  "string_bounds"])
+def test_a_bad_row_file_leaves_the_content_manager_running(temp_data_dir, tmp_path, monkeypatch,
+                                                           capsys, kind):
+    from admin import create_app
+    monkeypatch.setattr(admin_display, "ROWS_PATH", _bad_rows(tmp_path, kind))
+    monkeypatch.setenv("MAGIC_DISABLE_CSRF", "1")
+    client = create_app(temp_data_dir, config={"TESTING": True}).test_client()
+    assert client.get("/admin/device/info").status_code == 200   # an unrelated route answers
+    assert capsys.readouterr().err.count("tube_rows.json") == 1  # logged once
+
+    write_status(temp_data_dir, OPEN)                            # even with the kiosk offering Tube
+    r = client.get("/admin/display/tube")
+    assert r.status_code == 200
+    assert r.get_json()["data"] == {"available": False, "reason": "rows_unavailable"}
+    r = post(client, [HUM])
+    assert r.status_code == 409 and r.get_json()["error"]["code"] == "TUBE_UNAVAILABLE"
+    assert r.get_json()["error"]["details"]["reason"] == "rows_unavailable"
+    assert not (temp_data_dir / "tube_request.json").exists()
+
+
+@pytest.mark.parametrize("ts", ["1" + "0" * 400, "-1" + "0" * 400], ids=["huge", "huge_negative"])
+def test_kiosk_tube_counts_an_integer_ts_too_big_for_a_float_as_stale(client, temp_data_dir, ts):
+    (temp_data_dir / "kiosk_status.json").write_text('{"ts": %s, "tube": {"gate": true}}' % ts)
+    assert admin_display.kiosk_tube(temp_data_dir, now=1000.0) == (None, "kiosk_not_running")
+    r = client.get("/admin/display/tube")
+    assert r.status_code == 200 and r.get_json()["data"]["reason"] == "kiosk_not_running"
+    r = post(client, [HUM])
+    assert r.status_code == 409 and r.get_json()["error"]["details"]["reason"] == "kiosk_not_running"
