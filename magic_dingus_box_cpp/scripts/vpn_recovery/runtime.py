@@ -192,7 +192,44 @@ class SystemAdapters:
         except Exception:
             pass  # Current stopped state still prevents ambiguous resurrection.
 
-    def _dependents(self, deadline):
+    def _dependent_namespaces(self, generation, targets, deadline):
+        """Compare kernel namespaces, not Compose's desired NetworkMode.
+
+        A same-ID Gluetun restart replaces its namespace while running
+        dependents can retain the old one. Inspect only identity fields; a
+        missing process, changed Gluetun start or exhausted budget is unknown.
+        """
+        if not generation or not targets:
+            return None
+        try:
+            output = self.run(['docker','inspect','--format',
+                '{{.Name}} {{.Id}} {{.State.Pid}} {{.State.StartedAt}} {{.State.Running}}',
+                'mdb_gluetun']+['mdb_'+name for name in targets],deadline,.8)
+            identities = {}
+            for line in output.splitlines():
+                name, cid, pid, started, running = line.split()
+                if not re.fullmatch('[a-f0-9]{64}',cid) or not pid.isdigit() or int(pid)<=0 or running!='true':
+                    return None
+                identities[name.lstrip('/')] = dict(container_id=cid,pid=int(pid),started_at=started)
+            gluetun = identities['mdb_gluetun']
+            if gluetun != Controller.container_key(generation):
+                return None
+            def namespace(pid):
+                if self.mono()>=deadline:
+                    raise TimeoutError()
+                value=os.readlink('/proc/'+str(pid)+'/ns/net')
+                if not re.fullmatch(r'net:\[[1-9][0-9]*\]',value):
+                    raise ValueError()
+                return value
+            expected=namespace(gluetun['pid'])
+            matches=[namespace(identities['mdb_'+name]['pid'])==expected for name in targets]
+            if namespace(gluetun['pid'])!=expected:
+                return None
+            return all(matches)
+        except (OSError,RuntimeError,TimeoutError,ValueError,KeyError):
+            return None
+
+    def _dependents(self, deadline, generation=None):
         names = ['radarr','sonarr','prowlarr','qbittorrent','byparr']
         paused = Path('/tmp/mdb_playback_services_paused').exists()
         targets = ['qbittorrent'] if paused else names
@@ -213,7 +250,12 @@ class SystemAdapters:
                 self.dependent_since.setdefault(name,self.mono())
                 if self.mono()-self.dependent_since[name]>=300: converge=True
             else: self.dependent_since.pop(name,None)
-        # Host reachability catches stale DNAT even when namespace apps are up.
+        running=[name for name in targets if states.get('mdb_'+name,['absent'])[0]=='running']
+        namespaces=self._dependent_namespaces(generation,running,deadline)
+        if namespaces is True and len(running)!=len(targets):
+            namespaces=None
+        # TCP is supplementary availability evidence, never namespace proof:
+        # Docker's listener can accept and then reset HTTP in an orphaned netns.
         reachable=True
         import socket
         for name,port in [('radarr',7878),('sonarr',8989),('prowlarr',9696),('qbittorrent',8080),('byparr',8191)]:
@@ -224,7 +266,8 @@ class SystemAdapters:
                 with socket.create_connection(('127.0.0.1',port),timeout=remaining): pass
             except OSError:
                 reachable=False
-        return {'dependents_ok':not converge and reachable,'needs_converge':converge,
+        return {'dependents_ok':not converge and reachable and namespaces is True,'needs_converge':converge,
+                'namespaces_match':namespaces,
                 'host_reachable':reachable,'playback_paused':paused}
 
     def observe(self, *, deadline, traffic_due):
@@ -242,6 +285,9 @@ class SystemAdapters:
         o.update(generation=generation, port=result.get('forwarded_port'), port_at=self.mono(),
                  port_generation=result.get('generation'), qbit_synced=result.get('status')=='synced',
                  qbit_port=result.get('qbit_port'), control_available=type(result.get('forwarded_port')) is int)
+        # Sample dependencies before the final generation fence and reserve
+        # observation time for them even when qBit's HTTP request is failing.
+        o.update(self._dependents(min(deadline,now+6.8),generation))
         if generation is not None:
             if traffic_due or self.traffic.get('traffic_generation') != generation:
                 ok=self._traffic(generation,min(deadline,now+8.2))
@@ -272,11 +318,11 @@ class SystemAdapters:
                 self.traffic = {}
                 o.update(generation=current_generation, port=None, port_generation=None,
                          qbit_synced=False, qbit_port=None, traffic=None,
-                         traffic_generation=None, control_available=None)
+                         traffic_generation=None, control_available=None,
+                         namespaces_match=None, dependents_ok=False)
         else:
             # Missing tun0 is current affirmative tunnel failure; no cached port.
             o.update(traffic=False,traffic_at=self.mono(),port=None)
-        o.update(self._dependents(deadline))
         return o
 
     def attest_catalog(self, generation, snapshot, deadline):
@@ -336,6 +382,9 @@ class Controller:
             self.attempted=None
         self.api_failed=False; self.operation=read_json(paths.state/'operation.json')
         self.relinked=durable.get('relinked'); self.last_converge=-300
+        last_converge_wall=durable.get('last_converge_wall')
+        if finite(last_converge_wall):
+            self.last_converge=self.a.mono()-max(0,min(300,self.a.wall()-last_converge_wall))
         self.next_traffic=0
         self.next_refresh=self.a.mono()+max(0,min(86400,durable.get('refresh_after',0)-self.a.wall())) if finite(durable.get('refresh_after')) else 0
         self.last_load_container=durable.get('last_load_container')
@@ -502,8 +551,6 @@ class Controller:
             self.api_failed=False
             self.load_pending={'snapshot':ctx.get('snapshot'),'old_container':self.container_key(ctx.get('generation') or ctx['observation']),
                                'submitted_wall':result['submission']['wall'],'operation':'restart'}
-        elif ctx['action']=='relink_dependents' and result['status']=='issued':
-            self.relinked=self.container_key(ctx.get('generation'))
         if ctx['action'] in ('relink_dependents','converge_dependents'):
             self.last_converge=self.a.mono()
 
@@ -637,8 +684,12 @@ class Controller:
             o['selection_verified']=(effective is not None and effective.endpoint_ip==self.attempted.get('endpoint_ip')
                                      and generation!=self.attempted.get('prior_generation'))
             o['selection_failed']=not o['selection_verified'] and now>=self.state.get('candidate_until',now+1)
-        if container and self.relinked and container!=self.relinked:o['needs_relink']=True
-        if o.get('host_reachable') is False and not o.get('needs_converge') and now-self.last_converge>=300:o['needs_relink']=True
+        if container and o.get('namespaces_match') is True:
+            self.relinked=container
+        needs_relink=(o.get('namespaces_match') is False or
+                      bool(container and self.relinked and container!=self.relinked))
+        o['needs_relink']=needs_relink and now-self.last_converge>=300
+        o['relink_waiting']=needs_relink and not o['needs_relink']
         if now-self.last_converge<300:o['needs_converge']=False
         restart_before = {key:self.state.get(key) for key in ('last_restart','candidate_until')}
         decision=decide(o,self.state,config,now,wall)
@@ -689,7 +740,8 @@ class Controller:
         atomic_json(self.paths.state/'status.json',status,mode=0o644)
         atomic_json(self.paths.state/'controller.json',{'version':1,'saved_wall':wall,'saved_mono':now,'policy':self.state,
             'failures':self.failures,'round_attempts':self.round_attempts,'attempted':self.attempted,
-            'relinked':self.relinked or container,'last_load_container':self.last_load_container,'last_load_identity':self.last_load_identity,'last_load_wall':self.last_load_wall,
+            'relinked':self.relinked,
+            'last_converge_wall':wall-(now-self.last_converge) if self.last_converge!=-300 else None,
+            'last_load_container':self.last_load_container,'last_load_identity':self.last_load_identity,'last_load_wall':self.last_load_wall,
             'refresh_after':wall+max(0,self.next_refresh-now),'last_success':self.last_success,'last_selection':self.last_selection,'last_recovery_reason':self.last_reason})
-        if self.relinked is None:self.relinked=container
         return status

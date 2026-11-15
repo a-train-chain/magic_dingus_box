@@ -692,10 +692,118 @@ class RuntimeTests(unittest.TestCase):
         atomic_json(path, {'version': 1, 'protonvpn': provider})
         self.assertFalse(adapter.attest_catalog(GEN, snapshot, time.monotonic()+3))
 
+    def test_bootstrap_stale_namespace_repairs_before_port_sync_and_is_bounded(self):
+        self.a.observation.update(port=33013,qbit_synced=False,namespaces_match=False,
+                                  dependents_ok=False,host_reachable=True)
+        self.assertIsNone(self.c.relinked)
+        self.tick(0);self.finish()
+        self.assertEqual([c[0] for c in self.a.calls],['relink_dependents'])
+        self.tick(10)
+        # The repair's command success is not namespace proof. Do not loop or
+        # borrow success when Docker leaves the dependent on the old netns.
+        for t in [20,100,299]:self.assertFalse(self.tick(t)['ready'])
+        self.assertEqual([c[0] for c in self.a.calls],['relink_dependents'])
+        restored=Controller(self.paths,self.a);self.addCleanup(restored.close)
+        restored.next_refresh=100000
+        self.a.now=300;restored.tick()
+        self.assertEqual([c[0] for c in self.a.calls],['relink_dependents'])
+        self.a.now=310;restored.tick()
+        self.assertEqual([c[0] for c in self.a.calls],['relink_dependents','relink_dependents'])
+        self.a.observation.update(namespaces_match=True,dependents_ok=True)
+        self.a.now=320;restored.tick()
+        self.assertEqual(self.a.calls[-1][0],'sync')
+        self.a.observation['qbit_synced']=True
+        self.a.now=330;self.assertTrue(restored.tick()['ready'])
+
+    def test_bootstrap_unknown_namespace_never_stamps_relink_proof(self):
+        self.a.observation.update(port=33013,qbit_synced=False,namespaces_match=None)
+        self.tick(0)
+        self.assertIsNone(self.c.relinked)
+        self.assertIsNone(json.loads((self.paths.state/'controller.json').read_text())['relinked'])
+
+    def test_qbit_fault_with_matching_namespace_never_relinks(self):
+        self.a.observation.update(port=33013,qbit_synced=False,namespaces_match=True,
+                                  host_reachable=False,dependents_ok=False)
+        for t in [0,10,300,600,1200]:self.tick(t)
+        self.assertEqual({c[0] for c in self.a.calls},{'sync'})
+
     def test_unique_public_endpoint_only(self):
         rule='-A OUTPUT -d 84.20.16.29/32 -o eth0 -p udp -m udp --dport 51820 -j ACCEPT\n'
         self.assertEqual(parse_endpoint(rule),'84.20.16.29')
         self.assertIsNone(parse_endpoint(rule+rule.replace('84.20.16.29','84.20.16.1')))
         self.assertIsNone(parse_endpoint(rule.replace('84.20.16.29','10.2.0.1')))
+
+class NamespaceObservationTests(unittest.TestCase):
+    def setUp(self):
+        from vpn_recovery.runtime import SystemAdapters
+        from unittest.mock import patch, MagicMock
+        import subprocess
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.a=SystemAdapters(Paths(base=Path(self.tmp.name)))
+        self.a.mono=lambda:0
+        self.names=['radarr','sonarr','prowlarr','qbittorrent','byparr']
+        self.pids={name:100+i for i,name in enumerate(self.names)}
+        self.links={42:'net:[4026532677]',**{pid:'net:[4026532908]' for pid in self.pids.values()}}
+        self.paused=False;self.calls=[];self.replace_during_read=False
+        def runner(args,**kwargs):
+            self.calls.append((args,kwargs['timeout']))
+            if args[:2]==['docker','ps']:
+                out=''.join('mdb_'+name+' running Up 2 days (healthy)\n' for name in self.names)
+            elif args[:2]==['docker','inspect']:
+                rows=[]
+                for name in args[4:]:
+                    if name=='mdb_gluetun':
+                        rows.append('/mdb_gluetun '+GEN['container_id']+' 42 '+GEN['started_at']+' true')
+                    else:
+                        short=name.removeprefix('mdb_')
+                        rows.append('/'+name+' '+('b'*64)+' '+str(self.pids[short])+' old-start true')
+                out='\n'.join(rows)
+            else:raise AssertionError(args)
+            return subprocess.CompletedProcess(args,0,out,'')
+        self.a.runner=runner
+        def readlink(path):
+            pid=int(str(path).split('/')[2])
+            value=self.links[pid]
+            if self.replace_during_read and pid!=42:self.links[42]='net:[4026533000]'
+            if isinstance(value,Exception):raise value
+            return value
+        self.addCleanup(patch.stopall)
+        patch('vpn_recovery.runtime.os.readlink',side_effect=readlink).start()
+        patch('vpn_recovery.runtime.Path.exists',side_effect=lambda:self.paused).start()
+        patch('socket.create_connection',return_value=MagicMock()).start()
+
+    def observe(self):
+        return self.a._dependents(9,GEN)
+
+    def test_same_container_id_new_namespace_detected_despite_healthy_tcp(self):
+        o=self.observe()
+        self.assertFalse(o['dependents_ok'])
+        self.assertIs(o.get('namespaces_match'),False)
+        self.assertTrue(o['host_reachable'])
+        self.assertFalse(o['needs_converge'])
+        self.assertLessEqual(sum(timeout for _,timeout in self.calls),9)
+
+    def test_paused_heavy_services_do_not_request_relink(self):
+        self.paused=True
+        self.links[self.pids['qbittorrent']]=self.links[42]
+        o=self.observe()
+        self.assertIs(o.get('namespaces_match'),True)
+        self.assertTrue(o['dependents_ok'])
+        self.assertFalse(o['needs_converge'])
+        self.links[self.pids['qbittorrent']]='net:[4026532908]'
+        self.assertIs(self.observe().get('namespaces_match'),False)
+        self.links[self.pids['qbittorrent']]=self.links[42]
+        self.paused=False
+        self.assertIs(self.observe().get('namespaces_match'),False)
+
+    def test_unavailable_or_replaced_namespace_is_unknown(self):
+        self.links[42]=FileNotFoundError()
+        o=self.observe()
+        self.assertIsNone(o.get('namespaces_match'))
+        self.assertFalse(o['dependents_ok'])
+        self.links[42]='net:[4026532677]';self.replace_during_read=True
+        o=self.observe()
+        self.assertIsNone(o.get('namespaces_match'))
+        self.assertFalse(o['dependents_ok'])
 
 if __name__=='__main__': unittest.main()

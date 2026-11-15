@@ -108,6 +108,12 @@ class PolicyTests(unittest.TestCase):
         self.step(0,traffic=False,generation=None,port=None)
         self.assertEqual(self.step(60,traffic=False,generation=None,port=None)['action'],'restart_container')
 
+    def test_relink_and_start_precede_unreachable_qbit_sync(self):
+        self.assertEqual(self.step(0,needs_relink=True,qbit_synced=False)['action'],'relink_dependents')
+        self.assertEqual(self.step(10,needs_converge=True,qbit_synced=False)['action'],'converge_dependents')
+        self.assertEqual(self.step(20,relink_waiting=True,qbit_synced=False)['action'],'none')
+        self.assertNotEqual(self.step(30,relink_waiting=True)['reason'],'Ready')
+
     def test_dependents_only_after_traffic_and_no_soft_relink(self):
         self.assertEqual(self.step(0, needs_relink=True)['action'], 'relink_dependents')
         self.assertEqual(self.step(10, needs_converge=True)['action'], 'converge_dependents')

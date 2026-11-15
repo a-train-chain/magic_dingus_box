@@ -89,6 +89,15 @@ def decide(observation, state, config, now_mono, now_wall):
 
     if o.get('wan') is False and traffic is not True:
         return answer('none', 'Waiting for internet')
+    # qBit cannot synchronize through an orphaned namespace (or while absent).
+    # Repair proven linkage first, without turning a qBit-only fault into a
+    # restart. A bounded repair retry must not publish Ready in the meantime.
+    if traffic is True and o.get('needs_relink'):
+        return answer('relink_dependents', 'Relinking services')
+    if traffic is True and o.get('relink_waiting'):
+        return answer('none', 'Relinking services')
+    if traffic is True and o.get('needs_converge'):
+        return answer('converge_dependents', 'Restoring services')
     if traffic is True and port and o.get('selection_verified', True):
         # A healthy fallback is sticky; historical penalties remain in runtime.
         s.pop('candidate_until', None)
@@ -96,17 +105,8 @@ def decide(observation, state, config, now_mono, now_wall):
         s['backoff_level'] = 0
         if not o.get('qbit_synced'):
             return answer('sync_port', 'Synchronizing port')
-        if o.get('needs_relink'):
-            return answer('relink_dependents', 'Relinking services')
-        if o.get('needs_converge'):
-            return answer('converge_dependents', 'Restoring services')
         return answer('none', 'Ready')
 
-    # Initial dependents may start with verified traffic, before forwarding.
-    if traffic is True and o.get('needs_relink'):
-        return answer('relink_dependents', 'Relinking services')
-    if traffic is True and o.get('needs_converge'):
-        return answer('converge_dependents', 'Restoring services')
     if now < s.get('candidate_until', 0):
         return answer('none', 'Waiting for candidate')
     new_round = False
