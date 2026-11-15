@@ -21,6 +21,12 @@ namespace retroarch {
 struct CaptureDeviceCaps {
     uint16_t vid = 0, pid = 0;
     std::string name;
+    // Kernel driver of the parent device ("playstation", "xpad", "nintendo",
+    // "microsoft", "hid-generic", ...; empty if unknown) and the bus
+    // (0x03 USB, 0x05 Bluetooth). Used to pick an automatic layout -- see
+    // retroarch/standard_layout.h. The capture session ignores both.
+    std::string driver;
+    uint16_t bustype = 0;
     std::vector<uint16_t> key_codes;                  // ascending EV_KEY codes
     struct AxisRange { uint16_t code; int min, max, rest; };
     std::vector<AxisRange> axes;                      // ascending ABS codes (incl. hats)

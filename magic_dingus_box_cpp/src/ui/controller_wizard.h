@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "platform/bt_pairing.h"
 #include "platform/input_manager.h"
 #include "retroarch/capture_session.h"
 
@@ -39,13 +40,52 @@ std::string short_control_label(retroarch::LogicalControl c);
 //     box buttons and the phone remote producing normal InputActions
 //     (on_action). Chrome -- style choice, skip, redo, cancel, save -- is
 //     therefore always driveable from a surface that is known to work.
+//
+// PAIRING (Settings -> Pair Wireless Controller, or Green on PICK_DEVICE):
+//
+//   PAIR_SEARCH  a BlueZ session looks for a controller in pairing mode and
+//                pairs, trusts and connects it (platform::bt::PairingFlow;
+//                the screen only shows its state). Red / knob retries a
+//                failed pairing; the knob closes the screen when the box has
+//                no usable Bluetooth.
+//   PAIR_PRESS   connected; "press any button on it". The press claims the
+//                pad exactly like PICK_DEVICE does (other pads are ignored
+//                when BlueZ told us the new pad's IDs).
+//   then         a saved/built-in profile -> DONE ("Ready to play!");
+//                an automatic layout (retroarch/standard_layout.h) ->
+//                AUTO_READY; otherwise -> PICK_STYLE, the mapping steps.
+//
+// AUTO_READY is the TEST screen for an automatic layout: the controls light
+// as they are pressed. Start on the pad itself, or the knob, finishes;
+// Yellow maps the buttons by hand instead. Nothing is saved -- the automatic
+// layout is recomputed from the pad every time, so it improves with
+// updates. PICK_DEVICE also lands here for a wired pad with an automatic
+// layout and no saved profile.
+//
+// The BlueZ session runs only while PAIR_SEARCH is up; every way out of the
+// wizard ends it (BluetoothPort::stop() never blocks).
 class ControllerWizard {
 public:
-    enum class Phase { PICK_DEVICE, PICK_STYLE, CAPTURE, TEST, DONE };
+    enum class Phase {
+        PICK_DEVICE, PICK_STYLE, CAPTURE, TEST, DONE,
+        PAIR_SEARCH, PAIR_PRESS, AUTO_READY,
+    };
 
     void open(platform::InputManager* input);   // enables raw capture
+    // open() straight into PAIR_SEARCH.
+    void open_for_pairing(platform::InputManager* input);
     void close();                               // disables raw capture
     bool is_active() const { return active_; }
+
+    // The BlueZ session pairing uses. nullptr (the default, and every Mac
+    // build) means "no Bluetooth": pairing shows that instead of searching.
+    void set_bluetooth(platform::bt::BluetoothPort* port) { bt_ = port; }
+    bool can_pair() const { return bt_ != nullptr; }
+    // Pairing state for the renderer; nullptr outside the pairing phases.
+    const platform::bt::PairingFlow* pairing() const { return flow_.get(); }
+    // DONE's headline: "Saved!" after the mapping steps, "Ready to play!"
+    // after pairing or an automatic layout.
+    const std::string& done_title() const { return done_title_; }
 
     // Called every frame from main.cpp with the drained raw events.
     void on_raw_event(const platform::RawInputEvent& ev);
@@ -105,6 +145,23 @@ private:
     // device_caps() walks every open device and queries libevdev per code, so
     // the unplug check runs at 1 Hz rather than per frame.
     std::chrono::steady_clock::time_point last_caps_poll_;
+
+    platform::bt::BluetoothPort* bt_ = nullptr;
+    bool bt_session_ = false;
+    std::unique_ptr<platform::bt::PairingFlow> flow_;
+    platform::bt::PairingFlow::Phase last_flow_phase_{};
+    // The paired pad's IDs from BlueZ's modalias, when it reported one.
+    std::optional<std::pair<uint16_t, uint16_t>> paired_ids_;
+    std::string done_title_ = "Saved!";
+
+    void begin_pairing_();
+    void end_pairing_session_();
+    void pump_pairing_(std::chrono::steady_clock::time_point now);
+    // PICK_DEVICE / PAIR_PRESS: this press picks the pad. Decides the next
+    // phase from the profile store and the automatic layout.
+    void claim_device_(const platform::RawInputEvent& ev, bool after_pairing);
+    void enter_auto_ready_(const retroarch::PhysicalProfile& profile);
+    void finish_ready_();
 
     // False when the session is too incomplete to save (nothing written), and
     // ALSO false when the write itself failed -- the caller distinguishes the

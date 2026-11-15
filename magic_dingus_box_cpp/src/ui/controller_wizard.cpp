@@ -8,6 +8,7 @@
 #include "toast.h"
 #include "retroarch/controller_profile.h"
 #include "retroarch/logical_controls.h"
+#include "retroarch/standard_layout.h"
 #include "utils/time_format.h"
 
 namespace ui {
@@ -62,6 +63,9 @@ void ControllerWizard::open(platform::InputManager* input) {
     captured_.clear();
     test_lit_.clear();
     status_.clear();
+    done_title_ = "Saved!";
+    paired_ids_.reset();
+    flow_.reset();
     last_input_ = std::chrono::steady_clock::now();
     last_caps_poll_ = last_input_;
     if (input_) input_->set_raw_capture(true);
@@ -75,6 +79,10 @@ void ControllerWizard::close() {
     // can ever reach this call, which is what keeps a real capture from being
     // silently lost.
     if (input_) input_->set_raw_capture(false);
+    end_pairing_session_();
+    flow_.reset();
+    paired_ids_.reset();
+    done_title_ = "Saved!";
     input_ = nullptr;
     active_ = false;
     phase_ = Phase::PICK_DEVICE;
@@ -98,23 +106,42 @@ void ControllerWizard::on_raw_event(const platform::RawInputEvent& ev) {
     last_input_ = std::chrono::steady_clock::now();
 
     switch (phase_) {
-        case Phase::PICK_DEVICE: {
+        case Phase::PICK_DEVICE:
             // Any button press on any pad claims it as the target. Presses
             // only (value==1): a pad that arrives mid-release, or an axis
             // resting off-center, must not pick itself.
             if (ev.type != kEvKey || ev.value != 1) break;
-            vid_ = ev.vid;
-            pid_ = ev.pid;
-            device_name_ = ev.device_name;
-            caps_ = input_ ? input_->device_caps(vid_, pid_) : std::nullopt;
-            if (!caps_) {
-                // Stay on this phase: another pad (or the same one, replugged)
-                // can still be picked, and cancel is always available.
-                status_ = "Couldn't read that controller - try another";
+            claim_device_(ev, /*after_pairing=*/false);
+            break;
+
+        case Phase::PAIR_PRESS:
+            // "Press any button on the new controller." When BlueZ gave us
+            // its IDs, the box's other (working) pads cannot answer for it.
+            if (ev.type != kEvKey || ev.value != 1) break;
+            if (paired_ids_ && (ev.vid != paired_ids_->first ||
+                                ev.pid != paired_ids_->second)) {
                 break;
             }
-            status_.clear();
-            phase_ = Phase::PICK_STYLE;
+            claim_device_(ev, /*after_pairing=*/true);
+            break;
+
+        case Phase::PAIR_SEARCH:
+            break;
+
+        case Phase::AUTO_READY: {
+            if (ev.vid != vid_ || ev.pid != pid_) break;
+            // Start on the pad itself finishes: the person may be holding
+            // nothing else. (Raw capture keeps it from driving the menus.)
+            auto start = captured_.find(retroarch::LogicalControl::START);
+            if (ev.type == kEvKey && ev.value == 1 && start != captured_.end() &&
+                start->second.kind == retroarch::PhysicalBinding::Kind::BUTTON &&
+                start->second.code == ev.code) {
+                finish_ready_();
+                break;
+            }
+            for (const auto& [control, binding] : captured_) {
+                if (auto lit = binding_lit_(binding, ev)) test_lit_[control] = *lit;
+            }
             break;
         }
 
@@ -185,7 +212,46 @@ bool ControllerWizard::on_action(const platform::InputEvent& ev) {
 
     switch (phase_) {
         case Phase::PICK_DEVICE:
-            // Nothing else to do here; the pad picks itself.
+            // The pad picks itself; Green (NEXT) pairs a wireless one.
+            if (ev.action == InputAction::NEXT && ev.pressed && can_pair()) {
+                begin_pairing_();
+                return true;
+            }
+            return false;
+
+        case Phase::PAIR_SEARCH: {
+            if (!flow_ || !ev.pressed) return false;
+            using FlowPhase = platform::bt::PairingFlow::Phase;
+            if (flow_->phase() == FlowPhase::FAILED &&
+                (ev.action == InputAction::PLAY_PAUSE || ev.action == InputAction::SELECT)) {
+                status_.clear();
+                flow_->retry(std::chrono::steady_clock::now());
+                return true;
+            }
+            if (flow_->phase() == FlowPhase::UNAVAILABLE &&
+                ev.action == InputAction::SELECT) {
+                close();
+                return true;
+            }
+            return false;
+        }
+
+        case Phase::PAIR_PRESS:
+            return false;
+
+        case Phase::AUTO_READY:
+            if (ev.action == InputAction::SELECT && ev.pressed) {
+                finish_ready_();
+                return true;
+            }
+            if (ev.action == InputAction::PREV && ev.pressed) {          // Yellow
+                // Map the buttons by hand instead, on this same pad.
+                captured_.clear();
+                test_lit_.clear();
+                status_.clear();
+                phase_ = Phase::PICK_STYLE;
+                return true;
+            }
             return false;
 
         case Phase::PICK_STYLE:
@@ -292,7 +358,12 @@ bool ControllerWizard::tick() {
     if (!active_) return true;   // nothing to time out
     const auto now = std::chrono::steady_clock::now();
 
+    if (phase_ == Phase::PAIR_SEARCH) pump_pairing_(now);
+
     if (now - last_input_ > kIdleTimeout) {
+        if (phase_ == Phase::PAIR_SEARCH || phase_ == Phase::PAIR_PRESS) {
+            Toast::show("Controller pairing timed out");
+        }
         close();
         return false;
     }
@@ -300,7 +371,8 @@ bool ControllerWizard::tick() {
     // Only meaningful once a target exists AND the flow depends on it. In
     // PICK_DEVICE nothing is chosen yet; in DONE the profile is already on
     // disk and unplugging must not blow the confirmation away.
-    if ((phase_ == Phase::CAPTURE || phase_ == Phase::TEST) &&
+    if ((phase_ == Phase::CAPTURE || phase_ == Phase::TEST ||
+         phase_ == Phase::AUTO_READY) &&
         now - last_caps_poll_ >= kCapsPollPeriod) {
         last_caps_poll_ = now;
         // InputManager drops joystick nodes that report -ENODEV, so a missing
@@ -428,6 +500,119 @@ std::optional<bool> ControllerWizard::binding_lit_(
     if (delta > 0 && delta > avail_pos / 2) dir = +1;
     else if (delta < 0 && -delta > avail_neg / 2) dir = -1;
     return dir == b.direction;
+}
+
+// ---------------------------------------------------------------------------
+// Pairing + automatic layouts
+// ---------------------------------------------------------------------------
+
+void ControllerWizard::open_for_pairing(platform::InputManager* input) {
+    open(input);
+    begin_pairing_();
+}
+
+void ControllerWizard::begin_pairing_() {
+    const auto now = std::chrono::steady_clock::now();
+    end_pairing_session_();
+    flow_ = std::make_unique<platform::bt::PairingFlow>(now);
+    paired_ids_.reset();
+    status_.clear();
+    phase_ = Phase::PAIR_SEARCH;
+    last_input_ = now;
+    if (bt_) {
+        bt_->start();
+        bt_session_ = true;
+    } else {
+        platform::bt::BtSnapshot none;
+        none.adapter = platform::bt::BtAdapterState::NO_BLUETOOTH;
+        flow_->on_snapshot(none, now);
+    }
+    last_flow_phase_ = flow_->phase();
+}
+
+void ControllerWizard::end_pairing_session_() {
+    if (bt_ && bt_session_) bt_->stop();
+    bt_session_ = false;
+}
+
+void ControllerWizard::pump_pairing_(std::chrono::steady_clock::time_point now) {
+    if (!flow_) return;
+    if (bt_ && bt_session_) {
+        if (auto snap = bt_->take_snapshot()) flow_->on_snapshot(*snap, now);
+        for (const auto& r : bt_->take_results()) flow_->on_result(r, now);
+    }
+    flow_->tick(now);
+    const auto commands = flow_->take_commands();
+    if (bt_ && bt_session_) {
+        for (const auto& c : commands) bt_->send(c);
+    }
+    // Pairing progress counts as activity: the person is busy with the
+    // controller, not with the box, while this screen is up.
+    if (flow_->phase() != last_flow_phase_) {
+        last_flow_phase_ = flow_->phase();
+        last_input_ = now;
+    }
+    if (flow_->phase() == platform::bt::PairingFlow::Phase::CONNECTED) {
+        paired_ids_ = flow_->device_ids();
+        device_name_ = flow_->device_name();
+        // Paired and trusted: the pad reconnects on its own from now on, so
+        // the session (discovery, the pairing agent) can end here.
+        end_pairing_session_();
+        phase_ = Phase::PAIR_PRESS;
+        last_input_ = now;
+    }
+}
+
+void ControllerWizard::claim_device_(const platform::RawInputEvent& ev,
+                                     bool after_pairing) {
+    vid_ = ev.vid;
+    pid_ = ev.pid;
+    device_name_ = ev.device_name;
+    caps_ = input_ ? input_->device_caps(vid_, pid_) : std::nullopt;
+    if (!caps_) {
+        // Stay on this phase: another pad (or the same one, replugged)
+        // can still be picked, and cancel is always available.
+        status_ = "Couldn't read that controller - try another";
+        return;
+    }
+    status_.clear();
+
+    const auto store = retroarch::load_profile_store();
+    const bool captured = store.count(retroarch::vidpid_key(vid_, pid_)) != 0;
+    const bool builtin = retroarch::builtin_profile_for(vid_, pid_) != nullptr;
+    const auto automatic = retroarch::standard_profile(*caps_);
+
+    if (after_pairing && (captured || builtin)) {
+        // Already set up on this box: nothing to do but play.
+        done_title_ = "Ready to play!";
+        phase_ = Phase::DONE;
+        Toast::show(device_name_ + " is ready to play");
+        return;
+    }
+    // A saved profile means someone already mapped this pad by hand and is
+    // back to change it: go straight to the mapping steps.
+    if (automatic && !captured) {
+        enter_auto_ready_(*automatic);
+        return;
+    }
+    phase_ = Phase::PICK_STYLE;
+}
+
+void ControllerWizard::enter_auto_ready_(const retroarch::PhysicalProfile& profile) {
+    session_.reset();
+    captured_ = profile.controls;
+    test_lit_.clear();
+    for (const auto& [control, binding] : captured_) {
+        (void)binding;
+        test_lit_[control] = false;
+    }
+    phase_ = Phase::AUTO_READY;
+}
+
+void ControllerWizard::finish_ready_() {
+    done_title_ = "Ready to play!";
+    phase_ = Phase::DONE;
+    Toast::show(device_name_ + " is ready to play");
 }
 
 bool ControllerWizard::save_profile_() {

@@ -1,4 +1,5 @@
 #include "controller_mapping.h"
+#include "standard_layout.h"
 
 #include <cstdio>
 #include <ostream>
@@ -453,32 +454,43 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
     //
     // The right-stick block below has always followed the profile's kind.
     // These two helpers extend the same contract to every other slot.
+    //
+    // An AXIS-kind control assigned to a BUTTON slot (an Xbox pad's analog
+    // triggers) is not dropped, though: its token goes to btn_axes under the
+    // slot's RetroArch name and is emitted as input_playerN_<name>_axis.
     auto put_btn = [&](std::string ControllerMapping::*field,
-                       const std::optional<LogicalControl>& slot) {
+                       const std::optional<LogicalControl>& slot,
+                       const char* ra_name) {
         if (!slot) return;
-        m.*field = kind_is(*slot, Kind::AXIS) ? std::string() : profile.token(*slot);
+        if (kind_is(*slot, Kind::AXIS)) {
+            m.*field = std::string();
+            const std::string tok = profile.token(*slot);
+            if (!tok.empty()) m.btn_axes[ra_name] = tok;
+        } else {
+            m.*field = profile.token(*slot);
+        }
     };
     auto axis_token = [&](const std::optional<LogicalControl>& slot) {
         return (slot && kind_is(*slot, Kind::AXIS)) ? profile.token(*slot)
                                                     : std::string();
     };
 
-    put_btn(&ControllerMapping::b_btn, sem.b);
-    put_btn(&ControllerMapping::y_btn, sem.y);
-    put_btn(&ControllerMapping::select_btn, sem.select);
-    put_btn(&ControllerMapping::start_btn, sem.start);
-    put_btn(&ControllerMapping::a_btn, sem.a);
-    put_btn(&ControllerMapping::x_btn, sem.x);
-    put_btn(&ControllerMapping::l_btn, sem.l);
-    put_btn(&ControllerMapping::r_btn, sem.r);
-    put_btn(&ControllerMapping::l2_btn, sem.l2);
-    put_btn(&ControllerMapping::r2_btn, sem.r2);
+    put_btn(&ControllerMapping::b_btn, sem.b, "b");
+    put_btn(&ControllerMapping::y_btn, sem.y, "y");
+    put_btn(&ControllerMapping::select_btn, sem.select, "select");
+    put_btn(&ControllerMapping::start_btn, sem.start, "start");
+    put_btn(&ControllerMapping::a_btn, sem.a, "a");
+    put_btn(&ControllerMapping::x_btn, sem.x, "x");
+    put_btn(&ControllerMapping::l_btn, sem.l, "l");
+    put_btn(&ControllerMapping::r_btn, sem.r, "r");
+    put_btn(&ControllerMapping::l2_btn, sem.l2, "l2");
+    put_btn(&ControllerMapping::r2_btn, sem.r2, "r2");
     // Stick clicks are digital buttons on every pad that has them, so they
     // go through the same put_btn contract as the face buttons: an unset
     // slot, a control the profile never captured, or one captured as an axis
     // all leave the field "" -- unbound rather than mis-bound.
-    put_btn(&ControllerMapping::l3_btn, sem.l3);
-    put_btn(&ControllerMapping::r3_btn, sem.r3);
+    put_btn(&ControllerMapping::l3_btn, sem.l3, "l3");
+    put_btn(&ControllerMapping::r3_btn, sem.r3, "r3");
 
     // D-pad: the binding's kind decides WHICH FIELD, not just the value. On
     // pads that overload ABS_X/ABS_Y for the d-pad and carry no hat at all
@@ -594,7 +606,7 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
     };
     put_hotkey(&ControllerMapping::enable_hotkey_btn,
                &ControllerMapping::enable_hotkey_axis, sem.hotkey_enable);
-    put_btn(&ControllerMapping::menu_toggle_btn, sem.menu_toggle);
+    put_btn(&ControllerMapping::menu_toggle_btn, sem.menu_toggle, "menu_toggle");
     put_hotkey(&ControllerMapping::exit_emulator_btn,
                &ControllerMapping::exit_emulator_axis, sem.exit_emulator);
     return m;
@@ -637,6 +649,24 @@ ControllerMapping resolve_mapping_for_pad(
     return get_mapping(match_vid_pid(vid, pid), core_name);
 }
 
+ControllerMapping resolve_mapping_for_pad(
+    const DetectedPad& pad,
+    const std::map<std::string, PhysicalProfile>& store,
+    const std::string& core_name) {
+    // 1 + 2: a captured profile, then a built-in one, exactly as by VID/PID.
+    if (store.count(vidpid_key(pad.vid, pad.pid)) != 0 ||
+        builtin_profile_for(pad.vid, pad.pid) != nullptr) {
+        return resolve_mapping_for_pad(pad.vid, pad.pid, store, core_name);
+    }
+    // 3. A modern pad whose driver lays its buttons out by position.
+    if (auto automatic = standard_profile(pad)) {
+        return build_mapping(get_semantic_mapping(automatic->style, core_name),
+                             *automatic);
+    }
+    // 4. Legacy.
+    return resolve_mapping_for_pad(pad.vid, pad.pid, store, core_name);
+}
+
 PortMappings resolve_port_mappings(
     const std::vector<DetectedPad>& pads, ControllerType fallback_type,
     const std::map<std::string, PhysicalProfile>& store,
@@ -652,13 +682,13 @@ PortMappings resolve_port_mappings(
         out.p2 = out.p1;
         return out;
     }
-    out.p1 = resolve_mapping_for_pad(pads[0].vid, pads[0].pid, store, core_name);
+    out.p1 = resolve_mapping_for_pad(pads[0], store, core_name);
     // Only one pad connected: player 2 mirrors player 1 exactly, matching
     // every currently-fielded box (two identical pads, or -- as measured on
     // the one Pi we have hardware evidence for -- a single unrecognized pad
     // riding the legacy N64 fallback via resolve_mapping_for_pad above).
     out.p2 = pads.size() > 1
-                 ? resolve_mapping_for_pad(pads[1].vid, pads[1].pid, store, core_name)
+                 ? resolve_mapping_for_pad(pads[1], store, core_name)
                  : out.p1;
     return out;
 }
@@ -717,6 +747,13 @@ void write_player_binds(std::ostream& out, const ControllerMapping& map,
     auto write_btn = [&](const char* name, const std::string& token) {
         out << p << name << "_btn = \""
             << (token.empty() ? "nul" : token) << "\"\n";
+        // The slot's analog form (see ControllerMapping::btn_axes). Only
+        // written when set, so pads whose buttons are buttons get exactly
+        // the config they always did.
+        auto ax = map.btn_axes.find(name);
+        if (ax != map.btn_axes.end()) {
+            out << p << name << "_axis = \"" << ax->second << "\"\n";
+        }
     };
     out << p << "analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
     write_btn("b", map.b_btn);

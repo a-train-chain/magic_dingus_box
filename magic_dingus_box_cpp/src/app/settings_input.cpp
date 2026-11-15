@@ -343,6 +343,8 @@ bool dispatch_overlay_input(SettingsInputContext& ctx,
                     settings_menu.open_pairing_screen();
                 } else if (section == ui::MenuSection::CONTROLLER_SETUP) {
                     settings_menu.open_controller_wizard(&input);
+                } else if (section == ui::MenuSection::PAIR_CONTROLLER) {
+                    settings_menu.open_controller_wizard_for_pairing(&input);
                 } else if (section == ui::MenuSection::BROWSE_GAMES) {
                     // Enter game browser
                     settings_menu.enter_game_browser();

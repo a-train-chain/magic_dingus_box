@@ -62,7 +62,9 @@ enum class InputAction {
 // phone remote, and the keyboard. Any one of them can still drive the menu back
 // into Controller Setup to re-capture.
 struct MenuNavOverlay {
-    std::map<uint16_t, InputAction> buttons;  // EV_KEY code -> action
+    // EV_KEY code -> action. A code mapped to InputAction::NONE is claimed
+    // and does NOTHING (the built-in action for that code is suppressed).
+    std::map<uint16_t, InputAction> buttons;
     int nav_x_abs = -1;   // ABS code driving ROTATE (main stick X), -1 = none
     int seek_abs = -1;    // ABS code driving SEEK_LEFT/RIGHT, -1 = none
 };
