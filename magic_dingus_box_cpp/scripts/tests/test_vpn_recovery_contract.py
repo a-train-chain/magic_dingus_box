@@ -183,6 +183,16 @@ class HarnessTests(HarnessCase):
         self.assertTrue(result['desired_unchanged'])
         self.assertTrue(result['stale_not_ready'])
 
+    def test_replay_does_not_depend_on_the_host_clock_value(self):
+        # The replay's port loss lands exactly on the 90 s threshold. Its fake
+        # clock used to start at the raw time.monotonic(), and for some values
+        # (o+100)-(o+10) == 89.99999999999977: no rotation at t=100. A fresh CI
+        # VM's uptime-sized clock hit that ~6-24% of runs.
+        for host_clock in (2002.5370965219784, 524239.40880144114):
+            with self.subTest(host_clock=host_clock), patch('time.monotonic', return_value=host_clock):
+                self.assertEqual(contract.replay_failure_to_success()['states'],
+                                 ['Ready','Recovering port forwarding','Waiting for candidate','Ready'])
+
 
 
 class PinnedTransport:

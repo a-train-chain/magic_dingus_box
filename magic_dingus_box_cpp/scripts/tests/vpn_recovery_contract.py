@@ -11,6 +11,7 @@ from concurrent.futures import Future
 import contextlib
 import copy
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -252,7 +253,10 @@ class _Immediate:
 class _ReplayTransport:
     """Deterministic external-process boundary; policy/adapters stay real."""
     def __init__(self):
-        self.elapsed=0;self.offset=time.monotonic();self.wall=time.time()
+        # Whole-second start (never behind the real clock deadlines use): the
+        # replay lands exactly on policy thresholds, and offset+100-(offset+10)
+        # must be exactly 90 whatever the host's uptime is.
+        self.elapsed=0;self.offset=float(math.ceil(time.monotonic()));self.wall=time.time()
         self.generation={'container_id':'a'*64,'pid':42,'started_at':'2026-11-14T00:00:00Z','tunnel_ifindex':2}
         self.port=12345;self.prefs={'listen_port':12345,'upnp':False,'random_port':False}
         self.endpoint='84.20.16.29';self.writes=0;self.selections=[]
