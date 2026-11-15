@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is labeled OFF AIR with its return time where space allows, and the last
   film's NEXT points to the next morning's film. Live films still stop at
   1 AM; manually chosen programmes finish whole.
+- The CRT tube's settings model (looks, effect rows, curves, saved engine choice and a Pi 5-only gate) landed with no visible change: nothing draws differently yet.
 
 ### Fixed
 - **Playback quiet mode preserves pause ownership.** Movie channels hold

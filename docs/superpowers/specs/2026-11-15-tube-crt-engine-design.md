@@ -469,8 +469,8 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
 - **Pure C++ (Mac):** pinned look table; row-to-input curves against
   Sound Factory's own expected values. The box's CI cannot see the Sound
   Factory repository, so the cases are **copied into the box's tests**
-  from Sound Factory's `test_crt_looks.cpp`, `test_crt_geometry.cpp` and
-  `test_crt_wire.cpp`, with the Sound Factory commit they were taken from
+  from Sound Factory's `test_crt_looks.cpp`, `test_crt_geometry.cpp`,
+  `test_crt_wire.cpp` and (the arithmetic's cases) `test_tube_inputs.cpp`, with the Sound Factory commit they were taken from
   recorded beside them (`4ef74a6` as of this design). A dev-only script
   compares the box's row keys, look values and curve constants against a
   sibling `../mdb-sound-factory` checkout when one is present; it is run
