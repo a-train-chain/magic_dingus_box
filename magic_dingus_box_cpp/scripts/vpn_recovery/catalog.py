@@ -166,6 +166,15 @@ def bounded_history(history, now):
     return sorted(latest.values(), key=lambda e: (e['failed_at'], e['hostname'], e['endpoint_ip']))[-HISTORY_LIMIT:]
 
 
+def _network(ip):
+    """The block a failure is likely to share: IPv4 /24, IPv6 /48."""
+    try:
+        address = ipaddress.ip_address(ip)
+    except (ValueError, TypeError):
+        return None
+    return ipaddress.ip_network(f'{address}/{24 if address.version == 4 else 48}', strict=False)
+
+
 def select_candidate(candidates, history, preferred_countries, fallback_countries, now):
     """Pick without mutation. All-excluded returns oldest; caller MUST back off.
 
@@ -181,11 +190,21 @@ def select_candidate(candidates, history, preferred_countries, fallback_countrie
     fallback = [c for c in candidates if c.country in fallback_countries and c not in preferred]
     tried = {c.hostname for c in preferred if c.hostname in attempts}
     recent = {e['endpoint_ip']: e['failed_at'] for e in failures if now-e['failed_at'] < 1800}
+    # Proton lists same-block neighbours together (node-ca-59/60 are both
+    # 84.20.16.x), and a site-wide fault takes the whole block. Within a pool,
+    # prefer a server outside every block that just failed or was tried this
+    # round; never leave the pool (country) just to find one.
+    avoid = {_network(ip) for ip in recent}
+    avoid |= {_network(c.endpoint_ip) for c in candidates if c.hostname in attempts}
+    avoid.discard(None)
     pools = [preferred, fallback] if len(tried) < 2 else [fallback]
     for pool in pools:
-        for candidate in pool:
-            if candidate.hostname not in attempts and candidate.endpoint_ip not in recent:
+        eligible = [c for c in pool if c.hostname not in attempts and c.endpoint_ip not in recent]
+        for candidate in eligible:
+            if _network(candidate.endpoint_ip) not in avoid:
                 return candidate
+        if eligible:
+            return eligible[0]
     all_allowed = preferred+fallback
     # Already attempted servers require a new round even if a failure is absent.
     if all_allowed and all(c.endpoint_ip in recent for c in all_allowed):

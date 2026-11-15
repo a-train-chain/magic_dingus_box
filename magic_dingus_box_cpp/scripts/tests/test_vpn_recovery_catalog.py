@@ -302,6 +302,48 @@ class CatalogTests(unittest.TestCase):
         third = select_candidate(candidates, history, ['Canada'], ['United States'], NOW)
         self.assertEqual(third.country, 'United States')
 
+    def _add(self, hostname, country, ip):
+        extra = copy.deepcopy(next(s for s in self.provider['servers'] if s['country'] == country))
+        extra.update(hostname=hostname, ips=[ip])
+        self.provider['servers'].append(extra)
+
+    def test_next_candidate_avoids_the_failed_servers_network(self):
+        # Catalog order puts same-/24 neighbours together (ca-59 and ca-60 are
+        # both 84.20.16.x): a site-wide outage used to waste the second
+        # preferred attempt on the same block.
+        self._add('node-ca-24.protonvpn.net', 'Canada', '176.113.74.82')
+        candidates = eligible_candidates(validate_catalog(self.provider, NOW), ['Canada', 'United States'])
+        history = {'failures': [{'hostname': 'node-ca-59.protonvpn.net', 'endpoint_ip': '84.20.16.29', 'failed_at': NOW}],
+                   'round_attempts': ['node-ca-59.protonvpn.net']}
+        self.assertEqual(select_candidate(candidates, history, ['Canada'], ['United States'], NOW).hostname,
+                         'node-ca-24.protonvpn.net')
+        # An attempt this round counts too, even without a recorded failure.
+        history = {'failures': [], 'round_attempts': ['node-ca-59.protonvpn.net']}
+        self.assertEqual(select_candidate(candidates, history, ['Canada'], ['United States'], NOW).hostname,
+                         'node-ca-24.protonvpn.net')
+
+    def test_same_network_is_still_used_rather_than_leaving_the_country(self):
+        # Diversity only reorders within a pool: it never skips to the
+        # fallback country while a preferred server remains.
+        candidates = eligible_candidates(validate_catalog(self.provider, NOW), ['Canada', 'United States'])
+        history = {'failures': [{'hostname': 'node-ca-59.protonvpn.net', 'endpoint_ip': '84.20.16.29', 'failed_at': NOW}],
+                   'round_attempts': ['node-ca-59.protonvpn.net']}
+        self.assertEqual(select_candidate(candidates, history, ['Canada'], ['United States'], NOW).hostname,
+                         'node-ca-60.protonvpn.net')
+
+    def test_fallback_pool_also_avoids_recently_failed_networks(self):
+        self._add('node-us-391.protonvpn.net', 'United States', '89.222.100.66')
+        self._add('node-us-69.protonvpn.net', 'United States', '89.187.170.135')
+        candidates = [c for c in eligible_candidates(validate_catalog(self.provider, NOW), ['Canada', 'United States'])
+                      if ':' not in c.endpoint_ip]
+        history = {'failures': [{'hostname': 'node-us-119.protonvpn.net', 'endpoint_ip': '185.156.46.33', 'failed_at': NOW-60},
+                                {'hostname': 'node-us-390.protonvpn.net', 'endpoint_ip': '89.222.100.65', 'failed_at': NOW}],
+                   'round_attempts': ['node-ca-59.protonvpn.net', 'node-ca-60.protonvpn.net',
+                                      'node-us-119.protonvpn.net', 'node-us-390.protonvpn.net']}
+        # us-391 shares 89.222.100.x with the server that just failed.
+        self.assertEqual(select_candidate(candidates, history, ['Canada'], ['United States'], NOW).hostname,
+                         'node-us-69.protonvpn.net')
+
     def test_round_attempt_cap_does_not_reuse_twenty_four_hour_failures(self):
         extra = copy.deepcopy(self.provider['servers'][0])
         extra.update(hostname='node-ca-61.protonvpn.net', ips=['84.20.16.30'])
