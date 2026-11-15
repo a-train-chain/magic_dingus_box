@@ -552,19 +552,27 @@ class RuntimeTests(unittest.TestCase):
         current=[GEN]
         a.ports=SimpleNamespace(observe=lambda **_:dict(generation=current[0],forwarded_port=1234,status='synced',qbit_port=1234))
         a.control=SimpleNamespace(observe_generation=lambda **_:current[0])
-        reads=[]
+        reads=[];rules=iter(['10','10','10',  # GEN: confirmed by the 2nd read, refreshed after 60 s
+                             '10','20','20'])  # new tun0: rule still old at first, then rewritten
         def run(args,deadline,cap=3,**_):
             reads.append(args)
-            return '-A OUTPUT -d 84.20.16.%d/32 -o eth0 -p udp --dport 51820 -j ACCEPT'%len(reads)
+            return '-A OUTPUT -d 84.20.16.%s/32 -o eth0 -p udp --dport 51820 -j ACCEPT'%next(rules)
         a.run=run
-        endpoints=[]
-        for t,generation in [(100,GEN),(110,GEN),(120,GEN),(130,{**GEN,'tunnel_ifindex':3}),(140,{**GEN,'tunnel_ifindex':3}),(195,{**GEN,'tunnel_ifindex':3})]:
+        newer={**GEN,'tunnel_ifindex':3};endpoints=[]
+        for t,generation in [(100,GEN),(110,GEN),(120,GEN),(130,GEN),(171,GEN),(180,GEN),
+                             (190,newer),(200,newer),(210,newer),(220,newer),(230,newer)]:
             clock[0]=t;current[0]=generation
             endpoints.append(a.observe(deadline=t+9,traffic_due=False)['endpoint'])
-        # One read per generation, plus the 60 s refresh within a generation.
-        self.assertEqual(endpoints,['84.20.16.1']*3+['84.20.16.2']*2+['84.20.16.3'])
-        self.assertEqual(len(reads),3)
+        self.assertEqual(endpoints,['84.20.16.10']*6+['84.20.16.10']+['84.20.16.20']*4)
+        # GEN: reads at 100,110 (agree), cached 120,130, refresh 171 (agrees), cached 180.
+        # newer: stale 10 then 20 disagree, 20 again agrees at 210, cached afterwards.
+        self.assertEqual(len(reads),6)
         self.assertTrue(all(r[:2]==['docker','exec'] and r[3:]==['iptables','-S','OUTPUT'] for r in reads))
+        # A tick whose final fence sees a different tunnel never caches.
+        current[0]=GEN;clock[0]=300
+        a.control=SimpleNamespace(observe_generation=lambda **_:newer)
+        a.observe(deadline=309,traffic_due=False)
+        self.assertIsNone(a.endpoint_cache)
 
     def test_deferred_catalog_load_keeps_allowance_and_retries_after_lock_release(self):
         self.c.loaded=None

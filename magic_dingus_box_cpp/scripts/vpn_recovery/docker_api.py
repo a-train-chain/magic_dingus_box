@@ -80,12 +80,15 @@ class DockerRunner:
     def __init__(self, socket_path=DOCKER_SOCKET, fallback=subprocess.run, clock=time.monotonic):
         self.socket_path, self.fallback, self.clock = socket_path, fallback, clock
 
-    @staticmethod
-    def _system_cli():
-        if os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT'):
-            return False
-        found = shutil.which('docker')
-        return bool(found) and os.path.dirname(found) in SYSTEM_CLI_DIRS
+    _cli_cache = {}
+
+    @classmethod
+    def _system_cli(cls):
+        key = (os.environ.get('PATH'), os.environ.get('DOCKER_HOST'), os.environ.get('DOCKER_CONTEXT'))
+        if key not in cls._cli_cache:
+            found = None if key[1] or key[2] else shutil.which('docker')
+            cls._cli_cache = {key: bool(found) and os.path.dirname(found) in SYSTEM_CLI_DIRS}
+        return cls._cli_cache[key]
 
     def _match(self, args):
         if not isinstance(args, list) or len(args) < 5 or args[0] != 'docker' or not self._system_cli():

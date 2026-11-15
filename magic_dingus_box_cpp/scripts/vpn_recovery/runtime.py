@@ -309,25 +309,30 @@ class SystemAdapters:
                     self.traffic['wan']=self._traffic(generation,deadline,host=True)
             o.update(self.traffic)
             # Gluetun rewrites its endpoint rule only when it (re)connects,
-            # which always creates a new tun0, so the parse is reused within
-            # one full generation (refreshed at least every 60 s).
-            endpoint = None
+            # which always creates a new tun0, so a parse is reused within one
+            # full generation once two consecutive reads agree (a rule written
+            # just after tun0 appears is never held), refreshed every 60 s.
+            endpoint, fresh = None, False
             cached = self.endpoint_cache
-            if cached and cached[0] == generation and cached[1] and 0 <= self.mono()-cached[2] < 60:
+            if cached and cached[0] == generation and cached[3] and 0 <= self.mono()-cached[2] < 60:
                 endpoint = cached[1]
             else:
+                fresh = True
                 try:
                     endpoint=parse_endpoint(self.run(['docker','exec',generation['container_id'],'iptables','-S','OUTPUT'],deadline,.4))
                 except Exception:
                     pass
-                self.endpoint_cache = (copy.deepcopy(generation), endpoint, self.mono()) if endpoint else None
             try:
                 current_generation = self.control.observe_generation(deadline=deadline)
             except Exception:
                 current_generation = None
             if current_generation == generation:
                 o['endpoint'] = endpoint
+                if fresh:
+                    agreed = bool(endpoint and cached and cached[0] == generation and cached[1] == endpoint)
+                    self.endpoint_cache = (copy.deepcopy(generation), endpoint, self.mono(), agreed) if endpoint else None
             else:
+                self.endpoint_cache = None
                 # A known replacement (or failed final fence) invalidates the
                 # entire snapshot, including traffic cached before this tick.
                 # Force a fresh traffic probe on the next coherent generation.
