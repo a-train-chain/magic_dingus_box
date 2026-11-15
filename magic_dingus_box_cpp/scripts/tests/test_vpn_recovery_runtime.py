@@ -404,6 +404,19 @@ class RuntimeTests(unittest.TestCase):
         restored=restore_policy(durable, 10, self.a.wall()+10)
         self.assertEqual(restored['started'], -90)
         self.assertLessEqual(restore_policy(durable,10,self.a.wall()-1000).get('candidate_until',10),130)
+    def test_rotation_clock_is_translated_across_watcher_restart_and_reboot(self):
+        # rotated_at is a past monotonic timestamp like the loss clocks. Kept
+        # raw, a reboot (monotonic restarts near zero) would make it a future
+        # timer and the policy would discard ALL of its state.
+        durable = {'policy': {'version': 2, 'started': 900.0, 'rotated_at': 950.0,
+                              'candidate_until': 1070.0, 'traffic_lost': 955.0},
+                   'saved_mono': 1000.0, 'saved_wall': 5000.0}
+        same_boot = restore_policy(durable, 1010.0, 5010.0)
+        self.assertEqual(same_boot['rotated_at'], 1010.0-60.0)
+        rebooted = restore_policy(durable, 3.0, 5030.0)
+        self.assertLessEqual(rebooted['rotated_at'], 3.0)
+        self.assertEqual(rebooted['rotated_at'], 3.0-80.0)
+
     def test_one_candidate_is_not_recycled_without_backoff(self):
         only=copy.deepcopy(self.a.catalog.provider)
         only['servers']=only['servers'][:1]

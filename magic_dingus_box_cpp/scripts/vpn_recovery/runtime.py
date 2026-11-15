@@ -27,7 +27,7 @@ from .docker_api import DockerRunner
 from .port_sync import PortSynchronizer, QbitClient
 from .intent import (read_json, read_intent, may_recover, adopt_running, set_intent,
                      settings_revision, boot_id, process_start, owns_stop)
-from .policy import decide, finite
+from .policy import CANDIDATE_GRACE_S, decide, finite
 
 
 # Host WAN classification uses the already-required interpreter, not an
@@ -94,7 +94,7 @@ def restore_policy(durable, now, wall):
     if not 0 <= elapsed <= 86400:
         return {'version': 2, 'started': now, 'last_restart': now} if 'last_restart' in s else {}
     for key in ('started', 'last_tick', 'port_lost', 'traffic_lost', 'control_lost', 'last_restart',
-                'traffic_unknown', 'port_unknown', 'tunnel_seen'):
+                'traffic_unknown', 'port_unknown', 'tunnel_seen', 'rotated_at'):
         if finite(s.get(key)):
             age = max(0, oldmono-s[key])+elapsed
             s[key] = now-min(86400, age)
@@ -628,7 +628,7 @@ class Controller:
                     else:
                         self.state[key] = previous
         if (ctx['action']=='rotate_server' and result.get('status')=='deferred' and result.get('authorized') is False
-                and finite(ctx.get('decision_mono')) and self.state.get('candidate_until')==ctx['decision_mono']+120
+                and finite(ctx.get('decision_mono')) and self.state.get('candidate_until')==ctx['decision_mono']+CANDIDATE_GRACE_S
                 and ctx['revision']==settings_revision(self.paths)
                 and ctx['intent_revision']==read_intent(self.paths).get('revision')):
             # Nothing was sent and nothing changed but a busy lock: retry
