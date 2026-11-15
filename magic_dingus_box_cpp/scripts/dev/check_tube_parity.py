@@ -65,9 +65,31 @@ def parse_tables(rows_text, looks_text):
     }
 
 
+def _unparsed(label, t):
+    """Problems that mean a header was not parsed as expected (never a silent pass)."""
+    problems = []
+    for field, what in (("keys", "effect keys"), ("masks", "mask names"),
+                        ("look_names", "look names"), ("looks", "look table")):
+        if not t[field]:
+            problems.append(f"{label}: no {what} parsed - the header could not be "
+                            "parsed as expected")
+    rows = list(t["looks"])
+    if t["look_names"] and t["looks"] and rows != t["look_names"]:
+        problems.append(f"{label}: look table rows {rows} do not match the look "
+                        f"names {t['look_names']} (rows must be in the same order) "
+                        "- the header could not be parsed as expected")
+    if t["keys"]:
+        for name, (values, _mask) in t["looks"].items():
+            if len(values) != len(t["keys"]):
+                problems.append(f"{label}: look '{name}' has {len(values)} values "
+                                f"but there are {len(t['keys'])} effect keys - the "
+                                "header could not be parsed as expected")
+    return problems
+
+
 def compare(box, sf):
     """Each difference as one line; [] when the tables agree."""
-    diffs = []
+    diffs = _unparsed("box", box) + _unparsed("Sound Factory", sf)
     for field, label in (("keys", "effect keys"), ("masks", "mask names"),
                          ("look_names", "look names")):
         if box[field] != sf[field]:
