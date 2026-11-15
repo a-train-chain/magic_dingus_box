@@ -479,6 +479,29 @@ TEST_CASE("load_playlist_item: a missing file leaves the playing stream alone",
     CHECK(r.player.playing);
 }
 
+TEST_CASE("load_playlist_item: a start offset joins the item that far past its own start",
+          "[controller][controller_playback][guide]") {
+    // The Channel Guide joins an item mid-way: its scheduled offset counts
+    // from the item's `start:` trim, not from the file's beginning.
+    Rig r;
+    const int pl = r.add_playlist("v", 1);
+    r.state.playlists[pl].items[0].start = 10.0;
+
+    SECTION("with an offset") {
+        auto result = r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, "",
+                                                      nullptr, 12.5);
+        REQUIRE(result);
+        CHECK(r.player.last_start == 22.5);
+    }
+    SECTION("without one: the item's start, as before") {
+        auto result = r.controller.load_playlist_item(r.state, r.state.playlists[pl], 0, "");
+        REQUIRE(result);
+        CHECK(r.player.last_start == 10.0);
+    }
+    CHECK(r.last_loaded() == "v0.mp4");
+    CHECK(count("play") == 1);
+}
+
 TEST_CASE("load_next_item: unloadable items are retried at most kMaxSyncLoadRetries "
           "times per call, then handed to the per-frame policy",
           "[controller][next][retry][bound]") {
@@ -532,6 +555,10 @@ struct ControllerAdapter final : app::PlaylistTransport {
                                        const std::string& d) override {
         return c.load_playlist_item(s, pl, i, d);
     }
+    utils::Result<> load_playlist_item_at(app::AppState& s, const app::Playlist& pl, int i,
+                                          const std::string& d, double offset_s) override {
+        return c.load_playlist_item(s, pl, i, d, nullptr, offset_s);
+    }
     void load_next_item(app::AppState& s, const std::string& d) override { c.load_next_item(s, d); }
     void load_previous_item(app::AppState& s, const std::string& d) override {
         c.load_previous_item(s, d);
@@ -552,6 +579,7 @@ struct ControllerAdapter final : app::PlaylistTransport {
     std::chrono::steady_clock::time_point now() const override {
         return std::chrono::steady_clock::time_point{std::chrono::hours(1000)};
     }
+    double wall_now_utc() const override { return 0.0; }  // no schedule in this rig
 };
 
 TEST_CASE("a long run of unloadable items is walked a bounded chunk per frame",

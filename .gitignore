@@ -30,6 +30,9 @@ coverage.xml
 # with nothing in any status output to say so.
 build/
 build-*/
+# deploy_cpp.sh moves a stale build/ aside as build.prev.<epoch> (the running
+# kiosk's cwd) and deletes it after the restart.
+build.prev*/
 dist/
 *.egg-info/
 .eggs/

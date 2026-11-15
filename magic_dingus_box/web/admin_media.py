@@ -515,6 +515,15 @@ def register(app, ctx) -> None:
             '-profile:v', 'high', '-level:v', '4.1',
             '-maxrate', '20M', '-bufsize', '25M',
             '-fpsmax', '30',
+            # A keyframe at least every 2 s, whatever the frame rate.
+            # The kiosk's Channel Guide joins a channel with a KEY_UNIT
+            # seek, which lands on the keyframe BEFORE the target:
+            # libx264's default 250-frame GOP (~8.3 s at 30 fps) started a
+            # channel up to 8 s behind its schedule. An expression on the
+            # frame's time (not -g N frames) holds at 24, 25 and 29.97 fps
+            # alike; scene-cut keyframes are kept (the tier's preset
+            # decides those).
+            '-force_key_frames', 'expr:gte(t,n_forced*2)',
             '-c:a', 'aac',
             # 192k matches the Retro Ripper's AAC bitrate (was 128k here —
             # the one audio setting that diverged between the pipelines).

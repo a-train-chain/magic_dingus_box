@@ -204,6 +204,64 @@ def test_sideways_phone_clip_is_stored_upright(client, temp_data_dir, real_ffmpe
     assert info['crop'] is False
 
 
+def _keyframe_times(path):
+    out = subprocess.check_output([
+        'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+        '-skip_frame', 'nokey', '-show_entries', 'frame=pts_time',
+        '-of', 'csv=p=0', str(path)], text=True)
+    return [float(line.strip().rstrip(',')) for line in out.splitlines()
+            if line.strip()]
+
+
+def _wait_for_job(client, job_id, timeout_s=60):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        status = client.get('/admin/transcode-status/' + job_id).get_json()['data']
+        if status['status'] in ('complete', 'error'):
+            return status
+        time.sleep(0.05)
+    return status
+
+
+# A Channel Guide tune seeks with KEY_UNIT|SNAP_NEAREST, which lands on the
+# keyframe BEFORE the target: libx264's default 250-frame GOP (~8.3 s at
+# 30 fps) let a channel start up to 8 s behind its schedule. Every master
+# the box encodes carries a keyframe at least every 2 s, whatever its frame
+# rate, so a join lands at most 2 s early.
+@pytest.mark.parametrize('route,rate,pixel_format', [
+    ('/admin/upload-and-transcode', '30', 'yuv420p'),
+    ('/admin/smart-upload', '24000/1001', 'yuv422p'),
+])
+def test_every_transcode_has_a_keyframe_every_two_seconds(
+        client, temp_data_dir, real_ffmpeg, route, rate, pixel_format):
+    source = temp_data_dir.parent / 'long_gop.mp4'
+    # A 12 s source with ONE keyframe: the output's keyframes must come from
+    # the encode, not the source.
+    subprocess.run([
+        'ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+        f'testsrc2=size=640x480:rate={rate}', '-t', '12',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-g', '1000',
+        '-pix_fmt', pixel_format, str(source)], check=True)
+    response = client.post(route, data={
+        'file': (io.BytesIO(source.read_bytes()), 'long_gop.mp4'),
+        'resolution': 'crt', 'normalize_audio': 'false',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 200, response.get_json()
+    data = response.get_json()['data']
+    assert 'job_id' in data, data
+    status = _wait_for_job(client, data['job_id'])
+    assert status['status'] == 'complete', status
+    master = temp_data_dir / 'media' / status['output_filename']
+    times = _keyframe_times(master)
+    duration = float(json.loads(subprocess.check_output([
+        'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'json', str(master)]))['format']['duration'])
+    assert duration == pytest.approx(12, abs=0.2)
+    assert times and times[0] == pytest.approx(0, abs=0.05)
+    gaps = [b - a for a, b in zip(times, times[1:])] + [duration - times[-1]]
+    assert max(gaps) <= 2.1, (times, duration)
+
+
 @pytest.mark.parametrize('force_conversion', [False, True])
 def test_full_range_420_upload_and_converted_master_are_reusable(
         client, temp_data_dir, real_ffmpeg, force_conversion):

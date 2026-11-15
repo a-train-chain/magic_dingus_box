@@ -142,6 +142,9 @@ set(UI_SOURCES
     src/ui/renderer_shaders.cpp
     src/ui/renderer_text.cpp
     src/ui/renderer_main_menu.cpp
+    # The Channel Guide's painter (GL — kiosk only; its view model,
+    # channel_guide_view.h, and text_fit.h are header-only and Mac-tested).
+    src/ui/renderer_channel_guide.cpp
     src/ui/renderer_settings.cpp
     src/ui/renderer_mb.cpp
     src/ui/renderer_crt.cpp
@@ -190,7 +193,10 @@ set(APP_SOURCES
     src/app/playlist_cursor.cpp
     src/app/playlist_playback.cpp
     src/app/playlist_reload.cpp
+    src/app/channel_schedule.cpp
+    src/app/auto_tune.cpp
     src/app/overlay_nav.cpp
+    src/app/guide_nav.cpp
     src/app/game_handoff.cpp
     # GL/DRM half of the game hand-off: kiosk-only, in no test target.
     src/app/game_handoff_kiosk.cpp
@@ -231,6 +237,7 @@ set(RETROARCH_SOURCES
     src/retroarch/controller_profile.cpp
     src/retroarch/joydev_index.cpp
     src/retroarch/capture_session.cpp
+    src/retroarch/sink_suspension.cpp
 )
 
 # Retroarch sources shared by BOTH test_retroarch_unit and
@@ -257,6 +264,8 @@ set(RETROARCH_TESTABLE_SOURCES
     src/retroarch/controller_profile.cpp
     src/retroarch/joydev_index.cpp
     src/retroarch/capture_session.cpp
+    # PulseAudio -> RetroArch audio hand-over (pure; the launcher drives it).
+    src/retroarch/sink_suspension.cpp
 )
 
 set(ALL_SOURCES
@@ -786,6 +795,8 @@ if(UI_TEST_SOURCES)
         src/utils/subprocess.cpp
         # settings_menu.cpp's Audio Output row calls cycle_output().
         src/app/audio_router.cpp
+        # channel_guide_view.h (header-only) walks app::on_air / lineup.
+        src/app/channel_schedule.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -838,10 +849,17 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # transport, and the web-admin playlist reload's re-anchoring.
         src/app/playlist_playback.cpp
         src/app/playlist_reload.cpp
+        src/app/channel_schedule.cpp
+        # main.cpp's Channel Guide nothing-playing rule (re-tune live).
+        src/app/auto_tune.cpp
         # The list overlay's cursor (rows, scroll window, the Picture
         # control below the last row) — main.cpp's ROTATE handler and the
         # reload's clamp both go through it.
         src/app/overlay_nav.cpp
+        # The Channel Guide's cursor (channel rows, the 5-row window, the
+        # Picture control above channel 00) — main.cpp's guide-style
+        # ROTATE / SELECT / NEXT / PREV branches go through it.
+        src/app/guide_nav.cpp
         # main.cpp's boot intro decisions (end detection, fade volume, the
         # hand-off to the menu, the render-video decision).
         src/app/intro_sequence.cpp
@@ -921,7 +939,11 @@ if(UTILS_TEST_SOURCES)
         # The debug screenshot hook's file side (BMP encode, naming,
         # atomic write, retention).
         src/utils/bmp_writer.cpp
-        src/utils/screenshot_store.cpp)
+        src/utils/screenshot_store.cpp
+        # resolve_video_path against a deleted working directory
+        # (tests/utils/test_path_resolver_cwd.cpp).
+        src/utils/path_resolver.cpp
+        src/utils/config.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
     # pthread: latest_wins_worker.h (the background file-writer thread).
     target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain pthread)

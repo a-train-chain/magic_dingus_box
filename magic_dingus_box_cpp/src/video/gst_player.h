@@ -2,6 +2,7 @@
 
 #include "video_player.h"
 #include "deferred_start.h"
+#include "log_rate_limit.h"
 #include "query_cache.h"
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
@@ -49,6 +50,12 @@ public:
     // new pipeline decodes its first one. 0 = nothing ever loaded.
     uint64_t stream_generation() const { return stream_generation_; }
 
+    // The pipeline's current state, its pending one and the last state
+    // change's return, e.g. "PAUSED -> PLAYING (ASYNC)" — read with a ZERO
+    // timeout, so it never blocks the render thread. For the stall
+    // watchdog's log line (PlaylistTransport::pipeline_state).
+    std::string describe_state() const;
+
     // Set PulseAudio device on the audio sink (e.g. sink name)
     // Must be called after initialize(). Also stored for pipeline re-creation.
     void set_audio_device(const std::string& pulse_device);
@@ -72,7 +79,7 @@ private:
     std::atomic<bool> is_playing_;
     std::atomic<bool> is_paused_;
     // Latched by bus_call on GST_MESSAGE_EOS; cleared by stop() (which
-    // every load_file() runs through) and by fire_seek() (a FLUSH seek
+    // every load_file() runs through), by cleanup() (via forget_stream) and by fire_seek() (a FLUSH seek
     // out of EOS resumes playback). Needed because a pipeline REMAINS in
     // GST_STATE_PLAYING after posting EOS — without the latch,
     // update_state()'s state poll overwrote bus_call's is_playing_=false
@@ -80,7 +87,7 @@ private:
     // after natural end-of-stream.
     std::atomic<bool> at_eos_{false};
     // Latched by bus_call on GST_MESSAGE_ERROR; cleared ONLY by stop()
-    // (which every load_file() runs through). Unlike at_eos_ a seek does
+    // (which every load_file() runs through) and cleanup() (via forget_stream). Unlike at_eos_ a seek does
     // not clear it — a failed pipeline stays failed until it is torn down.
     // Gates is_playing_ the same way at_eos_ does: an errored pipeline can
     // keep reporting GST_STATE_PLAYING, and the state poll used to flip
@@ -111,6 +118,12 @@ private:
     // in a single millisecond. See bus_call() for the throttle logic.
     guint64 last_qos_logged_dropped_ = 0;
     std::chrono::steady_clock::time_point last_qos_log_time_{};
+
+    // GStreamer WARNING messages are logged at WARN, at most one per source
+    // element per 5 s (cleared per load_file), so the next frozen picture
+    // names the element that complained without a chatty one flooding the
+    // journal. See bus_call().
+    PerSourceLogLimit warning_log_limit_{std::chrono::seconds(5)};
 
     // EOS callback
     std::function<void()> eos_callback_;
@@ -147,6 +160,18 @@ private:
     void fire_seek();
 
     void update_position();
+
+    // Forget everything this player reports about a stream: playing /
+    // paused / EOS / error, position, duration, their query memos, the seek
+    // coalescer and the deferred start. stop() and cleanup() both end with
+    // it, so a pipeline that is gone can never be described by them.
+    // cleanup() used to skip it: is_playing() kept reading true through a
+    // whole game session, and after the post-game initialize() the new,
+    // empty playbin failed every query, so get_position()/get_duration()
+    // served the torn-down stream's last values — Controller::update_state
+    // then saw "duration 40.1, position 1.68" and raised video_active for a
+    // stream that did not exist (Pi 5, 2026-11-13).
+    void forget_stream();
 };
 
 } // namespace video

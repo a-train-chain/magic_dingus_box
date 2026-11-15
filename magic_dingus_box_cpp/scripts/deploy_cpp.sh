@@ -155,6 +155,7 @@ rsync -avz --checksum \
     --exclude '.git' \
     --exclude 'build' \
     --exclude 'build-*' \
+    --exclude 'build.prev*' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
     --exclude '.DS_Store' \
@@ -706,14 +707,44 @@ FINGERPRINT_FILE="build/.mdb_build_fingerprint"
 NEW_FINGERPRINT="$(build_fingerprint)"
 OLD_FINGERPRINT="$(cat "$FINGERPRINT_FILE" 2>/dev/null || true)"
 
+# Never `rm -rf build`: build/ is the running kiosk's systemd
+# WorkingDirectory= and this deploy keeps the OLD kiosk up until the new
+# build finishes. 2026-11-13: deleting it made the kiosk's next relative-path
+# lookup fail with "cannot get current path" and abort it, and systemd could
+# not exec the missing binary for 13 minutes (no picture). Move it aside
+# instead — the renamed directory is the same inode, so the old kiosk's cwd
+# (and ../data/... relative to it) stays valid; Step 3b deletes it once the
+# new kiosk is confirmed active.
+KIOSK_PID="$(systemctl show -p MainPID --value magic-dingus-box-cpp.service 2>/dev/null || true)"
+KIOSK_CWD=""
+SWEEP_OK=1
+if [ "${KIOSK_PID:-0}" -gt 0 ] 2>/dev/null; then
+    KIOSK_CWD="$(sudo -n readlink "/proc/${KIOSK_PID}/cwd" 2>/dev/null || true)"
+    KIOSK_CWD="${KIOSK_CWD% (deleted)}"
+    # A live kiosk whose cwd we cannot read might be standing in a leftover:
+    # fail CLOSED and sweep nothing.
+    [ -n "$KIOSK_CWD" ] || SWEEP_OK=0
+fi
+# Sweep leftovers from earlier deploys (e.g. one whose build failed), but
+# never the one the running kiosk is still standing in.
+for old_prev in build.prev*; do
+    [ "$SWEEP_OK" = 1 ] || break
+    [ -d "$old_prev" ] || continue
+    [ "$(cd "$old_prev" && pwd -P)" = "$KIOSK_CWD" ] && continue
+    rm -rf "$old_prev" || true
+done
+move_build_aside() {
+    mv build "build.prev.$(date +%s)"
+}
+
 if [ "${FORCE_CLEAN}" = "true" ]; then
-    echo "  Clean build requested (--clean) — wiping build/"
-    rm -rf build
+    echo "  Clean build requested (--clean) — moving build/ aside"
+    [ -d build ] && move_build_aside
 elif [ -d build ] && [ "$NEW_FINGERPRINT" != "$OLD_FINGERPRINT" ]; then
     echo "  Headers or CMakeLists.txt changed since the last build here."
-    echo "  Wiping build/ — incremental linking across a layout change"
+    echo "  Moving build/ aside — incremental linking across a layout change"
     echo "  produces a binary that builds fine and crashes at runtime."
-    rm -rf build
+    move_build_aside
 fi
 
 # Build
@@ -780,6 +811,21 @@ BUILDEOF
     # replaced the file but the running process didn't pick it up.
     echo "Step 3b: Restarting kiosk service to pick up the new binary..."
     ssh "${PI_HOST}" "${RESTART_CMD}"
+    # The new kiosk is active and running from build/, so any build.prev*
+    # directories moved aside by the build step are no longer anyone's cwd.
+    # Skip any directory the kiosk is somehow still standing in; never fail a
+    # deploy over cleanup after a good restart.
+    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" bash <<'CLEANEOF' || true
+cd "${PI_DIR}/magic_dingus_box_cpp" || exit 0
+pid="$(systemctl show -p MainPID --value magic-dingus-box-cpp.service 2>/dev/null || true)"
+cwd="$(sudo -n readlink "/proc/${pid:-0}/cwd" 2>/dev/null || true)"
+cwd="${cwd% (deleted)}"
+for d in build.prev*; do
+    [ -d "$d" ] || continue
+    [ "$(cd "$d" && pwd -P)" = "$cwd" ] && continue
+    rm -rf "$d" || true
+done
+CLEANEOF
     echo ""
 fi
 

@@ -10,12 +10,22 @@
 #include <mutex>
 #include <shared_mutex>
 
+#include "guide_nav.h"
+
 namespace app {
 
 // Display mode enumeration
 enum class DisplayMode {
     CRT_NATIVE,   // Fullscreen with CRT effects
     MODERN_TV     // 4:3 centered with bezel overlay
+};
+
+// How the main menu presents playlists. List is the classic menu; ChannelGuide
+// is the optional live-channel overlay. Persisted as display.menu_style
+// ("list" | "channel_guide").
+enum class MenuStyle {
+    List,
+    ChannelGuide
 };
 
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
@@ -276,6 +286,43 @@ public:
     bool loop;
     bool playlist_loop;  // Whether to loop back to start of playlist when finished
     bool shuffle;        // Whether to play videos in random order
+    // Channel Guide: the channel last tuned, as a playlist_identity() string
+    // ("shuffle" = channel 00, "" = none). Persisted as playback.last_channel.
+    std::string last_channel_id;
+    // Channel Guide, written by PlaylistPlayback (render thread only):
+    // tuned_channel: the channel (= UI row) on screen, or waiting for its
+    //   next item after a failed one; -1 = none. 00 stays 00 while the
+    //   playing playlist is the on-air item's source playlist.
+    // guide_gave_up: channels given up after repeated failures since a
+    //   channel last proved it plays (5 s of progress past its join point,
+    //   or an item's natural end — never a load alone); the
+    //   nothing-playing rule skips them.
+    // guide_wait_until_utc: after a failed item, the UTC second its
+    //   scheduled slot ends (at most its length after the failure) — the
+    //   channel is not re-tuned before then.
+    int tuned_channel = -1;
+    std::vector<int> guide_gave_up;
+    double guide_wait_until_utc = 0;
+    // Channel Guide input state, written by app::guide_input / guide_frame
+    // (app/guide_nav.h, called from main.cpp; render thread only):
+    // guide_cursor: channel row, the grid's 5-row window, on the Picture
+    //   control. The List style's selected_index / picture_focus are not
+    //   used in guide style.
+    // guide_opened_by_viewer: the viewer owns the guide — SELECT opened it,
+    //   or the shown guide got any other input. Cleared by the viewer's
+    //   Close and Tune presses, whenever the overlay hides, and when a game
+    //   session begins (GameSessionBracket::begin: after a game the video
+    //   comes back full screen). A tune's load
+    //   (PlaylistPlayback, decided when the load RUNS) never hides a guide
+    //   the viewer owns — "the guide never closes by itself"; one the
+    //   viewer does not own goes, so the video simply comes back.
+    // guide_viewer_tune: the row of a viewer's Tune press whose load has not
+    //   run (-1 none) — the knob and NEXT/PREV leave that tune's close alone.
+    // guide_appeared: the frame the guide comes on screen.
+    GuideCursor guide_cursor;
+    bool guide_opened_by_viewer = false;
+    int guide_viewer_tune = -1;
+    GuideShownEdge guide_appeared;
     bool master_shuffle_active; // True if Master Shuffle is playing (picks random video from ANY playlist)
     
     // Shuffle queue - ensures all videos play once before reshuffling
@@ -444,6 +491,7 @@ public:
     // Display settings for CRT effects and display mode
     struct DisplaySettings {
         DisplayMode mode = DisplayMode::CRT_NATIVE;
+        MenuStyle menu_style = MenuStyle::List;  // display.menu_style
         int bezel_index = 0;  // Index into bezels array (0 = procedural/none)
         
         float scanline_intensity = 0.0f;      // 0.0 - 1.0

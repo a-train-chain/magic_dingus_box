@@ -20,6 +20,7 @@ class ControllerWizard;
 class PairingScreen;
 class SettingsMenuManager;
 class VirtualKeyboard;
+struct GuideView;
 }
 
 namespace app {
@@ -111,7 +112,14 @@ public:
     // off-screen for the current viewport size, instead of using a
     // hardcoded CRT-tuned row count.
     void render(app::AppState& state);
-    
+
+    // Channel Guide style: the guide main.cpp laid out for this frame
+    // (ui/channel_guide_view.h), painted by render(state) in place of the
+    // playlist list; nullptr when the guide is not painted this frame
+    // (app::guide_painted). Set before every render(); the view must stay
+    // alive until that render returns. In List style it is never read.
+    void set_channel_guide(const GuideView* view) { channel_guide_ = view; }
+
     // Render loading overlay
     void render_loading_overlay(const app::AppState& state);
 
@@ -564,6 +572,44 @@ private:
     // no row is drawn selected (no highlight bar, no blinking indicator).
     void render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing, int current_playlist_index = -1, bool picture_focus = false);
     void render_footer(const app::AppState& state, float text_alpha = 1.0f, bool video_active = false, bool ui_visible_when_playing = false);
+    // The Channel Guide (renderer_channel_guide.cpp): `view` at `alpha` (the
+    // overlay's fade); `window_dark` fills the video window black (no video
+    // in it). Batched primitives only. GuidePainter holds one frame's
+    // painting (its sections and shared helpers); guide_fit_ keeps the
+    // strings and widths it measures with the fonts, redone only when the
+    // view's revision changes (a new layout), not every frame.
+    const GuideView* channel_guide_ = nullptr;
+    void render_channel_guide(const GuideView& view, float alpha, bool window_dark);
+    class GuidePainter;
+    // A letter-spaced label (the mockup's eyebrow, NEXT, PICTURE, CROP, ...)
+    // as measured once per layout: each code point, and its x from the
+    // label's left edge. Painting it measures nothing and builds no string.
+    struct GuideSpacedLabel {
+        std::vector<std::string> glyphs;
+        std::vector<float> x;
+        float w = 0;  // the whole label's width
+    };
+    struct GuideFitCache {
+        bool valid = false;
+        uint64_t revision = 0;  // GuideView::revision these were made for
+        float ap_w = 0, hm_w = 0;        // clock AM/PM, clock
+        float num_w = 0, box_w = 0;      // CH number, CH box
+        float title_x = 0;               // playlist title's left edge
+        std::vector<std::string> title_lines;
+        std::string item_title, artist;  // fitted to the panel
+        float start_w = 0, end_w = 0;    // progress row times
+        std::string next_label, next_title;
+        float next_title_x = 0;
+        float pic_box_x = 0, pic_crop_x = 0, pic_desc_x = 0, pic_end = 0;
+        float source_w = 0, join_w = 0;
+        std::string date;  // fitted to the channel column
+        std::vector<float> hint_key_x, hint_label_x;
+        // The letter-spaced labels, ready to paint.
+        GuideSpacedLabel eyebrow, ch_caption, next_spaced, picture, crop, press_to_watch,
+            source, date_spaced;
+        std::vector<GuideSpacedLabel> hint_keys;
+    };
+    GuideFitCache guide_fit_;
     void render_volume_overlay(const app::AppState& state);
     void render_seek_bar(const app::AppState& state);
     void render_scanlines(); // Deprecated, replaced by render_crt_effects

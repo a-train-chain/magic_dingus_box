@@ -1,9 +1,10 @@
 """Device identity, health and backup/restore routes.
 
-/admin/device/info, /admin/device/name, /admin/health,
-/admin/health/detailed, /admin/backup and /admin/restore, plus the
-device-name validators and get_device_info()/get_app_version(), which the
-support and update routes reuse through ctx.
+/admin/device/info, /admin/device/name, /admin/system/timezone (the
+Content Manager browser's zone; helpers in timezone_apply.py),
+/admin/health, /admin/health/detailed, /admin/backup and /admin/restore,
+plus the device-name validators and get_device_info()/get_app_version(),
+which the support and update routes reuse through ctx.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import json
 import os
 import re
 import socket
+import sys
 import time
 import uuid
 import yaml
@@ -25,6 +27,7 @@ from flask import request, send_file
 # sys.path, package-relative in production.
 try:
     import media_info
+    import timezone_apply
     from admin_common import (
         _read_zip_entry_capped, _sanitize_filename, error_response,
         get_cpu_temperature, get_cpu_usage, get_disk_info, get_memory_info,
@@ -35,6 +38,7 @@ try:
     )
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from . import media_info
+    from . import timezone_apply
     from .admin_common import (
         _read_zip_entry_capped, _sanitize_filename, error_response,
         get_cpu_temperature, get_cpu_usage, get_disk_info, get_memory_info,
@@ -105,6 +109,7 @@ def register(app, ctx) -> None:
     # these are shims that look the name up in admin at call time.
     _atomic_write_text = ctx._atomic_write_text
     check_service_status = ctx.check_service_status
+    _require_nopasswd_sudo = ctx._require_nopasswd_sudo
 
     def get_device_info() -> dict:
         """Get device identity and stats."""
@@ -181,6 +186,56 @@ def register(app, ctx) -> None:
             return success_response(data={"device_name": new_name}, message="Device name updated")
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
+
+    # ===== TIME ZONE (reported by the owner's browser) =====
+
+    @app.post("/admin/system/timezone")
+    @require_csrf
+    def set_timezone():  # type: ignore[no-redef]
+        """Apply the zone the Content Manager's browser reports. The latest
+        browser to connect wins; an unchanged zone does nothing, and neither
+        does a UTC report on a box already on a named zone (privacy modes
+        report UTC whatever the real zone is). Applied on every box, List
+        style included: a correct system zone is right for the whole box."""
+        data = request.get_json(silent=True)
+        reported = data.get("zone") if isinstance(data, dict) else None
+        zone = timezone_apply.resolve_zone(reported, timezone_apply.ZONEINFO_DIR)
+        if zone is None:
+            return error_response("VALIDATION_ERROR", "Unknown time zone")
+        # services/.env is rewritten by a running Media Browser setup/reset;
+        # touch nothing while one runs. The next page load retries.
+        if ctx._maintenance_precheck():
+            return success_response(data={"changed": False})
+        env_path = ctx.SERVICES_ENV
+        current = timezone_apply.read_system_timezone()
+        # A browser in a privacy mode reports UTC whatever its real zone:
+        # never let that move a box off a named zone (nor its .env TZ=).
+        if timezone_apply.keeps_named_zone(zone, current):
+            return success_response(data={"changed": False})
+        if current == zone:
+            # Cheap + quiet path; but revisit a .env whose rewrite once failed.
+            if (env_path.is_file()
+                    and timezone_apply.env_tz(env_path) != zone):
+                try:
+                    timezone_apply.rewrite_env_tz(env_path, zone)
+                except Exception as e:  # noqa: BLE001
+                    print(f"TZ= rewrite in services/.env failed: {e!r}",
+                          file=sys.stderr)
+            return success_response(data={"changed": False})
+        resp = _require_nopasswd_sudo()
+        if resp:
+            return resp
+        ok, err = timezone_apply.set_system_timezone(zone)
+        if not ok:
+            print(f"timedatectl set-timezone failed: {err!r}", file=sys.stderr)
+            return error_response(
+                "INTERNAL_ERROR", "Could not set the time zone", status=500)
+        try:
+            timezone_apply.rewrite_env_tz(env_path, zone)
+        except Exception as e:  # noqa: BLE001 - the system zone is already set
+            print(f"TZ= rewrite in services/.env failed: {e!r}", file=sys.stderr)
+        _poke_kiosk_reload("timezone")
+        return success_response(data={"changed": True})
 
     # ===== HEALTH CHECK & MONITORING =====
 

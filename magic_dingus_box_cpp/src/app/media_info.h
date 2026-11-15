@@ -148,6 +148,16 @@ public:
     const MediaInfoMap& map() const { return map_; }
     bool crop_for(const std::string& key) const { return app::crop_for(map_, key); }
 
+    // True once the first read ATTEMPT has finished, in any outcome — the
+    // file read (poll() adopting its map in the same call), no file, a
+    // corrupt file, an I/O error such as EACCES or EIO — and poll() has
+    // published it. False while that read is still under way (a slow or
+    // stalled card). The Channel Guide's power-on tune waits for it
+    // (app/auto_tune.h): until then only trimmed items have a length. A
+    // failed read lifts it too, so a box that can never read the file
+    // behaves as before the gate rather than never tuning on its own.
+    bool first_read_finished() const { return first_read_finished_; }
+
     // The operator's choice for one video. The map changes now; the write
     // is queued. crop == true removes the entry's crop field (and the entry
     // when nothing else is left in it). An empty key is ignored.
@@ -171,7 +181,8 @@ private:
     // read_merge_write, and post what is on disk (or put the edits back).
     bool run_job();
     // Worker thread. With edits: lock -> read -> merge -> write -> unlock;
-    // without: read. Sets `on_disk` to the file's contents after the job
+    // without (or when the lock cannot be taken: the edits then wait): read.
+    // Sets `on_disk` to the file's contents after the job
     // (left empty when the file could not be read). False when the edits
     // did not reach the disk.
     bool read_merge_write(const Edits& batch, std::optional<MediaInfoMap>& on_disk);
@@ -187,6 +198,7 @@ private:
     // Render thread only: its map, and the stranded-work retry schedule
     // (armed when poll() first sees work waiting with the worker idle).
     MediaInfoMap map_;
+    bool first_read_finished_ = false;
     bool retry_armed_ = false;
     std::chrono::steady_clock::time_point next_retry_{};
 
@@ -196,6 +208,7 @@ private:
     Edits pending_;        // edits no job has taken yet
     Edits inflight_;       // edits the running job is writing
     bool reload_requested_ = false;
+    bool read_finished_ = false;          // a job's read has run (any outcome)
     std::string reload_marker_;           // deleted by the next reload job
     std::optional<MediaInfoMap> result_;  // the newest map read, not yet adopted
 

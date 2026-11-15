@@ -90,8 +90,10 @@ public:
     
     // Load a playlist item (video or game)
     // progress_callback: Optional callback to run while waiting (e.g. for loading animation)
+    // start_offset_s: join a video item this far past its own `start:`
+    // (a Channel Guide tune: the scheduled position); ignored for games.
     // Returns Result with error message on failure
-    utils::Result<> load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr);
+    utils::Result<> load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr, double start_offset_s = 0.0);
     
     // Navigation
     //
@@ -194,10 +196,12 @@ private:
     // play for a video item, the RetroArch hand-off for a game. Kiosk-only
     // (controller.cpp); load_playlist_item itself is in
     // controller_playback.cpp so the stepping code can be linked into the
-    // Mac tests, which supply their own definition of this function.
+    // Mac tests, which supply their own definition of this function. A
+    // video starts at item.start + start_offset_s.
     utils::Result<> load_item_media(AppState& state, const app::PlaylistItem& item,
                                     const std::string& playlist_directory,
-                                    std::function<void()> progress_callback);
+                                    std::function<void()> progress_callback,
+                                    double start_offset_s);
 
     video::VideoPlayer* player_;
     retroarch::RetroArchLauncher retroarch_launcher_;

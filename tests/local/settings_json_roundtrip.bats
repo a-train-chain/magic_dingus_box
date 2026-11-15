@@ -57,6 +57,9 @@ setup() {
         (.display.bezel_index | type == "number") and
         (.display.scanline_intensity | type == "number") and
         (.display.enhanced_crt_enabled | type == "boolean") and
+        (.display.menu_style | type == "string") and
+        (.display.menu_style == "list" or .display.menu_style == "channel_guide") and
+        (.playback.last_channel | type == "string") and
         (.playback.master_volume | type == "number") and
         (.playback.master_volume >= 0 and .playback.master_volume <= 100) and
         (.playback.playlist_loop | type == "boolean") and

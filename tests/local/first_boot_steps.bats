@@ -737,3 +737,25 @@ kill -9 $$
     ! printf '%s' "$last" | grep -qF "=== FAILED" || false
     printf '%s' "$last" | grep -qF "=== Magic Dingus Box first-boot setup complete ==="
 }
+
+@test "reset_settings clears the source box's last channel and touches nothing else" {
+    mkdir -p "$ROOT/config"
+    cat > "$ROOT/config/settings.json" <<'JSON'
+{"display": {"menu_style": "channel_guide", "mode": "modern_tv"},
+ "playback": {"last_channel": "some-playlist", "master_volume": 80,
+              "media_browser_unlocked": false}}
+JSON
+    {
+        echo "INSTALL_DIR=\"$ROOT\""
+        echo 'log() { :; }'
+        real_step reset_settings
+        echo 'step_reset_settings'
+    } > "$T/reset.sh"
+    run bash "$T/reset.sh"
+    [ "$status" -eq 0 ]
+    assert_has "reset last_channel"
+    run jq -c '[.playback.last_channel, .playback.master_volume,
+                .playback.media_browser_unlocked, .display.menu_style, .display.mode]' \
+        "$ROOT/config/settings.json"
+    [ "$output" = '["",80,false,"channel_guide","modern_tv"]' ]
+}

@@ -39,6 +39,7 @@ enum class MenuSection {
     TOGGLE_PLAYLIST_LOOP,
     TOGGLE_SHUFFLE,
     TOGGLE_DISPLAY_MODE,
+    TOGGLE_MENU_STYLE,     // List ↔ Channel Guide
     TOGGLE_BEZEL,
     CHANGE_RESOLUTION,
     CYCLE_BEZEL_STYLE,
