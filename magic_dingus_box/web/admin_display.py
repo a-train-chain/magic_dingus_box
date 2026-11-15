@@ -64,26 +64,36 @@ def _is_int(value) -> bool:
 
 def kiosk_tube(data_dir: Path, now: Optional[float] = None) -> tuple:
     """(tube block, None) when the kiosk offers Tube, else (None, reason)."""
+    tube, reason, _ts = kiosk_tube_status(data_dir, now)
+    return tube, reason
+
+
+def kiosk_tube_status(data_dir: Path, now: Optional[float] = None) -> tuple:
+    """kiosk_tube plus the status's own `ts` (None when there is no fresh one).
+
+    The page compares `ts` with a POST's `accepted_at` (both this box's clock)
+    so it calls a change lost only on a status the kiosk wrote well after the
+    change was accepted, never on a status that is merely late."""
     try:
         status = json.loads((Path(data_dir) / STATUS_NAME).read_text("utf-8"))
     except (OSError, ValueError):  # missing, unreadable, not JSON (incl. bad UTF-8)
-        return None, "kiosk_not_running"
+        return None, "kiosk_not_running", None
     if not isinstance(status, dict):
-        return None, "kiosk_not_running"
+        return None, "kiosk_not_running", None
     ts = status.get("ts")
     if not isinstance(ts, (int, float)) or isinstance(ts, bool) or not math.isfinite(ts):
-        return None, "kiosk_not_running"
+        return None, "kiosk_not_running", None
     # Both directions: the Pi has no RTC, so the clock can step BACK after a
     # kiosk dies, which would leave its last status "fresh" for the step's size.
     if abs((time.time() if now is None else now) - ts) > STATUS_MAX_AGE_S:
-        return None, "kiosk_not_running"
+        return None, "kiosk_not_running", None
     tube = status.get("tube")
     if not isinstance(tube, dict):
-        return None, "kiosk_too_old"
+        return None, "kiosk_too_old", None
     if tube.get("gate") is not True:
         reason = tube.get("reason")
-        return None, reason if isinstance(reason, str) and reason else "not_ready"
-    return tube, None
+        return None, (reason if isinstance(reason, str) and reason else "not_ready"), None
+    return tube, None, ts
 
 
 def _op_rules(rows: dict) -> dict:
@@ -216,10 +226,10 @@ def register(app, ctx) -> None:
 
     @app.get("/admin/display/tube")
     def tube_state():  # type: ignore[no-redef]
-        tube, reason = kiosk_tube(data_dir)
+        tube, reason, ts = kiosk_tube_status(data_dir)
         if tube is None:
             return success_response({"available": False, "reason": reason})
-        data = {"available": True, "rows": rows, "state": tube}
+        data = {"available": True, "rows": rows, "state": tube, "status_ts": ts}
         if request.args.get("state_only") == "1":
             del data["rows"]
         return success_response(data)
@@ -246,4 +256,4 @@ def register(app, ctx) -> None:
                 return error_response("TUBE_BACKLOG", "The TV is not keeping up; try again shortly", 409)
             if not _replace_atomically(data_dir, text):
                 return error_response("INTERNAL_ERROR", "Could not save the change", 500)
-        return success_response({"seq": top})
+        return success_response({"seq": top, "accepted_at": time.time()})

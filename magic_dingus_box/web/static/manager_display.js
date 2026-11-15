@@ -20,9 +20,14 @@
 
 /** The server's limit on ops per POST (admin_display.MAX_OPS_PER_POST). */
 const TUBE_MAX_OPS_PER_POST = 64;
-/** A sent batch the kiosk has not confirmed after this long stops being drawn
-    on the controls (a healthy kiosk confirms within a second or two). */
-const TUBE_CONFIRM_TIMEOUT_MS = 6000;
+/** A sent batch is called lost only on the kiosk's word: a status the kiosk
+    wrote at least this many seconds after the server accepted the batch
+    (status_ts vs accepted_at, both the box's clock) that still lacks its
+    seq. A healthy kiosk confirms within a second; a status that is merely
+    late (no fresh one at all) never trips it. */
+const TUBE_CONFIRM_EVIDENCE_S = 4;
+/** A POST with no answer by then is abandoned and retried (a transient failure). */
+const TUBE_POST_TIMEOUT_MS = 10000;
 /** Consecutive failed POSTs before the page says the TV is not being reached. */
 const TUBE_FAILURES_BEFORE_NOTICE = 3;
 /** Failures that clear by themselves and are retried on every poll; anything
@@ -91,64 +96,96 @@ function tubeConfirm(sent, handledSeq, lastHandled) {
     return sent.filter(b => b.seq > handledSeq);
 }
 
+/** Plain text for a failed POST: the server's message, or what went wrong. */
+function tubeErrorText(err) {
+    if (err && err.code && err.message) return err.message;
+    if (err && err.name === 'SyntaxError') return 'the box did not answer properly';
+    if (err && (err.name === 'AbortError' || err.name === 'TimeoutError')) return 'the box did not answer in time';
+    if (err && err.name === 'TypeError') return 'the box could not be reached';
+    return (err && err.message) || 'unknown error';
+}
+
 /**
  * One POST in flight at a time, at most TUBE_MAX_OPS_PER_POST ops in it (the
- * rest go next). `post(ops)` resolves to {seq} or rejects with an error
- * carrying `code` (apiPost's errors). Ops added while a POST is out are
- * coalesced and sent when it returns.
+ * rest go next). `post(ops, signal)` resolves to {seq, accepted_at} or
+ * rejects with an error carrying `code` (apiRequest's errors); `signal`
+ * (an AbortSignal where the runtime has one) is aborted when the POST has had
+ * no answer for `opts.postTimeoutMs` (TUBE_POST_TIMEOUT_MS). Ops added while
+ * a POST is out are coalesced and sent when it returns.
  *
  * - VALIDATION_ERROR: the batch is dropped and `onRefused(message)` told.
- * - Any other failure puts the batch back in front of what arrived meanwhile
- *   and counts one consecutive failure (`status().failures`, `lastError`).
- *   A transient one (no code, TUBE_TRANSIENT_CODES) is retried by the next
- *   pump() — onStatus() pumps on every poll. Any other code cannot clear by
- *   itself: automatic retries stop (`status().stopped`) until the user's
- *   next change (add) or retry().
- * - A sent batch the kiosk has not confirmed TUBE_CONFIRM_TIMEOUT_MS after
- *   its POST succeeded is dropped from pending() so the kiosk's real values
- *   show again, and counted in `status().lost` until a later batch confirms.
+ * - Any other failure, an abandoned POST included, puts the batch back in
+ *   front of what arrived meanwhile and counts one consecutive failure
+ *   (`status().failures`, `lastError` as plain text). A transient one (no
+ *   code, TUBE_TRANSIENT_CODES) is retried by the next pump() — onStatus()
+ *   pumps on every poll. Any other code cannot clear by itself: automatic
+ *   retries stop (`status().stopped`) until the user's next change (add) or
+ *   retry().
+ * - onStatus(handledSeq, statusTs): a batch whose seq the kiosk has handled
+ *   is confirmed. A batch still unhandled in a status written
+ *   TUBE_CONFIRM_EVIDENCE_S or more after its accepted_at is lost: dropped
+ *   from pending() (the controls show the kiosk's values again) and its seq
+ *   remembered (`status().lost` counts them) until a later status handles it.
  *
  * pending() is what the page draws on top of the kiosk's state, so a value
- * never snaps back while its POST is out. `now()` is injectable for tests.
+ * never snaps back while its POST is out.
  */
-function makeOpSender(post, onRefused, now) {
-    const clock = now || (() => Date.now());
+function makeOpSender(post, onRefused, opts) {
+    const postTimeoutMs = (opts && opts.postTimeoutMs) || TUBE_POST_TIMEOUT_MS;
     let unsent = [];
-    let sent = [];        // [{ops, seq, at}]
+    let sent = [];        // [{ops, seq, acceptedAt}]
+    let lostSeqs = [];    // sent batches the kiosk's own status says it has not handled
     let inFlight = null;  // the ops of the POST that has not answered yet
     let lastHandled = -1;
     let failures = 0;
     let lastError = '';
     let stopped = false;
-    let lost = 0;
+
+    function failed(ops, err) {
+        const code = err && err.code;
+        if (code === 'VALIDATION_ERROR') {
+            if (onRefused) onRefused(tubeErrorText(err));
+            return;
+        }
+        failures += 1;
+        lastError = tubeErrorText(err);
+        if (code && !TUBE_TRANSIENT_CODES.includes(code)) stopped = true;
+        const meanwhile = unsent;
+        unsent = ops;
+        for (const op of meanwhile) unsent = tubeAddOp(unsent, op);
+    }
 
     function pump() {
         if (inFlight || unsent.length === 0) return;
         const ops = unsent.slice(0, TUBE_MAX_OPS_PER_POST);
         unsent = unsent.slice(TUBE_MAX_OPS_PER_POST);
         inFlight = ops;
+        const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+        let settled = false;
+        const settle = handler => value => {
+            if (settled) return;  // the other side (answer or timeout) came first
+            settled = true;
+            clearTimeout(timer);
+            inFlight = null;
+            handler(value);
+        };
+        const onAnswer = settle(result => {
+            failures = 0;
+            lastError = '';
+            const at = result && typeof result.accepted_at === 'number' ? result.accepted_at : null;
+            sent = sent.concat([{ ops, seq: result.seq, acceptedAt: at }]);
+            pump();
+        });
+        const onError = settle(err => failed(ops, err));
+        const timer = setTimeout(() => {
+            if (ctl) ctl.abort();
+            const err = new Error('no answer');
+            err.name = 'AbortError';
+            onError(err);
+        }, postTimeoutMs);
         Promise.resolve()
-            .then(() => post(ops))
-            .then(result => {
-                inFlight = null;
-                failures = 0;
-                lastError = '';
-                sent = sent.concat([{ ops, seq: result.seq, at: clock() }]);
-                pump();
-            }, err => {
-                inFlight = null;
-                const code = err && err.code;
-                if (code === 'VALIDATION_ERROR') {
-                    if (onRefused) onRefused(err.message || 'The TV refused that change');
-                    return;
-                }
-                failures += 1;
-                lastError = (err && err.message) || 'unknown error';
-                if (code && !TUBE_TRANSIENT_CODES.includes(code)) stopped = true;
-                const meanwhile = unsent;
-                unsent = ops;
-                for (const op of meanwhile) unsent = tubeAddOp(unsent, op);
-            });
+            .then(() => post(ops, ctl ? ctl.signal : undefined))
+            .then(onAnswer, onError);
     }
 
     return {
@@ -162,20 +199,22 @@ function makeOpSender(post, onRefused, now) {
             stopped = false;
             pump();
         },
-        onStatus(handledSeq) {
-            const kept = tubeConfirm(sent, handledSeq, lastHandled);
-            if (handledSeq >= lastHandled && kept.length < sent.length) lost = 0;  // something confirmed
-            const t = clock();
-            sent = kept.filter(b => {
-                if (t - b.at < TUBE_CONFIRM_TIMEOUT_MS) return true;
-                lost += 1;
-                return false;
-            });
+        onStatus(handledSeq, statusTs) {
+            if (handledSeq < lastHandled) lostSeqs = [];  // a fresh kiosk: nothing to say
+            sent = tubeConfirm(sent, handledSeq, lastHandled);
+            lostSeqs = lostSeqs.filter(seq => seq > handledSeq);  // a late confirmation clears it
+            if (typeof statusTs === 'number') {
+                sent = sent.filter(b => {
+                    if (b.acceptedAt === null || statusTs - b.acceptedAt < TUBE_CONFIRM_EVIDENCE_S) return true;
+                    lostSeqs = lostSeqs.concat([b.seq]);
+                    return false;
+                });
+            }
             lastHandled = handledSeq;
             if (!stopped) pump();
         },
         status() {
-            return { failures, lastError, stopped, lost };
+            return { failures, lastError, stopped, lost: lostSeqs.length };
         },
         unsent() { return unsent.slice(); },
         sent() { return sent.map(b => ({ ops: b.ops, seq: b.seq })); },
@@ -217,7 +256,10 @@ function crtLookState() {
             running: false, timer: null, held: null, els: null,
         };
         st.sender = makeOpSender(
-            ops => apiPost(`${url}/admin/display/tube`, { ops }),
+            // apiRequest = apiPost plus the sender's abort signal (the wait is bounded).
+            (ops, signal) => apiRequest(`${url}/admin/display/tube`, {
+                method: 'POST', headers: getCsrfHeaders(), body: JSON.stringify({ ops }), signal,
+            }),
             msg => showNotification(msg, 'error'));
         _crtLook = st;
         // Never leave the previous device's controls on screen.
@@ -270,7 +312,10 @@ async function checkCrtLookVisibility() {
 }
 
 function startCrtLookTab() {
-    if (!currentDevice) return;
+    if (!currentDevice) {
+        crtLookState();  // shows "No box selected." with no controls
+        return;
+    }
     const st = crtLookState();
     if (st.running) return;
     st.running = true;
@@ -288,6 +333,10 @@ function stopCrtLookTab() {
 async function crtLookPoll(st) {
     st.timer = null;
     if (!st.running || _crtLook !== st) return;
+    if (!currentDevice) {  // no box selected: drop the old box's controls, stop polling
+        crtLookState();
+        return;
+    }
     if (document.visibilityState === 'visible') {
         let data = null;
         try {
@@ -302,7 +351,7 @@ async function crtLookPoll(st) {
             st.kiosk = data.state;
             st.available = true;
             const handled = Number.isInteger(data.state.handled_seq) ? data.state.handled_seq : 0;
-            st.sender.onStatus(handled);
+            st.sender.onStatus(handled, typeof data.status_ts === 'number' ? data.status_ts : null);
         } else if (!data || data.reason === 'kiosk_not_running') {
             st.available = false;  // keep the tab and the unsent ops; stop sending
         } else {
@@ -447,7 +496,9 @@ function renderCrtLook() {
     const st = _crtLook;
     const status = document.getElementById('crtLookStatus');
     if (!st || !status) return;
-    const notice = tubeNotice(st.available, st.answered, st.sender.status());
+    const notice = st.deviceUrl === null
+        ? { text: 'No box selected.', retry: false }
+        : tubeNotice(st.available, st.answered, st.sender.status());
     status.textContent = notice.text;
     const box = document.getElementById('crtLookStatusBox');
     if (box) box.style.display = notice.text ? '' : 'none';

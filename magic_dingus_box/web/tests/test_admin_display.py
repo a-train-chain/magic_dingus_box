@@ -358,3 +358,18 @@ def test_the_written_log_is_what_the_kiosk_parser_accepts(client, temp_data_dir)
     seqs = [op["seq"] for op in doc["ops"]]
     assert all(type(s) is int for s in seqs) and seqs == sorted(set(seqs))
     assert os.path.getsize(temp_data_dir / "tube_request.json") <= admin_display.MAX_FILE_BYTES
+
+
+def test_get_and_post_carry_the_times_the_page_compares(client, temp_data_dir):
+    """The page calls a change lost only when a status the kiosk wrote well
+    after the server accepted it still lacks its seq: GET gives the status's
+    own ts, POST the acceptance time, both on this box's clock."""
+    write_status(temp_data_dir, OPEN, ts=time.time() - 2.5)
+    before = time.time()
+    data = client.get("/admin/display/tube?state_only=1").get_json()["data"]
+    assert data["status_ts"] == pytest.approx(before - 2.5, abs=0.5)
+    accepted = post(client, [HUM]).get_json()["data"]
+    assert accepted["seq"] == 1
+    assert before <= accepted["accepted_at"] <= time.time()
+    write_status(temp_data_dir, {"gate": False, "reason": "not_ready"})
+    assert "status_ts" not in client.get("/admin/display/tube").get_json()["data"]

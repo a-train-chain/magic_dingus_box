@@ -161,7 +161,8 @@ def test_pending_covers_the_post_in_flight_so_the_page_never_snaps_back():
     # whose POST has not answered yet must not vanish from it.
     result = run_js("""
         let answer;
-        const s = makeOpSender(ops => new Promise(r => { answer = r; }));
+        // The second POST (hum) is left unanswered; a short bound lets node exit.
+        const s = makeOpSender(ops => new Promise(r => { answer = r; }), null, {postTimeoutMs: 200});
         s.add({op: 'look', look: 'tv'}); s.pump();
         await settle();
         s.add({op: 'row', key: 'hum', value: 9});
@@ -323,7 +324,7 @@ def test_three_failures_in_a_row_are_reported_and_a_success_clears_them():
     result = run_js("""
         let fail = true;
         const s = makeOpSender(ops => {
-            if (fail) { const e = new Error('Failed to fetch'); return Promise.reject(e); }
+            if (fail) { const e = new TypeError('Failed to fetch'); return Promise.reject(e); }
             return Promise.resolve({seq: 1});
         });
         const notices = [];
@@ -337,9 +338,11 @@ def test_three_failures_in_a_row_are_reported_and_a_success_clears_them():
         notices.push(tubeNotice(true, true, s.status()));
         return {third, notices};
     """)
-    assert result["third"] == {"failures": 3, "lastError": "Failed to fetch", "stopped": False, "lost": 0}
+    assert result["third"] == {"failures": 3, "lastError": "the box could not be reached",
+                               "stopped": False, "lost": 0}
     assert result["notices"][0] == {"text": "", "retry": False}
-    assert result["notices"][1] == {"text": "Not reaching the TV: Failed to fetch", "retry": False}
+    assert result["notices"][1] == {"text": "Not reaching the TV: the box could not be reached",
+                                    "retry": False}
     assert result["notices"][2] == {"text": "", "retry": False}
 
 
@@ -382,27 +385,91 @@ def test_transient_codes_keep_retrying_on_every_poll():
     assert result == {"calls": 3, "stopped": False}
 
 
-def test_an_unconfirmed_batch_stops_being_drawn_after_the_timeout():
+def test_a_batch_is_lost_only_on_a_status_written_well_after_it_was_accepted():
+    # (a) The kiosk's own word: a status written TUBE_CONFIRM_EVIDENCE_S after
+    # accepted_at that still lacks the seq. A late status (old ts) never trips it.
     result = run_js("""
-        let t = 1000, seq = 0;
-        const s = makeOpSender(ops => Promise.resolve({seq: ++seq}), null, () => t);
+        const s = makeOpSender(ops => Promise.resolve({seq: 5, accepted_at: 1000}));
         s.add({op: 'row', key: 'hum', value: 10}); s.pump(); await settle();
-        t += TUBE_CONFIRM_TIMEOUT_MS - 1; s.onStatus(0);
-        const before = {pending: s.pending(), lost: s.status().lost};
-        t += 1; s.onStatus(0);
-        const after = {pending: s.pending(), sent: s.sent(), lost: s.status().lost,
-                       notice: tubeNotice(true, true, s.status())};
-        s.add({op: 'row', key: 'noise', value: 3}); s.pump(); await settle();
-        s.onStatus(2);
-        return {before, after, lostAfterConfirm: s.status().lost, timeout: TUBE_CONFIRM_TIMEOUT_MS};
+        const steps = [];
+        for (const ts of [995, 1001, 1003.9, 999]) {   // late or too soon: no evidence
+            s.onStatus(4, ts);
+            steps.push({ts, pending: s.pending().length, lost: s.status().lost});
+        }
+        s.onStatus(4, null);                            // no ts at all: no evidence
+        steps.push({ts: null, pending: s.pending().length, lost: s.status().lost});
+        s.onStatus(4, 1000 + TUBE_CONFIRM_EVIDENCE_S);
+        const lost = {pending: s.pending(), sent: s.sent(), status: s.status(),
+                      notice: tubeNotice(true, true, s.status())};
+        return {steps, lost, n: TUBE_CONFIRM_EVIDENCE_S};
     """)
-    assert result["timeout"] == 6000
-    assert result["before"] == {"pending": [hum(10)], "lost": 0}
-    assert result["after"]["pending"] == [] and result["after"]["sent"] == []
-    assert result["after"]["lost"] == 1
-    assert result["after"]["notice"] == {
+    assert result["n"] == 4
+    assert all(step["pending"] == 1 and step["lost"] == 0 for step in result["steps"])
+    assert result["lost"]["pending"] == [] and result["lost"]["sent"] == []
+    assert result["lost"]["status"]["lost"] == 1
+    assert result["lost"]["notice"] == {
         "text": "A change did not reach the TV; the controls show what the TV has.", "retry": False}
-    assert result["lostAfterConfirm"] == 0
+
+
+def test_a_late_confirmation_clears_the_notice_by_itself():
+    # (b)+(c) The lost seq is remembered; a later status that handles it clears
+    # the notice with no new change from the user, and restores nothing.
+    result = run_js("""
+        let seq = 0;
+        const s = makeOpSender(ops => Promise.resolve({seq: ++seq, accepted_at: 1000 + seq}));
+        s.add({op: 'row', key: 'hum', value: 10}); s.pump(); await settle();
+        s.add({op: 'row', key: 'noise', value: 3}); s.pump(); await settle();
+        s.onStatus(0, 1010);
+        const both = s.status().lost;
+        s.onStatus(1, 1011);
+        const one = {lost: s.status().lost, pending: s.pending()};
+        s.onStatus(2, 1012);
+        return {both, one, after: s.status(), pending: s.pending(), posts: seq,
+                notice: tubeNotice(true, true, s.status())};
+    """)
+    assert result["both"] == 2
+    assert result["one"] == {"lost": 1, "pending": []}
+    assert result["after"]["lost"] == 0 and result["pending"] == []
+    assert result["posts"] == 2                       # nothing re-sent
+    assert result["notice"] == {"text": "", "retry": False}
+
+
+def test_a_post_with_no_answer_is_abandoned_and_its_ops_put_back():
+    result = run_js("""
+        let calls = 0;
+        const bodies = [];
+        const s = makeOpSender(ops => {
+            calls += 1; bodies.push(ops);
+            if (calls === 1) return new Promise(() => {});   // never settles
+            return Promise.resolve({seq: 7, accepted_at: 1});
+        }, null, {postTimeoutMs: 5});
+        s.add({op: 'degauss'}); s.add({op: 'row', key: 'hum', value: 10}); s.pump();
+        const during = s.pending().length;
+        await settle();
+        const after = {status: s.status(), unsent: s.unsent(), sent: s.sent()};
+        s.add({op: 'row', key: 'hum', value: 12}); s.pump(); await settle();
+        return {during, after, bodies, sent: s.sent(), status: s.status()};
+    """)
+    assert result["during"] == 2
+    assert result["after"]["status"] == {
+        "failures": 1, "lastError": "the box did not answer in time", "stopped": False, "lost": 0}
+    assert result["after"]["unsent"] == [{"op": "degauss"}, hum(10)] and result["after"]["sent"] == []
+    assert result["bodies"][1] == [{"op": "degauss"}, hum(12)]
+    assert result["sent"] == [{"ops": [{"op": "degauss"}, hum(12)], "seq": 7}]
+    assert result["status"]["failures"] == 0
+
+
+def test_errors_read_as_plain_words():
+    result = run_js("""
+        const named = (name, message) => { const e = new Error(message); e.name = name; return e; };
+        const coded = Object.assign(new Error('The TV is not keeping up'), {code: 'TUBE_BACKLOG'});
+        return [named('SyntaxError', "Unexpected token '<' in JSON at position 0"),
+                named('AbortError', 'The operation was aborted.'),
+                named('TypeError', 'Failed to fetch'),
+                coded].map(tubeErrorText);
+    """)
+    assert result == ["the box did not answer properly", "the box did not answer in time",
+                      "the box could not be reached", "The TV is not keeping up"]
 
 
 def test_manager_js_guards_the_calls_into_this_later_file():
