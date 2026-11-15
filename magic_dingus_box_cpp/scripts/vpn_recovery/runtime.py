@@ -21,7 +21,7 @@ import sys
 import time
 
 from .common import atomic_json, bounded_lock, load_config
-from .catalog import CatalogStore, bounded_history, eligible_candidates, select_candidate, validate_catalog
+from .catalog import CatalogStore, bounded_history, eligible_candidates, record_failure, select_candidate, validate_catalog
 from .control import ControlClient, ControlError
 from .docker_api import DockerRunner
 from .port_sync import PortSynchronizer, QbitClient
@@ -664,7 +664,7 @@ class Controller:
     def _record_failure(self, candidate):
         if not candidate:return
         value=asdict(candidate) if not isinstance(candidate,dict) else candidate
-        self.failures=bounded_history(self.failures+[{'hostname':value['hostname'],'endpoint_ip':value['endpoint_ip'], 'failed_at':self.a.wall()}],self.a.wall())
+        self.failures=record_failure(self.failures,value['hostname'],value['endpoint_ip'],self.a.wall())
         if value['hostname'] not in self.round_attempts:self.round_attempts.append(value['hostname'])
 
     def tick(self):

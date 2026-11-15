@@ -18,7 +18,8 @@ from vpn_recovery.common import bounded_lock
 try:
     from vpn_recovery.catalog import (CatalogStore, FetchResponse, validate_catalog,
                                       eligible_candidates, select_candidate, bounded_history,
-                                      fetch_public_catalog, CATALOG_URL)
+                                      fetch_public_catalog, CATALOG_URL, record_failure,
+                                      REPEAT_COUNT_CAP)
 except ImportError:
     CatalogStore = None
 
@@ -343,6 +344,63 @@ class CatalogTests(unittest.TestCase):
         # us-391 shares 89.222.100.x with the server that just failed.
         self.assertEqual(select_candidate(candidates, history, ['Canada'], ['United States'], NOW).hostname,
                          'node-us-69.protonvpn.net')
+
+    def test_a_server_that_keeps_failing_goes_to_the_back_of_its_pool(self):
+        # node-us-119 never got a first port lease twice in one afternoon
+        # (2026-11-15), and moving off it hung Gluetun's settings request for
+        # two minutes each time. Its 30-minute exclusion had lapsed, and being
+        # first in catalog order it was picked again.
+        self._add('node-us-69.protonvpn.net', 'United States', '89.187.170.135')
+        candidates = [c for c in eligible_candidates(validate_catalog(self.provider, NOW), ['Canada', 'United States'])
+                      if ':' not in c.endpoint_ip]
+        canada = ['node-ca-59.protonvpn.net', 'node-ca-60.protonvpn.net']
+        twice = {'hostname': 'node-us-119.protonvpn.net', 'endpoint_ip': '185.156.46.33',
+                 'failed_at': NOW-3600, 'count': 2}
+        def pick(failures, attempts):
+            return select_candidate(candidates, {'failures': failures, 'round_attempts': attempts},
+                                    ['Canada'], ['United States'], NOW).hostname
+        # One failure an hour ago is not a pattern: catalog order stands.
+        self.assertEqual(pick([dict(twice, count=1)], canada), 'node-us-119.protonvpn.net')
+        self.assertEqual(pick([twice], canada), 'node-us-390.protonvpn.net')
+        # Last, never excluded: once the others were tried it is still used.
+        self.assertEqual(pick([twice], canada+['node-us-390.protonvpn.net', 'node-us-69.protonvpn.net']),
+                         'node-us-119.protonvpn.net')
+        # The preferred pool too, and still without leaving the country.
+        ca = {'hostname': 'node-ca-59.protonvpn.net', 'endpoint_ip': '84.20.16.29', 'failed_at': NOW-3600, 'count': 3}
+        self.assertEqual(pick([ca], []), 'node-ca-60.protonvpn.net')
+        self.assertEqual(pick([ca], ['node-ca-60.protonvpn.net']), 'node-ca-59.protonvpn.net')
+
+    def test_record_failure_counts_repeats_within_a_day(self):
+        host, ip = 'node-us-119.protonvpn.net', '185.156.46.33'
+        once = record_failure([], host, ip, NOW-7200)
+        self.assertEqual(once, [{'hostname': host, 'endpoint_ip': ip, 'failed_at': NOW-7200}])
+        twice = record_failure(once, host, ip, NOW)
+        self.assertEqual(twice, [{'hostname': host, 'endpoint_ip': ip, 'failed_at': NOW, 'count': 2}])
+        self.assertEqual(once, [{'hostname': host, 'endpoint_ip': ip, 'failed_at': NOW-7200}])
+        # Each failure within 24 h of the last one keeps the count going; a
+        # quiet day starts it over.
+        self.assertEqual(record_failure(twice, host, ip, NOW+86000)[0]['count'], 3)
+        self.assertNotIn('count', record_failure(twice, host, ip, NOW+86400)[0])
+        # Another server's failure is its own entry.
+        other = record_failure(twice, 'node-us-390.protonvpn.net', '89.222.100.65', NOW+1)
+        self.assertEqual([e.get('count', 1) for e in other], [2, 1])
+        capped = twice
+        for i in range(REPEAT_COUNT_CAP+5):
+            capped = record_failure(capped, host, ip, NOW+1+i)
+        self.assertEqual(capped[0]['count'], REPEAT_COUNT_CAP)
+
+    def test_repeat_count_survives_history_bounding_without_inflating(self):
+        base = {'hostname': 'node-us-119.protonvpn.net', 'endpoint_ip': '185.156.46.33'}
+        # Duplicated records (a corrupt or replayed file) never add up.
+        merged = bounded_history([dict(base, failed_at=NOW-900), dict(base, failed_at=NOW-60, count=2)]*3, NOW)
+        self.assertEqual(merged, [dict(base, failed_at=NOW-60, count=2)])
+        self.assertEqual(bounded_history(merged, NOW), merged)
+        for bad in (True, '3', 0, -1, 1.5, None, float('nan'), [2]):
+            with self.subTest(count=bad):
+                self.assertEqual(bounded_history([dict(base, failed_at=NOW, count=bad)], NOW),
+                                 [dict(base, failed_at=NOW)])
+        self.assertEqual(bounded_history([dict(base, failed_at=NOW, count=10**9)], NOW)[0]['count'],
+                         REPEAT_COUNT_CAP)
 
     def test_round_attempt_cap_does_not_reuse_twenty_four_hour_failures(self):
         extra = copy.deepcopy(self.provider['servers'][0])

@@ -661,6 +661,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(saved.get('last_selection',{}).get('hostname'),'node-ca-59.protonvpn.net')
         self.assertEqual(len(saved['failures']),1)
 
+    def test_a_server_failing_again_is_counted_once_per_failure(self):
+        server={'hostname':'node-us-119.protonvpn.net','endpoint_ip':'185.156.46.33','country':'United States'}
+        self.c._record_failure(server)
+        self.a.now+=3600
+        self.c._record_failure(server)
+        self.assertEqual(self.c.failures,[{'hostname':server['hostname'],'endpoint_ip':server['endpoint_ip'],
+                                           'failed_at':self.a.wall(),'count':2}])
+        self.assertEqual(self.c.round_attempts,['node-us-119.protonvpn.net'])
+
     def test_traffic_cadence_survives_nonzero_observation_duration(self):
         requested=[]
         cached={}
