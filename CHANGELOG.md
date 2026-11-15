@@ -78,7 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is labeled OFF AIR with its return time where space allows, and the last
   film's NEXT points to the next morning's film. Live films still stop at
   1 AM; manually chosen programmes finish whole.
-- The CRT tube's settings model (looks, effect rows, curves, saved engine choice and a Pi 5-only gate) landed with no visible change: nothing draws differently yet.
+- **Groundwork for a more realistic CRT look.** The settings for a new
+  CRT engine (preset looks, 44 adjustable effects and a Pi 5-only
+  switch) are now stored by the box. Nothing looks different yet: the
+  picture and the Settings menu are unchanged until the engine itself
+  ships.
 
 ### Fixed
 - **No more TV restarts while a big upload is copying.** Saving
