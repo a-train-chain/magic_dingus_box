@@ -156,26 +156,62 @@ class TestStatusEndpointPausedFlag:
 
 
 class TestPauseScriptMarker:
-    """Run the real script with a stubbed docker; assert marker lifecycle."""
+    """Run the real script with a stubbed docker; assert marker lifecycle.
 
-    MARKER = Path("/tmp/mdb_playback_services_paused")
+    The script now owns what it stops and refuses to change anything without
+    a usable compose lock, so it runs against private state only: its own
+    marker, ownership record, lock file and a flock that also works on macOS.
+    Never the box's real /tmp marker — a run on a live box must not touch it.
+    """
+
+    # Stateful docker: two running services the pause can own and stop.
+    DOCKER_STUB = (
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "p = Path(os.environ['DOCKER_STATE']); states = json.loads(p.read_text()); a = sys.argv[1:]\n"
+        "names = [n for n in a if n.startswith('mdb_')]\n"
+        "if a[0] == 'inspect':\n"
+        "    if not names or names[0] not in states: sys.exit(1)\n"
+        "    print('true false' if states[names[0]] == 'running' else 'false false')\n"
+        "elif a[0] == 'stop':\n"
+        "    for n in names: states[n] = 'stopped'\n"
+        "elif a[0] == 'start':\n"
+        "    for n in names: states[n] = 'running'\n"
+        "p.write_text(json.dumps(states))\n"
+    )
+    FLOCK_STUB = (
+        "#!/usr/bin/env python3\n"
+        "import fcntl, sys\n"
+        "fcntl.flock(int(sys.argv[-1]), fcntl.LOCK_EX)\n"
+    )
 
     @pytest.fixture(autouse=True)
     def stub_docker(self):
         # Explicit TemporaryDirectory instead of tmp_path — see module note.
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as tmpdir:
-            stub_bin = Path(tmpdir) / "bin"
+            root = Path(tmpdir)
+            stub_bin = root / "bin"
             stub_bin.mkdir()
-            docker = stub_bin / "docker"
-            # `inspect` succeeding makes every container "exist"; all other
-            # subcommands are accepted no-ops.
-            docker.write_text("#!/bin/bash\nexit 0\n")
-            docker.chmod(0o755)
-            self.env = dict(os.environ, PATH=f"{stub_bin}:{os.environ['PATH']}")
-            self.MARKER.unlink(missing_ok=True)
+            for name, text in (("docker", self.DOCKER_STUB), ("flock", self.FLOCK_STUB)):
+                stub = stub_bin / name
+                stub.write_text(text)
+                stub.chmod(0o755)
+            state = root / "docker_state.json"
+            state.write_text(json.dumps({"mdb_radarr": "running", "mdb_prowlarr": "running"}))
+            (root / "compose.lock").touch()
+            self.MARKER = root / "mdb_playback_services_paused"
+            self.env = dict(
+                os.environ,
+                PATH=f"{stub_bin}:{os.environ['PATH']}",
+                DOCKER_STATE=str(state),
+                PAUSE_MARKER=str(self.MARKER),
+                PLAYBACK_OWNED_FILE=str(root / "owned.services"),
+                MDB_COMPOSE_LOCK=str(root / "compose.lock"),
+                COMPOSE_DIR=str(root / "services"),
+            )
             yield
-            self.MARKER.unlink(missing_ok=True)
 
     def _run(self, action):
         return subprocess.run(
