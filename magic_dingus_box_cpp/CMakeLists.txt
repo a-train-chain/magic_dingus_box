@@ -185,6 +185,9 @@ set(APP_SOURCES
     src/app/media_info.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
+    # The web's live Tube op log (data/tube_request.json), parsed and
+    # applied; also in test_app_unit.
+    src/app/tube_ops.cpp
     src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
     src/app/playback_stall_watchdog.cpp
@@ -910,6 +913,8 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # settings.json load/save against real temp files (round-trip,
         # wrong-typed quarantine). Pulls jsoncpp + spdlog, linked below.
         src/app/settings_persistence.cpp
+        # The web's live Tube op log, parsed and applied (jsoncpp, linked below).
+        src/app/tube_ops.cpp
         src/app/mb_filter_persistence.cpp
         src/utils/config.cpp
         src/utils/services_env.cpp
