@@ -382,6 +382,7 @@ class Controller:
             self.attempted=None
         self.api_failed=False; self.operation=read_json(paths.state/'operation.json')
         self.relinked=durable.get('relinked'); self.last_converge=-300
+        self.last_converge_container=self.container_key(durable.get('last_converge_container'))
         last_converge_wall=durable.get('last_converge_wall')
         if finite(last_converge_wall):
             self.last_converge=self.a.mono()-max(0,min(300,self.a.wall()-last_converge_wall))
@@ -553,6 +554,7 @@ class Controller:
                                'submitted_wall':result['submission']['wall'],'operation':'restart'}
         if ctx['action'] in ('relink_dependents','converge_dependents'):
             self.last_converge=self.a.mono()
+            self.last_converge_container=self.container_key(ctx.get('generation'))
 
     def _record_failure(self, candidate):
         if not candidate:return
@@ -688,9 +690,15 @@ class Controller:
             self.relinked=container
         needs_relink=(o.get('namespaces_match') is False or
                       bool(container and self.relinked and container!=self.relinked))
-        o['needs_relink']=needs_relink and now-self.last_converge>=300
+        # A replacement start needs its own first repair promptly. Charge the
+        # completion to its exact container/PID/start, never to tun0 identity;
+        # missing observations and soft reconnects cannot reset the allowance.
+        new_start=bool(container and container==observed_container and
+                       self.last_converge_container and container!=self.last_converge_container)
+        converge_due=new_start or now-self.last_converge>=300
+        o['needs_relink']=needs_relink and converge_due
         o['relink_waiting']=needs_relink and not o['needs_relink']
-        if now-self.last_converge<300:o['needs_converge']=False
+        if not converge_due:o['needs_converge']=False
         restart_before = {key:self.state.get(key) for key in ('last_restart','candidate_until')}
         decision=decide(o,self.state,config,now,wall)
         self.state=decision['next_state']
@@ -741,6 +749,7 @@ class Controller:
         atomic_json(self.paths.state/'controller.json',{'version':1,'saved_wall':wall,'saved_mono':now,'policy':self.state,
             'failures':self.failures,'round_attempts':self.round_attempts,'attempted':self.attempted,
             'relinked':self.relinked,
+            'last_converge_container':self.last_converge_container,
             'last_converge_wall':wall-(now-self.last_converge) if self.last_converge!=-300 else None,
             'last_load_container':self.last_load_container,'last_load_identity':self.last_load_identity,'last_load_wall':self.last_load_wall,
             'refresh_after':wall+max(0,self.next_refresh-now),'last_success':self.last_success,'last_selection':self.last_selection,'last_recovery_reason':self.last_reason})

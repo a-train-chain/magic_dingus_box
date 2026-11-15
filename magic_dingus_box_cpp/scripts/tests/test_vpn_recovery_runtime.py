@@ -715,6 +715,40 @@ class RuntimeTests(unittest.TestCase):
         self.a.observation['qbit_synced']=True
         self.a.now=330;self.assertTrue(restored.tick()['ready'])
 
+    def test_new_container_start_gets_first_relink_inside_prior_cooldown(self):
+        self._new_start_relink_has_its_own_cooldown('b'*64)
+
+    def test_same_id_new_container_start_gets_first_relink_inside_prior_cooldown(self):
+        self._new_start_relink_has_its_own_cooldown(GEN['container_id'])
+
+    def _new_start_relink_has_its_own_cooldown(self,container_id):
+        self.a.observation.update(port=33013,qbit_synced=False,namespaces_match=False,
+                                  dependents_ok=False)
+        self.tick(0);self.tick(10);self.tick(20)
+        self.assertEqual([c[0] for c in self.a.calls],['relink_dependents'])
+        newer={**GEN,'container_id':container_id,'pid':43,'started_at':'2026-11-14T00:01:00Z'}
+        self.a.observation['generation']=newer
+        self.tick(100)
+        self.assertEqual([c[0] for c in self.a.calls],['relink_dependents','relink_dependents'])
+        self.tick(110)
+        restored=Controller(self.paths,self.a);self.addCleanup(restored.close)
+        restored.next_refresh=100000
+        self.a.now=120;restored.tick()
+        self.assertEqual(len(self.a.calls),2)
+        # Missing observations cannot erase the charged start or its cooldown.
+        self.a.observation.update(generation=None,traffic=None,port=None,namespaces_match=None)
+        self.a.now=200;restored.tick()
+        resumed=Controller(self.paths,self.a);self.addCleanup(resumed.close)
+        resumed.next_refresh=100000
+        self.a.observation.update(generation=newer,traffic=True,port=33013,namespaces_match=False)
+        for t in [210,300,409]:
+            if t==300:
+                self.a.observation['generation']={**newer,'tunnel_ifindex':3}
+            self.a.now=t;resumed.tick()
+            self.assertEqual(len(self.a.calls),2)
+        self.a.now=410;resumed.tick()
+        self.assertEqual([c[0] for c in self.a.calls],['relink_dependents']*3)
+
     def test_bootstrap_unknown_namespace_with_synced_qbit_is_not_ready(self):
         self.a.observation.update(port=33013,qbit_synced=True,namespaces_match=None,
                                   dependents_ok=False)
