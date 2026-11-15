@@ -197,6 +197,8 @@ AppState.on('deviceChanged', (device) => {
     // which the kiosk's secret-sequence unlock toggles.
     if (device) {
         checkMediaBrowserVisibility().catch(e => console.warn('MB visibility check failed:', e));
+        // CRT Look tab: shown only where the kiosk offers the Tube engine.
+        checkCrtLookVisibility().catch(e => console.warn('CRT Look visibility check failed:', e));
     }
 });
 AppState.on('devicesUpdated', (devices) => { discoveredDevices = devices; });
@@ -881,6 +883,10 @@ function initializeEventListeners() {
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
         const tabContent = document.getElementById(tabId);
         if (tabContent) tabContent.classList.add('active');
+
+        // The CRT Look tab polls the kiosk only while it is the open tab.
+        if (tabId === 'crtlook') startCrtLookTab();
+        else stopCrtLookTab();
 
         // Explicitly initialize the view when switching tabs
         if (tabId === 'roms') {
