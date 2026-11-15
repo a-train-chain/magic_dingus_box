@@ -235,6 +235,334 @@ assert_all_restored() {
 }
 
 # ---------------------------------------------------------------------------
+# Content curation: the per-video store (media_info.json)
+# ---------------------------------------------------------------------------
+# The store names every video the box ever had a Crop setting or a length
+# for — the operator's own file names, on every unit sold — and an orphaned
+# crop:false would be inherited by a later upload of the same name. prepare
+# moves the original into the content stash with the curated media (restore
+# mv's it back) and ships a copy pruned to the videos that ship.
+
+# A data dir with three videos: one shipping, one curated away, plus a store
+# naming those, a video that is long gone, and fields/keys to carry over.
+media_store_fixture() {
+    D="$T/data"
+    mkdir -p "$D/media/sub"
+    : > "$D/media/ship.mp4"
+    : > "$D/media/personal.mp4"
+    : > "$D/media/sub/deep.mp4"
+    cat > "$D/media_info.json" <<'JSON'
+{
+  "version": 1,
+  "future_top_level": {"x": 1},
+  "videos": {
+    "media/ship.mp4": {"duration_s": 10.0, "display_aspect": 1.7778, "crop": false, "future": "kept"},
+    "media/personal.mp4": {"duration_s": 3.0, "crop": false},
+    "media/long_gone.mp4": {"crop": false},
+    "media/sub/deep.mp4": {"display_aspect": 1.3333},
+    "media/../../etc/passwd": {"crop": false},
+    "/abs/x.mp4": {"crop": false}
+  }
+}
+JSON
+}
+
+@test "media_info prune: keeps only the shipping videos, everything else unchanged" {
+    media_store_fixture
+    run mdb_prune_media_info "$D" "$T/pruned.json" "$D/media/personal.mp4"
+    [ "$status" -eq 0 ]
+    run python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["version"] == 1 and d["future_top_level"] == {"x": 1}, d
+assert d["videos"] == {
+    "media/ship.mp4": {"duration_s": 10.0, "display_aspect": 1.7778,
+                       "crop": False, "future": "kept"},
+    "media/sub/deep.mp4": {"display_aspect": 1.3333}}, d["videos"]
+' "$T/pruned.json"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    # The original is never touched by the prune itself.
+    grep -q personal.mp4 "$D/media_info.json"
+    ! grep -q -e personal -e long_gone -e passwd "$T/pruned.json"
+}
+
+@test "media_info prune: nothing to remove leaves the store alone (10)" {
+    D="$T/data"
+    mkdir -p "$D/media"
+    : > "$D/media/ship.mp4"
+    printf '{"version":1,"videos":{"media/ship.mp4":{"crop":false}}}\n' > "$D/media_info.json"
+    run mdb_prune_media_info "$D" "$T/pruned.json"
+    [ "$status" -eq 10 ]
+}
+
+@test "media_info prune: an unreadable or wrong-shaped store ships as none" {
+    D="$T/data"
+    mkdir -p "$D/media"
+    for body in '' '{oops' '[]' '{"version":1,"videos":[]}'; do
+        printf '%s' "$body" > "$D/media_info.json"
+        run mdb_prune_media_info "$D" "$T/pruned.json"
+        [ "$status" -ne 0 ] && [ "$status" -ne 10 ] || { echo "body: $body -> $status"; false; }
+    done
+}
+
+@test "prepare: the store is decided after curation and stashed with the content" {
+    local f="$GI_DIR/prepare_for_cloning.sh"
+    local curated_line prune_line move_line copy_line
+    curated_line=$(grep -n 'unset _d _pl _base _keep _want _m _refs_file' "$f" | cut -d: -f1)
+    prune_line=$(grep -n 'mdb_prune_media_info "\$DATA_DIR"' "$f" | cut -d: -f1)
+    move_line=$(grep -n 'mv "\$_src" "\${CONTENT_STASH}/\${_key}"' "$f" | cut -d: -f1)
+    copy_line=$(grep -n 'cp "\$_pruned" "\$_store"' "$f" | cut -d: -f1)
+    [ -n "$curated_line" ] && [ -n "$prune_line" ] && [ -n "$move_line" ] && [ -n "$copy_line" ]
+    # Pruned against the full curated list, before anything moves; the
+    # pruned copy is written only once the original is in the stash.
+    [ "$curated_line" -lt "$prune_line" ]
+    [ "$prune_line" -lt "$move_line" ]
+    [ "$move_line" -lt "$copy_line" ]
+    # The original rides the content manifest (that is what restore reads).
+    run grep -n 'CONTENT_PATHS+=("\$_store")' "$f"
+    [ "$status" -eq 0 ]
+}
+
+@test "restore: the manifest loop puts the original back over the pruned copy" {
+    # Plain mv (no -n / --no-clobber): the stashed original replaces the
+    # pruned copy prepare left at the same path.
+    run grep -n 'mv "\${CONTENT_STASH}/\${key}" "\$dest"' "$GI_DIR/restore_after_cloning.sh"
+    [ "$status" -eq 0 ]
+    run grep -nE '^[^#]*mv (-[a-zA-Z]*n|--no-clobber)' "$GI_DIR/restore_after_cloning.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "content stash round trip: shipping copy in the image, original back after" {
+    # prepare's move + manifest and restore's manifest loop, as the scripts
+    # do them, around the prune.
+    media_store_fixture
+    local stash="$T/content-stash" orig pruned key dest
+    orig="$(cat "$D/media_info.json")"
+    mkdir -p "$stash"; : > "$stash/manifest"
+    pruned="$T/pruned.json"
+    mdb_prune_media_info "$D" "$pruned" "$D/media/personal.mp4"
+    for src in "$D/media/personal.mp4" "$D/media_info.json"; do
+        key="$(printf '%s' "$src" | tr '/' '_')"
+        mv "$src" "$stash/$key"
+        printf '%s\t%s\n' "$key" "$src" >> "$stash/manifest"
+    done
+    cp "$pruned" "$D/media_info.json"
+    # What the dd sees:
+    ! grep -q -e personal -e long_gone "$D/media_info.json"
+    grep -q ship.mp4 "$D/media_info.json"
+    # restore_after_cloning.sh's loop:
+    while IFS=$'\t' read -r key dest; do
+        [[ -n "$key" && -n "$dest" ]] || continue
+        [[ -f "$stash/${key}" ]] || continue
+        mkdir -p "$(dirname "$dest")"
+        mv "$stash/${key}" "$dest"
+    done < "$stash/manifest"
+    [ "$(cat "$D/media_info.json")" = "$orig" ]
+    [ -f "$D/media/personal.mp4" ]
+}
+
+# ---------------------------------------------------------------------------
+# Content curation, run for real
+# ---------------------------------------------------------------------------
+# prepare's curation section (SHIP_PLAYLISTS through the pruned copies) and
+# restore's content loop, extracted from the real scripts and run against a
+# scratch box — the extraction clone_backup_tripwire.bats uses for the
+# tripwire. mdb_check_stash_drive is stubbed: "ok" is a mounted movie drive,
+# anything else a drive-less box cloned with --allow-ram-stash.
+
+# The clone source: one shipping playlist and its video, the store, and the
+# build tree's configure-time copy of data/ — CMake's file(COPY) leaves
+# media/ out, so build/data holds the playlists and the store but no videos.
+clone_box_fixture() {
+    BOX="$T/box"
+    CSTASH="$T/drive/.mdb-content-stash"
+    mkdir -p "$BOX/data/playlists" "$BOX/data/media" "$BOX/build/data" "$T/drive"
+    printf "items:\n  - path: 'media/ship.mp4'\n" \
+        > "$BOX/data/playlists/The_Nostalgia_Channel.yaml"
+    : > "$BOX/data/media/ship.mp4"
+    printf '{"version":1,"videos":{"media/ship.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    cp -R "$BOX/data/playlists" "$BOX/build/data/"
+    cp "$BOX/data/media_info.json" "$BOX/build/data/"
+}
+
+run_curation() {
+    local verdict="$1"
+    {
+        printf 'set -euo pipefail\n'
+        printf 'source %q\n' "$LIB"
+        printf 'log() { printf "%%s\\n" "$*"; }\n'
+        printf 'mdb_check_stash_drive() { echo %q; }\n' "$verdict"
+        printf 'DATA_DIR=%q\nCPP_DIR=%q\nMDB_CONTENT_STASH_DIR=%q\n' \
+            "$BOX/data" "$BOX" "$CSTASH"
+        awk '/^SHIP_PLAYLISTS=\(/ { emit=1 } emit { print }
+             emit && /^unset _i _store _pruned _stashed$/ { exit }' \
+            "$GI_DIR/prepare_for_cloning.sh"
+    } > "$T/curation.sh"
+    # The extraction found the whole section (a renamed marker must fail
+    # here, not turn every test below into a no-op).
+    grep -q 'mdb_prune_media_info' "$T/curation.sh"
+    grep -q '^unset _i _store _pruned _stashed$' "$T/curation.sh"
+    run bash "$T/curation.sh"
+    echo "$output"
+}
+
+restore_content() {
+    {
+        printf 'set -euo pipefail\n'
+        printf 'log() { printf "%%s\\n" "$*"; }\n'
+        printf 'MDB_CONTENT_STASH_DIR=%q\n' "$CSTASH"
+        awk '/^CONTENT_STASH="\$MDB_CONTENT_STASH_DIR"$/ { emit=1 } emit { print }
+             emit && /^fi$/ { exit }' "$GI_DIR/restore_after_cloning.sh"
+    } > "$T/restore_content.sh"
+    grep -q 'mv "${CONTENT_STASH}/${key}" "$dest"' "$T/restore_content.sh"
+    bash "$T/restore_content.sh"
+}
+
+@test "curation: a drive-less --allow-ram-stash clone is not stopped by the build tree's store copy" {
+    clone_box_fixture
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation not-mounted
+    [ "$status" -eq 0 ]
+    # The store names only the shipping video: left exactly as it is.
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    # The build tree's copy is a regenerated artefact: gone, not stashed.
+    [ ! -e "$BOX/build/data/media_info.json" ]
+    [ ! -e "$CSTASH" ]
+}
+
+@test "curation: the image names no curated video; restore gives the source its store back" {
+    clone_box_fixture
+    : > "$BOX/data/media/personal.mp4"
+    printf '{"version":1,"videos":{"media/ship.mp4":{"crop":false},"media/personal.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    cp "$BOX/data/media_info.json" "$BOX/build/data/"
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation ok
+    [ "$status" -eq 0 ]
+    # "shipping a copy" is said once it is true: after the move.
+    [[ "$output" == *"Curated content moved"*"media_info.json: shipping a copy pruned"* ]] || false
+    # What the dd sees: the store pruned to the shipping video, no build-tree
+    # copy, and nothing anywhere in the tree naming the curated video.
+    grep -q 'media/ship.mp4' "$BOX/data/media_info.json"
+    [ ! -e "$BOX/build/data/media_info.json" ]
+    run grep -rl personal "$BOX"
+    [ "$status" -eq 1 ]
+    # Only data/'s store rides the content manifest.
+    grep -qF "$BOX/data/media_info.json" "$CSTASH/manifest"
+    run grep -F "$BOX/build/data/media_info.json" "$CSTASH/manifest"
+    [ "$status" -eq 1 ]
+    restore_content
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    [ -f "$BOX/data/media/personal.mp4" ]
+}
+
+@test "curation: a drive-less stop caused only by the store says so" {
+    # A store naming a video that is no longer on the box (e.g. after a
+    # backup restore) is the only file that needs the content stash.
+    clone_box_fixture
+    printf '{"version":1,"videos":{"media/ship.mp4":{},"media/gone.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation not-mounted
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ERROR: 1 curated file(s) need the content stash"* ]] || false
+    [[ "$output" == *"The only one is $BOX/data/media_info.json"* ]] || false
+    [[ "$output" == *"Removing those entries"*"attaching the drive"*"is enough"* ]] || false
+    [[ "$output" != *"shipping a copy pruned"* ]] || false
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    # An unreadable store: same cause, its own remedy.
+    printf '{oops' > "$BOX/data/media_info.json"
+    run_curation not-mounted
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"The only one is $BOX/data/media_info.json"*"unreadable"* ]] || false
+    [[ "$output" != *"held back, the image ships none"* ]] || false
+    # Alongside other curated files it is named as one of them.
+    printf '%s\n' "$orig" > "$BOX/data/media_info.json"
+    : > "$BOX/data/media/personal.mp4"
+    run_curation not-mounted
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ERROR: 2 curated file(s)"* ]] || false
+    [[ "$output" == *"One of them is $BOX/data/media_info.json"* ]] || false
+    [[ "$output" != *"Removing those entries"* ]] || false
+}
+
+# An interrupted store write leaves a staging copy naming every video: the
+# kiosk's fixed media_info.json.tmp and the web's mkstemp
+# .media_info.json.<rand>.tmp. CMake's file(COPY) carries dotfiles, so a
+# straggler in data/ also lands in build/data/.
+store_stragglers() {
+    local d body='{"version":1,"videos":{"media/personal.mp4":{"crop":false}}}'
+    for d in "$BOX/data" "$BOX/build/data"; do
+        printf '%s\n' "$body" > "$d/media_info.json.tmp"
+        printf '%s\n' "$body" > "$d/.media_info.json.k3x9_q.tmp"
+    done
+}
+
+no_store_stragglers() {
+    local d left
+    for d in "$BOX/data" "$BOX/build/data"; do
+        left="$(find "$d" -maxdepth 1 -name '*media_info.json*.tmp')"
+        [ -z "$left" ] || { echo "straggler left: $left"; return 1; }
+    done
+}
+
+@test "curation: interrupted store writes are deleted; a drive-less clone stays open" {
+    clone_box_fixture
+    store_stragglers
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation not-mounted
+    [ "$status" -eq 0 ]
+    no_store_stragglers
+    run grep -rl personal "$BOX"
+    [ "$status" -eq 1 ]
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    [ ! -e "$CSTASH" ]
+}
+
+@test "curation: interrupted store writes never reach the image, and restore brings none back" {
+    clone_box_fixture
+    : > "$BOX/data/media/personal.mp4"
+    printf '{"version":1,"videos":{"media/ship.mp4":{},"media/personal.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    store_stragglers
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation ok
+    [ "$status" -eq 0 ]
+    no_store_stragglers
+    run grep -rl personal "$BOX"
+    [ "$status" -eq 1 ]
+    run grep -F '.tmp' "$CSTASH/manifest"
+    [ "$status" -eq 1 ]
+    restore_content
+    no_store_stragglers
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    [ -f "$BOX/data/media/personal.mp4" ]
+}
+
+@test "curation: two files that stash under one name stop prepare, nothing overwritten" {
+    # data/media_info.json and a hand-placed data/media/info.json both
+    # flatten to ..._data_media_info.json in the stash.
+    clone_box_fixture
+    printf 'hand-placed\n' > "$BOX/data/media/info.json"
+    printf '{"version":1,"videos":{"media/ship.mp4":{},"media/gone.mp4":{"crop":false}}}\n' \
+        > "$BOX/data/media_info.json"
+    orig="$(cat "$BOX/data/media_info.json")"
+    run_curation ok
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ERROR:"*"$BOX/data/media_info.json"*"same content-stash name"* ]] || false
+    # The store's name is fixed: the message names the OTHER file to rename.
+    [[ "$output" == *"rename $BOX/data/media/info.json and re-run"* ]] || false
+    # The second file was never moved and the first is intact in the stash...
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+    # ...so restore puts the box back exactly.
+    restore_content
+    [ "$(cat "$BOX/data/media/info.json")" = "hand-placed" ]
+    [ "$(cat "$BOX/data/media_info.json")" = "$orig" ]
+}
+
+# ---------------------------------------------------------------------------
 # Script wiring
 # ---------------------------------------------------------------------------
 

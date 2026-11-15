@@ -182,6 +182,7 @@ sudo usermod -a -G video,input $USER
 - **`video/`** - Video playback (GStreamer backend)
   - `gst_player` - GStreamer pipeline management, playback control
   - `gst_renderer` - GL texture rendering from GStreamer video frames
+  - `picture_placement` - pure, header-only placement of playlist/intro video in the 4:3 area (`video::four_by_three_rect`: 960x720 at 720p, 1440x1080 at 1080p; the whole framebuffer, shown as 4:3, in CRT Native): `place_picture` crops to cover or fits inside the visible opening, all in DISPLAY aspect (pixel aspect ratio included); `picture_crop` draws a source known to be 4:3 cropped whatever is stored; `intersect` clamps a bezel opening to the 4:3 area. Unit-tested in `test_video_unit`.
 - **`ui/`** - User interface
   - `renderer` - Immediate-mode 2D renderer (quads, text, alpha blending), implemented across `renderer.cpp` (core/primitives), `renderer_shaders`, `renderer_text`, `renderer_main_menu`, `renderer_settings`, `renderer_mb`, `renderer_crt` and `renderer_batch`; private shared bits in `renderer_internal.h`. Primitives inside a `Renderer::BatchScope` (the whole `render(state)` pass, the MB screen + modals, the toast) accumulate into one CPU vertex batch (`ui_batch.h`, GL side `renderer_batch.cpp`) and are submitted per texture run; every non-batched GL site in the `renderer*.cpp` files calls `flush_ui_batch()` first, so draw order is unchanged. `MDB_BATCH_UI=0` restores one draw per primitive for A/B; the journal logs UI draw calls/frame per minute.
   - Redraw gate (`app/redraw_gate.h`, wired in `main.cpp`): render/swap/flip are skipped on iterations where nothing on screen can change — the main menu, an idle open Settings menu (`SettingsMenuManager::is_static_for_redraw`), and MB Browse/Search/Library/Detail/SeriesDetail when idle (`MbScreen::wants_continuous_redraw` + `redraw_signature`). The static menu with CRT flicker/interlacing draws every other vblank (`ui/crt_time.h`). `MDB_REDRAW_GATE=0` disables. A new screen or animation must either keep `wants_continuous_redraw()` true or put its state in the signature.
@@ -190,6 +191,7 @@ sudo usermod -a -G video,input $USER
   - `settings_menu` - Settings UI state machine
   - `virtual_keyboard` - On-screen QWERTY keyboard
   - `qrcodegen` - QR code generation for WiFi setup
+  - `picture_control_layout` - pure placement of the overlay's CROP checkbox in the now-playing block: left of the title, or on its own line above it when a long title would push it into the playlist half (both logical canvases). Unit-tested.
 - **`app/`** - Application logic
   - `app_state.h` - Global state (playlists, playback, settings)
   - `controller` - High-level video/audio control, RetroArch launch/return orchestration. Split in two TUs: `controller.cpp` (kiosk-only: `load_item_media` — stop/settle/load/play and the game hand-off) and `controller_playback.cpp` (player pass-throughs, `update_state`'s `video_active` debounce, `load_playlist_item`'s dispatch, NEXT/PREV/Master Shuffle stepping), which talks to the player only through `video::VideoPlayer` and is unit-tested in `test_app_unit` against a fake player (`tests/app/test_controller_playback.cpp`, link doubles in `controller_test_doubles.cpp`). A missing file is refused before anything stops the stream; `load_next_item` retries at most `kMaxSyncLoadRetries` loadable-but-failing items per call, then hands off via `AppState::playlist_item_load_failed` to `PlaylistPlayback::tick_pipeline_error` / `PlaybackErrorPolicy::on_load_failure` (an unbounded retry run once blocked the render thread past the watchdog).
@@ -200,6 +202,9 @@ sudo usermod -a -G video,input $USER
   - `playlist_reload` - `split_for_ui_with_master_shuffle` (boot AND the web-admin `playlists_reload_request` reload — one sequence) plus the reload's identity re-anchoring: playing item, shuffle queues, auto-advance guard, menu cursor, open Settings game list. main.cpp keeps only the marker poll and the Settings-menu calls.
   - `game_handoff` - non-drawing half of a game session, unit-tested in the RetroArch suite: `GameSessionBracket` (the controller's begin/end session hooks — loading state, media-stack quiet, GPIO restart-button thread, watchdog off/on, "retroarch" status, `PostGameGate` arm), `notify_session_watchdog`, `make_game_quiet_actions` (qBit pause/resume + `playback_services_pause.sh`, gated on `services/.env`), `TorrentResumeRecovery`. `game_handoff_kiosk` is the GL/DRM half (kiosk-only): Settings game-browser launch behind the loading plate, the post-game display restore (`state.reset_display`), and the post-game ready edge.
   - `intro_sequence` - the boot intro video's pure decisions (unit-tested): end detection (`intro_video_ended`: within 50 ms of the end, or the player stopped after progress), the 300 ms fade-out volume ramp, `hand_intro_to_menu` (stopped/de-indexed state + menu fade-IN — deliberately not `stop_to_menu`) and the per-frame `should_render_video` decision. `intro_sequence_kiosk` is the GStreamer/GL/LED half (kiosk-only): `find_intro_video`, `start_intro` (the blocking ≤10 s first-frame wait before READY=1) and the per-frame `tick_intro`.
+  - `media_info` - the kiosk's copy of `<data>/media_info.json` (per-video `crop`, `duration_s`, `display_aspect`; see "Per-video info" under Web Admin): `MediaInfoStore` reads and writes on a `LatestWinsWorker` thread under the sidecar `flock` the web admin shares — the render loop only swaps in maps and records edits, never touching the file. Unit-tested against the shared fixture `tests/app/fixtures/media_info.json`.
+  - `overlay_nav` - the list overlay's cursor (row, scroll window, and the Picture/crop control one stop below the last row): `rotate_overlay`, `clamp_overlay` (shared with `playlist_reload`), and `picture_control_visible` / `picture_focus_may_stay` (focus survives the load gap between items). Pure, unit-tested.
+  - `bezel_catalog` - `parse_bezel_catalog` for `assets/bezels/bezels.json`. Each bezel with art declares its visible `opening` (x,y,w,h in its 1920x1080 image px; `bezels_json_schema.bats` keeps it inside the 4:3 area): fit-mode video is placed inside the opening (main.cpp scales it with `video::scale_image_rect` and clamps it to the 4:3 area), not the full 4:3 area. A refused opening falls back to the whole 4:3 area and is logged. Unit-tested against the PNGs.
   - `settings_input` - the Settings-menu input dispatch (kiosk-only), called per event from main.cpp's loop in this order: `handle_menu_button` (BTN4 toggle + hold-for-volume) → `dispatch_overlay_input` (on-screen keyboard, then the Settings menu: game browser + ROM launch, Controller Setup wizard, pairing screen, top-level/submenu rows, MB entry rows — entering the MB is a callback to `MediaBrowserHost::enter_from_settings`) → main-menu input. Both return "consumed". Pure decisions in `settings_input_logic` (unit-tested): `MenuButtonHold` (300 ms: `<` toggles on release, `>` shows the slider; any volume change saves instead of toggling), `volume_after_hold_step`, the game browser's SELECT row classification.
 - **`retroarch/`** - Game emulation
   - `retroarch_launcher` - DRM/KMS handoff, config generation (incl. video config via `write_video_config()`), process lifecycle. It no longer owns button mappings: it resolves one mapping per controller port and emits the `input_playerN_*` lines through `write_player_binds()`.
@@ -304,23 +309,28 @@ This guarantees correct compositing without X11/compositor overhead.
 - **Transcode presets are MASTERS, not display formats** (retuned 2026-07-26).
   The kiosk scales stored content to whichever display mode is active, so
   keep the best master storage allows and let playback derive the rest.
-  Aspect matters as much as resolution: the main kiosk renders playlist
-  video into a **4:3** viewport (`vp_w = canvas_h*4/3` → 960x720 at 720p,
-  1440x1080 at 1080p output) — the deliberate CRT look — so a 16:9 master
-  gets letterboxed *inside* that pillarbox and ends up smaller on screen.
-  4:3 masters are therefore correct for playlist content even on a
-  widescreen TV.
-  | preset | size | aspect | use |
-  |---|---|---|---|
-  | `crt` | 640x480 | 4:3 | legacy / smallest files |
-  | **`crt_hd`** | **960x720** | **4:3** | **default** — 2.25x the old detail, 1:1 at 720p output |
-  | `crt_fhd` | 1440x1080 | 4:3 | max detail, 1:1 at 1080p output, ~2.25x the files |
-  | `modern` | 1280x720 | 16:9 | genuinely widescreen source material only |
+  Aspect: playlist video is drawn in a **4:3** area (`video::four_by_three_rect`
+  → 960x720 at 720p, 1440x1080 at 1080p output) — the deliberate CRT look.
+  Since 2026-11 a master KEEPS THE SOURCE'S ASPECT (`media_probe.master_size`:
+  covers the preset's 4:3 box, never upscaled, capped inside 1920x1080) and
+  the kiosk places each video per video with the pure `video::place_picture`:
+  **crop** (default) fills the 4:3 area, trimming the overflow; **fit** shows
+  the whole frame inside it. Non-4:3 masters are never stretched (the old
+  renderer stretched them) and never letterboxed inside a pillarbox. The
+  choice is the video's `crop` flag (below); the upload's Framing option is
+  only its starting value.
+  | preset | 4:3 source stored at | note |
+  |---|---|---|
+  | `crt` | 640x480 | legacy / smallest files |
+  | **`crt_hd`** | **960x720** | **default** — 1:1 at 720p output (a 16:9 source: 1280x720) |
+  | `crt_fhd` | 1440x1080 | max detail, 1:1 at 1080p output, ~2.25x the files |
+  | `modern` | = `crt_hd` | alias, kept for old clients |
   Note 640x480 was never a pixel-exact CRT path: the Pi 5 has no composite
   output, so CRT rigs go through an HDMI→composite converter and the signal
   is downscaled regardless — a higher-resolution master is strictly better
   for CRT too. Default changes affect NEW uploads only; existing files
   cannot regain detail they never had.
+- **Per-video info `<data>/media_info.json`** (2026-11; kiosk ⇄ web file channel): `{"version":1,"videos":{"media/x.mp4":{"duration_s","display_aspect","crop":false}}}`, keyed by data-dir-relative path. `crop` is written only as `false`; absent = cropped (default). Writers — the kiosk (`app/media_info.{h,cpp}`, background writer, never on the render loop) and the web admin (`web/media_info.py`, `media_probe.py`, `media_record.py`) — serialize on `flock` of the sidecar `media_info.json.lock`, never on the data file (replaced by rename). A web-side change touches the `media_info_reload_request` marker and the kiosk re-reads it. Videos with no length/shape recorded (on the box before the store existed) are filled once per web-admin process by `web/media_backfill.py` (a nice-10 thread, one ffprobe at a time, waiting while `/tmp/mdb_playback_services_paused` exists; `MAGIC_MEDIA_BACKFILL=0` disables, as the test conftest does). A source known to be 4:3 is never stored or drawn uncropped (no control is offered for one). Clone prep ships a copy pruned to the shipping videos (`mdb_prune_media_info`). Backup/restore/import/migrate carry it; every deploy/OTA/release exclude list keeps it. The kiosk's CROP checkbox lives in the playlist overlay (turn past the last playlist; shown only for non-4:3 video).
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
 - **Server: gunicorn, ONE worker, gthread threads** (`web/serve.py`, since
   2026-10). `magic-dingus-web.service` still runs

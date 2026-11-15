@@ -36,6 +36,7 @@ USER_DATA = [
     D + "thumbnails/*",            # per-game cover art; systems/ is carved out below
     D + "device_info.json", D + "paired_remotes.json", D + "flask_secret.key",
     D + "pairing_session.json", D + "pairing_audit.log", D + "media_browser.db*",
+    D + "media_info.json", D + "media_info.json.lock",
     "config/*", "services/.env", "services/config/*",
 ]
 NOT_USER_DATA = [D + "thumbnails/systems/*",   # shipped, updated by OTA

@@ -86,6 +86,26 @@ void PlaylistPlayback::on_select() {
         return; // Don't trigger selection yet
     }
 
+    // The cursor is on the Picture control (below the last playlist row,
+    // app/overlay_nav.h): toggle crop for the playing video. It never
+    // switches playlist, never hides the overlay, never touches playback.
+    // main.cpp drops the focus each frame once the control is gone; a press
+    // that lands before that, after the pipeline changed hands, is dropped
+    // too — it was aimed at a control, not at the row under it. The focus
+    // rides through the load gap between items, where video_active is
+    // briefly false and the reveal above does not fire: a press over the
+    // hidden overlay there still only reveals it.
+    if (state_.picture_focus) {
+        if (!owns_pipeline()) return;
+        if (!state_.ui_visible_when_playing) {
+            state_.ui_visible_when_playing = true;
+            state_.ui_visibility_timer = 3.0;
+            return;
+        }
+        transport_.toggle_picture_crop();
+        return;
+    }
+
     // If video is already playing
     if (state_.video_active) {
         // Check if the selected playlist is the same as the one currently playing

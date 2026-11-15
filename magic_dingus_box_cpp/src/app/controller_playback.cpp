@@ -13,9 +13,11 @@
 #include "controller.h"
 #include "playback_reset.h"
 #include "auto_advance.h"
+#include "media_info.h"
 #include "playlist_cursor.h"
 #include "shuffle_queue.h"
 #include "../video/video_player.h"
+#include "../utils/config.h"
 #include "../utils/path_resolver.h"
 #include "../utils/subprocess.h"
 #include "app_state.h"
@@ -33,12 +35,39 @@ namespace fs = std::filesystem;
 
 namespace app {
 
+namespace {
+
+// The loaded file's key in the media info store (app/media_info.h). Both
+// paths are canonicalized before the (lexical) comparison: the resolver
+// returns playlist-relative items through fs::canonical but other paths as
+// they were spelled, and the configured data directory may be reached
+// through a symlink — compared as spelled, the same file could get no key.
+std::string playback_media_key(const std::string& resolved_path,
+                               const std::string& data_dir) {
+    auto canonical_or_given = [](const std::string& p) {
+        std::error_code ec;
+        const fs::path c = fs::weakly_canonical(p, ec);
+        return ec ? p : c.string();
+    };
+    const std::string key =
+        media_key_for(canonical_or_given(resolved_path), canonical_or_given(data_dir));
+    // The boot intro lives in <data>/intro (config::get_intro_dir) and is
+    // not a library video: no per-video setting applies to it.
+    if (key.rfind("intro/", 0) == 0) return "";
+    return key;
+}
+
+}  // namespace
+
 Controller::Controller(video::VideoPlayer* player)
     : player_(player), display_(nullptr), input_manager_(nullptr)
 {
 }
 
 void Controller::load_file(const std::string& path, double start, double end, bool loop) {
+    // No resolution here, so no media key: a stale one would apply the
+    // previous video's setting to this one.
+    current_media_key_.clear();
     if (player_) {
         player_->load_file(path, start, end, loop);
         // Re-apply current volume to player
@@ -86,6 +115,8 @@ void Controller::apply_system_volume_now(int percent) {
 }
 
 utils::Result<> Controller::load_file_with_resolution(const std::string& path, const std::string& playlist_dir, double start, double end, bool loop) {
+    // Until this load succeeds, nothing of ours is loaded.
+    current_media_key_.clear();
     if (!player_) {
         return utils::Result<>::fail("Player not initialized");
     }
@@ -109,6 +140,10 @@ utils::Result<> Controller::load_file_with_resolution(const std::string& path, c
 
     // Re-apply current volume to player
     player_->set_volume(current_system_volume_);
+
+    current_media_key_ = playback_media_key(
+        resolved_path,
+        media_data_dir_.empty() ? config::get_data_path() : media_data_dir_);
 
     return utils::Result<>::ok();
 }

@@ -560,7 +560,9 @@ private:
     
     // Component renderers
     void render_title(float text_alpha = 1.0f, bool video_active = false, bool ui_visible_when_playing = false);
-    void render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing, int current_playlist_index = -1);
+    // picture_focus: the cursor is on the Picture (CROP) control, not a row —
+    // no row is drawn selected (no highlight bar, no blinking indicator).
+    void render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing, int current_playlist_index = -1, bool picture_focus = false);
     void render_footer(const app::AppState& state, float text_alpha = 1.0f, bool video_active = false, bool ui_visible_when_playing = false);
     void render_volume_overlay(const app::AppState& state);
     void render_seek_bar(const app::AppState& state);

@@ -178,6 +178,8 @@ rsync -avz --checksum \
     --exclude 'data/seek_request.json' \
     --exclude 'data/text_input_queue.jsonl' \
     --exclude 'data/media_browser.db*' \
+    --exclude 'data/media_info.json' \
+    --exclude 'data/media_info.json.lock' \
     --exclude 'data/upload_temp' \
     --exclude 'data/screenshots' \
     --filter 'P data/thumbnails/ps1' \

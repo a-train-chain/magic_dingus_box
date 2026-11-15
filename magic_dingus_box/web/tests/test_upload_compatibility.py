@@ -8,6 +8,7 @@ from fractions import Fraction
 import pytest
 
 import admin
+import media_info
 from admin import create_app
 from ._deps import need_tool
 from .test_transcode_staging import stub_bin, _run_job
@@ -98,9 +99,11 @@ def test_ffmpeg_thread_budget_follows_runtime_policy(
         assert '-filter_threads' not in argv
 
 
+# A 16:9 source keeps its shape: the master covers the preset's 4:3 box
+# (media_probe.master_size), and 'modern' is an alias of 'crt_hd'.
 @pytest.mark.parametrize('resolution,size', [
-    ('crt', (640, 480)), ('crt_hd', (960, 720)),
-    ('crt_fhd', (1440, 1080)), ('modern', (1280, 720)),
+    ('crt', (852, 480)), ('crt_hd', (1280, 720)),
+    ('crt_fhd', (1920, 1080)), ('modern', (1280, 720)),
 ])
 def test_each_preset_caps_large_high_rate_upload(
         client, temp_data_dir, real_ffmpeg, resolution, size):
@@ -124,10 +127,81 @@ def test_each_preset_caps_large_high_rate_upload(
     assert status['status'] == 'complete', status
     output = _probe(temp_data_dir / 'media' / status['output_filename'])
     assert (output['width'], output['height']) == size
+    assert output.get('sample_aspect_ratio') in ('1:1', None)
     assert output['pix_fmt'] in ('yuv420p', 'yuvj420p')
     assert output['profile'] in ('Constrained Baseline', 'Main', 'High')
     assert output['level'] <= 41
     assert Fraction(output['avg_frame_rate']) == 30
+    # The published master's real probe reached the kiosk's store.
+    info = media_info.load(temp_data_dir)['media/' + status['output_filename']]
+    assert info['display_aspect'] == pytest.approx(size[0] / size[1], abs=1e-3)
+    assert info['duration_s'] == pytest.approx(0.5, abs=0.1)
+    assert 'crop' not in info
+
+
+def test_unprobeable_source_fallback_keeps_square_pixels(
+        client, temp_data_dir, real_ffmpeg, monkeypatch):
+    # With no probe the job bounds the clip with a bare ffmpeg filter. A tall
+    # 1080x1920 clip used to come out 608x1080 with SAR 1215:1216.
+    import media_probe
+    monkeypatch.setattr(media_probe, 'probe_source', lambda path: None)
+    source = temp_data_dir.parent / 'tall.mp4'
+    subprocess.run([
+        'ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+        'testsrc2=size=1080x1920:rate=30', '-t', '0.5',
+        '-c:v', 'libx264', '-preset', 'ultrafast', str(source)], check=True)
+    response = client.post('/admin/upload-and-transcode', data={
+        'file': (io.BytesIO(source.read_bytes()), 'tall.mp4'),
+        'normalize_audio': 'false',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 200, response.get_json()
+    job_id = response.get_json()['data']['job_id']
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        status = client.get('/admin/transcode-status/' + job_id).get_json()['data']
+        if status['status'] in ('complete', 'error'):
+            break
+        time.sleep(0.05)
+    assert status['status'] == 'complete', status
+    output = _probe(temp_data_dir / 'media' / status['output_filename'])
+    assert (output['width'], output['height']) == (608, 1080)
+    assert output.get('sample_aspect_ratio') in ('1:1', None)
+
+
+def test_sideways_phone_clip_is_stored_upright(client, temp_data_dir, real_ffmpeg):
+    # A portrait phone clip: 1280x720 frames with a 90-degree display
+    # rotation. The master must be upright (ffmpeg auto-rotates) and sized
+    # by the upright 720x1280 shape: inside 1080 tall, so 608x1080.
+    source = temp_data_dir.parent / 'portrait.mp4'
+    plain = temp_data_dir.parent / 'landscape.mp4'
+    subprocess.run([
+        'ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+        'testsrc2=size=1280x720:rate=30', '-t', '0.5',
+        '-c:v', 'libx264', '-preset', 'ultrafast', str(plain)], check=True)
+    made = subprocess.run([
+        'ffmpeg', '-v', 'error', '-y', '-display_rotation', '90',
+        '-i', str(plain), '-c', 'copy', str(source)], capture_output=True)
+    if made.returncode != 0:
+        pytest.skip('this ffmpeg cannot write a display rotation')
+    response = client.post('/admin/upload-and-transcode', data={
+        'file': (io.BytesIO(source.read_bytes()), 'portrait.mp4'),
+        'resolution': 'crt_hd', 'fit_mode': 'fit', 'normalize_audio': 'false',
+    }, content_type='multipart/form-data')
+    assert response.status_code == 200, response.get_json()
+    job_id = response.get_json()['data']['job_id']
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        status = client.get('/admin/transcode-status/' + job_id).get_json()['data']
+        if status['status'] in ('complete', 'error'):
+            break
+        time.sleep(0.05)
+    assert status['status'] == 'complete', status
+    output = _probe(temp_data_dir / 'media' / status['output_filename'])
+    assert (output['width'], output['height']) == (608, 1080)
+    assert not any('rotation' in sd for sd in output.get('side_data_list', []))
+    info = media_info.load(temp_data_dir)['media/portrait.mp4']
+    assert info['display_aspect'] == pytest.approx(608 / 1080, abs=1e-3)
+    assert info['crop'] is False
 
 
 @pytest.mark.parametrize('force_conversion', [False, True])

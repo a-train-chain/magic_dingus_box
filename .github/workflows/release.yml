@@ -191,6 +191,8 @@ jobs:
             --exclude='*.pyc' \
             --exclude='data/media/*' \
             --exclude='data/roms/*' \
+            --exclude='data/media_info.json' \
+            --exclude='data/media_info.json.lock' \
             --exclude='dev_data' \
             --exclude='test_files' \
             --exclude='*.service.bak' \

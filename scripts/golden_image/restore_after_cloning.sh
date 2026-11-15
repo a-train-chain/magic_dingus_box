@@ -192,7 +192,10 @@ fi
 # Curated content (the operator's own playlists/videos) that prepare moved to
 # the disk-backed stash on the movie drive so the artifact would not carry
 # them. mv'd back exactly where they came from. This stash survives a reboot
-# (it is on the SSD, not tmpfs), so a crashed clone loses nothing.
+# (it is on the SSD, not tmpfs), so a crashed clone loses nothing. It also
+# holds the original per-video store (media_info.json) whenever prepare left
+# a copy pruned to the shipping videos in its place: the plain mv below puts
+# the original back over that copy (it must stay a replacing mv).
 CONTENT_STASH="$MDB_CONTENT_STASH_DIR"
 
 if [[ -f "${CONTENT_STASH}/manifest" ]]; then

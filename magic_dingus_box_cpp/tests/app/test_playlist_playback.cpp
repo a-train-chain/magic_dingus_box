@@ -78,6 +78,7 @@ struct FakeTransport : app::PlaylistTransport {
     void master_shuffle_back(app::AppState&, const std::string&) override {
         calls.push_back("shuffle_back");
     }
+    void toggle_picture_crop() override { calls.push_back("toggle_picture"); }
     uint64_t stream_generation() const override { return generation; }
     bool has_error() const override { return error; }
     double player_position() const override { return position; }
@@ -217,6 +218,116 @@ TEST_CASE("SELECT on the playing playlist toggles the UI with a fade",
         CHECK(t.calls.empty());
         CHECK_FALSE(s.ui_visible_when_playing);
     }
+}
+
+// ── The Picture (crop) control, one stop below the last playlist row ─────
+
+TEST_CASE("SELECT on the Picture control toggles crop and keeps the overlay",
+          "[playlist_playback][picture]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 2);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 4;  // the last row, under the control
+    s.playlist_scroll_offset = 1;
+    s.picture_control_available = true;
+    s.picture_focus = true;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    pb.on_select();
+
+    // Never a playlist switch, never a UI toggle, never a playback call.
+    CHECK(t.calls == std::vector<std::string>{"toggle_picture"});
+    CHECK(s.ui_visible_when_playing);
+    CHECK_FALSE(s.is_fading);
+    CHECK_FALSE(s.is_switching_playlist);
+    CHECK_FALSE(pb.switch_pending());
+    CHECK(s.current_playlist_index == 1);
+    CHECK(s.current_item_index == 2);
+    CHECK(s.selected_index == 4);
+    CHECK(s.playlist_scroll_offset == 1);
+    CHECK(s.picture_focus);
+
+    // Every press toggles again.
+    pb.on_select();
+    CHECK(t.calls == std::vector<std::string>{"toggle_picture", "toggle_picture"});
+}
+
+TEST_CASE("SELECT with the Picture focus over hidden UI only reveals the UI",
+          "[playlist_playback][picture]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 2);  // overlay hidden
+    s.selected_index = 4;
+    s.picture_control_available = true;
+    s.picture_focus = true;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    pb.on_select();
+
+    CHECK(t.calls.empty());
+    CHECK(s.ui_visible_when_playing);
+    CHECK(s.picture_focus);
+    CHECK(s.current_playlist_index == 1);
+    CHECK(s.current_item_index == 2);
+}
+
+TEST_CASE("SELECT in the load gap between items still toggles, or only reveals",
+          "[playlist_playback][picture]") {
+    // NEXT / auto-advance: video_active is briefly false while the next
+    // stream prerolls, and the focus stays on the control through it.
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 2);
+    s.video_active = false;
+    s.selected_index = 4;
+    s.picture_focus = true;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    SECTION("overlay up: the press toggles, nothing starts") {
+        s.ui_visible_when_playing = true;
+        pb.on_select();
+        CHECK(t.calls == std::vector<std::string>{"toggle_picture"});
+        CHECK(s.ui_visible_when_playing);
+    }
+    SECTION("overlay hidden: the press only reveals it") {
+        s.ui_visible_when_playing = false;
+        pb.on_select();
+        CHECK(t.calls.empty());
+        CHECK(s.ui_visible_when_playing);
+        CHECK(s.ui_visibility_timer == 3.0);
+    }
+    CHECK(s.current_playlist_index == 1);
+    CHECK(s.current_item_index == 2);
+    CHECK_FALSE(s.is_switching_playlist);
+    CHECK(s.picture_focus);
+}
+
+TEST_CASE("SELECT with a stale Picture focus does nothing once a game takes the pipeline",
+          "[playlist_playback][picture]") {
+    // The focus is cleared each frame when the control goes away; a press
+    // landing before that (a game took the pipeline) must neither toggle a
+    // video nobody is watching nor start the row under the control.
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 2);
+    s.ui_visible_when_playing = true;
+    s.is_loading_game = true;
+    s.selected_index = 4;
+    s.picture_control_available = true;
+    s.picture_focus = true;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    pb.on_select();
+
+    CHECK(t.calls.empty());
+    CHECK(s.current_playlist_index == 1);
+    CHECK(s.ui_visible_when_playing);
+    CHECK_FALSE(s.is_switching_playlist);
 }
 
 // ── Mid-playback switch: stop, cooperative wait, load ────────────────────

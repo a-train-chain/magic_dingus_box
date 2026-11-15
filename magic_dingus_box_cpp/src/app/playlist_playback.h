@@ -90,6 +90,10 @@ public:
                                         const std::string& playlist_directory) = 0;
     virtual void master_shuffle_back(AppState& state,
                                      const std::string& playlist_directory) = 0;
+    // Flip the playing video's crop setting (the Picture control). In the
+    // kiosk: MediaInfoStore::set_crop for Controller::current_media_key —
+    // in memory at once, written to disk on the store's own thread.
+    virtual void toggle_picture_crop() = 0;
 
     // GstPlayer (the shared pipeline)
     virtual uint64_t stream_generation() const = 0;
@@ -109,9 +113,10 @@ public:
                      const std::string& playlist_directory);
 
     // ── Main-menu input (called on the PRESS edge only) ──────────────────
-    // SELECT on the main menu: show the hidden UI, toggle it over the
-    // playing playlist, or switch to / start the highlighted playlist
-    // (index 0 = Master Shuffle).
+    // SELECT on the main menu: show the hidden UI, toggle the playing
+    // video's crop when the cursor is on the Picture control, toggle the UI
+    // over the playing playlist, or switch to / start the highlighted
+    // playlist (index 0 = Master Shuffle).
     void on_select();
     void on_play_pause();
     // NEXT/PREV: step the playlist (or Master Shuffle history) while one
@@ -148,10 +153,14 @@ public:
     static constexpr std::chrono::milliseconds kSwitchTimeout{2000};
     static constexpr std::chrono::milliseconds kTimeoutSettle{200};
 
-    // ── Failed-item handling (exposed for the tests) ─────────────────────
+    // ── Who owns the pipeline ────────────────────────────────────────────
     // True while a main-menu playlist item owns the shared pipeline (not
-    // the intro, a switch, a game launch, or Media Browser playback).
+    // the intro, a switch, a game launch, or Media Browser playback). Also
+    // read by main.cpp each frame for the overlay's Picture control
+    // (app/overlay_nav.h, PictureFacts::owns_pipeline).
     bool owns_pipeline() const;
+
+    // ── Failed-item handling (exposed for the tests) ─────────────────────
     int failure_budget() const;
     void act_on_failed_item(video::PlaybackErrorPolicy::Decision d, const char* why);
 

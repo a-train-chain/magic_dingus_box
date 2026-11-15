@@ -23,6 +23,7 @@
 #include "virtual_keyboard.h" // Added for virtual keyboard rendering
 #include "qrcodegen.hpp" // QR code generation
 #include "text_utf8.h"
+#include "picture_control_layout.h"
 #include "../app/app_state.h"
 #include "../app/playlist_loader.h"
 #include "../app/settings_persistence.h" // For getting config if needed
@@ -245,7 +246,7 @@ void Renderer::render(app::AppState& state) {
                 std::max(8, static_cast<int>(available_h / row_h));
         }
 
-        render_playlist_list(state.playlists, state.selected_index, state.playlist_scroll_offset, state.video_active, state.ui_visible_when_playing, state.current_playlist_index);
+        render_playlist_list(state.playlists, state.selected_index, state.playlist_scroll_offset, state.video_active, state.ui_visible_when_playing, state.current_playlist_index, state.picture_focus);
         render_footer(state, text_alpha, state.video_active, state.ui_visible_when_playing);
         
         // Render loading overlay if needed
@@ -494,7 +495,7 @@ void Renderer::render_title(float text_alpha, bool /* video_active */, bool /* u
               header_x + header_width, header_line_y, 2.0f, theme_->accent2, text_alpha);
 }
 
-void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing, int current_playlist_index) {
+void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing, int current_playlist_index, bool picture_focus) {
     // Debug: Log playlist rendering
     static int playlist_render_count = 0;
     if (playlist_render_count < 2) {
@@ -613,7 +614,10 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
     for (int i = 0; i < max_visible && (scroll_offset + i) < total_playlists; i++) {
         int playlist_idx = scroll_offset + i;
         const auto& pl = playlists[playlist_idx];
-        bool selected = (playlist_idx == selected_index);
+        // While the cursor is on the Picture control, selected_index still
+        // holds the last row (leaving the control lands there) but no row is
+        // the focus: draw every row unselected.
+        bool selected = (playlist_idx == selected_index) && !picture_focus;
         
         // Selection highlight bar (subtle background - very transparent so it doesn't block text)
         if (selected) {
@@ -970,7 +974,42 @@ void Renderer::render_footer(const app::AppState& state, float text_alpha, bool 
                 int title_width = body_font_manager_->get_text_width(title, theme_->font_small_size);
                 float title_x = static_cast<float>(width_) - title_width - 80.0f;
                 draw_text(title, title_x, footer_baseline, theme_->font_small_size, theme_->fg, false, text_alpha);
-                
+
+                // The Picture control: a CROP checkbox left of the title, or
+                // on its own line above it when a long title leaves no room
+                // (ui/picture_control_layout.h). Ticked = cropped; gold while
+                // the cursor is on it. Drawn only when main.cpp says it is
+                // shown — picture_focus alone (a load gap) draws nothing.
+                if (state.picture_control_available) {
+                    const int font = theme_->font_small_size;
+                    const float box = 14.0f;
+                    const float box_label_gap = 6.0f;
+                    const float stroke = 2.0f;
+                    const std::string label = "CROP";
+                    const float control_w =
+                        box + box_label_gap +
+                        static_cast<float>(body_font_manager_->get_text_width(label, font));
+                    const ui::PictureControlPos pos = ui::place_picture_control(
+                        static_cast<float>(width_), title_x, footer_baseline, control_w, 18.0f);
+                    const ui::Color ink = state.picture_focus ? theme_->accent : theme_->fg;
+                    // Box centred on the label's caps (~10 px at 14 px):
+                    // baseline - 12 .. baseline + 2.
+                    const float bx = pos.x;
+                    const float by = pos.y - 12.0f;
+                    if (state.picture_crop) {
+                        draw_quad(bx, by, box, box, ink, text_alpha);
+                        // Tick knocked out in bg: short stroke down, long stroke up.
+                        draw_line(bx + 3.0f, by + 7.0f, bx + 6.0f, by + 10.0f, stroke, theme_->bg, text_alpha);
+                        draw_line(bx + 6.0f, by + 10.0f, bx + 11.0f, by + 4.0f, stroke, theme_->bg, text_alpha);
+                    } else {
+                        draw_quad(bx, by, box, stroke, ink, text_alpha);                                 // top
+                        draw_quad(bx, by + box - stroke, box, stroke, ink, text_alpha);                  // bottom
+                        draw_quad(bx, by + stroke, stroke, box - 2.0f * stroke, ink, text_alpha);        // left
+                        draw_quad(bx + box - stroke, by + stroke, stroke, box - 2.0f * stroke, ink, text_alpha);  // right
+                    }
+                    draw_text(label, bx + box + box_label_gap, pos.y, font, ink, false, text_alpha);
+                }
+
                 // Line 2: Artist (if available)
                 if (!item.artist.empty()) {
                     float artist_baseline = footer_baseline + 18.0f;

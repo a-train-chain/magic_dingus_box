@@ -55,6 +55,16 @@ public:
     // Playback control
     void load_file(const std::string& path, double start = 0.0, double end = 0.0, bool loop = false);
     utils::Result<> load_file_with_resolution(const std::string& path, const std::string& playlist_dir, double start = 0.0, double end = 0.0, bool loop = false);
+
+    // The loaded video's key in the per-video media info store
+    // (app/media_info.h): its path relative to the data directory. Set by
+    // every successful load_file_with_resolution; "" for the boot intro
+    // (<data>/intro is not a library video), for a file outside the data
+    // directory (Media Browser movies), and after a failed load.
+    const std::string& current_media_key() const { return current_media_key_; }
+    // The directory keys are relative to. Default config::get_data_path();
+    // tests inject a temp directory.
+    void set_media_data_dir(std::string dir) { media_data_dir_ = std::move(dir); }
     void play();
     void pause();
     void toggle_pause();
@@ -210,6 +220,8 @@ private:
     int last_applied_system_volume_ = -1;
     std::string text_input_queue_path_;
     std::string seek_request_path_;  // cached in poll_seek_request (per-tick)
+    std::string current_media_key_;
+    std::string media_data_dir_;     // "" = config::get_data_path()
     platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
     platform::InputManager* input_manager_;  // For controller release before RetroArch launch
     int current_system_volume_ = 100;

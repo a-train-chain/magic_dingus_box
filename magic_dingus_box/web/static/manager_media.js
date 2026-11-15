@@ -6,6 +6,43 @@
 
 // ===== VIDEO MANAGEMENT =====
 
+// A video whose shape differs from the 4:3 area gets a Crop checkbox (ticked =
+// fill the area and trim the overflow, the default; unticked = whole frame
+// with black borders). A 4:3 video never does: the kiosk always crops it
+// (there is nothing to trim), so a stored crop:false from a restore or a
+// package import must not show an unticked box the TV contradicts. A video
+// whose shape is unknown has nothing to choose either — except when the box
+// holds it as NOT cropped, which shows its (unticked) box so that choice can
+// be undone from here: a kiosk toggle on a video whose shape is not recorded
+// yet, or an upload whose file could not be probed.
+function cropControl(video) {
+    const aspect = video.display_aspect;
+    const known = typeof aspect === 'number' && aspect > 0;
+    // Within 2 % of 4:3, relative: the kiosk's video::is_four_by_three and
+    // the web's media_record.is_four_by_three.
+    if (known && Math.abs(aspect / (4 / 3) - 1) <= 0.02) return '';
+    if (!known && video.crop !== false) return '';
+    return `<label class="video-crop" title="Fill the 4:3 screen, trimming the edges. Untick to show the whole picture with black borders.">
+        <input type="checkbox" ${video.crop === false ? '' : 'checked'}
+            onchange="setVideoCrop('${escapeJs(video.path)}', this.checked)"> Crop</label>`;
+}
+
+async function setVideoCrop(path, crop) {
+    try {
+        await apiRequest(`${currentDevice.url}/admin/media/picture`, {
+            method: 'POST',
+            headers: getCsrfHeaders(),
+            body: JSON.stringify({ path, crop })
+        });
+        const video = AppState.media.videos.find(v => v.path === path);
+        if (video) video.crop = crop;
+    } catch (e) {
+        console.error('Crop change failed:', e);
+        alert('Could not change Crop: ' + e.message);
+        loadVideos();  // put the checkbox back to what the box has
+    }
+}
+
 async function loadVideos() {
     if (!AppState.device.current) return;
 
@@ -111,6 +148,7 @@ async function loadVideos() {
                     : '<span class="usage-badge unused">⚠ Not used</span>'}
                                     </td>
                                     <td class="video-actions">
+                                        ${cropControl(video)}
                                         <button class="btn-remove" onclick="deleteVideo('${escapeJs(video.path)}', '${escapeJs(video.filename)}')">Delete</button>
                                     </td>
                                 </tr>

@@ -545,6 +545,7 @@ struct ControllerAdapter final : app::PlaylistTransport {
     void master_shuffle_back(app::AppState& s, const std::string& d) override {
         c.master_shuffle_back(s, d);
     }
+    void toggle_picture_crop() override {}  // the media info store: not in this rig
     uint64_t stream_generation() const override { return p.generation; }
     bool has_error() const override { return p.has_error(); }
     double player_position() const override { return p.get_position(); }
@@ -715,6 +716,52 @@ TEST_CASE("load_next_item: in Master Shuffle it takes the next queued pick",
 
     CHECK(r.state.master_shuffle_queue_position == before + 1);
     CHECK(count("play") == 2);
+}
+
+// ── current_media_key (the per-video setting's key, app/media_info.h) ─────
+
+TEST_CASE("current_media_key names the loaded video inside the data directory",
+          "[controller][media_info]") {
+    Rig r;
+    const fs::path data = r.dir / "data";
+    fs::create_directories(data / "media");
+    fs::create_directories(data / "intro");
+    fs::create_directories(data / "playlists");
+    const fs::path a = data / "media" / "a.mp4";
+    const fs::path intro = data / "intro" / "intro.mp4";
+    const fs::path outside = r.dir / "outside.mp4";
+    for (const auto& p : {a, intro, outside}) std::ofstream(p) << "x";
+    r.controller.set_media_data_dir(data.string());
+
+    CHECK(r.controller.current_media_key().empty());  // nothing loaded yet
+
+    REQUIRE(r.controller.load_file_with_resolution(a.string(), ""));
+    CHECK(r.controller.current_media_key() == "media/a.mp4");
+
+    // However the playlist spelled the path (a relative step back out of
+    // the playlists directory, as the resolver produces for `media/x.mp4`).
+    REQUIRE(r.controller.load_file_with_resolution(
+        (data / "playlists" / ".." / "media" / "a.mp4").string(), ""));
+    CHECK(r.controller.current_media_key() == "media/a.mp4");
+
+    // The boot intro is not a library video: no setting applies to it.
+    REQUIRE(r.controller.load_file_with_resolution(intro.string(), ""));
+    CHECK(r.controller.current_media_key().empty());
+
+    REQUIRE(r.controller.load_file_with_resolution(a.string(), ""));
+    REQUIRE(r.controller.load_file_with_resolution(outside.string(), ""));
+    CHECK(r.controller.current_media_key().empty());
+
+    // A failed load leaves no key behind from the video before it.
+    REQUIRE(r.controller.load_file_with_resolution(a.string(), ""));
+    CHECK_FALSE(r.controller.load_file_with_resolution(
+        (data / "media" / "gone.mp4").string(), ""));
+    CHECK(r.controller.current_media_key().empty());
+
+    REQUIRE(r.controller.load_file_with_resolution(a.string(), ""));
+    r.player.fail_paths.insert(a.string());
+    CHECK_FALSE(r.controller.load_file_with_resolution(a.string(), ""));
+    CHECK(r.controller.current_media_key().empty());
 }
 
 }  // namespace

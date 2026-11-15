@@ -169,9 +169,31 @@ void GstRenderer::set_viewport_size(uint32_t width, uint32_t height) {
     height_ = height;
 }
 
-void GstRenderer::set_letterbox_mode(bool enabled) {
-    letterbox_mode_ = enabled;
+void GstRenderer::set_picture(IRect target_fb, bool crop, IRect opening_fb) {
+    picture_mode_ = true;
+    picture_target_ = target_fb;
+    picture_crop_ = crop;
+    picture_opening_ = opening_fb;
 }
+
+std::optional<double> GstRenderer::source_display_aspect() const {
+    const double aspect = display_aspect(frame_width_, frame_height_,
+                                         frame_par_num_, frame_par_den_);
+    if (aspect > 0.0) return aspect;
+    return std::nullopt;
+}
+
+namespace {
+// The quad VBO: four vertices of interleaved floats {x, y, u, v}, in
+// GL_TRIANGLE_STRIP order bottom-left, bottom-right, top-left, top-right.
+// Texture row 0 is the frame's TOP row, so the top vertices take v0.
+constexpr GLsizei kQuadStride = 4 * sizeof(float);
+constexpr GLintptr kQuadTexOffset = 2 * sizeof(float);
+
+bool same_tex(const TexRect& a, const TexRect& b) {
+    return a.u0 == b.u0 && a.v0 == b.v0 && a.u1 == b.u1 && a.v1 == b.v1;
+}
+}  // namespace
 
 void GstRenderer::init_gl_resources() {
     if (gl_initialized_) return;
@@ -190,11 +212,15 @@ void GstRenderer::init_gl_resources() {
     
     glBindVertexArray(vao_id_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_id_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    // DYNAMIC: set_quad_tex rewrites the texture coordinates when the
+    // sampled region changes (crop).
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+    quad_tex_ = TexRect{0.0f, 0.0f, 1.0f, 1.0f};
     
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, kQuadStride, (void*)0);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kQuadStride,
+                          (void*)kQuadTexOffset);
     glEnableVertexAttribArray(1);
     
     // Create textures (Y, U, V)
@@ -319,8 +345,9 @@ void GstRenderer::render() {
         // required — skipping the draw would leave whatever the swap
         // chain's back buffer held two frames ago, which is the same
         // stale image. Scissor to the inset rect when one is active so
-        // Marquee playback's wood-frame overlay region isn't wiped.
-        if (render_inset_w_ > 0 && render_inset_h_ > 0) {
+        // Marquee playback's wood-frame overlay region isn't wiped
+        // (picture mode ignores the inset).
+        if (!picture_mode_ && render_inset_w_ > 0 && render_inset_h_ > 0) {
             glEnable(GL_SCISSOR_TEST);
             glScissor(render_inset_x_, render_inset_y_,
                       render_inset_w_, render_inset_h_);
@@ -500,17 +527,59 @@ void GstRenderer::upload_frame(GstSample* sample) {
     gst_video_frame_unmap(&vframe);
 }
 
-void GstRenderer::render_quad() {
-    if (program_id_ == 0) return;
+void GstRenderer::set_quad_tex(const TexRect& tex) {
+    if (same_tex(tex, quad_tex_)) return;
+    const float uv[4][2] = {
+        {tex.u0, tex.v1},  // Bottom-left
+        {tex.u1, tex.v1},  // Bottom-right
+        {tex.u0, tex.v0},  // Top-left
+        {tex.u1, tex.v0},  // Top-right
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_id_);
+    for (int i = 0; i < 4; ++i) {
+        glBufferSubData(GL_ARRAY_BUFFER, i * kQuadStride + kQuadTexOffset,
+                        sizeof(uv[i]), uv[i]);
+    }
+    quad_tex_ = tex;
+}
+
+void GstRenderer::apply_picture_placement() {
+    // Playlist / intro video. IRects are top-left origin; glViewport and
+    // glScissor want bottom-left, converted here and nowhere else.
+    const int fb_h = static_cast<int>(height_);
+    const auto gl_y = [fb_h](const IRect& r) { return fb_h - r.y - r.h; };
+
+    const Placement p = place_picture(
+        source_display_aspect().value_or(0.0), picture_target_, 4.0 / 3.0,
+        picture_opening_, picture_crop_);
+
+    // Fit leaves bars inside the target. Clear them: this is the frame's
+    // first draw, and a recycled back buffer still holds whatever an
+    // earlier (cropped) picture left there. Scissored to the target, so
+    // nothing outside it is touched.
+    if (!(p.viewport == picture_target_)) {
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(picture_target_.x, gl_y(picture_target_),
+                  picture_target_.w, picture_target_.h);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+    }
+
+    set_quad_tex(p.tex);
+    glViewport(p.viewport.x, gl_y(p.viewport), p.viewport.w, p.viewport.h);
+}
+
+void GstRenderer::apply_media_browser_viewport() {
+    set_quad_tex(TexRect{0.0f, 0.0f, 1.0f, 1.0f});
 
     // Working canvas — full screen by default, OR the explicit inset
     // rect set via set_render_inset(). All letterbox / aspect-preserve
     // math runs against canvas_w × canvas_h; the final glViewport call
     // adds the inset's (x, y) offset so the video lands at the right
     // position on screen. Marquee playback uses this to push the movie
-    // inside a 40 px wood-frame overlay without disturbing the legacy
-    // full-screen path used everywhere else (intro video, playlist
-    // playback in the main kiosk UI).
+    // inside a 40 px wood-frame overlay. (Intro and playlist video never
+    // come here: they draw in picture mode.)
     const bool inset_active =
         (render_inset_w_ > 0 && render_inset_h_ > 0);
     const int canvas_w = inset_active
@@ -520,29 +589,13 @@ void GstRenderer::render_quad() {
         ? render_inset_h_
         : static_cast<int>(height_);
 
-    // Calculate viewport based on letterbox mode
+    // Default: fill the canvas.
     int vp_x = 0;
     int vp_y = 0;
     int vp_w = canvas_w;
     int vp_h = canvas_h;
 
-    if (letterbox_mode_) {
-        // Calculate 4:3 content area centered in 16:9 frame
-        // Height stays the same, width is adjusted
-        vp_h = canvas_h;
-        vp_w = canvas_h * 4 / 3;  // 4:3 aspect ratio
-        vp_x = (canvas_w - vp_w) / 2;  // Center horizontally
-        vp_y = 0;
-
-        // If the calculated width is larger than screen (e.g., 4:3 content on 4:3 screen)
-        // then pillarbox based on width instead
-        if (vp_w > canvas_w) {
-            vp_w = canvas_w;
-            vp_h = canvas_w * 3 / 4;
-            vp_x = 0;
-            vp_y = (canvas_h - vp_h) / 2;
-        }
-    } else if (aspect_preserve_ && frame_width_ > 0 && frame_height_ > 0) {
+    if (aspect_preserve_ && frame_width_ > 0 && frame_height_ > 0) {
         // Aspect-preserve mode: keep source video's *display* aspect ratio.
         // Skipped entirely when aspect_preserve_=false (CRT_NATIVE), in which
         // case we fall through to the default fill-the-screen behavior so the
@@ -621,9 +674,8 @@ void GstRenderer::render_quad() {
             //   bands hidden behind the wood frame's top + bottom
             //   strips. Zero visible bars on any edge.
             //
-            // Legacy callers (intro video, playlist playback in the
-            // main kiosk UI) never pass inset_active=true, so the
-            // standard pillarbox path is preserved for them.
+            // Without the wood frame (no inset) the standard pillarbox
+            // path below applies.
             if (inset_active) {
                 vp_w = static_cast<int>(screen_w);
                 vp_h = static_cast<int>(screen_w * src_h_eff / src_w_eff);
@@ -644,6 +696,16 @@ void GstRenderer::render_quad() {
     // this is a no-op — legacy callers see the same viewport as before.
     glViewport(vp_x + render_inset_x_, vp_y + render_inset_y_,
                vp_w, vp_h);
+}
+
+void GstRenderer::render_quad() {
+    if (program_id_ == 0) return;
+
+    if (picture_mode_) {
+        apply_picture_placement();
+    } else {
+        apply_media_browser_viewport();
+    }
 
     // NOTE: We deliberately do NOT bind the default framebuffer here.
     // The caller chooses the target framebuffer:
@@ -675,9 +737,6 @@ void GstRenderer::render_quad() {
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, texture_ids_[1]);
     }
-
-    // Always render full-screen to fill the 4:3 display uniformly
-    // This maintains the original behavior where all videos fill the screen
 
     glBindVertexArray(vao_id_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
