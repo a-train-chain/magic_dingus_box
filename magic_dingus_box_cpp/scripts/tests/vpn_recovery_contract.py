@@ -262,8 +262,14 @@ class _ReplayTransport:
         if args[:2]==['systemctl','is-active']:out='active'
         elif args[:2]==['docker','inspect']:
             g=self.generation
-            out=f"{g['container_id']} {g['pid']} {g['started_at']} true"
-            if '.State.OOMKilled' in args[3]:out+=' false running'
+            if args[3].startswith('{{.Name}}'):
+                # Dependent namespace proof: Gluetun plus each running dependent.
+                out='\n'.join(f"/{name} {(g['container_id'] if name=='mdb_gluetun' else format(i,'x')*64)} "
+                              f"{g['pid'] if name=='mdb_gluetun' else 100+i} {g['started_at']} true"
+                              for i,name in enumerate(args[4:]))+'\n'
+            else:
+                out=f"{g['container_id']} {g['pid']} {g['started_at']} true"
+                if '.State.OOMKilled' in args[3]:out+=' false running'
         elif args[:2]==['docker','events']:out=''
         elif args[:2]==['docker','ps']:
             out='\n'.join('mdb_'+name+' running Up' for name in ('radarr','sonarr','prowlarr','qbittorrent','byparr'))
@@ -316,7 +322,14 @@ def replay_failure_to_success():
         # Only TCP reachability is stubbed outside the command transport. Keep
         # the real dependent parser, observations, intent, fencing and storage.
         try:
-            with patch('socket.create_connection',return_value=contextlib.nullcontext()):
+            # Kernel namespace identity is read from procfs, outside the
+            # command transport: every simulated container shares Gluetun's.
+            real_readlink=os.readlink
+            def readlink(path,*args,**kwargs):
+                if re.fullmatch(r'/proc/[0-9]+/ns/net',str(path)):return 'net:[4026532001]'
+                return real_readlink(path,*args,**kwargs)
+            with patch('socket.create_connection',return_value=contextlib.nullcontext()),\
+                 patch('os.readlink',side_effect=readlink):
                 states.append(tick(0)['state'])
                 transport.port=0
                 states.append(tick(10)['state'])

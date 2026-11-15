@@ -92,7 +92,8 @@ def restore_policy(durable, now, wall):
     elapsed = wall-oldwall
     if not 0 <= elapsed <= 86400:
         return {'version': 2, 'started': now, 'last_restart': now} if 'last_restart' in s else {}
-    for key in ('started', 'last_tick', 'port_lost', 'traffic_lost', 'control_lost', 'last_restart'):
+    for key in ('started', 'last_tick', 'port_lost', 'traffic_lost', 'control_lost', 'last_restart',
+                'traffic_unknown', 'port_unknown', 'tunnel_seen'):
         if finite(s.get(key)):
             age = max(0, oldmono-s[key])+elapsed
             s[key] = now-min(86400, age)
@@ -438,10 +439,17 @@ class Controller:
 
     def close(self): self.executor.shutdown(wait=True)
 
-    def _fence(self, ctx, deadline, require_tunnel=True):
+    def _fence(self, ctx, deadline, require_tunnel=True, container_only=False):
         if (settings_revision(self.paths)!=ctx['revision'] or read_intent(self.paths).get('revision')!=ctx['intent_revision']
                 or not may_recover(self.paths)):
             return False
+        if container_only:
+            # Server selection belongs to the container, not one tun0 instance:
+            # Gluetun restart-loops a dead endpoint every few seconds, so the
+            # observed tunnel is routinely gone by the time the PUT is fenced.
+            actual=self.a.current(deadline)
+            return (actual.get('running') is True and
+                    self.container_key(actual.get('generation') or actual)==self.container_key(ctx.get('generation')))
         if require_tunnel:
             try: return self.a.control.observe_generation(deadline=deadline)==ctx['generation']
             except Exception: return False
@@ -455,8 +463,13 @@ class Controller:
         action=ctx['action']; deadline=self.a.mono()+30
         allowed=[True]
         submission = {}
+        # True once any precondition has authorized a request: from then on
+        # the request may have reached Gluetun, so a failure is not 'unsent'.
+        authorized=[False]
         def precondition():
-            allowed[0]=self._fence(ctx,deadline,require_tunnel=bool(ctx.get('generation')))
+            allowed[0]=self._fence(ctx,deadline,require_tunnel=bool(ctx.get('generation')),
+                                   container_only=action=='rotate_server' and bool(ctx.get('generation')))
+            authorized[0]=authorized[0] or allowed[0]
             return allowed[0]
         try:
             if action=='catalog-refresh':
@@ -475,6 +488,7 @@ class Controller:
                     self.a.control.put('/v1/vpn/status',{'status':'stopped'},ctx['generation']['container_id'],precondition=precondition,deadline=deadline)
                     def start_precondition():
                         allowed[0]=self._fence(ctx,deadline,require_tunnel=False)
+                        authorized[0]=authorized[0] or allowed[0]
                         return allowed[0]
                     self.a.control.put('/v1/vpn/status',{'status':'running'},ctx['generation']['container_id'],precondition=start_precondition,deadline=deadline)
                 return {'status':'issued'}
@@ -504,11 +518,11 @@ class Controller:
             return {'status':'issued', 'submission':submission}
         except ControlError as exc:
             return {'status':'deferred' if not allowed[0] or str(exc)=='control mutation deferred' else 'failed',
-                    'submission':submission}
+                    'submission':submission,'authorized':authorized[0]}
         except (Deferred,TimeoutError,OSError):
-            return {'status':'deferred', 'submission':submission}
+            return {'status':'deferred', 'submission':submission,'authorized':authorized[0]}
         except Exception:
-            return {'status':'failed' if allowed[0] else 'deferred', 'submission':submission}
+            return {'status':'failed' if allowed[0] else 'deferred', 'submission':submission,'authorized':authorized[0]}
 
     def _complete(self, o):
         if not self.pending or not self.pending.done(): return
@@ -539,15 +553,32 @@ class Controller:
                         self.state.pop(key, None)
                     else:
                         self.state[key] = previous
+        if (ctx['action']=='rotate_server' and result.get('status')=='deferred' and result.get('authorized') is False
+                and finite(ctx.get('decision_mono')) and self.state.get('candidate_until')==ctx['decision_mono']+120
+                and ctx['revision']==settings_revision(self.paths)
+                and ctx['intent_revision']==read_intent(self.paths).get('revision')):
+            # Nothing was sent and nothing changed but a busy lock: retry
+            # after two ticks instead of costing the whole 120 s window. A
+            # settings/intent change (or a possibly-sent request) keeps it.
+            previous=ctx.get('restart_before',{}).get('candidate_until')
+            self.state['candidate_until']=max(previous if finite(previous) else float('-inf'),ctx['decision_mono']+20)
         if (ctx['revision']!=settings_revision(self.paths) or ctx['intent_revision']!=read_intent(self.paths).get('revision')):
             return
-        if ctx['action'] in ('rotate_server','sync_port') and self.container_key(o.get('generation'))!=self.container_key(ctx['generation']):
+        # Container identity: a tick that missed tun0 (mid-restart) still saw
+        # the same container, and an issued rotation must be recorded.
+        if ctx['action'] in ('rotate_server','sync_port') and self.container_key(o.get('generation') or o)!=self.container_key(ctx['generation']):
             return
         if ctx['action']=='rotate_server':
             if result['status']=='failed': self.api_failed=True
             if result['status']=='issued':
                 candidate=ctx['candidate'];self.attempted={**asdict(candidate),'prior_generation':ctx['generation']}
                 if candidate.hostname not in self.round_attempts: self.round_attempts.append(candidate.hostname)
+                # The candidate is judged on its own evidence: tun0 changes in
+                # the same container no longer reset the loss clocks, so clear
+                # the previous server's here (candidate grace is unchanged).
+                for key in ('traffic_lost','port_lost','control_lost','traffic_unknown','port_unknown'):
+                    self.state.pop(key,None)
+                self.state.update(started=self.a.mono(),had_port=False,port_was_present=False)
         elif ctx['action']=='restart_container' and result.get('submission'):
             self.api_failed=False
             self.load_pending={'snapshot':ctx.get('snapshot'),'old_container':self.container_key(ctx.get('generation') or ctx['observation']),

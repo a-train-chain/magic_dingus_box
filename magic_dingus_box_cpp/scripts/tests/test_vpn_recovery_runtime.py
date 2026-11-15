@@ -166,6 +166,62 @@ class RuntimeTests(unittest.TestCase):
         self.a.observation.update(generation={**GEN, 'tunnel_ifindex':3}, port=4567, qbit_synced=True)
         self.tick(130)
         self.assertFalse(any(x[0]=='restart_container' for x in self.a.calls))
+    def test_dead_server_with_restart_looping_tunnel_still_rotates(self):
+        # Live magicpi5 2026-11-15: Gluetun restarts tun0 every ~6 s on a dead
+        # endpoint, so the tunnel the rotation fence sees is never the one the
+        # tick observed. Container identity, not tun0, authorizes the PUT.
+        self.a.observation.update(port=1234, qbit_synced=True)
+        self.tick(0)
+        flap = [2]
+        def observe(*, deadline, traffic_due):
+            flap[0] += 1
+            gen = {**GEN, 'tunnel_ifindex': flap[0]}
+            self.a.observation['generation'] = gen
+            return {**copy.deepcopy(self.a.observation), 'traffic': False, 'port': 0,
+                    'traffic_at': self.a.now, 'port_at': self.a.now, 'port_generation': gen}
+        self.a.observe = observe
+        self.a.observe_generation = lambda container_id=None, *, deadline=None: {**GEN, 'tunnel_ifindex': flap[0]+1}
+        for t in range(10, 300, 10):
+            self.tick(t); self.finish()
+            if any(c[0] == 'put' for c in self.a.calls):
+                break
+        self.assertTrue(any(c[0] == 'put' for c in self.a.calls), 'never rotated off a dead server')
+        self.assertLessEqual(t, 80)
+
+    def test_deferred_rotation_does_not_cost_a_candidate_window(self):
+        self.tick(0)
+        with bounded_lock(self.paths.compose_lock, 0):
+            self.tick(120); self.finish()
+        self.assertFalse(self.a.calls)
+        self.tick(130)
+        # Nothing was sent: a short retry delay replaces the 120 s window.
+        self.assertEqual(self.c.state.get('candidate_until'), 140)
+        self.tick(140); self.finish()
+        self.assertEqual([c[0] for c in self.a.calls], ['put'])
+
+    def test_rotation_whose_request_may_have_been_sent_keeps_full_window(self):
+        self.tick(0)
+        def put(route, payload, cid, *, precondition, deadline=None):
+            with bounded_lock(self.paths.compose_lock, .01):
+                if not precondition(): raise RuntimeError('precondition')
+            raise ConnectionResetError('response lost after send')
+        self.a.put = put
+        self.tick(120); self.finish(); self.tick(130)
+        self.assertEqual(self.c.state.get('candidate_until'), 240)
+
+    def test_issued_rotation_gives_candidate_clean_loss_clocks(self):
+        self.a.observation.update(port=1234, qbit_synced=True)
+        self.tick(0)
+        self.a.observation.update(traffic=False, port=0)
+        for t in range(10, 80, 10):
+            self.tick(t); self.finish()
+        self.assertEqual([c[0] for c in self.a.calls], ['put'])
+        self.assertEqual(self.c.state['traffic_lost'], 10)
+        self.tick(80)
+        # The candidate's evidence starts at the first tick after issuance.
+        self.assertEqual((self.c.state['traffic_lost'], self.c.state['port_lost'], self.c.state['started']), (80, 80, 80))
+        self.assertFalse(self.c.state.get('had_port'))
+
     def test_settings_change_inside_lock_defers(self):
         self.tick(0)
         self.a.before_action=lambda: (self.paths.services/'.env').write_text('VPN_COUNTRIES=Netherlands\n')
