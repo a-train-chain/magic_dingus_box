@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_state.h"
+#include "text_queue_drainer.h"
 #include "../video/video_player.h"
 #include "../retroarch/retroarch_launcher.h"
 #include "../utils/result.h"
@@ -54,6 +55,16 @@ public:
     // Playback control
     void load_file(const std::string& path, double start = 0.0, double end = 0.0, bool loop = false);
     utils::Result<> load_file_with_resolution(const std::string& path, const std::string& playlist_dir, double start = 0.0, double end = 0.0, bool loop = false);
+
+    // The loaded video's key in the per-video media info store
+    // (app/media_info.h): its path relative to the data directory. Set by
+    // every successful load_file_with_resolution; "" for the boot intro
+    // (<data>/intro is not a library video), for a file outside the data
+    // directory (Media Browser movies), and after a failed load.
+    const std::string& current_media_key() const { return current_media_key_; }
+    // The directory keys are relative to. Default config::get_data_path();
+    // tests inject a temp directory.
+    void set_media_data_dir(std::string dir) { media_data_dir_ = std::move(dir); }
     void play();
     void pause();
     void toggle_pause();
@@ -79,10 +90,22 @@ public:
     
     // Load a playlist item (video or game)
     // progress_callback: Optional callback to run while waiting (e.g. for loading animation)
+    // start_offset_s: join a video item this far past its own `start:`
+    // (a Channel Guide tune: the scheduled position); ignored for games.
     // Returns Result with error message on failure
-    utils::Result<> load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr);
+    utils::Result<> load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr, double start_offset_s = 0.0);
     
     // Navigation
+    //
+    // load_next_item retries past items that fail to load. A missing file
+    // is skipped for the cost of a stat (no stop, no settle). An item that
+    // exists but fails costs a stop + the 200 ms settle, so at most
+    // kMaxSyncLoadRetries of those are retried in one call (after the
+    // first attempt): then it sets state.playlist_item_load_failed and
+    // returns, and PlaylistPlayback continues on the next frame through
+    // the playback error policy. Keeps one call well inside the 10 s
+    // systemd watchdog however long the run of bad items is.
+    static constexpr int kMaxSyncLoadRetries = 3;
     void load_next_item(AppState& state, const std::string& playlist_directory);
     void load_previous_item(AppState& state, const std::string& playlist_directory);
     
@@ -105,15 +128,26 @@ public:
     // seek handlers get (a phone tap-to-seek is invisible to it otherwise).
     bool poll_seek_request();
 
-    // Phone Remote: drain the JSON-Lines queue at the configured path
-    // and dispatch each event to state.active_text_keyboard. No-op when
-    // file is missing/empty (idle fast path) or pointer is null. The
-    // file is truncated after parsing under the same flock.
+    // Phone Remote: dispatch queued phone keystrokes to
+    // state.active_text_keyboard (dropped when it is null). Called every
+    // frame, and does NO blocking file work itself: it dispatches what the
+    // drain worker has read so far, then stats the JSON-Lines queue and —
+    // when it is not empty — asks the worker to lock, read and truncate it
+    // (app/text_queue_drainer.h). Keystrokes therefore reach the keyboard
+    // on the frame AFTER the one that noticed them, in order.
     void poll_text_input_queue(AppState& state);
 
     // Set the queue file path. Default is data/text_input_queue.jsonl
     // resolved via config::get_data_path(). Tests inject a temp path.
     void set_text_input_queue_path(std::string path);
+
+    // Test seams. wait_for_text_input_drain() blocks until the drain
+    // worker is idle (a test then polls once more to dispatch);
+    // set_text_input_drain_for_tests() replaces the lock/read/truncate.
+    void wait_for_text_input_drain() { text_drainer_.wait_idle(); }
+    void set_text_input_drain_for_tests(TextQueueDrainer::DrainFn fn) {
+        text_drain_fn_ = std::move(fn);
+    }
     
     // System Volume
     void set_system_volume(int percent);
@@ -142,6 +176,10 @@ public:
     // display from scratch. Sticky: never cleared.
     bool display_lost() const { return display_lost_; }
 
+    // Deterministic shuffle order for the unit tests (the kiosk seeds from
+    // std::random_device at construction).
+    void seed_shuffle_rng(uint32_t seed) { rng_.seed(seed); }
+
 private:
     bool display_lost_ = false;
 
@@ -152,6 +190,18 @@ private:
     // load_playlist_item that froze the render thread for the full budget
     // even when playback had already started.
     void wait_for_playback_start(int max_ms, std::function<void()> progress_callback);
+
+    // The media half of load_playlist_item, after the index check, the
+    // now-playing publish and the Master Shuffle check: stop/settle/load/
+    // play for a video item, the RetroArch hand-off for a game. Kiosk-only
+    // (controller.cpp); load_playlist_item itself is in
+    // controller_playback.cpp so the stepping code can be linked into the
+    // Mac tests, which supply their own definition of this function. A
+    // video starts at item.start + start_offset_s.
+    utils::Result<> load_item_media(AppState& state, const app::PlaylistItem& item,
+                                    const std::string& playlist_directory,
+                                    std::function<void()> progress_callback,
+                                    double start_offset_s);
 
     video::VideoPlayer* player_;
     retroarch::RetroArchLauncher retroarch_launcher_;
@@ -174,6 +224,8 @@ private:
     int last_applied_system_volume_ = -1;
     std::string text_input_queue_path_;
     std::string seek_request_path_;  // cached in poll_seek_request (per-tick)
+    std::string current_media_key_;
+    std::string media_data_dir_;     // "" = config::get_data_path()
     platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
     platform::InputManager* input_manager_;  // For controller release before RetroArch launch
     int current_system_volume_ = 100;
@@ -188,6 +240,13 @@ private:
     int video_active_negative_count_ = 0;
 
     // Shuffle ordering lives in app/shuffle_queue.h (pure, tested).
+
+    // Phone keyboard queue: the lock/read/truncate runs on text_drainer_'s
+    // worker thread, never on the render loop. text_drain_fn_ is empty in
+    // the kiosk (the real file drain is used). Keep text_drainer_ the LAST
+    // member so its thread is joined before anything else is destroyed.
+    TextQueueDrainer::DrainFn text_drain_fn_;
+    TextQueueDrainer text_drainer_;
 };
 
 } // namespace app

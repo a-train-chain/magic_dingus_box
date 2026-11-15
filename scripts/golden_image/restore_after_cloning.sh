@@ -192,7 +192,10 @@ fi
 # Curated content (the operator's own playlists/videos) that prepare moved to
 # the disk-backed stash on the movie drive so the artifact would not carry
 # them. mv'd back exactly where they came from. This stash survives a reboot
-# (it is on the SSD, not tmpfs), so a crashed clone loses nothing.
+# (it is on the SSD, not tmpfs), so a crashed clone loses nothing. It also
+# holds the original per-video store (media_info.json) whenever prepare left
+# a copy pruned to the shipping videos in its place: the plain mv below puts
+# the original back over that copy (it must stay a replacing mv).
 CONTENT_STASH="$MDB_CONTENT_STASH_DIR"
 
 if [[ -f "${CONTENT_STASH}/manifest" ]]; then
@@ -274,9 +277,26 @@ systemctl start docker.socket 2>/dev/null || true
 systemctl start docker.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: docker.service failed to start — the stack cannot come up without it"
 
+# Source intent was snapshotted before clone's unit stop. An explicitly
+# stopped source remains stopped; legacy sources without intent keep their
+# historical restore path.
+_vpn_should_start=true
+if [[ -f /var/lib/magic-dingus/vpn_recovery/intent.json ]]; then
+    python3 - /var/lib/magic-dingus/vpn_recovery/intent.json <<'PYTHON' || _vpn_should_start=false
+import json,sys
+try: enabled=json.load(open(sys.argv[1])).get('enabled') is True
+except (OSError,ValueError): enabled=False
+sys.exit(0 if enabled else 1)
+PYTHON
+fi
+if [[ "$_vpn_should_start" == true ]]; then
 systemctl reset-failed magic-dingus-services.service 2>/dev/null || true
 systemctl start magic-dingus-services.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-services.service failed to start (check docker logs)"
+else
+    log "[3/4] Media Browser remains explicitly stopped on the source"
+fi
+unset _vpn_should_start
 
 systemctl start magic-dingus-web.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-web.service failed to start"

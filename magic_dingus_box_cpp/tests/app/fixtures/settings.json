@@ -47,6 +47,7 @@
     "mb_tv_toprated_runtime" : "any",
     "mb_tv_toprated_sort" : "top_rated",
     "mb_warmth_intensity" : 0.0,
+    "menu_style" : "channel_guide",
     "mode" : "modern_tv",
     "rgb_mask_intensity" : 0.0,
     "scanline_intensity" : 0.25,
@@ -54,6 +55,7 @@
   },
   "playback" : 
   {
+    "last_channel" : "shuffle",
     "master_volume" : 80,
     "media_browser_unlocked" : false,
     "playlist_loop" : true,

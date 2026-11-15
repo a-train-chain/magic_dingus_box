@@ -89,6 +89,11 @@ journal_dir() {   # ROOT NAME
     [ -n "$setup_line" ] && [ -n "$call_line" ] && [ -n "$s1c" ]
     [ "$setup_line" -lt "$call_line" ]
     [ "$call_line" -lt "$s1c" ]
+    # The steps are functions now: the restart is the last line of the
+    # machine_id step, and the step list runs that step before Step 1c.
+    [ "$(sed -n '/^step_machine_id() {/,/^}/p' "$FB" | tail -2 | head -1)" = "restart_journald_for_machine_id" ]
+    eval "$(sed -n '/^FB_STEP_TABLE=(/,/^)/p' "$FB")"
+    [[ " ${FB_STEP_TABLE[*]} " == *" machine_id vpn_identity "* ]]
 }
 
 @test "old-id cleanup runs in Step 6c-2, after the vacuum" {
@@ -98,6 +103,14 @@ journal_dir() {   # ROOT NAME
     [ -n "$vacuum" ] && [ -n "$call_line" ] && [ -n "$s6d" ]
     [ "$vacuum" -lt "$call_line" ]
     [ "$call_line" -lt "$s6d" ]
+    # ...and in the step list: after the journal wipe, before Step 6d, and
+    # only once the machine_id step has completed — before that no directory
+    # is stale, so it would find nothing and be recorded as done.
+    [ "$(sed -n '/^step_wipe_logs() {/,/^}/p' "$FB" | grep -c '^journalctl --vacuum-time=1s')" -eq 1 ]
+    [ "$(sed -n '/^step_stale_journal_dirs() {/,/^}/p' "$FB" | sed -n 2p)" = "remove_stale_machine_id_journals" ]
+    eval "$(sed -n '/^FB_STEP_TABLE=(/,/^)/p' "$FB")"
+    order=" ${FB_STEP_TABLE[*]} "
+    [[ "$order" == *" wipe_logs stale_journal_dirs:machine_id "*" wipe_cloning_backup "* ]]
 }
 
 # ---------------------------------------------------------------------------

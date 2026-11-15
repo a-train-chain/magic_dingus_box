@@ -14,14 +14,14 @@ from flask import request
 # sys.path, package-relative in production.
 try:
     from admin_common import (
-        _sanitize_filename, _staged_save_upload, error_response,
-        success_response,
+        _sanitize_filename, _staged_save_upload, _valid_rom_system,
+        error_response, success_response,
     )
     from admin_security import _is_within
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
-        _sanitize_filename, _staged_save_upload, error_response,
-        success_response,
+        _sanitize_filename, _staged_save_upload, _valid_rom_system,
+        error_response, success_response,
     )
     from .admin_security import _is_within
 
@@ -96,6 +96,11 @@ def register(app, ctx) -> None:
         if "file" not in request.files:
             return error_response("VALIDATION_ERROR", "File field required")
         f = request.files["file"]
+
+        # The system name becomes a directory the Content Manager renders
+        # into HTML: allowlist it, not just strip separators.
+        if not _valid_rom_system(system):
+            return error_response("VALIDATION_ERROR", "Invalid system name")
 
         # Sanitize system name and filename to prevent path traversal
         try:

@@ -206,6 +206,35 @@ parse_blocks() {
     done
 }
 
+@test "media_info.json and its lock are excluded from all four blocks (per-video Crop survives OTA)" {
+    # The per-video store is per-box user data (never in the tarball): a
+    # missing exclude lets the install --delete reset every video's Crop.
+    parse_blocks
+    local path n
+    for path in 'magic_dingus_box_cpp/data/media_info.json' \
+                'magic_dingus_box_cpp/data/media_info.json.lock'; do
+        n=1
+        for block in "$BLOCK1" "$BLOCK2" "$BLOCK3" "$BLOCK4"; do
+            grep -qxF "$path" <<<"$block" || {
+                echo "Block $n is missing the exclude for $path"
+                return 1
+            }
+            n=$((n + 1))
+        done
+    done
+}
+
+@test "deploy_cpp.sh and the release tarball also keep media_info.json out" {
+    local root="$BATS_TEST_DIRNAME/../.."
+    local f
+    for f in media_info.json media_info.json.lock; do
+        grep -qF -- "--exclude 'data/$f'" "$root/magic_dingus_box_cpp/scripts/deploy_cpp.sh" || {
+            echo "deploy_cpp.sh does not exclude data/$f"; return 1; }
+        grep -qF -- "--exclude='data/$f'" "$root/.github/workflows/release.yml" || {
+            echo "release.yml tarball does not exclude data/$f"; return 1; }
+    done
+}
+
 @test "all 4 blocks carry the thumbnails/systems/*** include before the blanket exclude" {
     # System tiles are delivered content: the include must appear in every
     # block, and it must come BEFORE the thumbnails exclude on the command
@@ -294,4 +323,19 @@ PY
     [ "$(cat "$t/dst/magic_dingus_box_cpp/src/config/defaults.h")" = "nested" ]
     [ "$(cat "$t/dst/magic_dingus_box_cpp/third_party/VERSION")" = "3.2.1" ]
     rm -rf "$t"
+}
+
+# deploy_cpp.sh moves a stale build/ aside as build.prev.<epoch>; when its
+# build fails, the still-running kiosk stands in that directory. An OTA rsync
+# --delete that removed it would repeat the 2026-11-13 getcwd abort.
+@test "all four rsync blocks exclude deploy_cpp.sh's build.prev.* directories" {
+    parse_blocks
+    local n
+    for n in 1 2 3 4; do
+        local var="BLOCK$n"
+        grep -qxF 'magic_dingus_box_cpp/build.prev.*' <<<"${!var}" || {
+            echo "Block $n is missing the build.prev.* exclude."
+            return 1
+        }
+    done
 }

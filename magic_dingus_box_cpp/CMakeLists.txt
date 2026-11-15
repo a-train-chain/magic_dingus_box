@@ -146,6 +146,9 @@ set(UI_SOURCES
     src/ui/renderer_shaders.cpp
     src/ui/renderer_text.cpp
     src/ui/renderer_main_menu.cpp
+    # The Channel Guide's painter (GL — kiosk only; its view model,
+    # channel_guide_view.h, and text_fit.h are header-only and Mac-tested).
+    src/ui/renderer_channel_guide.cpp
     src/ui/renderer_settings.cpp
     src/ui/renderer_mb.cpp
     src/ui/renderer_crt.cpp
@@ -167,6 +170,7 @@ set(UI_SOURCES
 list(APPEND UI_SOURCES src/ui/toast.cpp)
 
 set(APP_SOURCES
+    src/app/bezel_catalog.cpp
     src/app/game_launch_recovery.cpp
     src/app/game_launch_validation.cpp
     src/app/game_quiet_mode.cpp
@@ -174,7 +178,11 @@ set(APP_SOURCES
     src/app/playlist_loader.cpp
     src/app/rom_title.cpp
     src/app/controller.cpp
+    # Controller playback state + playlist stepping, split out so
+    # test_app_unit can link it (also listed there).
+    src/app/controller_playback.cpp
     src/app/controller_text_input.cpp
+    src/app/media_info.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
     src/app/mb_filter_persistence.cpp
@@ -189,6 +197,10 @@ set(APP_SOURCES
     src/app/playlist_cursor.cpp
     src/app/playlist_playback.cpp
     src/app/playlist_reload.cpp
+    src/app/channel_schedule.cpp
+    src/app/auto_tune.cpp
+    src/app/overlay_nav.cpp
+    src/app/guide_nav.cpp
     src/app/game_handoff.cpp
     # GL/DRM half of the game hand-off: kiosk-only, in no test target.
     src/app/game_handoff_kiosk.cpp
@@ -230,6 +242,7 @@ set(RETROARCH_SOURCES
     src/retroarch/joydev_index.cpp
     src/retroarch/capture_session.cpp
     src/retroarch/standard_layout.cpp
+    src/retroarch/sink_suspension.cpp
 )
 
 # Retroarch sources shared by BOTH test_retroarch_unit and
@@ -260,6 +273,8 @@ set(RETROARCH_TESTABLE_SOURCES
     # controller_detector.cpp reads each pad's driver and capabilities
     # from sysfs through it (automatic layouts for modern pads).
     src/platform/input_device_info.cpp
+    # PulseAudio -> RetroArch audio hand-over (pure; the launcher drives it).
+    src/retroarch/sink_suspension.cpp
 )
 
 set(ALL_SOURCES
@@ -287,6 +302,9 @@ if(BUILD_KIOSK)
             # undefined LibraryDb::*/WatchStore::*.
             src/media_browser/library/library_db.cpp
             src/media_browser/library/watch_store.cpp
+            # The one libcurl transport every MB HTTP call goes through
+            # (dual-listed: also in MEDIA_BROWSER_SOURCES for the tests).
+            src/media_browser/http/http_request.cpp
             src/media_browser/sonarr/sonarr_parsers.cpp
             src/media_browser/sonarr/sonarr_client.cpp
             src/media_browser/sonarr/sonarr_mock.cpp
@@ -499,6 +517,7 @@ if(ENABLE_MEDIA_BROWSER)
 
     # --- Media browser library sources (expanded in later tasks) ---
     set(MEDIA_BROWSER_SOURCES
+        src/media_browser/http/http_request.cpp
         src/media_browser/sonarr/sonarr_parsers.cpp
         src/media_browser/sonarr/sonarr_client.cpp
         src/media_browser/sonarr/sonarr_mock.cpp
@@ -556,6 +575,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_watch_store.cpp
         tests/media_browser/test_tmdb_client.cpp
+        tests/media_browser/test_http_request.cpp
         tests/media_browser/test_tmdb_tv.cpp
         tests/media_browser/test_media_ref.cpp
         tests/media_browser/test_mb_filter_persistence.cpp
@@ -784,6 +804,8 @@ if(UI_TEST_SOURCES)
         src/utils/subprocess.cpp
         # settings_menu.cpp's Audio Output row calls cycle_output().
         src/app/audio_router.cpp
+        # channel_guide_view.h (header-only) walks app::on_air / lineup.
+        src/app/channel_schedule.cpp
         # controller_wizard.cpp's pairing steps drive the pairing flow.
         src/platform/bt_pairing.cpp
     )
@@ -822,11 +844,33 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # (controller.cpp is in no test target).
         src/app/shuffle_queue.cpp
         src/app/playlist_cursor.cpp
+        # Controller::update_state (video_active debounce) and NEXT/PREV/
+        # Master Shuffle stepping incl. the load-next retry loop, against a
+        # fake VideoPlayer. controller.cpp itself stays kiosk-only: the
+        # tests define Controller::load_item_media and RetroArchLauncher's
+        # constructor (tests/app/controller_test_doubles.cpp, globbed above).
+        src/app/controller_playback.cpp
+        src/utils/path_resolver.cpp
+        # media_info.json (per-video crop / length / aspect): the store
+        # against real temp files and a stallable write hook; also the
+        # Controller's current_media_key.
+        src/app/media_info.cpp
         # main.cpp's playlist playback control (SELECT/NEXT/PREV, auto-
         # advance, failed-item skip, stall watchdog) against a fake
         # transport, and the web-admin playlist reload's re-anchoring.
         src/app/playlist_playback.cpp
         src/app/playlist_reload.cpp
+        src/app/channel_schedule.cpp
+        # main.cpp's Channel Guide nothing-playing rule (re-tune live).
+        src/app/auto_tune.cpp
+        # The list overlay's cursor (rows, scroll window, the Picture
+        # control below the last row) — main.cpp's ROTATE handler and the
+        # reload's clamp both go through it.
+        src/app/overlay_nav.cpp
+        # The Channel Guide's cursor (channel rows, the 5-row window, the
+        # Picture control above channel 00) — main.cpp's guide-style
+        # ROTATE / SELECT / NEXT / PREV branches go through it.
+        src/app/guide_nav.cpp
         # main.cpp's boot intro decisions (end detection, fade volume, the
         # hand-off to the menu, the render-video decision).
         src/app/intro_sequence.cpp
@@ -839,17 +883,25 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/mb_filter_persistence.cpp
         src/utils/config.cpp
         src/utils/services_env.cpp
-        # playlist_loader is here for the trim/loop parsing tests; it pulls in
-        # yaml-cpp, hence the extra include/link directories below.
+        # playlist_loader is here for the trim/loop parsing tests and the
+        # all-fields fixture shared with the web admin's Python tests
+        # (test_playlist_yaml_fixture.cpp); it pulls in yaml-cpp, hence the
+        # extra include/link directories below.
         src/app/playlist_loader.cpp
         # platform_profile backs filter_for_platform (the Pi 4 game-system
         # gate) — pure logic, no Linux-only deps.
         src/platform/platform_profile.cpp
+        # bezels.json parsing; stb_image lets the test measure each shipped
+        # bezel PNG's transparent window against its declared opening.
+        src/app/bezel_catalog.cpp
+        src/utils/stb_image_impl.cpp
     )
     target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES}
-        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only)
+        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only
+        # settings_persistence.cpp writes on a background thread.
+        pthread)
     target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
@@ -902,9 +954,14 @@ if(UTILS_TEST_SOURCES)
         # The debug screenshot hook's file side (BMP encode, naming,
         # atomic write, retention).
         src/utils/bmp_writer.cpp
-        src/utils/screenshot_store.cpp)
+        src/utils/screenshot_store.cpp
+        # resolve_video_path against a deleted working directory
+        # (tests/utils/test_path_resolver_cwd.cpp).
+        src/utils/path_resolver.cpp
+        src/utils/config.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
-    target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
+    # pthread: latest_wins_worker.h (the background file-writer thread).
+    target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain pthread)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME UtilsUnit COMMAND test_utils_unit)
 endif()

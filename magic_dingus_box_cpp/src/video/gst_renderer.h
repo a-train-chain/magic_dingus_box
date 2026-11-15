@@ -2,11 +2,13 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 
+#include "picture_placement.h"
 #include "stream_gate.h"
 
 namespace video {
@@ -39,12 +41,26 @@ public:
     // This invalidates current GL resources and triggers lazy re-init on next render
     void reset_gl();
     
-    // Set letterbox mode for 4:3 content in 16:9 frame
-    // When enabled, video renders to a centered 4:3 viewport
-    void set_letterbox_mode(bool enabled);
+    // Playlist and intro video ("picture mode"): render_quad draws through
+    // place_picture into target_fb — the 4:3 area, in framebuffer px with
+    // a TOP-LEFT origin, shown at a 4:3 display aspect. crop covers the
+    // target; otherwise the whole frame fits inside opening_fb (the
+    // bezel's window, or target_fb without one). Black inside the target
+    // where the picture does not reach; nothing is drawn outside it. The
+    // render inset and aspect-preserve settings are ignored until
+    // clear_picture().
+    void set_picture(IRect target_fb, bool crop, IRect opening_fb);
+
+    // Leave picture mode: back to the Media Browser paths below
+    // (aspect-preserve and its render inset), unchanged.
+    void clear_picture() { picture_mode_ = false; }
+
+    // Display aspect (pixel aspect ratio included) of the last uploaded
+    // frame; nullopt before the first.
+    std::optional<double> source_display_aspect() const;
 
     // Toggle source-aspect-ratio preservation in render_quad's
-    // default (non-letterbox) path. When `true` (default), the
+    // default (non-picture) path. When `true` (default), the
     // renderer compares frame_w/h × PAR to width_/height_ and adds
     // letterbox/pillar bars so the video keeps its true display
     // aspect on the screen — necessary in Modern TV mode for Media
@@ -127,7 +143,14 @@ private:
     int frame_format_; // 0=RGBA, 1=I420, 2=NV12
     
     bool gl_initialized_;
-    bool letterbox_mode_ = false;  // When true, render 4:3 centered
+    // Picture mode (set_picture / clear_picture).
+    bool picture_mode_ = false;
+    bool picture_crop_ = true;
+    IRect picture_target_{0, 0, 0, 0};
+    IRect picture_opening_{0, 0, 0, 0};
+    // The sampled region the quad VBO currently holds; its texture
+    // coordinates are rewritten only when this changes.
+    TexRect quad_tex_{0.0f, 0.0f, 1.0f, 1.0f};
     bool aspect_preserve_ = true;  // When false, stretch to fill (CRT_NATIVE behavior)
     bool swap_uv_ = false; // Swap U/V planes (fix for red video)
     bool frame_dirty_ = false;  // Set when new frame arrives from appsink
@@ -146,6 +169,9 @@ private:
     void init_gl_resources();
     void upload_frame(GstSample* sample);
     void render_quad();
+    void apply_picture_placement();       // picture mode: tex + viewport
+    void apply_media_browser_viewport();  // otherwise: full frame, inset/aspect math
+    void set_quad_tex(const TexRect& tex);
     void update_shader(int format);
 };
 

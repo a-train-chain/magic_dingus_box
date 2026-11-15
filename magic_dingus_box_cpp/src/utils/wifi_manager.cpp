@@ -277,6 +277,10 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             if (connection_result_ == ConnectionResult::SUCCESS) {
                 last_failed_ssid_.clear();
                 last_failed_saved_ = false;
+                // Both connect flows name the profile after the SSID, so
+                // this is what `nmcli dev show` would report — recorded
+                // here so the UI's success toast never has to ask.
+                last_connected_ssid_ = ssid;
             }
         }
         // Ground truth just changed — make the next cached-status read
@@ -289,6 +293,11 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
 std::string WifiManager::get_last_failed_ssid() const {
     std::lock_guard<std::mutex> lock(error_mutex_);
     return last_failed_ssid_;
+}
+
+std::string WifiManager::get_last_connected_ssid() const {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    return last_connected_ssid_;
 }
 
 std::string WifiManager::get_connecting_ssid() const {

@@ -1,5 +1,5 @@
 [Unit]
-Description=Gluetun cascade restart (refresh netns linkage on dependent containers)
+Description=Managed VPN recovery and dependent convergence
 Documentation=file:///opt/magic_dingus_box/magic_dingus_box_cpp/scripts/gluetun_cascade_restart.sh
 After=docker.service magic-dingus-services.service
 Requires=docker.service
@@ -9,6 +9,10 @@ ConditionPathExists=/opt/magic_dingus_box/services/docker-compose.yml
 
 [Service]
 Type=simple
+# Native Proton execs the sole Python polling owner; unsupported modes retain
+# the legacy event watcher. Action children are bounded and stop with the unit.
+KillMode=control-group
+TimeoutStopSec=40
 ExecStart=/usr/local/bin/gluetun_cascade_restart.sh
 StandardOutput=journal
 StandardError=journal

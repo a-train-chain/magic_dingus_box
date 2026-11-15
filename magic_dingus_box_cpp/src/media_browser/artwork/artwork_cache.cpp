@@ -20,6 +20,7 @@
 // need libcurl.
 #ifndef ARTWORK_CACHE_TEST_MODE
 #include <curl/curl.h>
+#include "media_browser/http/http_request.h"
 #endif
 
 // GL calls live only on the production (kiosk) build path. In test
@@ -30,21 +31,6 @@
 #endif
 
 namespace media_browser {
-
-namespace {
-
-#ifndef ARTWORK_CACHE_TEST_MODE
-// libcurl write callback: append incoming bytes to a std::string buffer.
-std::size_t curl_write_to_string(void* contents, std::size_t size,
-                                 std::size_t nmemb, void* userp) {
-    std::size_t total = size * nmemb;
-    auto* buf = static_cast<std::string*>(userp);
-    buf->append(static_cast<char*>(contents), total);
-    return total;
-}
-#endif
-
-}  // namespace
 
 ArtworkCache::ArtworkCache(std::size_t max_bytes, std::string disk_cache_dir)
     : max_bytes_(max_bytes), disk_cache_dir_(std::move(disk_cache_dir)) {
@@ -642,11 +628,13 @@ void ArtworkCache::fetcher_thread_main() {
     }
     spdlog::info("[artwork] fetcher thread ready, entering work loop");
     // Sensible defaults for TMDB image CDN. 15s connect, 30s transfer.
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "magic-dingus-box/1.0");
+    // The one handle is reused for every poster (http::request resets its
+    // options per call but keeps the live connection to the CDN).
+    http::Request req;
+    req.connect_timeout_secs = 15;
+    req.timeout_secs = 30;
+    req.follow_redirects = true;
+    req.user_agent = "magic-dingus-box/1.0";
 
     while (!stop_.load(std::memory_order_acquire)) {
         // Pause gate: when paused (movie playback), block here until
@@ -698,15 +686,11 @@ void ArtworkCache::fetcher_thread_main() {
         }
 
         // 2) Network path — only when disk cache missed (or is disabled).
-        std::string body;
-        body.reserve(256 * 1024);  // typical poster JPEG is 30-200KB
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_to_string);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-
-        CURLcode cc = curl_easy_perform(curl);
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        req.url = url;
+        http::Response resp = http::request(req, curl);
+        const CURLcode cc = resp.curl_code;
+        const long http_code = resp.status;
+        std::string body = std::move(resp.body);
 
         if (cc != CURLE_OK || http_code >= 400 || body.empty()) {
             spdlog::warn("[artwork] fetch failed url='{}' curl={} http={} bytes={}",

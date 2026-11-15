@@ -1,9 +1,10 @@
 """Device identity, health and backup/restore routes.
 
-/admin/device/info, /admin/device/name, /admin/health,
-/admin/health/detailed, /admin/backup and /admin/restore, plus the
-device-name validators and get_device_info()/get_app_version(), which the
-support and update routes reuse through ctx.
+/admin/device/info, /admin/device/name, /admin/system/timezone (the
+Content Manager browser's zone; helpers in timezone_apply.py),
+/admin/health, /admin/health/detailed, /admin/backup and /admin/restore,
+plus the device-name validators and get_device_info()/get_app_version(),
+which the support and update routes reuse through ctx.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import json
 import os
 import re
 import socket
+import sys
 import time
 import uuid
 import yaml
@@ -24,6 +26,8 @@ from flask import request, send_file
 # Same dual import form as admin.py: flat when tests put web/ on
 # sys.path, package-relative in production.
 try:
+    import media_info
+    import timezone_apply
     from admin_common import (
         _read_zip_entry_capped, _sanitize_filename, error_response,
         get_cpu_temperature, get_cpu_usage, get_disk_info, get_memory_info,
@@ -33,6 +37,8 @@ try:
         _canonical_playlist_name, _invalid_emulator_core,
     )
 except ImportError:  # pragma: no cover - exercised by whichever form runs
+    from . import media_info
+    from . import timezone_apply
     from .admin_common import (
         _read_zip_entry_capped, _sanitize_filename, error_response,
         get_cpu_temperature, get_cpu_usage, get_disk_info, get_memory_info,
@@ -103,6 +109,7 @@ def register(app, ctx) -> None:
     # these are shims that look the name up in admin at call time.
     _atomic_write_text = ctx._atomic_write_text
     check_service_status = ctx.check_service_status
+    _require_nopasswd_sudo = ctx._require_nopasswd_sudo
 
     def get_device_info() -> dict:
         """Get device identity and stats."""
@@ -179,6 +186,56 @@ def register(app, ctx) -> None:
             return success_response(data={"device_name": new_name}, message="Device name updated")
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
+
+    # ===== TIME ZONE (reported by the owner's browser) =====
+
+    @app.post("/admin/system/timezone")
+    @require_csrf
+    def set_timezone():  # type: ignore[no-redef]
+        """Apply the zone the Content Manager's browser reports. The latest
+        browser to connect wins; an unchanged zone does nothing, and neither
+        does a UTC report on a box already on a named zone (privacy modes
+        report UTC whatever the real zone is). Applied on every box, List
+        style included: a correct system zone is right for the whole box."""
+        data = request.get_json(silent=True)
+        reported = data.get("zone") if isinstance(data, dict) else None
+        zone = timezone_apply.resolve_zone(reported, timezone_apply.ZONEINFO_DIR)
+        if zone is None:
+            return error_response("VALIDATION_ERROR", "Unknown time zone")
+        # services/.env is rewritten by a running Media Browser setup/reset;
+        # touch nothing while one runs. The next page load retries.
+        if ctx._maintenance_precheck():
+            return success_response(data={"changed": False})
+        env_path = ctx.SERVICES_ENV
+        current = timezone_apply.read_system_timezone()
+        # A browser in a privacy mode reports UTC whatever its real zone:
+        # never let that move a box off a named zone (nor its .env TZ=).
+        if timezone_apply.keeps_named_zone(zone, current):
+            return success_response(data={"changed": False})
+        if current == zone:
+            # Cheap + quiet path; but revisit a .env whose rewrite once failed.
+            if (env_path.is_file()
+                    and timezone_apply.env_tz(env_path) != zone):
+                try:
+                    timezone_apply.rewrite_env_tz(env_path, zone)
+                except Exception as e:  # noqa: BLE001
+                    print(f"TZ= rewrite in services/.env failed: {e!r}",
+                          file=sys.stderr)
+            return success_response(data={"changed": False})
+        resp = _require_nopasswd_sudo()
+        if resp:
+            return resp
+        ok, err = timezone_apply.set_system_timezone(zone)
+        if not ok:
+            print(f"timedatectl set-timezone failed: {err!r}", file=sys.stderr)
+            return error_response(
+                "INTERNAL_ERROR", "Could not set the time zone", status=500)
+        try:
+            timezone_apply.rewrite_env_tz(env_path, zone)
+        except Exception as e:  # noqa: BLE001 - the system zone is already set
+            print(f"TZ= rewrite in services/.env failed: {e!r}", file=sys.stderr)
+        _poke_kiosk_reload("timezone")
+        return success_response(data={"changed": True})
 
     # ===== HEALTH CHECK & MONITORING =====
 
@@ -289,6 +346,7 @@ def register(app, ctx) -> None:
         - playlists/*.yaml - All playlist files
         - config/settings.json - Device settings (if exists)
         - data/device_info.json - Device identity info (if exists)
+        - data/media_info.json - Per-video Crop settings (if exists)
         - manifest.json - Backup metadata
         """
         buffer = io.BytesIO()
@@ -302,7 +360,8 @@ def register(app, ctx) -> None:
                 "contents": {
                     "playlists": [],
                     "settings": False,
-                    "device_info": False
+                    "device_info": False,
+                    "media_info": False
                 }
             }
 
@@ -323,6 +382,12 @@ def register(app, ctx) -> None:
             if device_info_file.exists():
                 zf.write(device_info_file, "data/device_info.json")
                 manifest["contents"]["device_info"] = True
+
+            # Per-video info (Crop settings, lengths): per-box user data
+            media_info_file = data_dir / "media_info.json"
+            if media_info_file.exists():
+                zf.write(media_info_file, "data/media_info.json")
+                manifest["contents"]["media_info"] = True
 
             # Add manifest
             zf.writestr("manifest.json", json.dumps(manifest, indent=2))
@@ -365,7 +430,8 @@ def register(app, ctx) -> None:
         restored = {
             "playlists": [],
             "settings": False,
-            "device_info": False
+            "device_info": False,
+            "media_info": False
         }
         errors = []
 
@@ -463,6 +529,18 @@ def register(app, ctx) -> None:
                     except Exception as e:
                         errors.append(f"Failed to restore device info: {e}")
 
+                # Restore per-video info
+                if "data/media_info.json" in names:
+                    try:
+                        content = _read_zip_entry_capped(zf, "data/media_info.json")
+                        # Under the store's own lock: the kiosk writes this
+                        # file too and must not interleave with the swap.
+                        media_info.restore(data_dir, content.decode("utf-8"))
+                        restored["media_info"] = True
+                        _poke_kiosk_reload("media_info")
+                    except Exception as e:
+                        errors.append(f"Failed to restore video info: {e}")
+
         except zipfile.BadZipFile:
             return error_response("INVALID_FORMAT", "File is not a valid ZIP archive")
         except Exception as e:
@@ -476,6 +554,8 @@ def register(app, ctx) -> None:
             message_parts.append("settings")
         if restored["device_info"]:
             message_parts.append("device info")
+        if restored["media_info"]:
+            message_parts.append("video settings")
 
         message = "Restored: " + ", ".join(message_parts) if message_parts else "No items restored"
 

@@ -523,6 +523,14 @@ echo -e "${CYAN}[12/13] Installing first-boot service...${NC}"
 
 # converge_system_units.sh --only is the one writer of unit files: it
 # installs the tree's copy when absent or different and daemon-reloads.
+# first_boot.sh records every step it completes under this directory so a
+# retry boot never repeats a finished wipe. An image that carried the record
+# would skip those steps on every unit — clear it wherever first boot is
+# armed (prepare_for_cloning.sh does the same).
+FIRST_BOOT_STATE_ROOT="/var/lib/magic-dingus-box/first_boot"
+rm -rf "$FIRST_BOOT_STATE_ROOT"
+echo -e "  ${GREEN}Cleared${NC} first-boot step record"
+
 if [[ -f "$SYSTEMD_SRC" ]]; then
     bash "${SCRIPT_DIR}/../../magic_dingus_box_cpp/scripts/converge_system_units.sh" \
         --only magic-first-boot.service
@@ -617,6 +625,13 @@ if systemctl is-enabled magic-first-boot.service &>/dev/null; then
     check_pass "First-boot service enabled"
 else
     check_fail "First-boot service not enabled"
+fi
+
+# First-boot step record must not ship (a unit would skip the recorded steps)
+if [[ ! -e "$FIRST_BOOT_STATE_ROOT" ]]; then
+    check_pass "First-boot step record absent"
+else
+    check_fail "First-boot step record still present: ${FIRST_BOOT_STATE_ROOT}"
 fi
 
 # Device identity removed

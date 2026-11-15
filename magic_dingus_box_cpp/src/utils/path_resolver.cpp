@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <system_error>
 
 namespace fs = std::filesystem;
 
@@ -16,17 +17,35 @@ static std::string check_30fps_version(const fs::path& /*path*/) {
     return "";
 }
 
+// Non-throwing exists(): any filesystem error counts as "not there". The
+// resolver runs on the kiosk's render thread, where an uncaught
+// filesystem_error aborts the process.
+static bool path_exists(const fs::path& p) {
+    std::error_code ec;
+    return fs::exists(p, ec) && !ec;
+}
+
 // Helper to find a file that starts with the given filename (ignoring extension and suffix)
 static std::string find_fuzzy_match(const fs::path& dir, const std::string& filename) {
-    if (!fs::exists(dir) || !fs::is_directory(dir)) return "";
+    std::error_code dir_ec;
+    if (!path_exists(dir) || !fs::is_directory(dir, dir_ec) || dir_ec) return "";
     
     std::string target_stem = fs::path(filename).stem().string();
     std::string target_ext = fs::path(filename).extension().string();
     
     // std::cout << "Fuzzy searching in " << dir << " for " << filename << " (stem: " << target_stem << ")" << std::endl;
     
-    for (const auto& entry : fs::directory_iterator(dir)) {
-        if (fs::is_regular_file(entry)) {
+    fs::directory_iterator it(dir, fs::directory_options::none, dir_ec);
+    if (dir_ec) return "";
+    // increment(ec), not operator++: a directory removed or unreadable
+    // mid-scan must end the scan, not throw out of the render thread.
+    // The whole body is also wrapped (path/string allocation can throw).
+    try {
+    for (fs::directory_iterator end; it != end; it.increment(dir_ec)) {
+        if (dir_ec) break;
+        const auto& entry = *it;
+        std::error_code file_ec;
+        if (fs::is_regular_file(entry, file_ec) && !file_ec) {
             std::string entry_name = entry.path().filename().string();
 
             // Boundary-checked stem match — see fuzzy_name_matches in
@@ -39,6 +58,9 @@ static std::string find_fuzzy_match(const fs::path& dir, const std::string& file
                 return entry.path().string();
             }
         }
+    }
+    } catch (const std::exception&) {
+        // fall through: no match
     }
     return "";
 }
@@ -55,7 +77,7 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
     // Handle relative paths that start with dev_data/ or data/
     if (path_str.find("dev_data/") == 0 || path_str.find("data/") == 0) {
         std::string absolute_path = config::get_app_path() + "/" + path_str;
-        if (fs::exists(absolute_path)) {
+        if (path_exists(absolute_path)) {
             std::cout << "Resolved path: " << item_path << " -> " << absolute_path << std::endl;
             return absolute_path;
         }
@@ -71,7 +93,7 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
             data_path_str.replace(0, 8, "data"); // replace dev_data with data
             std::string data_absolute_path = config::get_app_path() + "/" + data_path_str;
 
-            if (fs::exists(data_absolute_path)) {
+            if (path_exists(data_absolute_path)) {
                 std::cout << "Resolved path (dev_data -> data): " << item_path << " -> " << data_absolute_path << std::endl;
                 return data_absolute_path;
             }
@@ -88,7 +110,7 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
         // Fallback: try old dev_data mapping for backward compatibility
         if (path_str.find("dev_data/") == 0) {
             std::string old_data_path = config::get_home_path() + "/magic_dingus_box/" + path_str;
-            if (fs::exists(old_data_path)) {
+            if (path_exists(old_data_path)) {
                 std::cout << "Resolved path (old location): " << item_path << " -> " << old_data_path << std::endl;
                 return old_data_path;
             }
@@ -103,7 +125,7 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
             return fps_path;
         }
         
-        if (fs::exists(p)) {
+        if (path_exists(p)) {
             return p.string();
         }
         
@@ -123,7 +145,7 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
                 return fps_path;
             }
             
-            if (fs::exists(candidate)) {
+            if (path_exists(candidate)) {
                 fs::path normalized = fs::canonical(candidate);
                 return normalized.string();
             }
@@ -145,7 +167,7 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
                 return fps_path;
             }
             
-            if (fs::exists(media_candidate)) {
+            if (path_exists(media_candidate)) {
                 fs::path normalized = fs::canonical(media_candidate);
                 return normalized.string();
             }
@@ -160,15 +182,23 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
     }
     
     // Strategy 4: Try relative to current working directory
-    fs::path cwd_candidate = fs::current_path() / p;
-    try {
+    // Non-throwing: the working directory can be deleted under a running
+    // kiosk (2026-11-13: a deploy removed build/, the kiosk's
+    // WorkingDirectory, and the throwing overload aborted the process).
+    std::error_code cwd_ec;
+    const fs::path cwd = fs::current_path(cwd_ec);
+    if (cwd_ec || cwd.empty()) {
+        std::cerr << "Warning: working directory unavailable (" << cwd_ec.message()
+                  << "), skipping cwd-relative resolution" << std::endl;
+    } else try {
+        fs::path cwd_candidate = cwd / p;
         // Check for 30fps version first
         std::string fps_path = check_30fps_version(cwd_candidate);
         if (!fps_path.empty()) {
             return fps_path;
         }
         
-        if (fs::exists(cwd_candidate)) {
+        if (path_exists(cwd_candidate)) {
             fs::path normalized = fs::canonical(cwd_candidate);
             return normalized.string();
         }

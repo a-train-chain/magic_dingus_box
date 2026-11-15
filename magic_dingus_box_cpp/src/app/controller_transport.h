@@ -5,6 +5,8 @@
 // a recording fake instead. See app/playlist_playback.h.
 
 #include <chrono>
+#include <functional>
+#include <utility>
 
 #include "controller.h"
 #include "playlist_playback.h"
@@ -14,8 +16,12 @@ namespace app {
 
 class ControllerTransport final : public PlaylistTransport {
 public:
-    ControllerTransport(Controller& controller, video::GstPlayer& player)
-        : controller_(controller), player_(player) {}
+    // toggle_picture: flips the playing video's crop in the media info store
+    // (main.cpp owns the store; the Controller only knows the video's key).
+    ControllerTransport(Controller& controller, video::GstPlayer& player,
+                        std::function<void()> toggle_picture)
+        : controller_(controller), player_(player),
+          toggle_picture_(std::move(toggle_picture)) {}
 
     void stop() override { controller_.stop(); }
     void play() override { controller_.play(); }
@@ -28,6 +34,13 @@ public:
                                        const std::string& playlist_directory) override {
         return controller_.load_playlist_item(state, playlist, item_index,
                                               playlist_directory);
+    }
+    utils::Result<> load_playlist_item_at(AppState& state, const Playlist& playlist,
+                                          int item_index,
+                                          const std::string& playlist_directory,
+                                          double offset_s) override {
+        return controller_.load_playlist_item(state, playlist, item_index,
+                                              playlist_directory, nullptr, offset_s);
     }
     void load_next_item(AppState& state, const std::string& dir) override {
         controller_.load_next_item(state, dir);
@@ -44,18 +57,28 @@ public:
     void master_shuffle_back(AppState& state, const std::string& dir) override {
         controller_.master_shuffle_back(state, dir);
     }
+    void toggle_picture_crop() override {
+        if (toggle_picture_) toggle_picture_();
+    }
 
     uint64_t stream_generation() const override { return player_.stream_generation(); }
     bool has_error() const override { return player_.has_error(); }
     double player_position() const override { return player_.get_position(); }
+    std::string pipeline_state() const override { return player_.describe_state(); }
 
     std::chrono::steady_clock::time_point now() const override {
         return std::chrono::steady_clock::now();
+    }
+    double wall_now_utc() const override {
+        return std::chrono::duration<double>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
     }
 
 private:
     Controller& controller_;
     video::GstPlayer& player_;
+    std::function<void()> toggle_picture_;
 };
 
 }  // namespace app

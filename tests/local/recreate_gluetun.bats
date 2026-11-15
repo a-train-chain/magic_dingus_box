@@ -13,7 +13,15 @@ setup() {
     export MDB_COMPOSE_LOCK="$BATS_TEST_TMPDIR/compose.lock"
     export DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
     export POLL_S=0 RECREATE_WAIT_S=3
+    # Stub the OS lock boundary on Macs; unavailable-lock has its own case.
+    cat > "$BATS_TEST_TMPDIR/flock.stub" <<'EOF'
+#!/bin/bash
+exit "${FLOCK_RC:-0}"
+EOF
     mkdir -p "$COMPOSE_DIR" "$BATS_TEST_TMPDIR/bin"
+    cp "$BATS_TEST_TMPDIR/flock.stub" "$BATS_TEST_TMPDIR/bin/flock"
+    chmod +x "$BATS_TEST_TMPDIR/bin/flock"
+    export VPN_RECOVERY_SOURCE_DIR="$BATS_TEST_TMPDIR/absent-package"
     echo "services: {}" > "$COMPOSE_DIR/docker-compose.yml"
     printf 'WIREGUARD_PRIVATE_KEY=x\nVPN_COUNTRIES="United States"\n' > "$COMPOSE_DIR/.env"
     cat > "$BATS_TEST_TMPDIR/bin/docker" <<'EOF'
@@ -61,7 +69,8 @@ EOF
 }
 
 @test "the lock is released before waiting for health" {
-    command -v flock >/dev/null || skip "no flock on this host"
+    [ -x /usr/bin/flock ] || skip "no flock on this host"
+    rm "$BATS_TEST_TMPDIR/bin/flock"
     # While the script waits on an unhealthy gluetun, another actor (the
     # cascade watcher re-linking dependents) must be able to take the lock.
     HEALTH=starting RECREATE_WAIT_S=2 POLL_S=1 bash "$SCRIPT" >/dev/null 2>&1 &
@@ -70,4 +79,10 @@ EOF
     run flock -w 0.5 "$MDB_COMPOSE_LOCK" true
     wait "$pid" || true
     [ "$status" -eq 0 ]
+}
+
+@test "busy or unusable lock never recreates unlocked" {
+    FLOCK_RC=1 run bash "$SCRIPT"
+    [ "$status" -ne 0 ]
+    ! grep -q '^compose' "$DOCKER_LOG" 2>/dev/null
 }

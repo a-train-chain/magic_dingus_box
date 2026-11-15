@@ -146,6 +146,40 @@ else
   pass "no first-boot log (source / hand-provisioned box)"
 fi
 
+# first_boot.sh runs as isolated steps and records each one it completes
+# (its "Step engine"). A step that keeps failing is abandoned after a few
+# boots and the service then disables itself — so "service disabled" alone
+# does not prove every wipe ran. The record does: <state>/steps lists every
+# step, <name>.done marks a finished one. No record = a unit set up by an
+# older first_boot.sh (the log check above covers it) or a box that never ran
+# first boot.
+FB_STATE_ROOT=/var/lib/magic-dingus-box/first_boot
+FB_BOARD_SERIAL_FILE=/proc/device-tree/serial-number
+# The state directory is named for the board; this must stay identical to
+# first_boot.sh's copy (tests/local/first_boot_steps.bats compares them).
+fb_board_id() {
+    local id
+    id="$(tr -cd '0-9A-Za-z' 2>/dev/null < "$FB_BOARD_SERIAL_FILE" || true)"
+    printf '%s\n' "${id:-unknown}"
+}
+first_boot_incomplete_steps() {   # STATE-DIR -> the steps with no .done marker
+    local dir="$1" name out=""
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        [[ -e "${dir}/${name}.done" ]] || out+="${name} "
+    done < "${dir}/steps"
+    printf '%s' "${out% }"
+}
+FB_STEP_DIR="${FB_STATE_ROOT}/$(fb_board_id)"
+if [[ -s "${FB_STEP_DIR}/steps" ]]; then
+  FB_MISSING=$(first_boot_incomplete_steps "$FB_STEP_DIR")
+  if [[ -n "$FB_MISSING" ]]; then
+    fail "first-boot step(s) never completed: ${FB_MISSING} — SOURCE-BOX state may remain on this unit (see ${FB_LOG})"
+  else
+    pass "every first-boot step is recorded complete ($(grep -c . "${FB_STEP_DIR}/steps") steps)"
+  fi
+fi
+
 # The unit self-disables as its final step; still enabled means first boot
 # has not completed, and it WILL run (wiping saves/pairing) on next boot.
 FB_STATE=$(systemctl is-enabled magic-first-boot.service 2>/dev/null)
@@ -774,10 +808,18 @@ fi  # System units
 VPN_EVENTS="${MDB_VPN_EVENTS_FILE:-/var/lib/magic-dingus/vpn_events.log}"
 if [[ -f "${BASE}/services/.env" ]]; then
   header "VPN tunnel"
-  G_HEALTH=$(docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null \
-             || sudo -n docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null)
-  VPN_LINE=$(python3 "${APP}/scripts/vpn_events_summary.py" --file "$VPN_EVENTS" \
-               --current-health "${G_HEALTH:-}" 2>/dev/null)
+  VPN_MODE=0
+  python3 "${APP}/scripts/vpn_recoveryctl.py" --base "$BASE" supported >/dev/null 2>&1 || VPN_MODE=$?
+  if [[ "$VPN_MODE" == 0 ]]; then
+    VPN_LINE=$(python3 "${APP}/scripts/vpn_recoveryctl.py" --base "$BASE" status --summary 2>/dev/null)
+  elif [[ "$VPN_MODE" == 1 || ! -f "${APP}/scripts/vpn_recoveryctl.py" ]]; then
+    G_HEALTH=$(docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null \
+               || sudo -n docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null)
+    VPN_LINE=$(python3 "${APP}/scripts/vpn_events_summary.py" --file "$VPN_EVENTS" \
+                 --current-health "${G_HEALTH:-}" 2>/dev/null)
+  else
+    VPN_LINE=$'warn\tVPN state unknown: recovery configuration unavailable'
+  fi
   case "${VPN_LINE%%$'\t'*}" in
     pass) pass "${VPN_LINE#*$'\t'}" ;;
     warn) warn "${VPN_LINE#*$'\t'}" ;;

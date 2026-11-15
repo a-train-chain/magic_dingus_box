@@ -4,16 +4,20 @@ and full reset.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
 import tempfile
+import time
+from pathlib import Path
 
 from flask import request
 
 # Same dual import form as admin.py: flat when tests put web/ on
 # sys.path, package-relative in production.
 try:
+    from vpn_recovery_support import Maintenance, native, snapshot
     from admin_common import error_response, success_response
     from admin_tmdb import (
         _tmdb_classify_key, _tmdb_key_file, _tmdb_redact, KIOSK_SERVICE,
@@ -22,6 +26,7 @@ try:
         _read_env_file, _vpn_supports_port_forwarding, EnvFileReadError,
     )
 except ImportError:  # pragma: no cover - exercised by whichever form runs
+    from .vpn_recovery_support import Maintenance, native, snapshot
     from .admin_common import error_response, success_response
     from .admin_tmdb import (
         _tmdb_classify_key, _tmdb_key_file, _tmdb_redact, KIOSK_SERVICE,
@@ -29,6 +34,57 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_vpn_config import (
         _read_env_file, _vpn_supports_port_forwarding, EnvFileReadError,
     )
+
+
+# Shared compose lock — the same file every actor that starts/stops/
+# recreates the stack's containers takes (gluetun_cascade_restart.sh,
+# playback_services_pause.sh, storage_attach.sh, recreate_gluetun.sh,
+# migrate_hardlink_layout.sh, setup_services.sh, clear_radarr_cooldowns.py).
+# Module state: tests patch it HERE, on its owner (admin does not re-export
+# it). The wait is short because it is spent inside an HTTP request; on
+# missing/busy lock defers reset before any container/config mutation.
+COMPOSE_LOCK_PATH = Path("/run/lock/mdb-compose.lock")
+COMPOSE_LOCK_WAIT_S = 30.0
+
+
+class _ComposeLock:
+    """Bounded read-open flock; an unavailable lock never permits mutation.
+
+    Same protocol as clear_radarr_cooldowns.py's ComposeLock (copied, not
+    imported: that script runs standalone from systemd). `held` says whether
+    the lock was actually taken, for the caller's step log.
+    """
+
+    def __init__(self, path: Path, wait_s: float):
+        self.path, self.wait_s, self.fd, self.held = path, wait_s, None, False
+
+    def __enter__(self):
+        try:
+            old = os.umask(0)
+            try:
+                self.fd = os.open(self.path, os.O_RDONLY)
+            finally:
+                os.umask(old)
+        except OSError:
+            return self
+        deadline = time.monotonic() + self.wait_s
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.held = True
+                return self
+            except OSError:
+                if time.monotonic() >= deadline:
+                    os.close(self.fd)
+                    self.fd = None
+                    return self
+                time.sleep(0.5)
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            os.close(self.fd)   # closing releases the flock
+            self.fd = None
+        return False
 
 
 def _qbit_get(env: dict, path: str):
@@ -83,6 +139,7 @@ def register(app, ctx) -> None:
     # create_app() state shared across route modules
     SERVICES_DIR = ctx.SERVICES_DIR
     SERVICES_ENV = ctx.SERVICES_ENV
+    recovery_ctl = ctx.VPN_RECOVERY_CTL
     _check_media_browser_gates = ctx._check_media_browser_gates
     require_csrf = ctx.require_csrf
     # Defined/re-exported in admin.py; tests monkeypatch admin.<name>, so
@@ -229,7 +286,12 @@ def register(app, ctx) -> None:
             in ("on", "true", "1", "yes")
         pf_expected = pf_requested and _vpn_supports_port_forwarding(provider)
 
-        if not pf_expected:
+        recovery = snapshot() if native(env) else {"supported": False, "state": "Legacy provider monitoring", "fresh": False, "ready": False}
+        if native(env):
+            forwarded_port = recovery["forwarded_port"] or 0
+            qbit_listen = forwarded_port if recovery["qbit_synced"] else -1
+            port_status = "synced" if recovery["qbit_synced"] else "unavailable"
+        elif not pf_expected:
             # Skip the docker exec entirely — there is no lease to ask about,
             # and the call would just burn its timeout on every refresh.
             forwarded_port = 0
@@ -246,6 +308,7 @@ def register(app, ctx) -> None:
                 port_status = "drift"
 
         return success_response(data={
+            "vpn_recovery": recovery,
             "library_count": library_count,
             "queue_count": queue["count"],
             "queue_active_dl_mbps": queue["active_dl_mbps"],
@@ -467,6 +530,9 @@ def register(app, ctx) -> None:
         if (resp := _require_nopasswd_sudo()):
             return resp
 
+        if (resp := ctx._maintenance_precheck()):
+            return resp
+
         try:
             result = subprocess.run(
                 ["sudo", "-n", "systemctl", "restart", "magic-dingus-services.service"],
@@ -508,63 +574,78 @@ def register(app, ctx) -> None:
         if (resp := _require_nopasswd_sudo()):
             return resp
 
-        steps_completed = []
-
-        # 1. docker compose down — stop + remove containers + networks
-        try:
-            result = subprocess.run(
-                ["sudo", "-n", "docker", "compose", "down", "--remove-orphans"],
-                cwd=str(SERVICES_DIR),
-                capture_output=True, text=True, timeout=60,
-            )
-            if result.returncode != 0:
-                # Non-fatal — proceed with file cleanup anyway so a stuck
-                # docker daemon can't strand a half-reset state.
-                steps_completed.append(
-                    f"compose_down_failed:{(result.stderr or result.stdout or '').strip()[:200]}"
-                )
-            else:
-                steps_completed.append("compose_down")
-        except Exception as e:
-            steps_completed.append(f"compose_down_exception:{e}")
-
-        # 2. Remove .env (drops VPN credentials + API keys)
-        try:
-            if SERVICES_ENV.exists():
-                SERVICES_ENV.unlink()
-            steps_completed.append("env_removed")
-        except Exception as e:
-            return error_response(
-                "reset_failed",
-                f"Could not remove {SERVICES_ENV}: {e}",
-                status=500,
-                details={"steps": steps_completed},
-            )
-
-        # 3. Wipe service config dirs (radarr/prowlarr/qbit/gluetun/byparr)
-        config_dirs_root = SERVICES_DIR / "config"
-        targets = ["radarr", "prowlarr", "qbittorrent", "gluetun", "byparr"]
-        for name in targets:
-            target = config_dirs_root / name
-            if not target.exists():
-                continue
+        maintenance = Maintenance(recovery_ctl, SERVICES_DIR.parent, reason="reset", lock_held=True)
+        if recovery_ctl.is_file():
             try:
-                # Use sudo for cleanup since service containers run as a
-                # different uid and may have written root-owned state.
-                rm_result = subprocess.run(
-                    ["sudo", "-n", "find", str(target), "-mindepth", "1", "-delete"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                if rm_result.returncode != 0:
-                    steps_completed.append(
-                        f"wipe_{name}_failed:{(rm_result.stderr or '').strip()[:120]}"
-                    )
-                else:
-                    steps_completed.append(f"wipe_{name}")
-            except Exception as e:
-                steps_completed.append(f"wipe_{name}_exception:{e}")
+                maintenance.command("intent", "stop", "--reason", "reset")
+            except RuntimeError:
+                return error_response("maintenance_unavailable", "Could not publish stop intent; reset deferred", status=409)
+        with _ComposeLock(COMPOSE_LOCK_PATH, COMPOSE_LOCK_WAIT_S) as compose_lock:
+            if not compose_lock.held:
+                return error_response("compose_lock_unavailable", "Services are busy; reset deferred", status=409)
+            try:
+                with maintenance:
+                    steps_completed = []
 
-        return success_response(
-            data={"steps": steps_completed},
-            message="Media Browser reset",
-        )
+                    # 1. docker compose down — stop + remove containers + networks.
+                    # Under the shared compose lock through configuration cleanup so a cascade re-link or storage re-attach cannot recreate a
+                    # container this is removing. The playback-pause marker needs no
+                    # re-check: down removes every container whatever the pause says, and
+                    # the kiosk's unpause clears a marker left with no containers.
+                    try:
+                        result = subprocess.run(
+                            ["sudo", "-n", "docker", "compose", "down", "--remove-orphans"],
+                            cwd=str(SERVICES_DIR),
+                            capture_output=True, text=True, timeout=60,
+                        )
+                        if result.returncode != 0:
+                            return error_response("reset_failed", "Could not stop services; configuration retained", status=503)
+                        steps_completed.append("compose_down")
+                    except Exception:
+                        return error_response("reset_failed", "Could not stop services; configuration retained", status=503)
+
+                    # 2. Remove .env (drops VPN credentials + API keys)
+                    try:
+                        if SERVICES_ENV.exists():
+                            SERVICES_ENV.unlink()
+                        steps_completed.append("env_removed")
+                    except Exception as e:
+                        return error_response(
+                            "reset_failed",
+                            f"Could not remove {SERVICES_ENV}: {e}",
+                            status=500,
+                            details={"steps": steps_completed},
+                        )
+
+                    policy = SERVICES_DIR.parent / "config" / "vpn_recovery.json"
+                    policy.unlink(missing_ok=True)
+
+                    # 3. Wipe service config dirs (radarr/prowlarr/qbit/gluetun/byparr)
+                    config_dirs_root = SERVICES_DIR / "config"
+                    targets = ["radarr", "prowlarr", "qbittorrent", "gluetun", "byparr"]
+                    for name in targets:
+                        target = config_dirs_root / name
+                        if not target.exists():
+                            continue
+                        try:
+                            # Use sudo for cleanup since service containers run as a
+                            # different uid and may have written root-owned state.
+                            rm_result = subprocess.run(
+                                ["sudo", "-n", "find", str(target), "-mindepth", "1", "-delete"],
+                                capture_output=True, text=True, timeout=30,
+                            )
+                            if rm_result.returncode != 0:
+                                steps_completed.append(
+                                    f"wipe_{name}_failed:{(rm_result.stderr or '').strip()[:120]}"
+                                )
+                            else:
+                                steps_completed.append(f"wipe_{name}")
+                        except Exception as e:
+                            steps_completed.append(f"wipe_{name}_exception:{e}")
+
+                    return success_response(
+                        data={"steps": steps_completed},
+                        message="Media Browser reset",
+                    )
+            except RuntimeError:
+                return error_response("maintenance_unavailable", "VPN maintenance unavailable; reset deferred", status=409)

@@ -135,7 +135,13 @@ void SettingsMenuManager::update() {
             // populated by the time we read it here.
             utils::ConnectionResult result = wifi.get_connection_result();
             if (result == utils::ConnectionResult::SUCCESS) {
-                ui::Toast::show("Connected to " + wifi.get_current_ssid());
+                // The SSID the worker just connected to — NOT
+                // get_current_ssid(): that runs nmcli synchronously (up
+                // to two invocations, 15 s timeout each) and this is the
+                // render thread, which pings the systemd watchdog.
+                const std::string ssid = wifi.get_last_connected_ssid();
+                ui::Toast::show("Connected to " +
+                                (ssid.empty() ? std::string("Wi-Fi") : ssid));
             } else {
                 std::string err = wifi.get_connection_error();
                 ui::Toast::show(err.empty() ? std::string("Connection failed")
@@ -196,6 +202,17 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                      settings.cycle_mode(); 
                      rebuild_current_submenu();
                      app::SettingsPersistence::save_settings(*app_state_); 
+                 }),
+        MenuItem(std::string("Menu Style: ") +
+                     (settings.menu_style == app::MenuStyle::ChannelGuide ? "Channel Guide"
+                                                                          : "List"),
+                 MenuSection::TOGGLE_MENU_STYLE, "List / Channel guide",
+                 [&]() {
+                     settings.menu_style = (settings.menu_style == app::MenuStyle::List)
+                                               ? app::MenuStyle::ChannelGuide
+                                               : app::MenuStyle::List;
+                     rebuild_current_submenu();
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
     };
     

@@ -29,7 +29,19 @@ EOF
     python3 - "$RELEASE_YML" <<'EOF'
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
-assert set(wf["jobs"]["release"]["needs"]) == {"tests", "build-arm64", "build-source"}
+assert set(wf["jobs"]["release"]["needs"]) == {"tests", "ota-tests", "build-arm64", "build-source"}
+assert wf["jobs"]["tests"]["uses"] == "./.github/workflows/test-local.yml"
+assert wf["jobs"]["ota-tests"]["uses"] == "./.github/workflows/test-ota.yml"
+EOF
+}
+
+@test "both called test workflows accept workflow_call (or the release cannot start)" {
+    python3 - "$TESTS_REPO_ROOT/.github/workflows" <<'EOF'
+import sys, yaml
+for name in ("test-local.yml", "test-ota.yml"):
+    wf = yaml.safe_load(open(f"{sys.argv[1]}/{name}"))
+    on = wf.get("on", wf.get(True))   # PyYAML reads a bare `on:` key as True
+    assert "workflow_call" in on, f"{name} has no workflow_call trigger"
 EOF
 }
 

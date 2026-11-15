@@ -10,12 +10,22 @@
 #include <mutex>
 #include <shared_mutex>
 
+#include "guide_nav.h"
+
 namespace app {
 
 // Display mode enumeration
 enum class DisplayMode {
     CRT_NATIVE,   // Fullscreen with CRT effects
     MODERN_TV     // 4:3 centered with bezel overlay
+};
+
+// How the main menu presents playlists. List is the classic menu; ChannelGuide
+// is the optional live-channel overlay. Persisted as display.menu_style
+// ("list" | "channel_guide").
+enum class MenuStyle {
+    List,
+    ChannelGuide
 };
 
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
@@ -65,12 +75,17 @@ enum class AppScreen {
 };
 #endif
 
-// Bezel info structure
+// Bezel info structure (bezels.json; parsed by app/bezel_catalog)
 struct BezelInfo {
     std::string id;
     std::string name;
     std::string file;  // filename (empty for procedural)
     std::string description;
+    // The frame's transparent window, in the bezel image's 1920x1080
+    // pixels (top-left origin). Fit-mode video is drawn inside it. False
+    // for procedural and for any entry without a usable opening.
+    bool has_opening = false;
+    int opening_x = 0, opening_y = 0, opening_w = 0, opening_h = 0;
 };
 
 } // namespace app
@@ -139,8 +154,31 @@ struct AppState {
     int selected_index;
     int playlist_scroll_offset = 0;  // Index of first visible playlist in scroll window
 
+    // The Picture (crop) control in the list overlay, one stop below the
+    // last playlist row (app/overlay_nav.h). main.cpp sets
+    // picture_control_available and picture_crop each frame:
+    // picture_control_available = the control is drawn
+    // (app::picture_control_visible — a playlist video whose display aspect
+    // is not 4:3 plays under the visible overlay); picture_crop mirrors the
+    // playing video's media-info setting so the renderer never reads the
+    // store. picture_focus: the cursor is on the control (selected_index
+    // then stays the last row); it may stay through the load gap between
+    // items, while the control is briefly not drawn
+    // (app::picture_focus_may_stay). Render thread only.
+    bool picture_focus = false;
+    bool picture_control_available = false;
+    bool picture_crop = true;
+
     // Display state
     bool ui_visible_when_playing = true; // Tracks whether UI should be visible when video is active
+
+    // Set by Controller::load_next_item when its synchronous retry budget
+    // (Controller::kMaxSyncLoadRetries) ran out on items that exist but
+    // would not load; current_item_index is the last one that failed.
+    // PlaylistPlayback::tick_pipeline_error consumes it on the next frame
+    // and hands the item to video::PlaybackErrorPolicy like any other
+    // failed item (skip on, or give up after a run). Render thread only.
+    bool playlist_item_load_failed = false;
 
     // Thread-safe flags (accessed from GStreamer callbacks and main thread)
     std::atomic<bool> reset_display{false};       // Signal to reset display state (e.g. after VT switch)
@@ -248,6 +286,43 @@ public:
     bool loop;
     bool playlist_loop;  // Whether to loop back to start of playlist when finished
     bool shuffle;        // Whether to play videos in random order
+    // Channel Guide: the channel last tuned, as a playlist_identity() string
+    // ("shuffle" = channel 00, "" = none). Persisted as playback.last_channel.
+    std::string last_channel_id;
+    // Channel Guide, written by PlaylistPlayback (render thread only):
+    // tuned_channel: the channel (= UI row) on screen, or waiting for its
+    //   next item after a failed one; -1 = none. 00 stays 00 while the
+    //   playing playlist is the on-air item's source playlist.
+    // guide_gave_up: channels given up after repeated failures since a
+    //   channel last proved it plays (5 s of progress past its join point,
+    //   or an item's natural end — never a load alone); the
+    //   nothing-playing rule skips them.
+    // guide_wait_until_utc: after a failed item, the UTC second its
+    //   scheduled slot ends (at most its length after the failure) — the
+    //   channel is not re-tuned before then.
+    int tuned_channel = -1;
+    std::vector<int> guide_gave_up;
+    double guide_wait_until_utc = 0;
+    // Channel Guide input state, written by app::guide_input / guide_frame
+    // (app/guide_nav.h, called from main.cpp; render thread only):
+    // guide_cursor: channel row, the grid's 5-row window, on the Picture
+    //   control. The List style's selected_index / picture_focus are not
+    //   used in guide style.
+    // guide_opened_by_viewer: the viewer owns the guide — SELECT opened it,
+    //   or the shown guide got any other input. Cleared by the viewer's
+    //   Close and Tune presses, whenever the overlay hides, and when a game
+    //   session begins (GameSessionBracket::begin: after a game the video
+    //   comes back full screen). A tune's load
+    //   (PlaylistPlayback, decided when the load RUNS) never hides a guide
+    //   the viewer owns — "the guide never closes by itself"; one the
+    //   viewer does not own goes, so the video simply comes back.
+    // guide_viewer_tune: the row of a viewer's Tune press whose load has not
+    //   run (-1 none) — the knob and NEXT/PREV leave that tune's close alone.
+    // guide_appeared: the frame the guide comes on screen.
+    GuideCursor guide_cursor;
+    bool guide_opened_by_viewer = false;
+    int guide_viewer_tune = -1;
+    GuideShownEdge guide_appeared;
     bool master_shuffle_active; // True if Master Shuffle is playing (picks random video from ANY playlist)
     
     // Shuffle queue - ensures all videos play once before reshuffling
@@ -416,6 +491,7 @@ public:
     // Display settings for CRT effects and display mode
     struct DisplaySettings {
         DisplayMode mode = DisplayMode::CRT_NATIVE;
+        MenuStyle menu_style = MenuStyle::List;  // display.menu_style
         int bezel_index = 0;  // Index into bezels array (0 = procedural/none)
         
         float scanline_intensity = 0.0f;      // 0.0 - 1.0

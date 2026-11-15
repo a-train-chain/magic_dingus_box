@@ -214,6 +214,8 @@ STUB
     export PATH="$STUB_DIR:$PATH"
     WATCHER="$TEST_TEMP_DIR/gluetun_cascade_restart.sh"
     export MAGIC_CASCADE_WATCHER_BIN="$WATCHER"
+    # These cases explicitly exercise a rollback/legacy tree without modules.
+    export MAGIC_VPN_RECOVERY_SOURCE_DIR="$TEST_TEMP_DIR/legacy-source"
 }
 
 file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }

@@ -1213,7 +1213,7 @@ std::string PlaybackScreen::run_quick_add(int tmdb_id) {
     // Radarr returns HTTP 400 with "This movie has already been added" in
     // the body when the title is already in the library; the error string
     // is "HTTP 400: <json body>" (quick_add_failure_toast).
-    return quick_add_failure_toast(radarr_.last_error());
+    return quick_add_failure_toast(radarr_.last_error_on_this_thread());
 }
 
 void PlaybackScreen::start_deferred_adds() {

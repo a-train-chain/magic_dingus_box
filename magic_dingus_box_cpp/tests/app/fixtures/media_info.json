@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "videos": {
+    "media/classic.mp4": {
+      "duration_s": 212.4,
+      "display_aspect": 1.3333
+    },
+    "media/widescreen.mp4": {
+      "duration_s": 95.5,
+      "display_aspect": 1.7778,
+      "crop": false
+    },
+    "media/not_probed_yet.mp4": {
+      "crop": false
+    },
+    "media/music videos/long one.mp4": {
+      "duration_s": 3600
+    }
+  }
+}

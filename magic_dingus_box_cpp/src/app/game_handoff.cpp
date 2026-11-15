@@ -46,6 +46,13 @@ void GameSessionBracket::begin(const PlaylistItem& item) {
     // cancels any in-flight post-game fade — a stale alpha of 0 from
     // the previous exit would make this launch's plate invisible.
     app::prepare_loading_state_for_launch(state_);
+    // Channel Guide: after a game the kiosk comes back to the video full
+    // screen (owner decision, 2026-11-13). A guide the viewer owned before
+    // the game (Settings opened over it) is the viewer's no longer, so the
+    // post-game auto-tune's load hides it. Here, at the start, rather than at
+    // the post-game ready edge: the auto-tune waits for that edge, so
+    // nothing can run between this and its load.
+    state_.guide_opened_by_viewer = false;
     // Media Browser: quiet the media stack for the whole session (async —
     // never delays launch) and drop poster textures while the GL context is
     // still current.

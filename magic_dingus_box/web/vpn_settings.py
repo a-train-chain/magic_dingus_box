@@ -42,12 +42,17 @@ Wired into admin.py by a single register() call; all the logic is here.
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import threading
 from pathlib import Path
 from typing import Callable, Optional
 
 from flask import request
+try:
+    from vpn_recovery_support import Maintenance
+except ImportError:
+    from .vpn_recovery_support import Maintenance
 
 DEFAULT_COUNTRY = "Netherlands"
 # Default first, then alphabetical. See the module docstring for the rule.
@@ -99,15 +104,15 @@ def country_state(env: dict) -> dict:
     }
 
 
-def rewrite_env_text(text: str, line: str) -> str:
-    """Replace the VPN_COUNTRIES line in .env text with `line`, keeping every
-    other line byte-for-byte. Duplicates collapse into the first position
+def rewrite_env_text(text: str, line: str, key: str = ENV_KEY) -> str:
+    """Replace the `key` (default VPN_COUNTRIES) line in .env text with
+    `line`, keeping every other line byte-for-byte. Duplicates collapse into the first position
     (a later duplicate would otherwise silently win); an absent key is
     appended. `line` is a full, already-validated `KEY=VALUE` line."""
     out, placed = [], False
     for raw in text.splitlines(keepends=True):
-        key = raw.strip().split("=", 1)[0].strip() if "=" in raw else ""
-        if key == ENV_KEY and not raw.lstrip().startswith("#"):
+        line_key = raw.strip().split("=", 1)[0].strip() if "=" in raw else ""
+        if line_key == key and not raw.lstrip().startswith("#"):
             if not placed:
                 out.append(line + ("\n" if raw.endswith("\n") else ""))
                 placed = True
@@ -164,6 +169,19 @@ def register(app, *, require_csrf: Callable, check_gates: Callable,
     decorator, Media Browser gates, .env reader/formatter, detached-job
     launcher), so this module carries no second copy of any of them.
     """
+    policy_path = Path(env_path).parent.parent / "config" / "vpn_recovery.json"
+    recovery_ctl = Path(script_path).parent / "vpn_recoveryctl.py"
+
+    def fallback_policy():
+        try:
+            data = json.loads(policy_path.read_text())
+            value = data.get("fallback_countries", [])
+            if not isinstance(value, list) or any(c not in COUNTRIES for c in value):
+                raise ValueError()
+            return value
+        except FileNotFoundError:
+            return []
+
     lock = threading.Lock()
     last_job: dict = {"id": None}
 
@@ -180,7 +198,7 @@ def register(app, *, require_csrf: Callable, check_gates: Callable,
             return None
         lines, _, state, rc = result
         status = {"running": "running", "lost": "failed"}.get(
-            state, "success" if rc == 0 else "failed")
+            state, "success" if rc == 0 else "stopped" if rc == 3 else "failed")
         return {"id": job_id, "status": status, "exit_code": rc,
                 "log": [l for l in lines if l.strip()][-LOG_TAIL_LINES:]}
 
@@ -193,6 +211,10 @@ def register(app, *, require_csrf: Callable, check_gates: Callable,
         except env_read_error as e:
             return error_response("env_read_failed", str(e), status=500)
         data = country_state(env)
+        try:
+            data["fallback_countries"] = fallback_policy()
+        except (OSError, ValueError, AttributeError):
+            return error_response("policy_read_failed", "Could not read the VPN fallback policy", status=500)
         data["job"] = _job_view()
         return success_response(data=data)
 
@@ -209,6 +231,11 @@ def register(app, *, require_csrf: Callable, check_gates: Callable,
             return error_response(
                 "invalid_country",
                 "Pick one of: " + ", ".join(COUNTRIES), status=400)
+        fallback = body.get("fallback_countries")
+        if fallback is not None and (not isinstance(fallback, list)
+                or any(c not in COUNTRIES or c == country for c in fallback)
+                or len(set(fallback)) != len(fallback)):
+            return error_response("invalid_fallback", "Choose distinct fallback countries other than the primary country", status=400)
         if (resp := require_sudo()):
             return resp
         if not lock.acquire(blocking=False):
@@ -218,46 +245,65 @@ def register(app, *, require_csrf: Callable, check_gates: Callable,
             if (resp := maintenance_precheck()):
                 return resp
             try:
-                env = read_env(env_path)
-                original = Path(env_path).read_text(encoding="utf-8")
-            except env_read_error as e:
-                return error_response(
-                    "env_read_failed",
-                    f"{e}. Nothing was changed.", status=500)
-            except (OSError, UnicodeDecodeError) as e:
-                return error_response(
-                    "env_read_failed",
-                    f"Could not read {env_path}: {e}. Nothing was changed.", status=500)
-            state = country_state(env)
-            if not state["editable"]:
-                return error_response("not_supported", state["reason"], status=409)
-            if state["country"] == country:
-                return success_response(
-                    data={"country": country, "changed": False, "job_id": None},
-                    message=f"The VPN already uses {country}")
+                with Maintenance(recovery_ctl, Path(env_path).parent.parent, reason="country-change") as maintenance:
+                    try:
+                        env = read_env(env_path)
+                        original = Path(env_path).read_text(encoding="utf-8")
+                    except env_read_error as e:
+                        return error_response(
+                            "env_read_failed",
+                            f"{e}. Nothing was changed.", status=500)
+                    except (OSError, UnicodeDecodeError) as e:
+                        return error_response(
+                            "env_read_failed",
+                            f"Could not read {env_path}: {e}. Nothing was changed.", status=500)
+                    state = country_state(env)
+                    if not state["editable"]:
+                        return error_response("not_supported", state["reason"], status=409)
+                    original_fallback = fallback_policy()
+                    fallback = original_fallback if fallback is None else fallback
+                    if state["country"] == country and fallback == original_fallback:
+                        return success_response(
+                            data={"country": country, "changed": False, "job_id": None},
+                            message=f"The VPN already uses {country}")
 
-            try:
-                new_text = rewrite_env_text(original, format_env_line(ENV_KEY, country))
-                atomic_replace(Path(env_path), new_text)
-            except (OSError, ValueError) as e:
-                return error_response(
-                    "env_write_failed",
-                    f"Could not update {env_path}: {e}. Nothing was changed.",
-                    status=500)
+                    try:
+                        new_text = rewrite_env_text(original, format_env_line(ENV_KEY, country))
+                        atomic_replace(Path(env_path), new_text)
+                        if fallback != original_fallback:
+                            policy_path.parent.mkdir(parents=True, exist_ok=True)
+                            atomic_replace(policy_path, json.dumps({"fallback_countries": fallback}) + "\n")
+                    except (OSError, ValueError) as e:
+                        try:
+                            atomic_replace(Path(env_path), original)
+                        except OSError:
+                            pass
+                        return error_response(
+                            "env_write_failed",
+                            f"Could not complete the VPN settings update: {e}",
+                            status=500)
 
-            job_id, err = launch_job(JOB_KIND, ["/bin/bash", str(script_path)],
-                                     as_root=True)
-            if err:
-                # Nothing applied it: put the old line back so the file keeps
-                # describing the tunnel that is actually running.
-                try:
-                    atomic_replace(Path(env_path), original)
-                except OSError:
-                    pass
-                return err
-            last_job["id"] = job_id
-            return success_response(
-                data={"country": country, "changed": True, "job_id": job_id},
-                message=f"Switching the VPN to {country}")
+                    maintenance.release()
+                    job_id, err = launch_job(JOB_KIND, ["/bin/bash", str(script_path)],
+                                             as_root=True)
+                    if err:
+                        # Nothing applied it: put the old line back so the file keeps
+                        # describing the tunnel that is actually running.
+                        try:
+                            if recovery_ctl.is_file():
+                                maintenance.command("inhibit", "begin", maintenance.token, "--owner-pid", str(os.getpid()), "--reason", "country-rollback")
+                                maintenance.started = True
+                            atomic_replace(Path(env_path), original)
+                            if fallback != original_fallback:
+                                atomic_replace(policy_path, json.dumps({"fallback_countries": original_fallback}) + "\n")
+                        except OSError:
+                            pass
+                        return err
+                    last_job["id"] = job_id
+                    return success_response(
+                        data={"country": country, "changed": True, "job_id": job_id},
+                        message=f"Switching the VPN to {country}")
+            except (RuntimeError, OSError, ValueError):
+                return error_response("maintenance_unavailable", "VPN settings are busy or unavailable; nothing applied", status=409)
         finally:
             lock.release()

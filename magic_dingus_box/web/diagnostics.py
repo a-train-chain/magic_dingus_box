@@ -47,6 +47,11 @@ CMD_TIMEOUT_S = 25
 # Written by gluetun_cascade_restart.sh: `<epoch> <kind> [detail]` per tunnel
 # transition, 7 days / 2000 lines at most. Timestamps and fixed words only —
 # it still goes through the redactor like every other file.
+try:
+    from vpn_recovery_support import snapshot
+except ImportError:
+    from .vpn_recovery_support import snapshot
+
 VPN_EVENTS_FILE = Path("/var/lib/magic-dingus/vpn_events.log")
 
 STATUS_UNITS = (
@@ -80,7 +85,7 @@ JOURNAL_UNITS = (
 # "log" entry at one of these fails closed.
 FORBIDDEN_NAMES = frozenset({
     ".env", "flask_secret.key", "paired_remotes.json", "pairing_session.json",
-    "tmdb_api_key", "tmdb.key", "text_input_queue.jsonl",
+    "tmdb_api_key", "tmdb.key", "text_input_queue.jsonl", "recovery.key",
 })
 
 
@@ -125,7 +130,8 @@ class BundleBuilder:
                  home: Optional[Path] = None,
                  extra_files: Optional[dict] = None,
                  proc_root: Path = Path("/proc"),
-                 vpn_events_path: Optional[Path] = None):
+                 vpn_events_path: Optional[Path] = None,
+                 vpn_status_path: Optional[Path] = None):
         self.data_dir = Path(data_dir)
         self.install_dir = Path(install_dir)
         self.redactor = Redactor(known_secrets)
@@ -135,6 +141,7 @@ class BundleBuilder:
         self.extra_files = extra_files or {}
         self.proc_root = Path(proc_root)
         self.vpn_events_path = Path(vpn_events_path or VPN_EVENTS_FILE)
+        self.vpn_status_path = vpn_status_path
         self.total = 0
         self.manifest = []
 
@@ -159,7 +166,7 @@ class BundleBuilder:
         return f"$ {' '.join(argv)}\n{out}"
 
     def _read_file(self, path: Path) -> Optional[str]:
-        if path.name in FORBIDDEN_NAMES:
+        if path.name in FORBIDDEN_NAMES or (path.name == "config.toml" and path.parent.name == "auth"):
             raise ValueError(f"refusing to bundle {path.name}")
         try:
             with open(path, "rb") as f:
@@ -238,6 +245,7 @@ class BundleBuilder:
         audit = self._read_file(self.data_dir / "pairing_audit.log")
         if audit is not None:
             self._add(zf, "logs/pairing_audit.log", audit)
+        self._add(zf, "vpn_recovery.json", json.dumps(snapshot(self.vpn_status_path), sort_keys=True))
         vpn = self._read_file(self.vpn_events_path)
         if vpn is not None:
             self._add(zf, "logs/vpn_events.log", vpn)
@@ -265,7 +273,7 @@ def known_secret_values(install_dir: Path, data_dir: Path,
             (Path(install_dir) / "services" / ".env").read_text(encoding="utf-8", errors="replace"))
     except OSError:
         pass
-    for p in (Path(data_dir) / "flask_secret.key", *extra_paths):
+    for p in (Path(data_dir) / "flask_secret.key", Path(install_dir) / "services/config/gluetun/auth/recovery.key", *extra_paths):
         try:
             v = Path(p).read_text(encoding="utf-8", errors="replace").strip()
         except OSError:

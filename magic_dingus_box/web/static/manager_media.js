@@ -6,6 +6,43 @@
 
 // ===== VIDEO MANAGEMENT =====
 
+// A video whose shape differs from the 4:3 area gets a Crop checkbox (ticked =
+// fill the area and trim the overflow, the default; unticked = whole frame
+// with black borders). A 4:3 video never does: the kiosk always crops it
+// (there is nothing to trim), so a stored crop:false from a restore or a
+// package import must not show an unticked box the TV contradicts. A video
+// whose shape is unknown has nothing to choose either — except when the box
+// holds it as NOT cropped, which shows its (unticked) box so that choice can
+// be undone from here: a kiosk toggle on a video whose shape is not recorded
+// yet, or an upload whose file could not be probed.
+function cropControl(video) {
+    const aspect = video.display_aspect;
+    const known = typeof aspect === 'number' && aspect > 0;
+    // Within 2 % of 4:3, relative: the kiosk's video::is_four_by_three and
+    // the web's media_record.is_four_by_three.
+    if (known && Math.abs(aspect / (4 / 3) - 1) <= 0.02) return '';
+    if (!known && video.crop !== false) return '';
+    return `<label class="video-crop" title="Fill the 4:3 screen, trimming the edges. Untick to show the whole picture with black borders.">
+        <input type="checkbox" ${video.crop === false ? '' : 'checked'}
+            onchange="setVideoCrop('${escapeJs(video.path)}', this.checked)"> Crop</label>`;
+}
+
+async function setVideoCrop(path, crop) {
+    try {
+        await apiRequest(`${currentDevice.url}/admin/media/picture`, {
+            method: 'POST',
+            headers: getCsrfHeaders(),
+            body: JSON.stringify({ path, crop })
+        });
+        const video = AppState.media.videos.find(v => v.path === path);
+        if (video) video.crop = crop;
+    } catch (e) {
+        console.error('Crop change failed:', e);
+        alert('Could not change Crop: ' + e.message);
+        loadVideos();  // put the checkbox back to what the box has
+    }
+}
+
 async function loadVideos() {
     if (!AppState.device.current) return;
 
@@ -111,6 +148,7 @@ async function loadVideos() {
                     : '<span class="usage-badge unused">⚠ Not used</span>'}
                                     </td>
                                     <td class="video-actions">
+                                        ${cropControl(video)}
                                         <button class="btn-remove" onclick="deleteVideo('${escapeJs(video.path)}', '${escapeJs(video.filename)}')">Delete</button>
                                     </td>
                                 </tr>
@@ -134,13 +172,39 @@ async function loadVideos() {
     }
 }
 
+// The owner's Quality / Framing / Normalize choices for a video upload. Read
+// by EVERY path into /admin/smart-upload — the file picker, drag-and-drop,
+// the retry button and the playlist editor's auto-add — so the input method
+// can never decide which settings apply. (Until 2026-11 only the file picker
+// sent them; the other paths silently got the server's defaults.) A control
+// missing from the page falls back to the file picker's historical defaults.
+function readSmartUploadOptions() {
+    return {
+        resolution: document.getElementById('targetResolution')?.value
+            || UPLOAD_CONFIG.TRANSCODE.DEFAULT_RESOLUTION,
+        fitMode: document.getElementById('framingMode')?.value
+            || UPLOAD_CONFIG.TRANSCODE.DEFAULT_FIT_MODE,
+        normalizeAudio: document.getElementById('normalizeAudio')?.checked || false,
+    };
+}
+
+// The ONE multipart body for /admin/smart-upload (fields read by
+// admin_media.py's smart_upload).
+function buildSmartUploadFormData(file, options = readSmartUploadOptions()) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('resolution', options.resolution);
+    formData.append('fit_mode', options.fitMode);
+    formData.append('normalize_audio', options.normalizeAudio ? 'true' : 'false');
+    return formData;
+}
+
 async function handleDirectUpload(input) {
     if (input.files.length === 0) return;
 
     const files = Array.from(input.files);
-    const targetResolution = document.getElementById('targetResolution')?.value || UPLOAD_CONFIG.TRANSCODE.DEFAULT_RESOLUTION;
-    const framingMode = document.getElementById('framingMode')?.value || UPLOAD_CONFIG.TRANSCODE.DEFAULT_FIT_MODE;
-    const normalizeAudio = document.getElementById('normalizeAudio')?.checked || false;
+    // Read once, so a control changed mid-batch does not split the batch.
+    const uploadOptions = readSmartUploadOptions();
 
     // Auto-expand the upload section if it's collapsed
     const uploadContent = document.getElementById('libraryUploadContent');
@@ -187,13 +251,9 @@ async function handleDirectUpload(input) {
             console.log(`[SmartUpload] Processing: ${file.name}`);
 
             // Upload to smart-upload endpoint
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('resolution', targetResolution);
-            formData.append('fit_mode', framingMode);
-            formData.append('normalize_audio', normalizeAudio ? 'true' : 'false');
+            const formData = buildSmartUploadFormData(file, uploadOptions);
 
-            const uploadResponse = await new Promise((resolve, reject) => {
+            const sendUpload = () => new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', `${currentDevice.url}/admin/smart-upload`);
 
@@ -222,7 +282,9 @@ async function handleDirectUpload(input) {
                             reject(new Error('Invalid server response'));
                         }
                     } else {
-                        reject(new Error(`Upload failed: ${xhr.status}`));
+                        const err = new Error(`Upload failed: ${xhr.status}`);
+                        err.csrfRejected = xhrIsCsrfRejection(xhr);
+                        reject(err);
                     }
                 };
 
@@ -231,6 +293,17 @@ async function handleDirectUpload(input) {
                 xhr.onabort = () => reject(new Error('Upload cancelled'));
                 xhr.send(formData);
             });
+
+            // An expired CSRF token: refresh it and re-send the file once
+            // (sendUpload reads csrfToken when it opens the request).
+            let uploadResponse;
+            try {
+                uploadResponse = await sendUpload();
+            } catch (e) {
+                if (!e.csrfRejected) throw e;
+                await fetchCsrfToken();
+                uploadResponse = await sendUpload();
+            }
 
             if (uploadResponse.data?.action === 'direct') {
                 // File was compatible - already saved directly
@@ -585,7 +658,10 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
     // assume.
     return new Promise((resolve) => {
         const { MAX_RETRIES, RETRY_DELAY_MS, TIMEOUT_MS } = UPLOAD_CONFIG;
+        // Read once per file: every retry re-sends with the same settings.
+        const uploadOptions = readSmartUploadOptions();
         let attempts = 0;
+        let csrfRetried = false;
 
         const autoAddFinal = (finalPath) => {
             if (!autoAddToPlaylist) return;
@@ -669,8 +745,7 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
         const attemptUpload = () => {
             attempts++;
 
-            const formData = new FormData();
-            formData.append('file', file);
+            const formData = buildSmartUploadFormData(file, uploadOptions);
 
             const xhr = new XMLHttpRequest();
             let timeoutId = null;
@@ -709,6 +784,12 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                         autoAddFinal(data.output_path || `data/media/${data.output_filename || file.name}`);
                         resolve({ success: true });
                     }
+                } else if (!csrfRetried && xhrIsCsrfRejection(xhr)) {
+                    // Expired CSRF token: refresh it and re-send once. Not
+                    // a failed attempt, so it does not use up a retry.
+                    csrfRetried = true;
+                    attempts--;
+                    fetchCsrfToken().then(attemptUpload);
                 } else {
                     handleError(`Server error (${xhr.status})`);
                 }
@@ -817,7 +898,7 @@ async function deleteVideo(path, filename) {
                 // Encode the path components to handle special characters in URL
                 const encodedPath = path.split('/').map(encodeURIComponent).join('/');
 
-                const response = await fetch(`${currentDevice.url}/admin/media/${encodedPath}`, {
+                const response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/media/${encodedPath}`, {
                     method: 'DELETE',
                     headers: getCsrfHeaders(false)
                 });

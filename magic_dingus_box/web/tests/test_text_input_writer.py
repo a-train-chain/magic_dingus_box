@@ -112,3 +112,29 @@ def test_rate_limit_window_resets(tmp_path):
     w.type_char("y", device_id="d")
     events = _read_lines(tmp_path / "queue.jsonl")
     assert len(events) == 51
+
+
+def test_line_is_on_disk_before_the_lock_is_released(tmp_path, monkeypatch):
+    # The kiosk (controller_text_input.cpp) reads the queue and then
+    # truncates it under the same flock. A line that reaches the file
+    # AFTER LOCK_UN can land between that read and that truncate and be
+    # erased — a lost phone keystroke. So at the moment of unlock, the
+    # line must already be visible to any other reader of the file.
+    import fcntl
+    from remote import text_input_writer as tiw
+
+    path = tmp_path / "queue.jsonl"
+    seen_at_unlock = []
+    real_flock = fcntl.flock
+
+    def spying_flock(fd, op):
+        if op == fcntl.LOCK_UN:
+            seen_at_unlock.append(path.read_bytes())
+        return real_flock(fd, op)
+
+    monkeypatch.setattr(tiw.fcntl, "flock", spying_flock)
+    TextInputWriter(queue_path=path).type_char("a", device_id="d")
+
+    assert len(seen_at_unlock) == 1
+    assert seen_at_unlock[0], "line was still in Python's buffer at unlock"
+    assert json.loads(seen_at_unlock[0].decode())["c"] == "a"

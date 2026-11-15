@@ -5,6 +5,29 @@
 // Part of the Content Manager front end; see the load-order note at the top
 // of manager.js. Loaded after: manager.js, manager_devices.js, manager_media.js, manager_roms.js.
 
+// ===== PLAYLIST FIELDS =====
+// The keys the editor has a form control or a rule for. Every OTHER key in a
+// loaded playlist — top-level or per-item — is carried through a save
+// unchanged (the server's format_playlist_yaml does the same), so the editor
+// never deletes a field it does not know about.
+const PLAYLIST_TOP_LEVEL_KNOWN_KEYS = [
+    'title', 'curator', 'description', 'playlist_type', 'loop', 'items'];
+const PLAYLIST_ITEM_KNOWN_KEYS = [
+    'title', 'artist', 'source_type', 'path', 'url', 'start', 'end', 'tags',
+    'emulator_core', 'emulator_system'];
+
+// Unknown top-level keys of the playlist open in each editor (by type).
+const playlistEditorExtras = { video: {}, game: {} };
+
+function unknownPlaylistKeys(playlistData) {
+    const extras = {};
+    if (!playlistData || typeof playlistData !== 'object') return extras;
+    for (const [key, value] of Object.entries(playlistData)) {
+        if (!PLAYLIST_TOP_LEVEL_KNOWN_KEYS.includes(key)) extras[key] = value;
+    }
+    return extras;
+}
+
 // ===== UNIFIED MEDIA FUNCTIONS =====
 // These functions handle both video and game media types using MEDIA_CONFIG
 
@@ -83,6 +106,7 @@ function createNewPlaylist(type) {
 
     // Clear items
     config.setItems([]);
+    playlistEditorExtras[type] = {};
     renderPlaylistItems(type);
 
     // Remove editing file reference
@@ -359,6 +383,7 @@ async function editPlaylist(filename, type) {
         // Use unified config to set items and switch view
         const config = MEDIA_CONFIG[type];
         config.setItems(items);
+        playlistEditorExtras[type] = unknownPlaylistKeys(playlistData);
         renderPlaylistItems(type);
 
         // Refresh library availability view to reflect current playlist items
@@ -414,8 +439,11 @@ async function performSavePlaylist(type) {
         return;
     }
 
-    // Clean up playlist data
+    // Clean up playlist data. Keys the editor does not know come first (the
+    // server orders the known ones ahead of them anyway) and can never
+    // override a form field.
     const playlistData = {
+        ...playlistEditorExtras[type],
         title,
         // Blank stays blank. This wrote the literal string 'Unknown', so merely
         // opening one of the imported playlists and saving it permanently
@@ -451,7 +479,7 @@ async function performSavePlaylist(type) {
         let response;
         if (saveBtn) saveBtn.disabled = true;
         try {
-            response = await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}${qs}`, {
+            response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}${qs}`, {
                 method: 'POST',
                 headers: getCsrfHeaders(),
                 body: JSON.stringify(playlistData)
@@ -485,6 +513,12 @@ async function performSavePlaylist(type) {
             return;
         }
 
+        if (response.status === 403) {
+            // Still refused after fetchWithCsrfRetry's fresh token.
+            alert('Your session expired and could not be refreshed. Reload the page and try again.');
+            return;
+        }
+
         alert('Failed to save playlist');
     }
 
@@ -511,8 +545,15 @@ function savePlaylist(type) {
 function cleanPlaylistItems(items) {
     if (!Array.isArray(items)) return [];
 
-    // Remove any null/undefined/empty fields from items to match YAML format
-    return items.filter(item => item && typeof item === 'object').map(item => {
+    // Known fields: drop null/undefined/empty values to match the YAML
+    // format. Unknown fields: copied through untouched. A bare string item
+    // is a path — the kiosk loads it exactly like {path} (local video,
+    // title from the filename) — so it becomes one instead of being dropped.
+    // Editor-only empty slots ({isEmpty: true}) are not playlist items.
+    return items
+        .map(item => (typeof item === 'string' && item) ? { path: item } : item)
+        .filter(item => item && typeof item === 'object' && !Array.isArray(item) && !item.isEmpty)
+        .map(item => {
         const cleaned = {};
 
         // Always include these core fields
@@ -531,6 +572,12 @@ function cleanPlaylistItems(items) {
         if (item.tags && item.tags.length > 0) cleaned.tags = item.tags;
         if (item.emulator_core) cleaned.emulator_core = item.emulator_core;
         if (item.emulator_system) cleaned.emulator_system = item.emulator_system;
+
+        for (const [key, value] of Object.entries(item)) {
+            if (!PLAYLIST_ITEM_KNOWN_KEYS.includes(key) && key !== 'isEmpty') {
+                cleaned[key] = value;
+            }
+        }
 
         return cleaned;
     });
@@ -556,6 +603,7 @@ function cancelEdit(type) {
         // Clear items using unified config
         const config = MEDIA_CONFIG[type];
         config.setItems([]);
+        playlistEditorExtras[type] = {};
         renderPlaylistItems(type);
 
         // Hide cancel button
@@ -932,7 +980,7 @@ async function deletePlaylist(filename, type) {
                     const deleteVideos = document.getElementById('deleteVideosCheckbox')?.checked || false;
                     const url = `${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}${deleteVideos ? '?delete_videos=true' : ''}`;
 
-                    const response = await fetch(url, {
+                    const response = await fetchWithCsrfRetry(url, {
                         method: 'DELETE',
                         headers: getCsrfHeaders(false)
                     });
@@ -967,7 +1015,7 @@ async function deletePlaylist(filename, type) {
             `Delete playlist "${filename}"?`,
             async () => {
                 try {
-                    await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}`, {
+                    await fetchWithCsrfRetry(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}`, {
                         method: 'DELETE',
                         headers: getCsrfHeaders(false)
                     });
@@ -1415,13 +1463,13 @@ function renderROMLibraryPanel() {
 
         if (!shouldShow) return '';
 
-        const systemLabel = rom.system.toUpperCase();
+        const systemLabel = escapeHtml(String(rom.system).toUpperCase());
 
         return `
             <div class="library-item ${inPlaylist ? 'in-playlist' : ''}" 
                  draggable="true" 
                  data-index="${rom.originalIndex}"
-                 data-system="${rom.system}"
+                 data-system="${escapeHtml(rom.system)}"
                  data-type="rom"
                  data-path="${escapeHtml(rom.path)}"
                  ondragstart="handleROMLibraryDragStart(event)"
@@ -1429,7 +1477,7 @@ function renderROMLibraryPanel() {
                 <span class="video-icon">${spriteIcon('ic-games')}</span>
                 <span class="video-name">${escapeHtml(name)}</span>
                 <span style="font-size: 0.7rem; color: var(--text-secondary); margin-left: 0.5rem;">${systemLabel}</span>
-                <button class="add-btn" onclick="addROMToPlaylist('${rom.system}', ${rom.originalIndex})" title="Add to playlist">+</button>
+                <button class="add-btn" onclick="addROMToPlaylist('${escapeJs(rom.system)}', ${rom.originalIndex})" title="Add to playlist">+</button>
             </div>
         `;
     }).join('');

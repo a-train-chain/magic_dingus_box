@@ -96,6 +96,49 @@ OOMScoreAdjust=-500
 EOF
 log "kiosk MemoryLow + OOMScoreAdjust drop-in installed"
 
+# Credentials must exist before convergence can restart the watcher. This
+# new-tree hook is also reached by OLD update.sh on its first native OTA.
+VPN_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VPN_WATCHER_QUIESCED=false
+VPN_QUIESCE_FAILED=false
+vpn_systemctl() {
+    python3 - "$@" <<'PYTHON'
+import subprocess,sys
+try: sys.exit(subprocess.run(['systemctl',*sys.argv[1:]],timeout=45 if sys.argv[1:2]==['stop'] else 3,check=False).returncode)
+except (OSError,subprocess.TimeoutExpired): sys.exit(124)
+PYTHON
+}
+resume_vpn_watcher() {
+    if [[ "$VPN_WATCHER_QUIESCED" == true ]]; then
+        VPN_WATCHER_QUIESCED=false
+        vpn_systemctl start --no-block gluetun-cascade-restart.service \
+            || log "WARNING: VPN watcher restart deferred; inspect its systemd unit"
+    fi
+}
+trap resume_vpn_watcher EXIT
+if [[ -z "$TUNING_ROOT" && -f "$VPN_SCRIPT_DIR/ensure_gluetun_auth.sh" ]]; then
+    if [[ -f "$VPN_SCRIPT_DIR/vpn_recoveryctl.py" ]]; then
+        python3 "$VPN_SCRIPT_DIR/vpn_recoveryctl.py" --base "$(cd "$VPN_SCRIPT_DIR/../.." && pwd)" provision
+    fi
+    bash "$VPN_SCRIPT_DIR/ensure_gluetun_auth.sh" "$VPN_SCRIPT_DIR/../../services" || true
+fi
+if [[ -z "$TUNING_ROOT" && "$SKIP_SYSTEMCTL" != true && -f "$VPN_SCRIPT_DIR/vpn_recoveryctl.py" ]] \
+        && python3 "$VPN_SCRIPT_DIR/vpn_recoveryctl.py" --base "$(cd "$VPN_SCRIPT_DIR/../.." && pwd)" supported >/dev/null 2>&1 \
+        && python3 "$VPN_SCRIPT_DIR/vpn_recoveryctl.py" --base "$(cd "$VPN_SCRIPT_DIR/../.." && pwd)" migration-needed >/dev/null 2>&1 \
+        && vpn_systemctl is-active --quiet gluetun-cascade-restart.service >/dev/null 2>&1; then
+    VPN_WATCHER_QUIESCED=true
+    if ! vpn_systemctl stop gluetun-cascade-restart.service; then
+        VPN_QUIESCE_FAILED=true
+        log "WARNING: watcher did not quiesce; credential activation deferred"
+    fi
+fi
+if [[ -z "$TUNING_ROOT" ]]; then
+    if [[ "$SKIP_SYSTEMCTL" != true && "$VPN_QUIESCE_FAILED" != true && -f "$VPN_SCRIPT_DIR/vpn_recoveryctl.py" ]]; then
+        python3 "$VPN_SCRIPT_DIR/vpn_recoveryctl.py" --base "$(cd "$VPN_SCRIPT_DIR/../.." && pwd)" activate \
+            || log "WARNING: VPN credential activation deferred (stack intent preserved)"
+    fi
+fi
+
 # --- 1a. the tree's systemd units --------------------------------------------
 # This script is the root-run hook every delivery path executes (deploy,
 # OTA — including the OLD update.sh on the first OTA that ships a change —
@@ -143,20 +186,9 @@ else
     log "restart_stale_cascade_watcher.sh not found; skipping cascade watcher check"
 fi
 
-# --- 1f. Gluetun control-server access file ---------------------------------
-# Same delivery reasoning as 1d: the routes the stack reads (forwarded port,
-# exit IP) must be explicitly public before any gluetun bump that makes
-# them private by default. Writes a file under services/config/gluetun only
-# (Media Browser boxes); restarts nothing. Never fails.
-GLUETUN_AUTH_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ensure_gluetun_auth.sh"
-if [[ -n "$TUNING_ROOT" ]]; then
-    log "SKIP: gluetun access file (test mode)"
-elif [[ -f "$GLUETUN_AUTH_HELPER" ]]; then
-    bash "$GLUETUN_AUTH_HELPER" "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/services" 2>&1 \
-        | sed 's/^/  /' || true
-else
-    log "ensure_gluetun_auth.sh not found; skipping gluetun access file"
-fi
+# Restore only the watcher that was active on entry, after auth + unit/module
+# convergence. The EXIT trap covers every error/early exit in this sequence.
+resume_vpn_watcher
 
 # --- 1g. retire the legacy usb0 networkd DHCP server ------------------------
 # Same delivery reasoning as 1d: a box that once ran the old

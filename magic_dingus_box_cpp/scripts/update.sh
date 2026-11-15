@@ -1867,10 +1867,13 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
+        --exclude 'magic_dingus_box_cpp/build.prev.*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || backup_exit=$?
@@ -1957,6 +1960,12 @@ install_update() {
     #                       - Transient kiosk<->web runtime files;
     #                          excluded so an OTA can't yank them out
     #                          from under the running web admin.
+    #   - data/media_info.json, data/media_info.json.lock
+    #                       - Per-video info (each video's Crop setting and
+    #                          probed length/shape; the lock is its writers'
+    #                          sidecar). Per-box, never in the tarball:
+    #                          without excludes --delete would reset every
+    #                          video's Crop on every OTA.
     #   - data/screenshots/ - Debug screenshots (debug/screenshot_capture,
     #                          `touch data/screenshot_request`). Per-box,
     #                          never in the tarball, and kept out of the
@@ -2058,12 +2067,15 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
         --exclude 'magic_dingus_box_cpp/build/*' \
+        --exclude 'magic_dingus_box_cpp/build.prev.*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$content_dir/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
@@ -2522,11 +2534,14 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
+        --exclude 'magic_dingus_box_cpp/build.prev.*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$BACKUP_DIR/" "$INSTALL_DIR/" || restore_exit=$?
@@ -2683,11 +2698,14 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
         --exclude 'magic_dingus_box_cpp/data/pending_revocations.txt' \
         --exclude 'magic_dingus_box_cpp/data/qbit_paused_by_kiosk' \
         --exclude 'magic_dingus_box_cpp/data/upload_temp/' \
         --exclude 'magic_dingus_box_cpp/data/screenshots/' \
         --exclude '/config/*' \
+        --exclude 'magic_dingus_box_cpp/build.prev.*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$BACKUP_DIR/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
@@ -2798,6 +2816,16 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
     # shellcheck disable=SC2317  # `|| true` is reached only if return fails (not sourced after all)
     return 0 2>/dev/null || true
 fi
+
+# Preserve enabled intent throughout OTA and rollback. This process is the
+# bounded owner; even a failed install releases without enabling a stopped box.
+case "${1:-}" in
+    install|rollback|recover)
+        _recovery="${INSTALL_DIR}/magic_dingus_box_cpp/scripts/vpn_recoveryctl.py"
+        if [[ "$SKIP_SYSTEMCTL" != true && -f "$_recovery" && -z "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
+            exec python3 "$_recovery" --base "$INSTALL_DIR" run-inhibited --reason ota --timeout 7200 -- bash "$0" "$@"
+        fi ;;
+esac
 
 case "${1:-}" in
     check)

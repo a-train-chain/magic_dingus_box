@@ -70,6 +70,20 @@ public:
         }
         has_handled_ = true;
         handled_generation_ = generation;
+        return count_failure(budget);
+    }
+
+    // An item that never produced a stream at all: Controller::load_next_item
+    // ran out of synchronous retries on items that would not load and handed
+    // the rest over (AppState::playlist_item_load_failed). No stream
+    // generation to dedupe on — the caller consumes its flag, so each call
+    // is one distinct hand-off. Counts toward the same consecutive run.
+    Decision on_load_failure(int budget) { return count_failure(budget); }
+
+    int consecutive_failures() const { return consecutive_failures_; }
+
+private:
+    Decision count_failure(int budget) {
         ++consecutive_failures_;
         if (consecutive_failures_ >= std::max(budget, 1)) {
             consecutive_failures_ = 0;  // the next attempt is user-initiated
@@ -78,9 +92,6 @@ public:
         return Decision::Advance;
     }
 
-    int consecutive_failures() const { return consecutive_failures_; }
-
-private:
     bool has_handled_ = false;
     uint64_t handled_generation_ = 0;
     int consecutive_failures_ = 0;

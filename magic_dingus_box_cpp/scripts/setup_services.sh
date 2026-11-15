@@ -16,6 +16,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICES_DIR="${SERVICES_DIR:-/opt/magic_dingus_box/services}"
+# Explicit provisioning authorizes a start; the wrapper owns inhibition for
+# the complete mutation/API sequence and releases it even after child failure.
+if [[ -f "$SCRIPT_DIR/vpn_recoveryctl.py" && -z "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
+    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" intent enable --if-idle --reason setup
+    exec python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" run-inhibited \
+        --reason setup --timeout 3600 -- bash "$0" "$@"
+fi
+
 # Single-flight. Two concurrent runs (a double-submitted Content Manager
 # setup, or one racing first_boot.sh) rewrite .env, recreate the same
 # containers and set the qBit password against each other. The web admin
@@ -149,7 +159,7 @@ EOF
     echo "=== Step 0 complete ==="
 fi
 
-SERVICES_DIR="/opt/magic_dingus_box/services"
+SERVICES_DIR="${SERVICES_DIR:-/opt/magic_dingus_box/services}"
 STORAGE_ROOT="${STORAGE_ROOT:-/mnt/ssd}"
 ENV_FILE="${SERVICES_DIR}/.env"
 
@@ -349,6 +359,32 @@ fi
 
 cd "${SERVICES_DIR}"
 
+# Shared compose lock (same path/fd as gluetun_cascade_restart.sh,
+# playback_services_pause.sh, storage_attach.sh, recreate_gluetun.sh,
+# migrate_hardlink_layout.sh, clear_radarr_cooldowns.py): one actor at a
+# time starts/stops/recreates the stack's containers. A Reconfigure's
+# `compose up` recreates gluetun and its dependents; without the lock the
+# cascade watcher's restart/up -d on the same containers races it ("name
+# already in use"). Taken ONLY around this script's container commands —
+# never across the long API-provisioning waits, which would stall every
+# other actor for minutes. Busy or unusable locks defer. Copied, not sourced: each
+# script must stand alone when an older updater runs it.
+# Returns 0 = held, 1 = timed out, 2 = no flock / lock file unusable.
+MDB_COMPOSE_LOCK="${MDB_COMPOSE_LOCK:-/run/lock/mdb-compose.lock}"
+PAUSE_MARKER=/tmp/mdb_playback_services_paused
+compose_lock() {
+    command -v flock >/dev/null 2>&1 || return 2
+    [ -r "$MDB_COMPOSE_LOCK" ] || return 2
+    exec 9<"$MDB_COMPOSE_LOCK" || return 2
+    flock -w "$1" 9 || return 1
+}
+compose_unlock() { flock -u 9 2>/dev/null; exec 9<&-; }
+
+# Only installers provision the shared inode. All mutation clients read-open it.
+if [[ -f "$SCRIPT_DIR/vpn_recoveryctl.py" ]]; then
+    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" provision
+fi
+
 # Gluetun's control-server access file, before the first gluetun start:
 # keeps the forwarded-port and exit-IP routes this stack reads public on
 # any gluetun version (see ensure_gluetun_auth.sh). Never fatal.
@@ -368,8 +404,28 @@ echo "Starting Docker stack..."
 # and the Content Manager only surfaces "setup failed (exit N)". Name the
 # compose file we were trying to use, then re-exit with docker's own code
 # so the number in the UI still means what it always meant.
+#
+# Provisioning deliberately overrides playback pause: API setup needs all
+# dependents. Native startup stages Gluetun, waits without the compose lock,
+# then rechecks this setup owner's intent/settings/generation before --no-deps.
+if [ -f "${PAUSE_MARKER}" ]; then
+    echo "  NOTE: playback is active. Setup needs all companion services for provisioning."
+fi
 _compose_rc=0
-docker compose up -d --remove-orphans || _compose_rc=$?
+if [[ -f "$SCRIPT_DIR/vpn_recoveryctl.py" ]]; then
+    # Unreadable settings -> empty revision: every fenced step below then
+    # refuses (an empty value never matches), which is the intended fail-closed.
+    MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)" || MDB_VPN_SETTINGS_REVISION=""
+    export MDB_VPN_SETTINGS_REVISION
+    python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" setup-start || _compose_rc=$?
+else
+    # Package-absent rollback compatibility only.
+    _lock_rc=0
+    compose_lock 120 || _lock_rc=$?
+    [ "${_lock_rc}" = "0" ] || { echo "ERROR: compose lock unavailable; setup deferred"; exit 1; }
+    docker compose up -d --remove-orphans || _compose_rc=$?
+    compose_unlock
+fi
 if [ "${_compose_rc}" -ne 0 ]; then
     echo "ERROR: 'docker compose up -d' failed (exit ${_compose_rc}) in ${SERVICES_DIR}"
     echo "       compose file: ${COMPOSE_FILE}"
@@ -2048,7 +2104,21 @@ if inj: print(",".join(inj))
     if [[ -n "${INJECTED}" ]]; then
         echo "  injected (DB direct): ${INJECTED}"
         echo "  Restarting Radarr so it reloads the indexer cache..."
-        docker restart mdb_radarr >/dev/null
+        # Under the shared compose lock (helper defined at "Starting Docker
+        # stack"), for the restart ONLY — the readiness wait below runs
+        # unlocked so other actors are not stalled for up to 60 s.
+        _lock_rc=0
+        compose_lock 120 || _lock_rc=$?
+        [ "${_lock_rc}" = "0" ] || { echo "ERROR: compose lock unavailable; Radarr repair deferred"; exit 1; }
+        if [[ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
+            MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)" || MDB_VPN_SETTINGS_REVISION=""
+            export MDB_VPN_SETTINGS_REVISION
+            python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" check-operation || { compose_unlock; exit 3; }
+        fi
+        _restart_rc=0
+        docker restart mdb_radarr >/dev/null || _restart_rc=$?
+        [ "${_lock_rc}" = "0" ] && compose_unlock
+        [ "${_restart_rc}" -eq 0 ] || exit "${_restart_rc}"
         # Wait for Radarr to be reachable again so subsequent steps
         # (qBit download client config, custom format scoring) don't
         # race against an unhealthy API. Re-arm RADARR_READY from the
