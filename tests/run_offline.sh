@@ -14,6 +14,7 @@ set -euo pipefail
 #   ota-python     magic_dingus_box_cpp/scripts/tests/test_*.py (unittest)
 #   scripts-bats   scripts/tests/*.bats                  (only if present)
 #   scripts-python scripts/tests/test_*.py               (only if present)
+#   vpn-fault      tests/vpn_fault/test_*.py             (unittest, mock-only)
 #   web-pytest     magic_dingus_box/web/tests/           (pytest)
 #   cpp-unit       C++ Catch2/CTest suites — OPT-IN (--with-cpp): it needs a
 #                  CMake build (BUILD_KIOSK=OFF), which is slow and big.
@@ -53,7 +54,7 @@ QUIET=0
 ONLY=$'\n'   # newline-delimited set of --suite names; empty = all
 n_only=0
 
-ALL_SUITES="local-bats local-python ota-bats ota-python scripts-bats scripts-python web-pytest cpp-unit"
+ALL_SUITES="local-bats local-python ota-bats ota-python scripts-bats scripts-python vpn-fault web-pytest cpp-unit"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -277,6 +278,7 @@ bats_suite     ota-bats       "$REPO_ROOT/magic_dingus_box_cpp/scripts/tests" \
 unittest_suite ota-python     "$REPO_ROOT/magic_dingus_box_cpp/scripts/tests"
 bats_suite     scripts-bats   "$REPO_ROOT/scripts/tests"
 unittest_suite scripts-python "$REPO_ROOT/scripts/tests"
+unittest_suite vpn-fault      "$REPO_ROOT/tests/vpn_fault"
 web_suite
 cpp_suite
 
