@@ -14,6 +14,7 @@ import time
 from typing import Callable, Optional, Union
 
 from .common import Paths, atomic_write, bounded_lock
+from .docker_api import DockerRunner
 
 PUBLIC_READS = ('/v1/portforward', '/v1/publicip/ip', '/v1/openvpn/portforwarded')
 PRIVATE_ROUTES = ('/v1/vpn/settings', '/v1/vpn/status')
@@ -117,9 +118,15 @@ class ControlClient:
     use precondition for intent/settings/playback checks under its lock instead.
     GET does not require a compose lock, even while setup/recovery is blocked.
     """
-    def __init__(self, paths: Paths, runner=subprocess.run):
+    def __init__(self, paths: Paths, runner=subprocess.run, *, host_namespace_reads=None):
         self.paths = paths
-        self.runner = runner
+        # Production answers identity inspects from the Docker socket (same
+        # stdout as the CLI, no process per fence); injected runners are kept.
+        self.runner = DockerRunner(fallback=runner) if runner is subprocess.run else runner
+        # Root reads tun0 with host iproute2 inside the container's network
+        # namespace (as the HTTP reads already do) instead of a docker exec,
+        # which costs containerd+runc work on every fence.
+        self.host_namespace_reads = os.geteuid() == 0 if host_namespace_reads is None else host_namespace_reads
 
     def _run(self, args, *, input=None, timeout, deadline=None):
         try:
@@ -169,8 +176,11 @@ class ControlClient:
             if not isinstance(container_id, str) or not re.fullmatch(r'[0-9a-f]{64}', container_id):
                 raise ControlError('invalid container identity')
             identity = self._identity(container_id, deadline=deadline)
-        output = self._run(['docker', 'exec', container_id, 'ip', '-o', 'link', 'show', 'dev', 'tun0'],
-                           timeout=INSPECT_TIMEOUT_S, deadline=deadline)
+        # The inspect -> read -> inspect sandwich fences PID reuse either way.
+        command = (['nsenter', '--target', identity[1], '--net', 'ip', '-o', 'link', 'show', 'dev', 'tun0']
+                   if self.host_namespace_reads else
+                   ['docker', 'exec', container_id, 'ip', '-o', 'link', 'show', 'dev', 'tun0'])
+        output = self._run(command, timeout=INSPECT_TIMEOUT_S, deadline=deadline)
         match = re.fullmatch(r'([1-9][0-9]*): tun0(?:@[^: ]+)?:[^\n]*(?:\n)?', output)
         if not match:
             raise ControlError('tunnel generation unavailable')

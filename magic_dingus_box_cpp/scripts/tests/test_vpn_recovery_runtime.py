@@ -539,6 +539,33 @@ class RuntimeTests(unittest.TestCase):
                 self.assertIsNone(obs['traffic'])
                 self.assertEqual(a.traffic,{})
 
+    def test_firewall_endpoint_parse_is_reused_only_within_one_generation(self):
+        from types import SimpleNamespace
+        from vpn_recovery.runtime import SystemAdapters
+        a=SystemAdapters(self.paths)
+        clock=[100.]
+        a.mono=lambda:clock[0]
+        a.current=lambda *_:dict(running=True,configured=True,unit_active=True)
+        a._events=lambda *_:None
+        a._dependents=lambda *_:{'dependents_ok':True}
+        a._traffic=lambda *_:True
+        current=[GEN]
+        a.ports=SimpleNamespace(observe=lambda **_:dict(generation=current[0],forwarded_port=1234,status='synced',qbit_port=1234))
+        a.control=SimpleNamespace(observe_generation=lambda **_:current[0])
+        reads=[]
+        def run(args,deadline,cap=3,**_):
+            reads.append(args)
+            return '-A OUTPUT -d 84.20.16.%d/32 -o eth0 -p udp --dport 51820 -j ACCEPT'%len(reads)
+        a.run=run
+        endpoints=[]
+        for t,generation in [(100,GEN),(110,GEN),(120,GEN),(130,{**GEN,'tunnel_ifindex':3}),(140,{**GEN,'tunnel_ifindex':3}),(195,{**GEN,'tunnel_ifindex':3})]:
+            clock[0]=t;current[0]=generation
+            endpoints.append(a.observe(deadline=t+9,traffic_due=False)['endpoint'])
+        # One read per generation, plus the 60 s refresh within a generation.
+        self.assertEqual(endpoints,['84.20.16.1']*3+['84.20.16.2']*2+['84.20.16.3'])
+        self.assertEqual(len(reads),3)
+        self.assertTrue(all(r[:2]==['docker','exec'] and r[3:]==['iptables','-S','OUTPUT'] for r in reads))
+
     def test_deferred_catalog_load_keeps_allowance_and_retries_after_lock_release(self):
         self.c.loaded=None
         self.tick(0)

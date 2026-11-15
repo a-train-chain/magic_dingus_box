@@ -23,6 +23,7 @@ import time
 from .common import atomic_json, bounded_lock, load_config
 from .catalog import CatalogStore, bounded_history, eligible_candidates, select_candidate, validate_catalog
 from .control import ControlClient, ControlError
+from .docker_api import DockerRunner
 from .port_sync import PortSynchronizer, QbitClient
 from .intent import (read_json, read_intent, may_recover, adopt_running, set_intent,
                      settings_revision, boot_id, process_start, owns_stop)
@@ -115,9 +116,15 @@ class Deferred(RuntimeError):
 
 class SystemAdapters:
     def __init__(self, paths, runner=subprocess.run):
-        self.paths, self.runner = paths, runner
+        self.paths = paths
+        # Production identity/ps queries are served in-process from the
+        # Docker socket with the CLI's exact stdout (~20 per tick); every
+        # other command still runs as a process. Test runners are unchanged.
+        self.production = runner is subprocess.run
+        self.runner = DockerRunner(fallback=runner) if self.production else runner
         self.mono, self.wall = time.monotonic, time.time
-        self.control = ControlClient(paths, runner)
+        self.control = ControlClient(paths, self.runner)
+        self.endpoint_cache = None
         self.ports = PortSynchronizer(paths, self.control, QbitClient(paths.services/'.env', runner=runner))
         self.store = CatalogStore(paths)
         self.traffic = {}
@@ -301,11 +308,19 @@ class SystemAdapters:
                     # Host traffic is public probe metadata only, never indexer traffic.
                     self.traffic['wan']=self._traffic(generation,deadline,host=True)
             o.update(self.traffic)
+            # Gluetun rewrites its endpoint rule only when it (re)connects,
+            # which always creates a new tun0, so the parse is reused within
+            # one full generation (refreshed at least every 60 s).
             endpoint = None
-            try:
-                endpoint=parse_endpoint(self.run(['docker','exec',generation['container_id'],'iptables','-S','OUTPUT'],deadline,.4))
-            except Exception:
-                pass
+            cached = self.endpoint_cache
+            if cached and cached[0] == generation and cached[1] and 0 <= self.mono()-cached[2] < 60:
+                endpoint = cached[1]
+            else:
+                try:
+                    endpoint=parse_endpoint(self.run(['docker','exec',generation['container_id'],'iptables','-S','OUTPUT'],deadline,.4))
+                except Exception:
+                    pass
+                self.endpoint_cache = (copy.deepcopy(generation), endpoint, self.mono()) if endpoint else None
             try:
                 current_generation = self.control.observe_generation(deadline=deadline)
             except Exception:
@@ -349,7 +364,7 @@ class SystemAdapters:
         command='source "$1"; COMPOSE_DIR="$2"; MDB_COMPOSE_LOCK_HELD=1; VPN_RECOVERY_CTL="$3"; VPN_RECOVERY_STATE="$4"; VPN_RECOVERY_RUNTIME="$5"; '
         command += 'cascade_dependents' if action=='relink_dependents' else 'converge_dependents'
         args=['bash','-c',command,'vpn-helpers',str(script),str(self.paths.services),str(script.with_name('vpn_recoveryctl.py')),str(self.paths.state),str(self.paths.runtime)]
-        if self.runner is subprocess.run:
+        if self.production:
             remaining=min(28,deadline-self.mono()-.25)
             if remaining<=0:raise Deferred()
             process=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
