@@ -1,0 +1,34 @@
+Tube CRT engine — Task 1: isolating the shader-compiler hang (2026-11-15)
+
+Box: magicpi5, Raspberry Pi 5 2 GB, V3D 7.1.10.2, Mesa 25.0.7-2+rpt4, GLSL ES 3.10.
+Method: the spike (branch spike/tube-phase0 @ 279b32e) run as a transient unit; one configuration at a time
+through run_matrix.sh with matrix_hang.tsv; a hang = kiosk_status.json stale > 15 s with the process at 100%
+of a core inside libgallium (gdb: frames in libgallium-25.0.7 under the program build). The spike records the
+program it is building in building.txt and refuses that define set on the next start.
+Raw output: 2026-11-15-tube-round3-hang.txt, 2026-11-15-tube-round3-hang_narrow.txt.
+
+Program: fullscreen.vert + v2_signal.frag (the round-2 signal pass). Define sets tried:
+
+  [SIG_TONE SIG_CHROMA SIG_CONV SIG_JITTER SCENE_HW_DECODE]   HANG   (the suspect; reproduced first try)
+  [SIG_TONE            SIG_CONV SIG_JITTER SCENE_HW_DECODE]   builds (chroma bleed removed)
+  [SIG_TONE SIG_CHROMA          SIG_JITTER SCENE_HW_DECODE]   builds (convergence removed)
+  [SIG_TONE SIG_CHROMA SIG_CONV            SCENE_HW_DECODE]   HANG   (jitter removed)
+  [         SIG_CHROMA SIG_CONV SIG_JITTER SCENE_HW_DECODE]   HANG   (tone removed)
+  [SIG_TONE SIG_CHROMA SIG_CONV SIG_JITTER                ]   HANG   (shader decode instead of hardware)
+
+For comparison, round 2 built and drew these without trouble (the tv, arcade and everything looks):
+  [SIG_TONE SIG_SHARP SIG_CHROMA SIG_CONV SIG_JITTER SCENE_HW_DECODE]
+
+FINDING
+The V3D compiler hangs (more than nine minutes observed in round 2; killed after about 20 s here) on the
+signal program whenever SIG_CHROMA and SIG_CONV are both compiled in and SIG_SHARP is not. Tone, jitter and
+the decode method do not matter. 4 hangs in 4 attempts; the two controls built. The construct was not
+narrowed further than the define set.
+
+WHAT THE RENDERER PLAN MUST DO WITH IT
+- The fixed program table must not contain a signal program with chroma bleed and convergence but without
+  the sharpness code. Any program that has both must compile the sharpness path too and switch it off by its
+  uniform when the row is neutral (that is the variant known to build).
+- This is one known bad combination, not a proof that the others are safe: every program in the table is
+  still compiled and drawn on hardware (Task 14) before the feature is switched on, under the build guard.
+- A hang is silent: no GL error, no log line, one core at 100%. Only the guard and the watchdog can see it.
