@@ -518,4 +518,77 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
   and porting Sound Factory's tests; not eliminated.
 - **Two pending designs touch the same screen** (`2026-11-12` crop toggle
   and channel guide). Both draw into the scene the tube reads, so they
-  should compose; whoever lands second re-checks.
+  should compose; whoever lands second re-checks. (Both have since landed: see the
+  Addendum.)
+
+## Addendum — after the core landed (2026-11-15)
+
+Plan 1 (`docs/superpowers/plans/2026-11-15-tube-crt-core.md`) is built: the
+data model, persistence and the board gate. This section records what the
+later plans must know that the design above does not say.
+
+### The design was written against a stale tree
+
+The checkout this design was written in was 238 commits behind `main`. The
+core was rebased onto current `main` before it was proposed. Re-checked
+against current `main`:
+
+- **Unchanged since:** `renderer_crt.cpp`, `renderer_shaders.cpp`,
+  `crt_time.h`, `redraw_gate.h`. The rendering analysis in §3 and §4 stands.
+- **The two "pending" designs in Risks have landed** (crop toggle, channel
+  guide), along with movie channels. The "whoever lands second re-checks"
+  duty is now the tube's. The renderer plan must compose with the guide's
+  picture window, full-screen channel films that skip the cabinet art, and
+  per-film picture fill (`video/picture_placement`).
+- **The Channel Guide does not use `wants_continuous_redraw`**: `main.cpp`
+  adds a guide-inputs signature to the redraw gate. §4's resting rules need
+  re-checking against that.
+- **Bezels now record their opening** (`has_opening`, `opening_x/y/w/h` in
+  the app state). §3 said how each bezel's opening sits against the curved
+  picture "may need a per-bezel follow-up"; the data for it now exists.
+- **Saving is asynchronous** (`settings_persistence` serializes on the
+  caller and writes on a worker). Code that reads `settings.json` right
+  after a save must call `flush_pending_saves()`; code that reloads a file
+  something else replaced uses `reload_from_disk()`. §7's "saves once
+  changes have stopped" should use this path, not its own.
+- **The web admin's restore replaces `settings.json` whole.** A web page
+  that edits the tube must leave `crt_engine` and the old flag to the
+  kiosk, as §7 already requires.
+
+### What the core leaves for the later plans
+
+- The "CRT Engine" menu toggle still offers only Classic/Enhanced and reads
+  the old flag, so a saved Tube shows as "Enhanced" and one press drops it
+  to Classic. Plan 2 replaces the toggle before Tube can be chosen.
+- `renderer_crt.cpp` and `main.cpp`'s `begin_scene_fbo` path still gate on
+  `enhanced_crt_enabled` alone. Plan 3 switches them to
+  `app::effective_crt_engine(crt_engine, profile.tube_crt_engine)`.
+- Rows are written only through `tube::set_row` / `tube::set_mask` (or
+  validated with `tube::is_row_value` first): `tube::resolve()` does not
+  range-check. This binds Plan 2's request parser.
+- `tube::tube_frame(still, resolved, state)` is the per-frame entry point.
+  `tube_uniforms_for` gives the still uniforms and may be cached;
+  `tube_signal_motion` must never run twice on the same uniforms. A
+  renderer with no quarter-resolution pass zeroes glow, chroma bleed, ABL
+  and breathing on the still uniforms, as Sound Factory's does.
+- `TubeUniforms` is not laid out for a uniform block; upload it field by
+  field.
+- The MASK row has a label but no hint lines: Sound Factory's hint depends
+  on the chosen mask. Plan 2 supplies per-mask hints.
+- Hints copied from Sound Factory quote millimetres of its panel ("0: 8 mm
+  · 100: 60 mm"). On a TV those sizes scale with the picture; Plan 2
+  decides whether to reword them.
+
+### Open, for the owner, before the renderer plan
+
+1. **CRT Native still insets the picture.** §5 draws scanlines, raster,
+   mask, curvature, rim, glass black and reflection at neutral on a real
+   tube, but the picture's fit, corner radius and margin are not on that
+   list, so a real tube would show the picture about 3% smaller with
+   rounded black corners. Proposed: neutral there too.
+2. **Speed rows jump while being tuned.** BAND SPEED, DRIFT SPEED and BEND
+   SPEED compute their phase as `seconds / period` from absolute time, so
+   each step of the slider moves the effect to an unrelated position
+   before it carries on. Sound Factory behaves the same. Fixing it means
+   accumulating each phase, which changes the per-frame API, so it is
+   cheaper to decide before the renderer is built.
