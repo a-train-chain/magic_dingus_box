@@ -166,6 +166,20 @@ def cleanup_ip(fd, spec, args, end, *, allowed_failure=False):
 def cleanup(spec, end):
     # Removing our network fault is always permitted, even after operator stop.
     # Never reapply it to a new tunnel/container; never write lifecycle/intent.
+    try:
+        return _cleanup_pinned(spec, end)
+    except FileNotFoundError:
+        if Path('/proc/%s' % spec['generation']['pid']).exists():
+            raise
+        # The pinned Gluetun process is gone (its container restarted): our
+        # rules lived only in its namespace, which nothing here can reach.
+        # Dependents briefly left in it are relinked by the controller. A
+        # reused pid still fails proc_identity and is never touched.
+        return {'cleanup': 'original_process_gone', 'rules': len(spec['rules']),
+                'namespace_proof': 'pinned_process_absent'}
+
+
+def _cleanup_pinned(spec, end):
     with owned_namespace(spec) as fd:
         def execute(spec, args, end, **kwargs):
             return cleanup_ip(fd, spec, args, end, **kwargs)

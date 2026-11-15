@@ -192,6 +192,26 @@ class OwnershipTests(unittest.TestCase):
         self.assertNotIn('dport', fault.rule_args(peer, 'add'))
         self.assertEqual(fault.rule_args(ITEM, 'add')[-6:], ['ipproto', 'udp', 'dport', '5351', 'lookup', '20001'])
 
+    def test_watchdog_cleanup_after_gluetun_restart_is_a_clean_exit(self):
+        # magicpi5 2026-11-15: the controller restarted Gluetun mid-test; the
+        # 550 s watchdog then crashed on /proc/<old pid>/stat and left a
+        # failed systemd unit (verify_box FAILs failed units).
+        def gone(pid):
+            raise FileNotFoundError('/proc/%s/stat' % pid)
+        with patch.object(fault, 'proc_identity', side_effect=gone), \
+                patch.object(fault.Path, 'exists', return_value=False), \
+                patch.object(fault, 'run') as run:
+            result = fault.cleanup(SPEC, 999999999)
+        self.assertEqual(result['cleanup'], 'original_process_gone')
+        run.assert_not_called()
+
+    def test_cleanup_never_touches_a_reused_pid(self):
+        with patch.object(fault, 'proc_identity', return_value={'pid_startticks': 999, 'netns_inode': 1}), \
+                patch.object(fault.Path, 'exists', return_value=True), patch.object(fault, 'run') as run:
+            with self.assertRaises(fault.FaultError):
+                fault.cleanup(SPEC, 999999999)
+        run.assert_not_called()
+
     def test_watchdog_explicit_oneshot_and_finite_early_timer(self):
         helper = object.__new__(fault.LiveFault)
         helper.mode, helper.scripts = 'fallback', '/tmp/code/scripts'
