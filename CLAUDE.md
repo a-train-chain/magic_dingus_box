@@ -881,6 +881,20 @@ series, which would have destroyed already-watched seasons too.
     `nsenter --net ip`; the firewall endpoint parse is cached per generation
     once two reads agree. Measured 16.7% → 6.1% of a Pi 5 core (controller +
     containerd + dockerd). Don't add per-tick processes casually.
+  - **Per-server evidence**: a container restart drops `attempted` (Gluetun
+    reverts to `.env`; a healthy restarted server was once rotated away as a
+    "failed attempt"); lease `losses` are cleared on an issued rotation; any
+    intent-revision change (maintenance owners/lifecycle only, never routine
+    ticks) re-evaluates the current selection with first-lease grace.
+  - **The 1.3 s in-tunnel probe takes 650–750 ms idle** and starves under a
+    heavy indexer search. For a tunnel generation our own probe already
+    verified, a Docker in-tunnel healthcheck success ≤45 s old (after that
+    proof, not followed by a failure) counts as traffic; a new candidate never
+    borrows it. Don't "fix" this with a longer in-tick retry: it starves the
+    host-WAN check, and a starved WAN check suppresses real recovery.
+  - **Gluetun v3.41.3 can wedge** after a sub-second startup-check restart
+    loop: the settings PUT blocked 2 min and shutdown timed out. The
+    api_failed → single container restart escalation is what recovers it.
   - Never run `scripts/tests` suites that write `/tmp/mdb_*` on a box:
     `test_gluetun_cascade.py` used to create/delete the real playback-pause
     marker (it now uses a private `PAUSE_MARKER`).
