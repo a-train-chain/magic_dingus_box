@@ -8,6 +8,7 @@
 #include "platform/bluez_worker.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
+#include "video/content_area.h"
 #include "video/picture_placement.h"
 #include "ui/renderer.h"
 #include "ui/settings_menu.h"
@@ -2412,43 +2413,26 @@ int main(int /* argc */, char* /* argv */[]) {
         // Same gating idea as the bezel skip below (kept as a separate
         // flag so future tweaks to either don't have to touch the other).
 #ifdef MEDIA_BROWSER_ENABLED
-        bool letterbox_active = use_letterbox && !movie_full_screen_now &&
-            state.current_screen != app::AppScreen::MediaBrowser;
+        const bool media_browser_now =
+            state.current_screen == app::AppScreen::MediaBrowser;
 #else
-        bool letterbox_active = use_letterbox && !movie_full_screen_now;
+        const bool media_browser_now = false;
 #endif
-        // The 4:3 content rect exists in TWO coordinate spaces and they
-        // are no longer the same thing:
-        //
-        //   PHYSICAL (content)         -> glViewport and the video's 4:3
-        //                                 area, real framebuffer px
-        //   LOGICAL  (logical_content) -> set_content_viewport, which
-        //                                 overwrites the renderer's
-        //                                 projection size
-        //
-        // They coincided while the framebuffer was always 1280x720. In
-        // Modern TV at 1920x1080 they diverge by 1.5x, and feeding the
-        // PHYSICAL size to set_content_viewport would make the logical
-        // canvas 1440x1080 instead of 960x720 — every menu element would
-        // render at 2/3 of its intended screen fraction with dead margin
-        // right and bottom. The logical rect is derived from the UI's own
-        // logical canvas so it stays 960x720 at any output resolution.
-        //
-        // Both rects use a TOP-LEFT origin; glViewport's bottom-left y is
-        // derived where it is called.
+        // The content rect in PHYSICAL framebuffer pixels (`content`:
+        // glViewport and the video's 4:3 area) and in the UI's LOGICAL
+        // canvas (`logical_content`: set_content_viewport) — see
+        // video/content_area.h for why the two differ at 1080p. The Tube
+        // engine takes its rectangle from the same function.
         const int fb_w = static_cast<int>(mode.width);
         const int fb_h = static_cast<int>(mode.height);
         const config::display::Size ui_canvas = config::display::logical_canvas(
             state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
-        video::IRect content{0, 0, fb_w, fb_h};
-        video::IRect logical_content{0, 0, ui_canvas.w, ui_canvas.h};
-
-        if (letterbox_active) {
-            // Integer-exact at both resolutions: 720 -> 960x720,
-            // 1080 -> 1440x1080 (physical and logical alike).
-            content = video::four_by_three_rect(fb_w, fb_h);
-            logical_content = video::four_by_three_rect(ui_canvas.w, ui_canvas.h);
-        }
+        const video::ContentRects frame_rects = video::content_rects(
+            use_letterbox, movie_full_screen_now, media_browser_now,
+            fb_w, fb_h, ui_canvas.w, ui_canvas.h);
+        const bool letterbox_active = frame_rects.letterbox_active;
+        const video::IRect content = frame_rects.content;
+        const video::IRect logical_content = frame_rects.logical_content;
 
         // The bezel drawn over this frame, or null. Decided once here so
         // the video's visible opening (below) and the bezel draw (near the

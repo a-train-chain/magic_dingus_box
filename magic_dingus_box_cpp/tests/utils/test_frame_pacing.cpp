@@ -201,3 +201,34 @@ TEST_CASE("field_rate_skip_sleep: never shorter than the normal cap",
     CHECK(utils::field_rate_skip_sleep(p, 60, microseconds{0}, microseconds{0})
               .count() == 16666 + 16666 / 8);
 }
+
+TEST_CASE("present hold: round(refresh / 30) vblanks after the last flip", "[pacing]") {
+    using us = std::chrono::microseconds;
+    REQUIRE(utils::held_vblanks(60) == 2); REQUIRE(utils::held_vblanks(120) == 4);
+    REQUIRE(utils::held_vblanks(50) == 2); REQUIRE(utils::held_vblanks(30) == 1); REQUIRE(utils::held_vblanks(0) == 2);
+    REQUIRE(utils::present_hold(60, us{5000}) == us{16666 + 2083 - 5000});    // fast frame: wait
+    REQUIRE(utils::present_hold(60, us{18749}) == us{0});
+    REQUIRE(utils::present_hold(60, us{30000}) == us{0});                     // slow frame: flip now
+    REQUIRE(utils::present_hold(120, us{0}) == us{3 * 8333 + 1041});
+    REQUIRE(utils::present_hold(50, us{0}) == us{20000 + 2500});
+    REQUIRE(utils::present_hold(30, us{0}) == us{0});
+    REQUIRE(utils::held_frame_sleep(60, us{40000}) == us{0});                 // a held frame never adds a gap
+    REQUIRE(utils::held_frame_sleep(60, us{1000}) == us{2 * 16666 - 2083 - 1000});  // the floor (flip did not block)
+}
+
+TEST_CASE("present hold: the brief's cadence cases", "[pacing]") {
+    using us = std::chrono::microseconds;
+    // 10 and 20 ms frames at 60 Hz: the swap waits to 18.75 ms after the
+    // last flip, so the flip catches the vblank at 33.3 ms.
+    CHECK(utils::present_hold(60, us{10000}) == us{18749 - 10000});
+    CHECK(utils::present_hold(60, us{20000}) == us{0});
+    // 50 Hz holds to 22.5 ms (25 fps); 120 Hz to 26.0 ms over four vblanks.
+    CHECK(utils::present_hold(50, us{10000}) == us{22500 - 10000});
+    CHECK(utils::present_hold(120, us{10000}) == us{26040 - 10000});
+    // 59.94 Hz reads as 60: same two vblanks, same ~2 ms margin.
+    CHECK(utils::held_vblanks(59) == 2);
+    // After a rest the gap since the last flip is long: no hold.
+    CHECK(utils::present_hold(60, us{5000000}) == us{0});
+    // Never negative.
+    CHECK(utils::held_frame_sleep(120, us{1000000}) == us{0});
+}

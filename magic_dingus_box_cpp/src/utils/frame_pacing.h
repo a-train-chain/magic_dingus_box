@@ -98,4 +98,45 @@ inline std::chrono::microseconds field_rate_skip_sleep(
     return std::max(frame_cap_sleep(p, iteration_elapsed), past_skipped_vblank);
 }
 
+// Rich30 tube frames (app::TubeRedraw::hold_present): each flip is held so
+// it lands round(refresh / 30) vblanks after the previous one — 2 at 50/60
+// Hz, 4 at 120 Hz, 1 at 30 Hz or below (nothing to hold). <= 0 reads as 60.
+inline int held_vblanks(int refresh_hz) noexcept {
+    return frame_pacing_for(30, refresh_hz).vblanks_per_frame;
+}
+
+// How long to wait before the page flip of a held frame. Called AFTER
+// eglSwapBuffers and BEFORE the flip is submitted, with a FRESH
+// since_last_present = steady_clock::now() - the last present's completion
+// (a vblank); a value read earlier in the iteration would let a slow frame
+// wait for a vblank it has already passed.
+//
+// Why hold the flip instead of skipping an iteration (design section 4): a
+// rich frame costs up to ~23 ms, more than one refresh. Skipping iterations
+// the way the CRT field-rate path does gives it at most one refresh minus a
+// margin to render, so a 20 ms frame would miss and the cadence would
+// wobble between 2 and 3 vblanks. Rendering straight after the flip and
+// holding only the FLIP gives the frame the whole two-refresh budget: the
+// wait ends just past the intermediate vblank(s) plus the margin, so the
+// flip lands exactly held_vblanks after the last one. A frame slower than
+// that waits for nothing and flips at the next vblank (counted late).
+inline std::chrono::microseconds present_hold(int refresh_hz,
+                                              std::chrono::microseconds since_last_present) {
+    const FramePacing p = frame_pacing_for(30, refresh_hz);
+    if (p.vblanks_per_frame == 1) return std::chrono::microseconds{0};
+    // post_present_gap = period * (held_vblanks - 1) + period / 8.
+    return std::max(std::chrono::microseconds{0}, p.post_present_gap - since_last_present);
+}
+
+// The bottom-of-loop sleep for a held frame: ONLY the floor on the whole
+// iteration (period * held_vblanks - period / 8), which binds when the flip
+// did not block (SetCrtc fallback). Never a post-present gap — the hold
+// already happened before the flip, so the next frame starts rendering
+// right after it.
+inline std::chrono::microseconds held_frame_sleep(int refresh_hz,
+                                                  std::chrono::microseconds iteration_elapsed) {
+    const FramePacing p = frame_pacing_for(30, refresh_hz);
+    return std::max(std::chrono::microseconds{0}, p.min_iteration - iteration_elapsed);
+}
+
 }  // namespace utils
