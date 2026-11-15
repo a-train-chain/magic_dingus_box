@@ -164,20 +164,20 @@ A restored services tree may require a supported Gluetun reload to load its matc
 
 Remove only disposable container/fixture and ephemeral staged tests/Bats created by this run. Do not remove `.superpowers/sdd` evidence, original backups, supported watcher/unit/status files, media or user state. Commit the live result ledger locally and update recovery memory after validation, with remaining Pi 4 gate explicit.
 
-## Owner result ledger (pending)
+## Owner result ledger (magicpi5, 2026-11-15; final controller `004c2bf`)
 
 | Gate | UTC / evidence / result |
 |---|---|
-| Astra review and local pi5-test integration | Whole-branch review plus scoped fix review approved through code commit `2d68205`; local `pi5-test` fast-forward integration complete; no deleted paths or C++ source changes. |
-| Linux root/unprivileged identity + affected Bash 5 tests | Pending |
-| Cached pinned disposable contract and exact cleanup | Pending |
-| Fresh secure backup/baseline and scoped dry-run | Pending |
-| Delivery, auth, desired Canada + US, kiosk continuity | Pending |
-| qBit-only / sustained port loss / first lease / selected-server fallback | Pending |
-| Explicit stop / maintenance / playback preservation | Pending |
-| External TCP port and 15 service checks | Pending |
-| Full 30min steady-state interval and final inventories | Pending |
-| Rollback rehearsal/results; Pi 4 release gate | Pending |
+| Astra review and local pi5-test integration | Whole-branch review plus scoped fix review approved through code commit `2d68205`; local `pi5-test` fast-forward integration complete; no deleted paths or C++ source changes. Live-validation fixes after that each got an independent scoped review (see below). |
+| Linux root/unprivileged identity + affected Bash 5 tests | **Pass.** Root-boundary identity 1/1, playback ownership 18/18, affected Bats 61/61 on the Pi (Codex). Package suite re-run on the Pi as `magic` after every later fix (195 → 249 tests, 1 opt-in skip each time). Do **not** run `test_gluetun_cascade.py` on a box before `10f2719` (it wrote the real pause marker). |
+| Cached pinned disposable contract and exact cleanup | **Pass.** 28/28 assertions, cleanup removed (Codex, `656d290`); re-run after the socket-runner/nsenter change and after the attestation change: 28/28 each, no leftover container or fixture. Network capability gate 10/10 after the `dport_mask` helper fix. |
+| Fresh secure backup/baseline and scoped dry-run | **Pass.** `/var/backups/mdb-vpn-reliability-20261115T090842Z` (Codex), plus root-0700 `before-*` subdirectories for every later module swap (`before-flap-fix`, `-attest-fix`, `-round-fix`, `-attempted-fix`, `-selection-reset`); each swap hash-verified, mode/owner preserved, watcher quiesced under `run-inhibited` and resumed with a verified fingerprint. |
+| Delivery, auth, desired Canada + US, kiosk continuity | **Pass.** Activation + Content Manager Canada/US policy (Codex). Kiosk PID 308949, NRestarts 0 for the whole session; no C++ rebuild. |
+| qBit-only / sustained port loss / first lease / selected-server fallback | wrong qBit port **pass** (3.31 s, Codex); sustained port loss **pass** (observed, loss→action 100.6 s, rotation + qBit readback, Ready 22 s later); first lease **pass** (observed, 130.5 s); fallback: **demonstrated, not formally proven** — run 4 (after the flap fix) went CA→CA→US with loss→action 68 s / ~66 s, but `us-119` never leased inside the window; run 5 (final code) went CA→CA in 60 s, then Gluetun wedged on `ca-59` (its own sub-second startup-check restart loop, no fault of ours) and the `us-119` PUT hung for 2 min in Gluetun's handler, so the controller escalated to its one container restart and recovered on Canada `ca-51` in ~2 min; the helper itself crashed that run. No single run produced the helper's "observed" verdict. |
+| Explicit stop / maintenance / playback preservation | Explicit stop **pass** (30.02 s/11 samples, no resurrection, Codex). Playback pause exercise not run (owner playback active); SSD unplug deferred. |
+| External TCP port and 15 service checks | **Pass.** Mac (different egress) → VPN exit `139.28.218.23:34160` connected in 197 ms; qBit listens in the VPN namespace only. `verify_services.sh` 15/15 (262 live results); `verify_box.sh --with-services` 38 pass / 0 fail / 4 warn (3 aged-out kiosk boot log lines, no Dreamcast BIOS), SHIPPABLE, native VPN Ready check PASS. |
+| Full 30min steady-state interval and final inventories | soak-1 **pass**: 184/184 samples Ready over 1861 s, one generation, port steady, kiosk unchanged, 0 Gluetun VPN restarts, controller 3.68 % of a core, RSS 20–35 MB, stale round closed live at 1794 s. Final soak (soak-2, Canada `ca-27`) **pass**: 184/184 Ready over 1861 s, one generation, port 34160, 0 Gluetun restarts, controller 3.65 % of a core, RSS 17.4–17.8 MB, round closed at 1774 s. Final inventories vs. the pre-test baseline: media, playlists, ROMs, SSD library/downloads, protected settings/pairing files, watch history, firewall DROP and unpublished control port unchanged; only the watcher PID differs. |
+| Rollback rehearsal/results; Pi 4 release gate | Not exercised. Per-module backups retained on the Pi. **Pi 4B hardware validation remains a release gate.** |
 
 ## Local verification checkpoint — 2026-11-14
 
@@ -188,3 +188,23 @@ Root verified the current checkout: 195 package tests in9.973s (194 passed,1 exp
 Hardware access became unavailable during a read-only check: the Mac moved from the home LAN to en0 `172.20.10.14`, gateway `172.20.10.1`; SSH/web at`10.0.0.227` and mDNS are unreachable. The owner was asked to reconnect or leave Pi checks for later. Last successful read-only sample (epoch1794693858) showed the same Canada container/start, fresh TLS traffic, forwarded port60906=qBit, and kioskPID308949/NRestarts0. This is baseline evidence, not validation of the new code.
 
 Linux identity/flock and pinned-image contracts, fresh backup/dry-run, activation/deployment, real fault/port/country recovery, external TCP, actual browser/preservation checks and the full30-minute soak remain **pending** until the Mac can reach the Pi. No source credentials, content, services, or network configuration were changed on the Pi during implementation. The earlier manual Netherlands→Canada repair remains separate. Do not substitute the old preparation snapshot for the required fresh baseline; real settings are under `/opt/magic_dingus_box/config/`.
+
+## Live validation, continued — 2026-11-15 (after the Codex hand-off)
+
+Resumed at ~01:50 PST from the SDD ledger with magicpi5 Ready on `1a06e20`. The live fault rows found six controller defects that the deterministic suites could not; each was reproduced in a failing test first, fixed, independently reviewed, re-run on the Pi's Linux suite and deployed with the guarded module swap above.
+
+| Live observation | Fix |
+|---|---|
+| Fallback row #1: Gluetun restart-loops a blocked endpoint every ~6 s inside the same container (tun0 ifindex 4→30 in 150 s); every new tun0 reset the loss clocks and re-armed the 120 s candidate grace, so the controller sat in "Waiting for candidate" forever. | `0c766f8`: only a new container start resets clocks/grace; ≤30 s unknown samples keep loss evidence; a missing tun0 within 30 s of one seen waits a tick instead of spending the container restart; rotation PUT fenced on container identity; an unsent deferred rotation retries after 20 s. Also restores the contract replay test `3ddabdd` left failing. |
+| Fault helper preflight: the startup INFO line had scrolled past `--tail 1000` (1199 lines after one restart loop). | `af50e24`: attest from the 121 s startup window (`--since`/`--until`; Docker 26 returns nothing for `--tail` with `--until`). |
+| `round_attempts` from a recovered incident persisted, so the next unrelated failure would skip Canada. | `2487f14`: a round closes after 30 min continuous Ready (closed live at 1794 s in soak-1); shorter success keeps it. |
+| After a container restart reverted to Canada, healthy `node-ca-43` (port 43857) was rotated away because `attempted` still named the US host PUT before the restart; and `0c766f8`'s issued-rotation reset stamped a future `started`, wiping policy state. | `13129fd`: drop `attempted` on container change; `_complete` uses the tick's clock. One sanitized journal line per issued action. |
+| First-lease row: "3 losses in 600 s" fired 6 s after an attended PUT, counting losses from two previous servers. | `3d827bf`: losses are per server (cleared on issued rotation); any intent-revision change (maintenance/lifecycle only) re-evaluates the current selection with first-lease grace. |
+| During `verify_services` the 1.3 s in-tunnel probe (650–750 ms idle) failed for 60 s while Docker's 3 s in-tunnel healthcheck passed; the healthy server was recorded failed (the rotation happened not to be issued). | `70d5652` + `004c2bf`: for a tunnel generation our own probe already verified, a Docker healthcheck success ≤45 s old, after that proof and not followed by a failure, counts as working traffic. Candidates never borrow it. |
+
+Other changes in the same pass: `33644c8`/`7e4a944` serve the controller's fixed `docker inspect`/`docker ps` identity queries from the Engine socket in-process (stdout verified byte-identical to the CLI on the Pi) and read tun0 via `nsenter`; controller CPU on the Pi 5 fell from 10.7 % to 3.7–4.0 % of a core, containerd from 4.6 % to 1.5 %, dockerd from 1.5 % to 0.6 % (import RSS +0.16 MB). `10f2719`: the cascade suite no longer touches the real pause marker (a run on the Pi left a fixture marker that was removed by hand; no container was affected). `e0ebfaa`: first boot no longer wipes the watcher's tmpfs runtime dir. Fault helper (scratch, not shipped): accepts iproute2's exact `dport_mask`, records the controller's action before voiding an interval on a mid-rotation unknown sample, and lets the first-lease traffic check settle for up to 15 s.
+
+Gluetun's own restarts stopped as soon as each fault was removed (0 in the following 30 min). Evidence (sanitized JSONL, logs, baselines): `/private/tmp/mdb-vpn-reliability-20261114/` on the Mac; per-row evidence directories under `/run/mdb-vpn-network-*` on the Pi until reboot.
+
+Final state (04:08 PST): Ready on Canada `node-ca-51` (desired country), forwarded port 52371 = qBit, kiosk PID 308949 / NRestarts 0, deployed controller = `004c2bf` (fingerprint `d266169b…`). Gluetun v3.41.3 can wedge its VPN loop after a sub-second startup-check restart loop (settings PUT blocked 2 min, shutdown timed out); the controller's api_failed → single restart path is what recovers it, so keep that escalation.
+
