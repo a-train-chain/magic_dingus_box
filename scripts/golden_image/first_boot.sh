@@ -873,7 +873,12 @@ if [[ -d "$SERVICES_DIR" ]]; then
     # stall case.
     if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null \
        && systemctl is-active --quiet docker.service; then
+        if [[ -f "$CPP_DIR/scripts/vpn_recoveryctl.py" ]]; then
+            python3 "$CPP_DIR/scripts/vpn_recoveryctl.py" --base "$INSTALL_DIR" provision
+            python3 "$CPP_DIR/scripts/vpn_recoveryctl.py" --base "$INSTALL_DIR" lifecycle stop || return 1
+        else
         (cd "$SERVICES_DIR" && docker compose down 2>&1 | sed 's/^/    /' || true)
+        fi
         log "[6/7] Stopped Docker stack (was inherited from source image)"
     elif [[ -f "$SERVICES_DIR/docker-compose.yml" ]]; then
         log "[6/7] docker.service not active — skipping compose down (image carries no running stack)"
@@ -1004,6 +1009,13 @@ for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revo
         log "    wiped: ${f}"
     fi
 done
+# Recovery identity/history and desired fallback are per-box, like VPN keys.
+# prepare also removes them from the artifact; this covers older donor images.
+# (Not /run/mdb-vpn-recovery: tmpfs never reaches an image, and removing it
+# under a running watcher would orphan its single-instance controller.lock.)
+rm -rf /var/lib/magic-dingus/vpn_recovery
+rm -f "$INSTALL_DIR/config/vpn_recovery.json" "$INSTALL_DIR/config/vpn_recovery.json.lock"
+
 # The VPN tunnel event log (gluetun_cascade_restart.sh) is the SOURCE box's
 # drop history; a clone must not report it on its own Box health card.
 if [[ -f /var/lib/magic-dingus/vpn_events.log ]]; then

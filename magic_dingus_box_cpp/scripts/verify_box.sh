@@ -808,10 +808,18 @@ fi  # System units
 VPN_EVENTS="${MDB_VPN_EVENTS_FILE:-/var/lib/magic-dingus/vpn_events.log}"
 if [[ -f "${BASE}/services/.env" ]]; then
   header "VPN tunnel"
-  G_HEALTH=$(docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null \
-             || sudo -n docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null)
-  VPN_LINE=$(python3 "${APP}/scripts/vpn_events_summary.py" --file "$VPN_EVENTS" \
-               --current-health "${G_HEALTH:-}" 2>/dev/null)
+  VPN_MODE=0
+  python3 "${APP}/scripts/vpn_recoveryctl.py" --base "$BASE" supported >/dev/null 2>&1 || VPN_MODE=$?
+  if [[ "$VPN_MODE" == 0 ]]; then
+    VPN_LINE=$(python3 "${APP}/scripts/vpn_recoveryctl.py" --base "$BASE" status --summary 2>/dev/null)
+  elif [[ "$VPN_MODE" == 1 || ! -f "${APP}/scripts/vpn_recoveryctl.py" ]]; then
+    G_HEALTH=$(docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null \
+               || sudo -n docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null)
+    VPN_LINE=$(python3 "${APP}/scripts/vpn_events_summary.py" --file "$VPN_EVENTS" \
+                 --current-health "${G_HEALTH:-}" 2>/dev/null)
+  else
+    VPN_LINE=$'warn\tVPN state unknown: recovery configuration unavailable'
+  fi
   case "${VPN_LINE%%$'\t'*}" in
     pass) pass "${VPN_LINE#*$'\t'}" ;;
     warn) warn "${VPN_LINE#*$'\t'}" ;;

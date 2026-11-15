@@ -180,15 +180,14 @@ services:
     # 10.2.0.2:x->10.2.0.1:5351: recvfrom: connection refused`, once
     # `external port changed: 60551 changed to 35802`); v3.41.1's loop then
     # logged `[port forwarding] starting` and never obtained a port again.
-    # The healthcheck below requires a port once one was seen, so ~5 min
+    # Previously the healthcheck required a port once seen, so ~5 min
     # later gluetun went unhealthy and the cascade watcher restarted it and
     # all five dependents ~5 min after that — while the tunnel passed
     # traffic the whole time (in-tunnel ping 1.1.1.1 ~170 ms, handshakes
     # answered). v3.41.2: "VPN port forwarding: no longer stuck after failed
     # port forwarding"; v3.41.3: "fixes a VPN server port forwarding
     # deadlock bug introduced whilst back-porting a fix". gluetun should now
-    # re-acquire the port itself; the healthcheck's port requirement stays
-    # as the backstop.
+    # re-acquire the port itself; native recovery now owns forwarding health.
     image: qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027
     container_name: mdb_gluetun
     logging: *default-logging
@@ -314,71 +313,12 @@ services:
       - ./config/gluetun:/gluetun
     restart: unless-stopped
     healthcheck:
-      # Hit Cloudflare's `one.one.one.one` via HTTPS rather than gluetun's
-      # own /v1/publicip/ip endpoint. The internal endpoint reports
-      # "healthy" even when egress is broken — it returns a cached IP
-      # value with no DNS lookup. That's the bug we hit on 2026-05-26
-      # where DoT got wedged: containers couldn't resolve any hostname,
-      # all indexer searches returned 0, but gluetun stayed green for
-      # hours until a manual reboot.
-      #
-      # one.one.one.one (Cloudflare's official hostname for 1.1.1.1):
-      #   - Requires DNS lookup → fails fast when the resolver wedges
-      #   - HTTPS → exercises TCP connect + TLS handshake through the
-      #     VPN tunnel
-      #   - /cdn-cgi/trace returns plain text with `ip=...`, `loc=...`
-      #     etc. — the grep confirms we got a sensible 200 body.
-      #   - No rate-limit / Cloudflare challenge issues even on ProtonVPN
-      #     exit IPs (Cloudflare owns the endpoint and never blocks its
-      #     own infrastructure)
-      #
-      # Failure of any layer (DNS, TCP, TLS, content) → wget returns
-      # non-zero → grep fails → exit 1 → container marked unhealthy.
-      # The cascade-restart watcher (gluetun_cascade_restart.sh) catches
-      # the resulting health_status:unhealthy event and restarts gluetun,
-      # which then fires a start event that cascades to dependents.
-      #
-      # SECOND LAYER — the NAT-PMP forwarded port. Added after a live
-      # incident: the tunnel stayed perfectly healthy for ~8 hours while
-      # port forwarding was dead, because the check above passes on DNS +
-      # TCP + TLS and never touches NAT-PMP. Gluetun had leased port 48513,
-      # then the gateway began refusing (`10.2.0.2->10.2.0.1:5351:
-      # connection refused`), the port went to 0, and nothing noticed:
-      # qBittorrent sat on a stale 38738 accepting no incoming peers while
-      # the dashboard read "VPN port unavailable" and the container reported
-      # healthy, so the cascade-restart watchdog never fired. A manual
-      # `docker restart mdb_gluetun` fixed it in 10 seconds.
-      #
-      # The sentinel /tmp/.pf_seen is the load-bearing part, and it must be
-      # written by THIS CHECK — not read from gluetun's own port file.
-      # Gluetun CLEARS /tmp/gluetun/forwarded_port the moment a lease dies
-      # (observed: "17:53:22 writing port file" then "17:54:10 clearing port
-      # file"). Keying off that file therefore reads a DEAD lease as "never
-      # had one" and reports healthy — which is precisely the 8-hour silent
-      # outage this check exists to catch. The sentinel only ever gets
-      # created, never cleared, so it is a true "we held a lease this
-      # session" latch. /tmp is container-local (only /gluetun is bind
-      # mounted), so a recreate resets it and a fresh session legitimately
-      # starts in the never-leased state.
-      # That is what stops two much worse outcomes than a missing port:
-      #
-      #   1. BOOT DEADLOCK. radarr/prowlarr/qbit/byparr share this netns and
-      #      `depends_on: service_healthy` gates their startup. If a plain
-      #      port assertion were used and NAT-PMP happened to be unavailable
-      #      at boot, gluetun would never go healthy and the ENTIRE media
-      #      stack would fail to start — far worse than degraded peering.
-      #   2. RESTART LOOP. cascade-restart restarts gluetun on unhealthy. A
-      #      sustained ProtonVPN port-forwarding outage would otherwise churn
-      #      the whole stack every few minutes, indefinitely.
-      #
-      # Net effect: a lease that DIES is caught and auto-recovered (the case
-      # that actually bit us); a lease that never existed is left alone.
-      #
-      # GET /v1/portforward must stay listed in ensure_gluetun_auth.sh's
-      # access file: current gluetun makes control-server routes private by
-      # default, and a 401 here after /tmp/.pf_seen exists = unhealthy
-      # forever = a full-stack restart every ~10 minutes.
-      test: ["CMD-SHELL", "wget -qO- --tries=1 --timeout=5 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip=' && { wget -qO- --tries=1 --timeout=3 http://localhost:8000/v1/portforward 2>/dev/null | grep -qE '\"port\":[1-9]' && touch /tmp/.pf_seen || [ ! -f /tmp/.pf_seen ]; }"]
+      # Startup eligibility is traffic, independent of forwarding/qBit. The
+      # native Proton controller publishes full readiness and the first-port
+      # deadline, preventing both startup deadlock and the old never-leased gap.
+      # Independent HTTPS fallback prevents one probe-site outage from gating
+      # startup. Unsupported provider/type retains the old forwarding latch.
+      test: ["CMD-SHELL", "{ wget -qO- --tries=1 --timeout=3 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip=' || wget -qO- --tries=1 --timeout=3 https://www.google.com/generate_204; } && { { [ \"$$VPN_SERVICE_PROVIDER\" = protonvpn ] && [ \"$$VPN_TYPE\" = wireguard ] && [ \"$$VPN_PORT_FORWARDING\" = on ]; } || { wget -qO- --tries=1 --timeout=2 http://localhost:8000/v1/portforward 2>/dev/null | grep -qE '\"port\":[1-9]' && touch /tmp/.pf_seen || [ ! -f /tmp/.pf_seen ]; }; }"]
       interval: 60s
       timeout: 10s
       # 5 consecutive failures (~5 min) before unhealthy, not 3. A NAT-PMP

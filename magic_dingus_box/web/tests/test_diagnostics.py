@@ -234,3 +234,23 @@ def test_endpoint_single_flight(app, client):
         gate.set()
         t.join(5)
     assert results == {"a": 200, "b": 429}
+
+def test_native_recovery_bundle_is_sanitized_and_stale_ready_is_unknown(box,tmp_path):
+    status=tmp_path/'recovery-status.json'
+    status.write_text(json.dumps({'checked_at':'2000-01-01T00:00:00+00:00','ready':True,'forwarded_port':4567,
+        'effective':{'country':'Canada','hostname':'ca-01','private_key':WG_KEY},'credential':QBIT_PW}))
+    zf,_=_build(box,vpn_status_path=status)
+    recovery=json.loads(zf.read('vpn_recovery.json'))
+    assert recovery['ready'] is False and recovery['fresh'] is False
+    assert recovery['forwarded_port'] is None
+    assert WG_KEY not in zf.read('vpn_recovery.json').decode()
+    assert QBIT_PW not in zf.read('vpn_recovery.json').decode()
+
+def test_recovery_auth_files_are_never_bundled_even_as_extra_files(box):
+    auth=box['install']/'services/config/gluetun/auth'
+    auth.mkdir(parents=True)
+    (auth/'recovery.key').write_text('a'*64)
+    (auth/'config.toml').write_text('apikey = "'+'a'*64+'"\n')
+    for path in (auth/'recovery.key',auth/'config.toml'):
+        with pytest.raises(ValueError,match='refusing to bundle'):
+            _build(box,extra_files={'logs/pretend.log':path})

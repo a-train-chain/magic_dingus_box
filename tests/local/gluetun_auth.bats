@@ -64,7 +64,7 @@ file_routes() {
     [ "$status" -eq 0 ]
     run file_routes "$SVC/config/gluetun/auth/config.toml"
     [[ "$output" == *"GET /v1/portforward"* ]]
-    [[ "$output" != *"/v1/vpn/status"* ]]
+    [[ "$output" == *"PUT /v1/vpn/status"* ]]
 }
 
 @test "skips a games-only box unless provisioning" {
@@ -119,4 +119,34 @@ file_routes() {
 @test "setup_memory_tuning and setup_services both deliver it" {
     grep -q 'ensure_gluetun_auth.sh' "$CPP_DIR/scripts/setup_memory_tuning.sh"
     grep -q 'ensure_gluetun_auth.sh" --provision' "$CPP_DIR/scripts/setup_services.sh"
+}
+
+@test "package installation adds a private credential while preserving public reads" {
+    bash "$SCRIPT" --provision "$SVC"
+    auth="$SVC/config/gluetun/auth"
+    [ -s "$auth/recovery.key" ]
+    run python3 - "$auth" <<'PY'
+from pathlib import Path
+import stat, sys, tomllib
+p = Path(sys.argv[1])
+roles = tomllib.loads((p/'config.toml').read_text())['roles']
+public = next(r for r in roles if r['auth'] == 'none')
+private = next(r for r in roles if r['auth'] == 'apikey')
+assert set(public['routes']) == {'GET /v1/portforward', 'GET /v1/publicip/ip', 'GET /v1/openvpn/portforwarded'}
+assert set(private['routes']) == {'GET /v1/vpn/status', 'PUT /v1/vpn/status', 'GET /v1/vpn/settings', 'PUT /v1/vpn/settings'}
+assert private['apikey'] == (p/'recovery.key').read_text().strip()
+assert all(stat.S_IMODE((p/name).stat().st_mode) == 0o600 for name in ['recovery.key','config.toml'])
+PY
+    [ "$status" -eq 0 ]
+    before="$(ls -i "$auth/recovery.key")"
+    run bash "$SCRIPT" --provision "$SVC"
+    [ "$status" -eq 0 ]
+    [ "$(ls -i "$auth/recovery.key")" = "$before" ]
+}
+
+@test "standalone legacy installer remains usable without the Python package" {
+    cp "$SCRIPT" "$BATS_TEST_TMPDIR/ensure_gluetun_auth.sh"
+    run bash "$BATS_TEST_TMPDIR/ensure_gluetun_auth.sh" --provision "$SVC"
+    [ "$status" -eq 0 ]
+    grep -q '^auth = "none"$' "$SVC/config/gluetun/auth/config.toml"
 }

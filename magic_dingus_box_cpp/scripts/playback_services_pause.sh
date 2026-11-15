@@ -54,7 +54,7 @@ CONTAINERS=(mdb_radarr mdb_sonarr mdb_prowlarr mdb_byparr)
 # a support question, 2026-07-31). /tmp is tmpfs, so a marker orphaned by a
 # power cut cannot survive into the next boot; neither the kiosk's unit nor
 # magic-dingus-web uses PrivateTmp, so both processes see the same file.
-PAUSE_MARKER=/tmp/mdb_playback_services_paused
+PAUSE_MARKER="${PAUSE_MARKER:-/tmp/mdb_playback_services_paused}"
 
 # Compose file location, needed only by the unpause fallback below.
 # Env-overridable for the test harness (scripts/tests/test_gluetun_cascade.py).

@@ -494,7 +494,12 @@ function _renderMediaBrowserStatus(data) {
     // VPN info
     const vpnEl = document.getElementById('mbVpnInfo');
     if (vpnEl) {
-        if (data.vpn_country) {
+        if (data.vpn_recovery) {
+            const recovery = data.vpn_recovery;
+            const label = recovery.fresh ? (recovery.ready ? 'Ready' : recovery.state) : 'Unknown — observation out of date';
+            vpnEl.innerHTML = `<div class="health-row"><span class="health-label">VPN recovery</span><span class="health-value">${escapeHtml(label || 'Unknown')}</span></div>`;
+            if (recovery.country) vpnEl.innerHTML += `<div class="health-row"><span class="health-label">Current server</span><span class="health-value">${escapeHtml(recovery.country)} · ${escapeHtml(recovery.hostname || '—')}</span></div>`;
+        } else if (data.vpn_country) {
             vpnEl.innerHTML = `
                 <div class="health-row">
                     <span class="health-label">VPN country</span>
@@ -1013,6 +1018,9 @@ function _renderHealthSummaryRows(d) {
         portTitle = 'This VPN provider does not offer port forwarding. '
             + 'Downloads still work; incoming peer connections are limited, '
             + 'so some torrents may be slower to start.';
+    } else if (d.vpn_recovery && !d.vpn_recovery.fresh && d.vpn_recovery.supported !== false) {
+        portColor = 'var(--text-secondary)';
+        portText = 'unknown — observation out of date';
     } else {
         portColor = 'var(--error)';
         portText = 'unavailable';
@@ -1025,7 +1033,14 @@ function _renderHealthSummaryRows(d) {
             <span class="health-value" style="color: ${portColor};"${portTitle ? ` title="${escapeHtml(portTitle)}"` : ''}>${escapeHtml(portText)}</span>
         </div>`;
 
-    return libRow + queueRow + qbitRow + portRow;
+    const recovery = d.vpn_recovery;
+    let recoveryRow = '';
+    if (recovery && recovery.supported !== false) {
+        const label = recovery.fresh ? (recovery.ready ? 'Ready' : recovery.state) : 'Unknown — observation out of date';
+        const detail = recovery.last_recovery_reason ? `Last recovery: ${recovery.last_recovery_reason}` : '';
+        recoveryRow = `<div class="health-row"><span class="health-label">VPN recovery</span><span class="health-value" title="${escapeHtml(detail)}">${escapeHtml(label || 'Unknown')}</span></div>`;
+    }
+    return libRow + queueRow + qbitRow + portRow + recoveryRow;
 }
 
 // ----- Credentials expander (lazy-loaded) -----
