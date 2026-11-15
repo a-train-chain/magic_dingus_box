@@ -808,6 +808,7 @@ for _d in data build/data; do
         "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/pairing_audit.log"
         "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/pending_revocations.txt"
         "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/seek_request.json"
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/tube_request.json"
         "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/kiosk_status.json"
         "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/"'*.jsonl'
     )

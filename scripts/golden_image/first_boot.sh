@@ -1014,7 +1014,7 @@ step_wipe_phone_remote() {
 log "[6/7] Wiping Phone Remote per-Pi state (paired phones, sessions, secrets)..."
 # box_health_last.json is the Content Manager's cached Box health verdict —
 # the SOURCE box's, which a clone must not show as its own.
-for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revocations.txt seek_request.json kiosk_status.json flask_secret.key box_health_last.json; do
+for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revocations.txt seek_request.json tube_request.json kiosk_status.json flask_secret.key box_health_last.json; do
     if [[ -f "${DATA_DIR}/${f}" ]]; then
         rm -f "${DATA_DIR}/${f}"
         log "    wiped: ${f}"
@@ -1062,12 +1062,12 @@ done
 # HMAC secret and its paired-phone records. A phone paired to the source
 # would have authenticated against the clone.
 #
-# kiosk_status.json and seek_request.json are here for the same reason they
+# kiosk_status.json, seek_request.json and tube_request.json are here for the same reason they
 # are in the data/ list above: transient kiosk↔Flask state a fresh box
 # regenerates on demand, and the build copy shipped when only data/ was wiped.
 if [[ -d "$BUILD_DATA_DIR" ]]; then
     for f in paired_remotes.json pairing_session.json pairing_audit.log \
-             pending_revocations.txt seek_request.json kiosk_status.json \
+             pending_revocations.txt seek_request.json tube_request.json kiosk_status.json \
              flask_secret.key; do
         if [[ -f "${BUILD_DATA_DIR}/${f}" ]]; then
             rm -f "${BUILD_DATA_DIR}/${f}"
