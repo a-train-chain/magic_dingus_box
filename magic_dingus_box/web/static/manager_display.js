@@ -18,15 +18,38 @@
 
 // ===== PURE LOGIC (no DOM; tested) =====
 
-/** Add `op` to the unsent list: the newest value per row wins, one degauss is enough. */
+/** The server's limit on ops per POST (admin_display.MAX_OPS_PER_POST). */
+const TUBE_MAX_OPS_PER_POST = 64;
+/** A sent batch the kiosk has not confirmed after this long stops being drawn
+    on the controls (a healthy kiosk confirms within a second or two). */
+const TUBE_CONFIRM_TIMEOUT_MS = 6000;
+/** Consecutive failed POSTs before the page says the TV is not being reached. */
+const TUBE_FAILURES_BEFORE_NOTICE = 3;
+/** Failures that clear by themselves and are retried on every poll; anything
+    else (CSRF_ERROR, FORBIDDEN_HOST, CROSS_SITE_REQUEST, UNKNOWN_ERROR, ...)
+    waits for the user. A network error or a non-JSON 5xx carries no code. */
+const TUBE_TRANSIENT_CODES = ['TUBE_UNAVAILABLE', 'TUBE_BACKLOG', 'INTERNAL_ERROR'];
+
+/**
+ * Add `op` to the unsent list so the list ends in the same state the kiosk
+ * would reach applying every op in order (app/tube_ops.cpp, tube_setting.h):
+ * the newest value per row, mask and engine wins; a look clears every moved
+ * row and the mask, so it drops earlier row/mask/reset/look ops; a reset
+ * clears them without changing the look, so it drops earlier row/mask/reset
+ * ops; one degauss is enough.
+ */
 function tubeAddOp(unsent, op) {
-    if (op.op === 'row') {
-        return unsent.filter(o => !(o.op === 'row' && o.key === op.key)).concat([op]);
-    }
+    const drops = {
+        row: o => o.op === 'row' && o.key === op.key,
+        mask: o => o.op === 'mask',
+        engine: o => o.op === 'engine',
+        look: o => ['row', 'mask', 'reset', 'look'].includes(o.op),
+        reset: o => ['row', 'mask', 'reset'].includes(o.op),
+    }[op.op];
     if (op.op === 'degauss' && unsent.some(o => o.op === 'degauss')) {
         return unsent;
     }
-    return unsent.concat([op]);
+    return (drops ? unsent.filter(o => !drops(o)) : unsent).concat([op]);
 }
 
 /** The kiosk's state with `ops` (sent-but-unconfirmed, then unsent) applied on top. */
@@ -69,38 +92,59 @@ function tubeConfirm(sent, handledSeq, lastHandled) {
 }
 
 /**
- * One POST in flight at a time. `post(ops)` resolves to {seq} or rejects with
- * an error carrying `code` (apiPost's errors). Ops added while a POST is out
- * are coalesced and sent together when it returns. A refused batch
- * (VALIDATION_ERROR) is dropped and `onRefused(message)` told; any other
- * failure (network, 5xx, TUBE_UNAVAILABLE, TUBE_BACKLOG) puts the batch back
- * in front of what arrived meanwhile and waits for the next pump() — which
- * onStatus() does on every poll. pending() is what the page draws on top of
- * the kiosk's state, so a value never snaps back while its POST is out.
+ * One POST in flight at a time, at most TUBE_MAX_OPS_PER_POST ops in it (the
+ * rest go next). `post(ops)` resolves to {seq} or rejects with an error
+ * carrying `code` (apiPost's errors). Ops added while a POST is out are
+ * coalesced and sent when it returns.
+ *
+ * - VALIDATION_ERROR: the batch is dropped and `onRefused(message)` told.
+ * - Any other failure puts the batch back in front of what arrived meanwhile
+ *   and counts one consecutive failure (`status().failures`, `lastError`).
+ *   A transient one (no code, TUBE_TRANSIENT_CODES) is retried by the next
+ *   pump() — onStatus() pumps on every poll. Any other code cannot clear by
+ *   itself: automatic retries stop (`status().stopped`) until the user's
+ *   next change (add) or retry().
+ * - A sent batch the kiosk has not confirmed TUBE_CONFIRM_TIMEOUT_MS after
+ *   its POST succeeded is dropped from pending() so the kiosk's real values
+ *   show again, and counted in `status().lost` until a later batch confirms.
+ *
+ * pending() is what the page draws on top of the kiosk's state, so a value
+ * never snaps back while its POST is out. `now()` is injectable for tests.
  */
-function makeOpSender(post, onRefused) {
+function makeOpSender(post, onRefused, now) {
+    const clock = now || (() => Date.now());
     let unsent = [];
-    let sent = [];
+    let sent = [];        // [{ops, seq, at}]
     let inFlight = null;  // the ops of the POST that has not answered yet
     let lastHandled = -1;
+    let failures = 0;
+    let lastError = '';
+    let stopped = false;
+    let lost = 0;
 
     function pump() {
         if (inFlight || unsent.length === 0) return;
-        const ops = unsent;
-        unsent = [];
+        const ops = unsent.slice(0, TUBE_MAX_OPS_PER_POST);
+        unsent = unsent.slice(TUBE_MAX_OPS_PER_POST);
         inFlight = ops;
         Promise.resolve()
             .then(() => post(ops))
             .then(result => {
                 inFlight = null;
-                sent = sent.concat([{ ops, seq: result.seq }]);
+                failures = 0;
+                lastError = '';
+                sent = sent.concat([{ ops, seq: result.seq, at: clock() }]);
                 pump();
             }, err => {
                 inFlight = null;
-                if (err && err.code === 'VALIDATION_ERROR') {
+                const code = err && err.code;
+                if (code === 'VALIDATION_ERROR') {
                     if (onRefused) onRefused(err.message || 'The TV refused that change');
                     return;
                 }
+                failures += 1;
+                lastError = (err && err.message) || 'unknown error';
+                if (code && !TUBE_TRANSIENT_CODES.includes(code)) stopped = true;
                 const meanwhile = unsent;
                 unsent = ops;
                 for (const op of meanwhile) unsent = tubeAddOp(unsent, op);
@@ -108,21 +152,54 @@ function makeOpSender(post, onRefused) {
     }
 
     return {
-        add(op) { unsent = tubeAddOp(unsent, op); },
+        add(op) {
+            unsent = tubeAddOp(unsent, op);
+            stopped = false;  // the user acted: try again
+        },
         pump,
-        onStatus(handledSeq) {
-            sent = tubeConfirm(sent, handledSeq, lastHandled);
-            lastHandled = handledSeq;
+        /** The user pressed "Try again". */
+        retry() {
+            stopped = false;
             pump();
         },
+        onStatus(handledSeq) {
+            const kept = tubeConfirm(sent, handledSeq, lastHandled);
+            if (handledSeq >= lastHandled && kept.length < sent.length) lost = 0;  // something confirmed
+            const t = clock();
+            sent = kept.filter(b => {
+                if (t - b.at < TUBE_CONFIRM_TIMEOUT_MS) return true;
+                lost += 1;
+                return false;
+            });
+            lastHandled = handledSeq;
+            if (!stopped) pump();
+        },
+        status() {
+            return { failures, lastError, stopped, lost };
+        },
         unsent() { return unsent.slice(); },
-        sent() { return sent.slice(); },
+        sent() { return sent.map(b => ({ ops: b.ops, seq: b.seq })); },
         /** Every op the kiosk has not confirmed, oldest first: sent, in flight, unsent. */
         pending() {
             const ops = sent.reduce((all, b) => all.concat(b.ops), []);
             return ops.concat(inFlight || [], unsent);
         },
     };
+}
+
+/**
+ * The status line: {text, retry}. `text` is plain text (the page sets it as
+ * textContent); `retry` asks for the "Try again" button.
+ */
+function tubeNotice(available, answered, status) {
+    if (!available) return { text: answered ? 'Waiting for the TV…' : 'Loading…', retry: false };
+    if (status.stopped || status.failures >= TUBE_FAILURES_BEFORE_NOTICE) {
+        return { text: `Not reaching the TV: ${status.lastError}`, retry: status.stopped };
+    }
+    if (status.lost > 0) {
+        return { text: 'A change did not reach the TV; the controls show what the TV has.', retry: false };
+    }
+    return { text: '', retry: false };
 }
 
 // ===== DOM (thin) =====
@@ -143,6 +220,10 @@ function crtLookState() {
             ops => apiPost(`${url}/admin/display/tube`, { ops }),
             msg => showNotification(msg, 'error'));
         _crtLook = st;
+        // Never leave the previous device's controls on screen.
+        const body = document.getElementById('crtLookBody');
+        if (body) body.innerHTML = '';
+        renderCrtLook();
     }
     return _crtLook;
 }
@@ -238,6 +319,14 @@ function crtLookSend(op) {
     if (!st || !st.available) return;
     st.sender.add(op);
     st.sender.pump();
+    renderCrtLook();
+}
+
+/** The status line's "Try again" button (shown after an error that will not clear by itself). */
+function crtLookRetry() {
+    const st = _crtLook;
+    if (!st || !st.available) return;
+    st.sender.retry();
     renderCrtLook();
 }
 
@@ -358,14 +447,21 @@ function renderCrtLook() {
     const st = _crtLook;
     const status = document.getElementById('crtLookStatus');
     if (!st || !status) return;
-    status.textContent = st.available ? '' : (st.answered ? 'Waiting for the TV…' : 'Loading…');
-    status.style.display = st.available ? 'none' : '';
+    const notice = tubeNotice(st.available, st.answered, st.sender.status());
+    status.textContent = notice.text;
+    const box = document.getElementById('crtLookStatusBox');
+    if (box) box.style.display = notice.text ? '' : 'none';
+    const retry = document.getElementById('crtLookRetry');
+    if (retry) retry.style.display = notice.retry ? '' : 'none';
     if (!st.rows || !st.kiosk) return;
     if (!st.els) buildCrtLook(st);
     const els = st.els;
     const rows = st.rows;
     const kiosk = st.kiosk;
     const waiting = !st.available;
+    // A disabled control commonly gets no pointerup/change, so a slider held
+    // when the box stopped answering would stay "held" (never repainted).
+    if (waiting) st.held = null;
     const shown = tubeShown(kiosk, st.sender.pending(), rows);
     const moved = tubeMovedKeys(shown, rows);
     const native = kiosk.crt_native === true;
@@ -396,6 +492,7 @@ function renderCrtLook() {
         const range = els.ranges[key];
         const na = native && !!(rowByKey[key] && rowByKey[key].crt_native_neutral);
         range.disabled = waiting || na;
+        if (na && st.held === range) st.held = null;
         els.na[key].style.display = na ? '' : 'none';
         els.moved[key].style.visibility = moved.includes(key) ? 'visible' : 'hidden';
         if (st.held === range) return;  // never repaint a slider the pointer is holding

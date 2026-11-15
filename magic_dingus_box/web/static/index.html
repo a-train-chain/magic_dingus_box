@@ -37,7 +37,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=107">
+    <link rel="stylesheet" href="/static/style.css?v=108">
 </head>
 
 <body class="faceplate">
@@ -979,7 +979,10 @@
             <div class="view-header">
                 <h3>CRT Look</h3>
             </div>
-            <p id="crtLookStatus" class="settings-description" role="status">Loading…</p>
+            <div id="crtLookStatusBox" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem;">
+                <p id="crtLookStatus" class="settings-description" role="status" style="margin: 0;">Loading…</p>
+                <button class="btn-secondary small" id="crtLookRetry" onclick="crtLookRetry()" style="display: none;">Try again</button>
+            </div>
             <div id="crtLookBody"></div>
         </section>
 
@@ -1041,7 +1044,7 @@
 
     <!-- Classic scripts sharing one global scope; ORDER MATTERS (see the note
          at the top of manager.js). Bump a file's ?v= whenever it changes. -->
-    <script src="/static/manager.js?v=127"></script>
+    <script src="/static/manager.js?v=128"></script>
     <script src="/static/manager_devices.js?v=2"></script>
     <script src="/static/manager_media.js?v=8"></script>
     <script src="/static/manager_roms.js?v=2"></script>
@@ -1050,7 +1053,7 @@
     <script src="/static/manager_settings.js?v=2"></script>
     <script src="/static/manager_media_browser.js?v=4"></script>
     <script src="/static/vpn_settings.js?v=2"></script>
-    <script src="/static/manager_display.js?v=1"></script>
+    <script src="/static/manager_display.js?v=2"></script>
 
 </body>
 

@@ -240,3 +240,172 @@ def test_a_refused_op_is_dropped_and_the_message_shown():
         return {shown, unsent: s.unsent(), sent: s.sent()};
     """)
     assert result == {"shown": ["Invalid Tube operation"], "unsent": [], "sent": []}
+
+
+# ----- fix round 1: coalescing, failure notice, permanent errors, confirm timeout
+
+def test_a_look_or_reset_drops_the_ops_it_overrides():
+    result = run_js("""
+        const add = ops => ops.reduce((u, op) => tubeAddOp(u, op), []);
+        return {
+            look: add([{op: 'engine', engine: 'tube'}, {op: 'row', key: 'hum', value: 1},
+                       {op: 'mask', mask: 'dots'}, {op: 'reset'}, {op: 'degauss'},
+                       {op: 'look', look: 'tv'}, {op: 'look', look: 'pvm'}]),
+            reset: add([{op: 'look', look: 'tv'}, {op: 'row', key: 'hum', value: 1},
+                        {op: 'mask', mask: 'dots'}, {op: 'reset'}, {op: 'reset'}]),
+            newest: add([{op: 'mask', mask: 'dots'}, {op: 'engine', engine: 'tube'},
+                         {op: 'mask', mask: 'slot'}, {op: 'engine', engine: 'classic'}]),
+        };
+    """)
+    assert result["look"] == [{"op": "engine", "engine": "tube"}, {"op": "degauss"},
+                              {"op": "look", "look": "pvm"}]
+    assert result["reset"] == [{"op": "look", "look": "tv"}, {"op": "reset"}]
+    assert result["newest"] == [{"op": "mask", "mask": "slot"}, {"op": "engine", "engine": "classic"}]
+
+
+def test_coalesced_ops_end_in_the_same_state_as_the_full_sequence():
+    # tubeShown applies ops the way the kiosk does (tube_ops.cpp: a look clears
+    # every moved row and the mask, a reset clears them and keeps the look).
+    result = run_js("""
+        let seed = 12345;
+        const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+        const keys = ROWS.rows.map(r => r.key);
+        const pick = list => list[rnd(list.length)];
+        const values = {}; keys.forEach(k => { values[k] = 50; });
+        const kiosk = {engine: 'classic', look: 'pvm', mask: 'grille', values};
+        const mismatches = []; let longest = 0;
+        for (let trial = 0; trial < 300; trial++) {
+            const full = [];
+            for (let i = 0; i < 1 + rnd(250); i++) {
+                const kind = pick(['row', 'row', 'row', 'mask', 'look', 'reset', 'engine', 'degauss']);
+                if (kind === 'row') full.push({op: 'row', key: pick(keys), value: rnd(101)});
+                else if (kind === 'mask') full.push({op: 'mask', mask: pick(ROWS.mask.choices).key});
+                else if (kind === 'look') full.push({op: 'look', look: pick(ROWS.looks).key});
+                else if (kind === 'engine') full.push({op: 'engine', engine: pick(ROWS.engines).key});
+                else full.push({op: kind});
+            }
+            const coalesced = full.reduce((u, op) => tubeAddOp(u, op), []);
+            longest = Math.max(longest, coalesced.length);
+            const a = JSON.stringify(tubeShown(kiosk, full, ROWS));
+            const b = JSON.stringify(tubeShown(kiosk, coalesced, ROWS));
+            if (a !== b) mismatches.push(trial);
+            if (full.some(o => o.op === 'degauss') !== coalesced.some(o => o.op === 'degauss')) mismatches.push(trial);
+        }
+        return {mismatches, longest};
+    """)
+    assert result["mismatches"] == []
+    assert result["longest"] <= 64
+
+
+def test_a_long_failure_streak_never_posts_more_than_64_ops():
+    result = run_js("""
+        let fail = true; const sizes = [];
+        const s = makeOpSender(ops => {
+            sizes.push(ops.length);
+            if (fail) { const e = new Error('down'); return Promise.reject(e); }
+            return Promise.resolve({seq: sizes.length});
+        });
+        const keys = ROWS.rows.map(r => r.key);
+        for (let i = 0; i < 400; i++) {
+            if (i % 7 === 0) s.add({op: 'look', look: ROWS.looks[i % ROWS.looks.length].key});
+            else if (i % 11 === 0) s.add({op: 'reset'});
+            else s.add({op: 'row', key: keys[i % keys.length], value: i % 101});
+            s.pump();
+            for (let k = 0; k < 10; k++) await null;   // let the rejected POST settle
+        }
+        fail = false; s.onStatus(0); await settle();
+        return {max: Math.max(...sizes), unsent: s.unsent().length};
+    """)
+    assert result["max"] <= 64 and result["unsent"] == 0
+
+
+def test_three_failures_in_a_row_are_reported_and_a_success_clears_them():
+    result = run_js("""
+        let fail = true;
+        const s = makeOpSender(ops => {
+            if (fail) { const e = new Error('Failed to fetch'); return Promise.reject(e); }
+            return Promise.resolve({seq: 1});
+        });
+        const notices = [];
+        s.add({op: 'row', key: 'hum', value: 10}); s.pump(); await settle();
+        s.onStatus(0); await settle();
+        notices.push(tubeNotice(true, true, s.status()));
+        s.onStatus(0); await settle();
+        const third = s.status();
+        notices.push(tubeNotice(true, true, third));
+        fail = false; s.onStatus(0); await settle();
+        notices.push(tubeNotice(true, true, s.status()));
+        return {third, notices};
+    """)
+    assert result["third"] == {"failures": 3, "lastError": "Failed to fetch", "stopped": False, "lost": 0}
+    assert result["notices"][0] == {"text": "", "retry": False}
+    assert result["notices"][1] == {"text": "Not reaching the TV: Failed to fetch", "retry": False}
+    assert result["notices"][2] == {"text": "", "retry": False}
+
+
+def test_an_error_that_cannot_clear_by_itself_stops_retrying_until_the_user_acts():
+    result = run_js("""
+        let calls = 0, fail = true;
+        const s = makeOpSender(ops => {
+            calls += 1;
+            if (fail) { const e = new Error('Invalid or missing CSRF token'); e.code = 'CSRF_ERROR'; return Promise.reject(e); }
+            return Promise.resolve({seq: calls});
+        });
+        s.add({op: 'row', key: 'hum', value: 10}); s.pump(); await settle();
+        const afterFirst = s.status();
+        s.onStatus(0); await settle(); s.onStatus(0); await settle();
+        const pollsPosted = calls - 1;
+        const notice = tubeNotice(true, true, s.status());
+        s.add({op: 'row', key: 'hum', value: 11}); s.pump(); await settle();
+        const afterChange = calls;
+        s.onStatus(0); await settle();
+        fail = false; s.retry(); await settle();
+        return {afterFirst, pollsPosted, notice, afterChange, calls, status: s.status(), sent: s.sent()};
+    """)
+    assert result["afterFirst"]["stopped"] is True
+    assert result["pollsPosted"] == 0
+    assert result["notice"] == {"text": "Not reaching the TV: Invalid or missing CSRF token", "retry": True}
+    assert result["afterChange"] == 2   # the user's next change tries again
+    assert result["calls"] == 3         # and so does "Try again"; polls did not
+    assert result["status"] == {"failures": 0, "lastError": "", "stopped": False, "lost": 0}
+    assert result["sent"] == [{"ops": [hum(11)], "seq": 3}]
+
+
+def test_transient_codes_keep_retrying_on_every_poll():
+    result = run_js("""
+        let calls = 0;
+        const s = makeOpSender(ops => { calls += 1; const e = new Error('busy'); e.code = 'TUBE_BACKLOG'; return Promise.reject(e); });
+        s.add({op: 'row', key: 'hum', value: 10}); s.pump(); await settle();
+        s.onStatus(0); await settle(); s.onStatus(0); await settle();
+        return {calls, stopped: s.status().stopped};
+    """)
+    assert result == {"calls": 3, "stopped": False}
+
+
+def test_an_unconfirmed_batch_stops_being_drawn_after_the_timeout():
+    result = run_js("""
+        let t = 1000, seq = 0;
+        const s = makeOpSender(ops => Promise.resolve({seq: ++seq}), null, () => t);
+        s.add({op: 'row', key: 'hum', value: 10}); s.pump(); await settle();
+        t += TUBE_CONFIRM_TIMEOUT_MS - 1; s.onStatus(0);
+        const before = {pending: s.pending(), lost: s.status().lost};
+        t += 1; s.onStatus(0);
+        const after = {pending: s.pending(), sent: s.sent(), lost: s.status().lost,
+                       notice: tubeNotice(true, true, s.status())};
+        s.add({op: 'row', key: 'noise', value: 3}); s.pump(); await settle();
+        s.onStatus(2);
+        return {before, after, lostAfterConfirm: s.status().lost, timeout: TUBE_CONFIRM_TIMEOUT_MS};
+    """)
+    assert result["timeout"] == 6000
+    assert result["before"] == {"pending": [hum(10)], "lost": 0}
+    assert result["after"]["pending"] == [] and result["after"]["sent"] == []
+    assert result["after"]["lost"] == 1
+    assert result["after"]["notice"] == {
+        "text": "A change did not reach the TV; the controls show what the TV has.", "retry": False}
+    assert result["lostAfterConfirm"] == 0
+
+
+def test_manager_js_guards_the_calls_into_this_later_file():
+    src = (STATIC / "manager.js").read_text(encoding="utf-8")
+    for name in ("checkCrtLookVisibility", "startCrtLookTab", "stopCrtLookTab"):
+        assert f"typeof {name} === 'function'" in src
