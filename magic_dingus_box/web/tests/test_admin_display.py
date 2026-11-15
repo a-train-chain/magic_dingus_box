@@ -130,6 +130,49 @@ def test_an_unparsable_log_counts_as_no_ops(client, temp_data_dir):
     assert log(temp_data_dir)["ops"] == [{"seq": 5, "op": "row", "key": "hum", "value": 20}]
 
 
+GOOD = {"seq": 7, "op": "row", "key": "noise", "value": 30}
+
+
+@pytest.mark.parametrize("doc", [
+    {"version": 1, "ops": [GOOD, {"seq": 8, "op": "wobble"}]},                       # unknown op
+    {"version": 1, "ops": [GOOD, {"seq": 8, "op": "row", "key": "hum", "value": 101}]},  # bad value
+    {"version": 1, "ops": [GOOD, {"seq": 8, "op": "row", "key": "hum", "value": 2.0}]},
+    {"version": 1, "ops": [GOOD, {"seq": 8, "op": "mask", "mask": "Slot"}]},
+    {"version": 1, "ops": [GOOD, {"seq": 7, "op": "degauss"}]},                      # not ascending
+    {"version": 1, "ops": [{**GOOD, "seq": 9}, {"seq": 8, "op": "degauss"}]},
+    {"version": 1, "ops": [{**GOOD, "seq": 0}]},                                      # seq < 1
+    {"version": 1, "ops": [{**GOOD, "seq": -3}]},
+    {"version": 1, "ops": [{**GOOD, "seq": True}]},
+    {"version": 1, "ops": [{**GOOD, "seq": 7.0}]},
+    {"version": 1, "ops": [{"op": "degauss"}]},                                       # no seq
+    {"version": 1, "ops": [[], GOOD]},
+    {"version": 2, "ops": [GOOD]},
+    {"version": True, "ops": [GOOD]},
+    {"ops": [GOOD]},
+    {"version": 1, "ops": {"0": GOOD}},
+    [GOOD],
+])
+def test_a_log_the_kiosk_would_refuse_is_replaced_not_kept(client, temp_data_dir, doc):
+    write_status(temp_data_dir, {**OPEN, "handled_seq": 4})
+    (temp_data_dir / "tube_request.json").write_text(json.dumps(doc))
+    assert post(client, [HUM]).get_json()["data"]["seq"] == 5
+    assert log(temp_data_dir)["ops"] == [{"seq": 5, "op": "row", "key": "hum", "value": 20}]
+
+
+def test_a_valid_log_is_kept_and_cleaned(client, temp_data_dir):
+    write_status(temp_data_dir, {**OPEN, "handled_seq": 4})
+    (temp_data_dir / "tube_request.json").write_text(json.dumps(
+        {"version": 1, "ops": [{"seq": 3, "op": "degauss"}, {**GOOD, "extra": 1}]}))
+    assert post(client, [HUM]).get_json()["data"]["seq"] == 8
+    assert log(temp_data_dir)["ops"] == [GOOD, {"seq": 8, "op": "row", "key": "hum", "value": 20}]
+
+
+def test_the_log_is_world_readable(client, temp_data_dir):
+    write_status(temp_data_dir, OPEN)
+    post(client, [HUM])
+    assert (temp_data_dir / "tube_request.json").stat().st_mode & 0o777 == 0o644
+
+
 def test_rapid_posts_keep_only_the_newest_op_per_row(client, temp_data_dir):
     write_status(temp_data_dir, OPEN)
     seqs = [post(client, [{**HUM, "value": v}]).get_json()["data"]["seq"] for v in range(0, 101, 5)]
@@ -162,12 +205,43 @@ def test_post_refuses_a_bad_op_and_writes_nothing(client, temp_data_dir, op, fie
 
 @pytest.mark.parametrize("op,field", [("row", "op"), ({"op": 3}, "op"), ({"op": "row", "value": 5}, "key"),
     ({"op": "row", "key": "hum"}, "value"), ({"op": "row", "key": "hum", "value": -1}, "value"),
-    ({"op": "mask"}, "mask"), ({"op": "look", "look": 1}, "look"), ({"op": "engine", "engine": None}, "engine")])
+    ({"op": "mask"}, "mask"), ({"op": "look", "look": 1}, "look"), ({"op": "engine", "engine": None}, "engine"),
+    ({"op": []}, "op"), ({"op": {}}, "op")])
 def test_post_refuses_more_bad_ops(client, temp_data_dir, op, field):
     write_status(temp_data_dir, OPEN)
     r = post(client, [op])
     assert r.status_code == 400 and r.get_json()["error"]["details"] == {"index": 0, "field": field}
     assert r.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+WRONG_TYPES = [[], {}, None, 3, 2.5, True, "", {"a": {"b": [1, {"c": None}]}}, [[{"x": []}]]]
+
+
+def _wrong_typed_bodies():
+    """(body, expected details) for every request-supplied field, each wrong-typed."""
+    for bad in WRONG_TYPES:
+        if not (isinstance(bad, list) and bad):  # a non-empty list is a valid container
+            yield {"ops": bad}, {"index": None, "field": "ops"}
+        yield {"ops": [bad]}, {"index": 0, "field": "op"}
+        yield {"ops": [{"op": bad}]}, {"index": 0, "field": "op"}
+        yield {"ops": [{"op": "row", "key": bad, "value": 5}]}, {"index": 0, "field": "key"}
+        if type(bad) is not int:  # 3 is a valid row value
+            yield {"ops": [{"op": "row", "key": "hum", "value": bad}]}, {"index": 0, "field": "value"}
+        for word in ("mask", "look", "engine"):
+            yield {"ops": [{"op": word, word: bad}]}, {"index": 0, "field": word}
+    for bad in WRONG_TYPES:
+        if not isinstance(bad, dict):
+            yield bad, {"index": None, "field": "ops"}
+
+
+@pytest.mark.parametrize("body,details", list(_wrong_typed_bodies()))
+def test_every_wrong_typed_field_is_a_400_envelope(client, temp_data_dir, body, details):
+    write_status(temp_data_dir, OPEN)
+    r = client.post("/admin/display/tube", json=body)
+    assert r.status_code == 400 and r.is_json
+    assert r.get_json()["error"] == {"code": "VALIDATION_ERROR", "message": r.get_json()["error"]["message"],
+                                     "details": details}
+    assert not (temp_data_dir / "tube_request.json").exists()
 
 
 def test_post_refuses_an_empty_or_oversized_batch(client, temp_data_dir):
@@ -246,6 +320,21 @@ def test_kiosk_tube_reads_age_from_ts(temp_data_dir):
     assert admin_display.kiosk_tube(temp_data_dir, now=1011.0) == (None, "kiosk_not_running")
     (temp_data_dir / "kiosk_status.json").write_text(json.dumps({"ts": True, "tube": OPEN}))
     assert admin_display.kiosk_tube(temp_data_dir) == (None, "kiosk_not_running")
+
+
+def test_kiosk_tube_counts_a_future_ts_as_stale_too(temp_data_dir):
+    """No RTC: the clock can step back after the kiosk dies."""
+    write_status(temp_data_dir, OPEN, ts=1000.0)
+    assert admin_display.kiosk_tube(temp_data_dir, now=995.0) == (OPEN, None)
+    assert admin_display.kiosk_tube(temp_data_dir, now=989.0) == (None, "kiosk_not_running")
+    write_status(temp_data_dir, OPEN, ts=time.time() + 30)
+    assert admin_display.kiosk_tube(temp_data_dir) == (None, "kiosk_not_running")
+
+
+@pytest.mark.parametrize("ts", ["NaN", "Infinity", "-Infinity", '"1000"', "null"])
+def test_kiosk_tube_refuses_a_non_finite_ts(temp_data_dir, ts):
+    (temp_data_dir / "kiosk_status.json").write_text('{"ts": %s, "tube": {"gate": true}}' % ts)
+    assert admin_display.kiosk_tube(temp_data_dir, now=1000.0) == (None, "kiosk_not_running")
 
 
 def test_append_ops_is_pure():

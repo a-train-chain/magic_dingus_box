@@ -25,6 +25,7 @@ under one module lock.
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import threading
@@ -70,9 +71,11 @@ def kiosk_tube(data_dir: Path, now: Optional[float] = None) -> tuple:
     if not isinstance(status, dict):
         return None, "kiosk_not_running"
     ts = status.get("ts")
-    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or not math.isfinite(ts):
         return None, "kiosk_not_running"
-    if (time.time() if now is None else now) - ts > STATUS_MAX_AGE_S:
+    # Both directions: the Pi has no RTC, so the clock can step BACK after a
+    # kiosk dies, which would leave its last status "fresh" for the step's size.
+    if abs((time.time() if now is None else now) - ts) > STATUS_MAX_AGE_S:
         return None, "kiosk_not_running"
     tube = status.get("tube")
     if not isinstance(tube, dict):
@@ -81,6 +84,46 @@ def kiosk_tube(data_dir: Path, now: Optional[float] = None) -> tuple:
         reason = tube.get("reason")
         return None, reason if isinstance(reason, str) and reason else "not_ready"
     return tube, None
+
+
+def _op_rules(rows: dict) -> dict:
+    """What a valid op may say, from the row file."""
+    return {
+        "row_keys": frozenset(row["key"] for row in rows["rows"]),
+        "row_min": rows["row_min"],
+        "row_max": rows["row_max"],
+        "words": {
+            "mask": frozenset(choice["key"] for choice in rows["mask"]["choices"]),
+            "look": frozenset(look["key"] for look in rows["looks"]),
+            "engine": frozenset(engine["key"] for engine in rows["engines"]),
+        },
+    }
+
+
+def _check_op(op, rules: dict) -> tuple:
+    """(clean op, None) or (None, field). Every request-supplied value is
+    type-checked before it is hashed, compared or looked up, so no shape of
+    JSON can raise here. The clean op keeps only the fields its kind names."""
+    if not isinstance(op, dict):
+        return None, "op"
+    name = op.get("op")
+    if not isinstance(name, str):
+        return None, "op"
+    if name == "row":
+        key, value = op.get("key"), op.get("value")
+        if not isinstance(key, str) or key not in rules["row_keys"]:
+            return None, "key"
+        if not _is_int(value) or not rules["row_min"] <= value <= rules["row_max"]:
+            return None, "value"
+        return {"op": "row", "key": key, "value": value}, None
+    if name in rules["words"]:
+        word = op.get(name)
+        if not isinstance(word, str) or word not in rules["words"][name]:
+            return None, name
+        return {"op": name, name: word}, None
+    if name in ("reset", "degauss"):
+        return {"op": name}, None
+    return None, "op"
 
 
 def validate_ops(body, rows: dict) -> tuple:
@@ -93,34 +136,13 @@ def validate_ops(body, rows: dict) -> tuple:
     ops = body.get("ops") if isinstance(body, dict) else None
     if not isinstance(ops, list) or not 1 <= len(ops) <= MAX_OPS_PER_POST:
         return None, {"index": None, "field": "ops"}
-
-    row_keys = {row["key"] for row in rows["rows"]}
-    words = {
-        "mask": {choice["key"] for choice in rows["mask"]["choices"]},
-        "look": {look["key"] for look in rows["looks"]},
-        "engine": {engine["key"] for engine in rows["engines"]},
-    }
-    row_min, row_max = rows["row_min"], rows["row_max"]
-
+    rules = _op_rules(rows)
     clean = []
     for i, op in enumerate(ops):
-        name = op.get("op") if isinstance(op, dict) else None
-        if name == "row":
-            key, value = op.get("key"), op.get("value")
-            if not isinstance(key, str) or key not in row_keys:
-                return None, {"index": i, "field": "key"}
-            if not _is_int(value) or not row_min <= value <= row_max:
-                return None, {"index": i, "field": "value"}
-            clean.append({"op": "row", "key": key, "value": value})
-        elif name in words:
-            word = op.get(name)
-            if not isinstance(word, str) or word not in words[name]:
-                return None, {"index": i, "field": name}
-            clean.append({"op": name, name: word})
-        elif name in ("reset", "degauss"):
-            clean.append({"op": name})
-        else:
-            return None, {"index": i, "field": "op"}
+        checked, field = _check_op(op, rules)
+        if checked is None:
+            return None, {"index": i, "field": field}
+        clean.append(checked)
     return clean, None
 
 
@@ -136,19 +158,31 @@ def append_ops(existing: list, new: list, handled_seq: int) -> tuple:
     return ops, top
 
 
-def _read_log(path: Path) -> list:
-    """The ops already in the log; a missing or unusable file holds none."""
+def _read_log(path: Path, rows: dict) -> list:
+    """The ops already in the log. A missing file, or one the kiosk's parser
+    would refuse (app/tube_ops.cpp: version 1, every op valid, seq integers
+    >= 1 strictly ascending), holds none: keeping a refused file would
+    re-write it forever while the kiosk's handled_seq never moves."""
     try:
         doc = json.loads(path.read_text("utf-8"))
     except (OSError, ValueError):
         return []
-    ops = doc.get("ops") if isinstance(doc, dict) else None
+    if not isinstance(doc, dict) or doc.get("version") != 1 or not _is_int(doc.get("version")):
+        return []
+    ops = doc.get("ops")
     if not isinstance(ops, list):
         return []
-    if not all(isinstance(op, dict) and _is_int(op.get("seq")) and isinstance(op.get("op"), str)
-               for op in ops):
-        return []
-    return ops
+    rules = _op_rules(rows)
+    kept = []
+    previous = 0
+    for op in ops:
+        checked, _ = _check_op(op, rules)
+        seq = op.get("seq") if isinstance(op, dict) else None
+        if checked is None or not _is_int(seq) or seq <= previous:
+            return []
+        previous = seq
+        kept.append({"seq": seq, **checked})
+    return kept
 
 
 def _serialize(ops: list) -> bytes:
@@ -163,6 +197,7 @@ def _replace_atomically(data_dir: Path, text: bytes) -> bool:
         fd, tmp = tempfile.mkstemp(dir=data_dir, prefix=".tube_request.", suffix=".tmp")
         with os.fdopen(fd, "wb") as f:
             f.write(text)
+            os.fchmod(f.fileno(), 0o644)  # mkstemp makes 0600; match the data dir
         os.replace(tmp, data_dir / REQUEST_NAME)
         return True
     except OSError:
@@ -204,7 +239,7 @@ def register(app, ctx) -> None:
         handled_seq = handled if _is_int(handled) and handled >= 0 else 0
 
         with _log_lock:
-            existing = _read_log(data_dir / REQUEST_NAME)
+            existing = _read_log(data_dir / REQUEST_NAME, rows)
             log_ops, top = append_ops(existing, ops, handled_seq)
             text = _serialize(log_ops)
             if len(text) > MAX_FILE_BYTES:
