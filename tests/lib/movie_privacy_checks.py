@@ -113,6 +113,12 @@ def os_bash():
     return os.environ.get("MDB_TEST_BASH", shutil.which("bash"))
 
 
+# The one repository file the extracted sections may name: sourced, read
+# only. The checkout itself can live under /home (CI runners) or /opt (a
+# box), so it is exempted by exact path, never by its directory.
+LIBRARY = shlex.quote(str(GI / "clone_stash_lib.sh"))
+
+
 def shell(t, body):
     script = t / "run.sh"
     # Pi stash code uses GNU stat -c; translate that command-line boundary
@@ -136,7 +142,8 @@ def shell(t, body):
     # Never execute a host/Pi path: fixture paths replace every production
     # absolute path before any extracted deletion or stash command can run.
     code = "\n".join(l for l in script.read_text().splitlines() if not l.lstrip().startswith("#"))
-    assert not re.search(r'(?<![\w/])/(?:opt|home|root|var|etc|boot|run)/', code.replace(str(t), "FIXTURE")), "unsafe host path in fixture"
+    scan = code.replace(LIBRARY, "LIBRARY").replace(str(t), "FIXTURE")
+    assert not re.search(r'(?<![\w/])/(?:opt|home|root|var|etc|boot|run)/', scan), "unsafe host path in fixture"
     run([os_bash(), str(script)])
 
 
