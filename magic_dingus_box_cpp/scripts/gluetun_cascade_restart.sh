@@ -59,7 +59,7 @@ CASCADE_STATE_DIR="${CASCADE_STATE_DIR:-/run/mdb-cascade}"  # unhealthy-since st
 # re-link for active downloads); the paused ones get re-linked when the
 # kiosk's unpause brings them back. The service/container name pairs must
 # stay in sync with CONTAINERS in playback_services_pause.sh.
-PAUSE_MARKER=/tmp/mdb_playback_services_paused
+PAUSE_MARKER="${PAUSE_MARKER:-/tmp/mdb_playback_services_paused}"
 PAUSED_CONTAINERS=(mdb_radarr mdb_sonarr mdb_prowlarr mdb_byparr)
 
 # ---------------------------------------------------------------------------

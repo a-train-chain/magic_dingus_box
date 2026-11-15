@@ -38,8 +38,11 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 CASCADE = SCRIPTS_DIR / "gluetun_cascade_restart.sh"
 PAUSE = SCRIPTS_DIR / "playback_services_pause.sh"
 
-# Must match both scripts and admin_media_browser.py PLAYBACK_PAUSE_MARKER.
-MARKER = Path("/tmp/mdb_playback_services_paused")
+# Production default in both scripts and admin_media_browser.py
+# PLAYBACK_PAUSE_MARKER. Tests NEVER touch it: they pass a private
+# PAUSE_MARKER, so running this suite on a live box cannot create or delete
+# a real playback pause (it once did, 2026-11-15, on magicpi5).
+DEFAULT_MARKER = Path("/tmp/mdb_playback_services_paused")
 
 DOCKER_STUB = """#!/bin/bash
 echo "$@" >> "$DOCKER_LOG"
@@ -109,11 +112,11 @@ class StubDockerTestCase(unittest.TestCase):
             CASCADE_STATE_DIR=str(tmp / "cascade_state"),
             MDB_COMPOSE_LOCK=str(tmp / "compose.lock"),
             VPN_EVENTS_FILE=str(tmp / "vpn" / "vpn_events.log"),
+            PAUSE_MARKER=str(tmp / "mdb_playback_services_paused"),
         )
+        self.marker = tmp / "mdb_playback_services_paused"
         self.events_file = tmp / "vpn" / "vpn_events.log"
         self.state_dir = tmp / "cascade_state"
-        MARKER.unlink(missing_ok=True)
-        self.addCleanup(lambda: MARKER.unlink(missing_ok=True))
         self.addCleanup(self._tmp.cleanup)
 
     def run_script(self, script, *args, extra_env=None):
@@ -155,7 +158,7 @@ class CascadeStartEventTests(StubDockerTestCase):
             any(l.startswith("stop") for l in self.log_lines()))
 
     def test_marker_restricts_cascade_to_qbittorrent(self):
-        MARKER.write_text("2026-07-31T00:00:00Z\n")
+        self.marker.write_text("2026-07-31T00:00:00Z\n")
         result = self.run_script(CASCADE)
         self.assertEqual(result.returncode, 0, result.stderr)
         compose = self.compose_lines()
@@ -170,7 +173,7 @@ class CascadeStartEventTests(StubDockerTestCase):
                 f"{svc} re-linked despite pause marker: {compose}")
 
     def test_marker_enforces_stop_of_paused_three(self):
-        MARKER.write_text("2026-07-31T00:00:00Z\n")
+        self.marker.write_text("2026-07-31T00:00:00Z\n")
         result = self.run_script(CASCADE)
         self.assertEqual(result.returncode, 0, result.stderr)
         stops = [l for l in self.log_lines() if l.startswith("stop")]
@@ -204,7 +207,7 @@ class UnpauseFallbackTests(StubDockerTestCase):
         result = self.run_script(PAUSE, "pause")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.compose_lines(), [])
-        self.assertTrue(MARKER.exists())
+        self.assertTrue(self.marker.exists())
 
 
 class CascadeBlindStartTests(StubDockerTestCase):
@@ -301,7 +304,7 @@ class CascadeConvergeTests(StubDockerTestCase):
             [l for l in self.log_lines() if l.startswith("restart ")])
 
     def test_marker_keeps_paused_containers_down(self):
-        MARKER.write_text("2026-10-03T00:00:00Z\n")
+        self.marker.write_text("2026-10-03T00:00:00Z\n")
         self.converge(radarr="exited", sonarr="exited",
                       prowlarr="exited", byparr="exited",
                       qbittorrent="exited")
@@ -329,7 +332,7 @@ class CascadeConvergeTests(StubDockerTestCase):
         self.assertNotIn("restart mdb_radarr", self.log_lines())
 
     def test_paused_unhealthy_is_never_restarted(self):
-        MARKER.write_text("2026-10-03T00:00:00Z\n")
+        self.marker.write_text("2026-10-03T00:00:00Z\n")
         self.state_dir.mkdir()
         (self.state_dir / "unhealthy_since.radarr").write_text("0\n")
         self.converge(radarr="running unhealthy")
