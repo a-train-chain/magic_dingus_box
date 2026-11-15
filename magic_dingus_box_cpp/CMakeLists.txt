@@ -199,6 +199,9 @@ set(APP_SOURCES
     # Its poller on the main loop (stat, read on change, debounced save);
     # also in test_app_unit.
     src/app/tube_live.cpp
+    # The shader-build marker (a kiosk killed in the driver's compiler falls back
+    # to the old engine); also in test_app_unit.
+    src/app/tube_build_guard.cpp
     src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
     src/app/playback_stall_watchdog.cpp
@@ -930,6 +933,7 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/tube_ops.cpp
         # Its main-loop poller against real temp files and an injected clock.
         src/app/tube_live.cpp
+        src/app/tube_build_guard.cpp
         src/app/mb_filter_persistence.cpp
         src/utils/config.cpp
         src/utils/services_env.cpp
