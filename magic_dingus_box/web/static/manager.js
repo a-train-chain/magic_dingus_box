@@ -332,6 +332,35 @@ async function fetchCsrfToken() {
     }
 }
 
+// Tokens live in the web server's memory for an hour and vanish on any
+// restart, so a long-open page eventually sends a dead one. The server says
+// so with HTTP 403 + {ok: false, error: {code: 'CSRF_ERROR'}}
+// (admin_security.require_csrf; test_csrf_envelope.py pins it).
+function isCsrfRejection(status, body) {
+    return status === 403 && body?.error?.code === 'CSRF_ERROR';
+}
+
+function xhrIsCsrfRejection(xhr) {
+    let body = null;
+    try { body = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
+    return isCsrfRejection(xhr.status, body);
+}
+
+// fetch() that, on a CSRF rejection, fetches a fresh token and re-sends the
+// request ONCE with it. Only for re-sendable bodies (strings, FormData).
+async function fetchWithCsrfRetry(url, options = {}) {
+    const response = await fetch(url, options);
+    if (response.status !== 403) return response;
+    const body = await response.clone().json().catch(() => null);
+    if (!isCsrfRejection(response.status, body)) return response;
+    await fetchCsrfToken();
+    if (!csrfToken) return response;
+    return fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), 'X-CSRF-Token': csrfToken },
+    });
+}
+
 function getCsrfHeaders(includeContentType = true) {
     const headers = {};
     if (includeContentType) {
@@ -355,7 +384,7 @@ function getCsrfHeaders(includeContentType = true) {
  * @throws {Error} - Error with message and code properties on failure
  */
 async function apiRequest(url, options = {}) {
-    const response = await fetch(url, options);
+    const response = await fetchWithCsrfRetry(url, options);
     const result = await response.json();
 
     // Handle standardized response format

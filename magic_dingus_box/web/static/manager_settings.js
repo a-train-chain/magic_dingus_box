@@ -73,7 +73,7 @@ async function handleRestoreUpload(input) {
         const formData = new FormData();
         formData.append('file', file);
 
-        const response = await fetch(`${currentDevice.url}/admin/restore`, {
+        const response = await fetchWithCsrfRetry(`${currentDevice.url}/admin/restore`, {
             method: 'POST',
             headers: {
                 'X-CSRF-Token': csrfToken

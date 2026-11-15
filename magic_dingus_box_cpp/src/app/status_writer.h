@@ -1,11 +1,10 @@
 #pragma once
 #include <chrono>
-#include <condition_variable>
 #include <functional>
-#include <mutex>
 #include <string>
 #include <thread>
 #include "app_state.h"
+#include "../utils/latest_wins_worker.h"
 
 namespace app {
 
@@ -55,8 +54,6 @@ public:
     void flush();
 
 private:
-    void writer_loop();
-
     std::string path_;
     std::string tmp_path_;
     FileSink sink_;
@@ -67,15 +64,10 @@ private:
     std::string last_body_;
     std::chrono::steady_clock::time_point last_write_{};
 
-    // Writer-thread mailbox, guarded by mu_.
-    std::mutex mu_;
-    std::condition_variable cv_;
-    std::string pending_;          // body awaiting the writer
-    bool has_pending_ = false;
-    bool writing_ = false;         // writer is inside sink_ right now
-    bool write_failed_ = false;    // last write failed; owner resends
-    bool stop_ = false;
-    std::thread writer_;
+    // The writer thread (latest snapshot wins; utils/latest_wins_worker.h).
+    // Declared LAST: it is destroyed — drained and joined — first, while
+    // sink_ and the paths its jobs read are still alive.
+    utils::LatestWinsWorker worker_;
 };
 
 } // namespace app

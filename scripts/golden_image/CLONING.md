@@ -62,7 +62,17 @@ invisible for exactly those reasons. Acceptance: boots as
 `magicpi-XXXX` (not the source hostname), Media Browser locked, no
 saves/states, no watch history, no paired phones, factory browse
 filters, docker dormant until VPN provisioned, root partition fills the
-card.
+card. Then check first boot itself — a unit can look right and still have
+skipped a step:
+
+```bash
+sudo tail -3 /var/log/magic-first-boot.log    # ends "=== Magic Dingus Box first-boot setup complete ==="
+sudo grep '=== FAILED\|\[gave up\]\|\[wait\]' /var/log/magic-first-boot.log    # nothing from this unit's run
+sudo /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/verify_box.sh | grep -i 'first'
+#   [PASS] first boot completed (/var/log/magic-first-boot.log)
+#   [PASS] every first-boot step is recorded complete (20 steps)
+#   [PASS] magic-first-boot.service not enabled (disabled)
+```
 
 ## What happens during a clone
 
@@ -99,8 +109,11 @@ ControlMaster + ControlPersist). Seven steps:
      (`/mnt/ssd/.mdb-content-stash`), zeroes free space on both SD
      partitions, and ABORTS if its post-scrub leak check finds any
      credential class still present
-   - Re-enables `magic-first-boot.service` (so the cloned image
-     fires `first_boot.sh` on its first boot)
+   - Deletes first boot's step record
+     (`/var/lib/magic-dingus-box/first_boot/` — an image that carried it
+     would skip the recorded steps on every unit) and re-enables
+     `magic-first-boot.service` (so the cloned image fires `first_boot.sh`
+     on its first boot)
    - `sync; sync; drop_caches; sync`
 5. **dd the SD card over SSH**, gzip-compressed in flight, written to
    the local `.img.gz` file. Progress shown via `pv` if installed.
@@ -147,7 +160,89 @@ That runs `first_boot.sh`, which does:
 | 5 | Fix ownership | (idempotent) |
 | 6 | **Wipe every per-unit state class** | `services/.env`, all *arr/qBittorrent config + DBs, watch history, paired phones, RetroArch saves/states + history (both `data/` and `build/data/`), Wi-Fi profiles, TMDB key, browse filters, MB re-lock, logs/journal (incl. the image's old machine-id journal directory) |
 | 6e | Pi 4B pruning | N64/Dreamcast ROMs + playlists deleted on a Pi 4B (runtime gate hides them anyway; this reclaims disk) |
-| 7 | Self-disable | Won't run again (a FAILED run leaves it enabled, so it retries next boot) |
+| 7 | Self-disable | Won't run again. If a step FAILED it stays enabled and the next boot retries only what is unfinished — see below |
+
+### No step can stop another, and none runs twice (2026-11)
+
+`first_boot.sh` used to be one linear run under `set -e`: the first
+failing command ended it and nothing below ran. That is how the 2026-08-04
+image shipped units with the source box's hostname, saves, pairings and
+Wi-Fi password — `parted -s` exited 1 in Step 2 — and it failed at the
+same line on every boot. Guarding that command fixed that command; every
+wipe still depended on every line above it never failing.
+
+The table's rows are now **20 separate steps** (the list is `FB_STEP_TABLE`
+at the bottom of the script; Steps 6–6i alone are fourteen of them). Each
+runs in its own subshell:
+
+- **A failing step stops at its first error; the steps after it still
+  run.** The credential and personal-data wipes no longer depend on the
+  expand, the identity step, or each other.
+- **A completed step is recorded and never run again.** The record is a
+  set of empty files in `/var/lib/magic-dingus-box/first_boot/<board
+  serial>/`: `steps` (the list), `<step>.done`, `<step>.attempt.N`. This is
+  what makes isolation safe — without it, one harmless step that fails on
+  every boot (the expand on an odd card) would keep the service enabled and
+  re-run the *wipes* each boot, deleting the customer's own saves, pairings
+  and Wi-Fi.
+- **A step is tried on at most 3 boots**, counted before it starts, so a
+  step that hangs the boot or is cut off by a power loss counts too (a
+  step that hangs every time is skipped from the fourth power-on). After
+  that it is abandoned. The bound covers the wipes too, deliberately: a
+  wipe that first succeeded months later would delete months of the
+  customer's data. The cost, accepted: a wipe that fails on boot 1 and
+  works on boot 2 also deletes whatever the customer made in between —
+  getting the source box's credentials off the unit is worth more.
+- **The service disables itself** when every step is done (the log ends
+  `=== Magic Dingus Box first-boot setup complete ===`) or when every
+  unfinished step has been abandoned (`=== GIVING UP on: …`). Either way it
+  never runs again by itself.
+- If the record itself cannot be written (root filesystem read-only or
+  full), every step still runs — once — and the service is disabled
+  whatever the outcome, because an unrecorded wipe would otherwise repeat.
+
+What a failure looks like in `/var/log/magic-first-boot.log` (the line
+number is the failing command's line in `first_boot.sh`):
+
+```
+=== FAILED step ssh_host_keys at line 431 (exit 1): ssh-keygen -A
+=== FAILED step ssh_host_keys (exit 1, attempt 1 of 3) — the remaining steps still run
+...
+=== FAILED: first-boot setup INCOMPLETE — steps not completed: ssh_host_keys
+=== Retrying on the next boot: ssh_host_keys
+```
+
+On later boots a finished step logs `[skip] <step>: completed on an
+earlier boot`, an abandoned one `[gave up] <step>: …`, and
+`stale_journal_dirs` logs `[wait]` until the machine-id step has completed
+(before that there is no old journal directory to remove).
+
+`verify_box.sh` **FAILs** such a unit two ways: the log's last run contains
+`=== FAILED`, and *"first-boot step(s) never completed: …"* from the record
+— which still holds after the service has given up and disabled itself.
+
+**Fixing a unit by hand.** Fix the cause, then:
+
+```bash
+# retry only the unfinished steps (finished ones are skipped):
+sudo rm -f /var/lib/magic-dingus-box/first_boot/*/*.attempt.*
+sudo bash /opt/magic_dingus_box/scripts/golden_image/first_boot.sh
+
+# run ALL of first boot again — this WIPES the unit's saves, pairings, Wi-Fi:
+sudo rm -rf /var/lib/magic-dingus-box/first_boot
+sudo bash /opt/magic_dingus_box/scripts/golden_image/first_boot.sh
+```
+
+Running the script on a finished unit without deleting the record does
+nothing and says so (`Every step was already recorded complete — NOTHING
+was run`).
+
+**The record must never be in an image.** A clone that inherited "every
+step done" would skip every wipe and report success. `prepare_for_cloning.sh`
+(Step 3) and `prepare_golden_image.sh` (Step 12) delete the directory where
+they enable the service; anything else that arms first boot must do the
+same. As a second line, the directory is named after the board's hardware
+serial, so a record that did ride along is not read on any other board.
 
 **Journal on first boot (2026-10-26).** journald names its directory after
 the machine-id it read at startup (`/var/log/journal/<id>/`) and never
@@ -161,8 +256,11 @@ forever, out of reach of Step 6c-2's vacuum. Step 1b now runs `systemctl
 restart systemd-journald` (`journalctl --flush`/`--rotate` do not move it —
 measured on systemd 257) and Step 6c-2 deletes every journal directory named
 for another id, unless a process still holds it open (then it WARNs and keeps
-it). The journal of a first boot starts at Step 6c-2; Steps 1–6 are in
-`/var/log/magic-first-boot.log`. Units cloned before this fix still carry
+it). The removal is its own step (`stale_journal_dirs`) and waits for the
+machine-id step: if that failed there is no old directory yet, and running
+anyway would record the cleanup as done and leave the image's journal on the
+unit once a later boot does change the id. The journal of a first boot
+starts at Step 6c-2; Steps 1–6 are in `/var/log/magic-first-boot.log`. Units cloned before this fix still carry
 the old directory; after their first reboot (so journald is off it) this
 removes it:
 

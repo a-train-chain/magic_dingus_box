@@ -10,6 +10,13 @@ jobs:
   tests:
     uses: ./.github/workflows/test-local.yml
 
+  # The updater's own suites (update.sh table tests, system-unit converge,
+  # memory tuning, cascade, cooldown, missing-search, the OTA endpoint
+  # tests). They live in test-ota.yml, which is path-filtered for ordinary
+  # pushes; before this call a tag could publish while they were red.
+  ota-tests:
+    uses: ./.github/workflows/test-ota.yml
+
   # Job 1: Build ARM64 binary using QEMU emulation
   build-arm64:
     runs-on: ubuntu-22.04
@@ -237,7 +244,7 @@ jobs:
   # Job 3: Create GitHub Release
   release:
     runs-on: ubuntu-latest
-    needs: [tests, build-arm64, build-source]
+    needs: [tests, ota-tests, build-arm64, build-source]
     permissions:
       contents: write
 

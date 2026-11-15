@@ -1329,6 +1329,26 @@ if ! bash "$CONVERGE_UNITS" --only magic-first-boot.service 2>&1 | sed 's/^/    
     exit 1
 fi
 
+# first_boot.sh records every step it completes under this directory, so a
+# retry boot never repeats a finished wipe. That record must NOT ride into the
+# image: a clone that inherited "every step done" would skip every wipe and
+# call itself complete. Arming first boot and clearing its record are one act.
+# (first_boot.sh also names the record after the board serial, so one that
+# did ride along is ignored on any other board — this delete is what covers a
+# card booted on the SOURCE board.) Nothing restores it afterwards: this box's
+# own first boot is long over, and restore_after_cloning.sh disables the
+# service again.
+FIRST_BOOT_STATE_ROOT="/var/lib/magic-dingus-box/first_boot"
+rm -rf "$FIRST_BOOT_STATE_ROOT" 2>/dev/null || true
+if [[ -e "$FIRST_BOOT_STATE_ROOT" ]]; then
+    log "ERROR: could not remove ${FIRST_BOOT_STATE_ROOT} (first_boot.sh's record of"
+    log "       completed steps). An image carrying it would skip those steps —"
+    log "       the credential wipes included — on every unit."
+    log "       Run restore_after_cloning.sh to put the Pi back, then remove it by hand."
+    exit 1
+fi
+log "[3/5] first-boot step record cleared (the image starts with no step done)"
+
 if systemctl is-enabled magic-first-boot.service &>/dev/null; then
     log "[3/5] magic-first-boot.service was already enabled (unusual but harmless)"
 else

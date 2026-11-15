@@ -794,6 +794,47 @@ TEST_CASE("pipeline errors outside a playlist are not the playlist's to handle",
     CHECK(t.calls.empty());
 }
 
+TEST_CASE("a load-next hand-off is skipped on next frame, once per hand-off",
+          "[playlist_playback]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);  // 3 items: budget 3
+    FakeTransport t;       // no pipeline error, same generation throughout
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    s.playlist_item_load_failed = true;
+    pb.tick_pipeline_error();
+    CHECK_FALSE(s.playlist_item_load_failed);   // consumed
+    pb.tick_pipeline_error();                    // nothing new: no action
+    CHECK(t.calls == std::vector<std::string>{"next_item"});
+
+    // Each hand-off counts, though no stream generation changed.
+    s.playlist_item_load_failed = true;
+    pb.tick_pipeline_error();
+    CHECK(t.calls.back() == "next_item");
+    s.playlist_item_load_failed = true;
+    pb.tick_pipeline_error();
+    CHECK(t.calls.back() == "stop");             // third in a row: give up
+    CHECK(s.error_message == "Couldn't play these videos");
+}
+
+TEST_CASE("a load-next hand-off nobody owns any more is dropped",
+          "[playlist_playback]") {
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.is_switching_playlist = true;   // e.g. a playlist switch took over
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+
+    s.playlist_item_load_failed = true;
+    pb.tick_pipeline_error();
+    CHECK_FALSE(s.playlist_item_load_failed);
+    s.is_switching_playlist = false;
+    pb.tick_pipeline_error();
+    CHECK(t.calls.empty());
+}
+
 // ── Auto-advance ─────────────────────────────────────────────────────────
 
 TEST_CASE("auto-advance at the item's end loads the next item once",

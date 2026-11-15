@@ -162,6 +162,12 @@ public:
         std::lock_guard<std::mutex> lk(err_mtx_);
         return last_error_;
     }
+    // The last error set on the CALLING thread (by any RadarrClient; ""
+    // until one is set, and cleared by set_error({}) on this thread). A
+    // worker that turns its own failed call into a message reads THIS:
+    // last_error() is one member shared with every background poll, so
+    // reading it after a failure can report another worker's error.
+    std::string last_error_on_this_thread() const { return thread_error_slot(); }
 
     // POST outcome with the transport facts kept apart, for callers that
     // must classify a failure (grab_release). Public so tests can script it.
@@ -181,8 +187,13 @@ protected:
     };
 
     void set_error(std::string msg) {
+        thread_error_slot() = msg;
         std::lock_guard<std::mutex> lk(err_mtx_);
         last_error_ = std::move(msg);
+    }
+    static std::string& thread_error_slot() {
+        thread_local std::string slot;
+        return slot;
     }
     // Virtual for mocking (see radarr_mock.h)
     virtual std::string http_get(const std::string& path);

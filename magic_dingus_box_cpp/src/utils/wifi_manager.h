@@ -60,6 +60,11 @@ public:
     // the parent Wi-Fi submenu and Toast notifications, instead of a generic
     // "Connecting..." that lost the operator's selection context.
     std::string get_connecting_ssid() const;
+    // SSID of the most recent SUCCESSFUL connect_async(), recorded by the
+    // worker before is_connecting() falls. For the "Connected to <SSID>"
+    // toast: the render thread must not ask nmcli (get_current_ssid() is
+    // up to two synchronous invocations, 15 s timeout each).
+    std::string get_last_connected_ssid() const;
     void reset_connection_state();
 
     // Error details from last connection attempt
@@ -179,6 +184,8 @@ private:
     // the worker thread publishes its result). Read concurrently from the
     // render thread, so guarded by the same mutex as connection_error_.
     std::string connecting_ssid_;
+    // SSID of the last successful connect (guarded by error_mutex_).
+    std::string last_connected_ssid_;
 
     // Recovery context for the UI (guarded by error_mutex_ / atomic).
     std::string last_failed_ssid_;

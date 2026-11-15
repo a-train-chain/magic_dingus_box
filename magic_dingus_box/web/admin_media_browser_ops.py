@@ -4,10 +4,13 @@ and full reset.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
 import tempfile
+import time
+from pathlib import Path
 
 from flask import request
 
@@ -29,6 +32,57 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_vpn_config import (
         _read_env_file, _vpn_supports_port_forwarding, EnvFileReadError,
     )
+
+
+# Shared compose lock — the same file every actor that starts/stops/
+# recreates the stack's containers takes (gluetun_cascade_restart.sh,
+# playback_services_pause.sh, storage_attach.sh, recreate_gluetun.sh,
+# migrate_hardlink_layout.sh, setup_services.sh, clear_radarr_cooldowns.py).
+# Module state: tests patch it HERE, on its owner (admin does not re-export
+# it). The wait is short because it is spent inside an HTTP request; on
+# timeout the reset proceeds without the lock (the pre-lock behavior).
+COMPOSE_LOCK_PATH = Path("/run/lock/mdb-compose.lock")
+COMPOSE_LOCK_WAIT_S = 30.0
+
+
+class _ComposeLock:
+    """Bounded flock on the shared compose lock; proceeds without on timeout.
+
+    Same protocol as clear_radarr_cooldowns.py's ComposeLock (copied, not
+    imported: that script runs standalone from systemd). `held` says whether
+    the lock was actually taken, for the caller's step log.
+    """
+
+    def __init__(self, path: Path, wait_s: float):
+        self.path, self.wait_s, self.fd, self.held = path, wait_s, None, False
+
+    def __enter__(self):
+        try:
+            old = os.umask(0)
+            try:
+                self.fd = os.open(self.path, os.O_RDONLY | os.O_CREAT, 0o666)
+            finally:
+                os.umask(old)
+        except OSError:
+            return self
+        deadline = time.monotonic() + self.wait_s
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.held = True
+                return self
+            except OSError:
+                if time.monotonic() >= deadline:
+                    os.close(self.fd)
+                    self.fd = None
+                    return self
+                time.sleep(0.5)
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            os.close(self.fd)   # closing releases the flock
+            self.fd = None
+        return False
 
 
 def _qbit_get(env: dict, path: str):
@@ -510,13 +564,21 @@ def register(app, ctx) -> None:
 
         steps_completed = []
 
-        # 1. docker compose down — stop + remove containers + networks
+        # 1. docker compose down — stop + remove containers + networks.
+        # Under the shared compose lock (the down ONLY, not the file wipes
+        # below) so a cascade re-link or storage re-attach cannot recreate a
+        # container this is removing. The playback-pause marker needs no
+        # re-check: down removes every container whatever the pause says, and
+        # the kiosk's unpause clears a marker left with no containers.
         try:
-            result = subprocess.run(
-                ["sudo", "-n", "docker", "compose", "down", "--remove-orphans"],
-                cwd=str(SERVICES_DIR),
-                capture_output=True, text=True, timeout=60,
-            )
+            with _ComposeLock(COMPOSE_LOCK_PATH, COMPOSE_LOCK_WAIT_S) as lock:
+                if not lock.held:
+                    steps_completed.append("compose_lock_unavailable")
+                result = subprocess.run(
+                    ["sudo", "-n", "docker", "compose", "down", "--remove-orphans"],
+                    cwd=str(SERVICES_DIR),
+                    capture_output=True, text=True, timeout=60,
+                )
             if result.returncode != 0:
                 # Non-fatal — proceed with file cleanup anyway so a stuck
                 # docker daemon can't strand a half-reset state.

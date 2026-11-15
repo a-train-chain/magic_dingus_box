@@ -133,7 +133,13 @@ void SettingsMenuManager::update() {
             // populated by the time we read it here.
             utils::ConnectionResult result = wifi.get_connection_result();
             if (result == utils::ConnectionResult::SUCCESS) {
-                ui::Toast::show("Connected to " + wifi.get_current_ssid());
+                // The SSID the worker just connected to — NOT
+                // get_current_ssid(): that runs nmcli synchronously (up
+                // to two invocations, 15 s timeout each) and this is the
+                // render thread, which pings the systemd watchdog.
+                const std::string ssid = wifi.get_last_connected_ssid();
+                ui::Toast::show("Connected to " +
+                                (ssid.empty() ? std::string("Wi-Fi") : ssid));
             } else {
                 std::string err = wifi.get_connection_error();
                 ui::Toast::show(err.empty() ? std::string("Connection failed")

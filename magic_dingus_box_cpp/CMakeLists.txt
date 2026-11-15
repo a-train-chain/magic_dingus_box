@@ -170,6 +170,9 @@ set(APP_SOURCES
     src/app/playlist_loader.cpp
     src/app/rom_title.cpp
     src/app/controller.cpp
+    # Controller playback state + playlist stepping, split out so
+    # test_app_unit can link it (also listed there).
+    src/app/controller_playback.cpp
     src/app/controller_text_input.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
@@ -278,6 +281,9 @@ if(BUILD_KIOSK)
             # undefined LibraryDb::*/WatchStore::*.
             src/media_browser/library/library_db.cpp
             src/media_browser/library/watch_store.cpp
+            # The one libcurl transport every MB HTTP call goes through
+            # (dual-listed: also in MEDIA_BROWSER_SOURCES for the tests).
+            src/media_browser/http/http_request.cpp
             src/media_browser/sonarr/sonarr_parsers.cpp
             src/media_browser/sonarr/sonarr_client.cpp
             src/media_browser/sonarr/sonarr_mock.cpp
@@ -490,6 +496,7 @@ if(ENABLE_MEDIA_BROWSER)
 
     # --- Media browser library sources (expanded in later tasks) ---
     set(MEDIA_BROWSER_SOURCES
+        src/media_browser/http/http_request.cpp
         src/media_browser/sonarr/sonarr_parsers.cpp
         src/media_browser/sonarr/sonarr_client.cpp
         src/media_browser/sonarr/sonarr_mock.cpp
@@ -547,6 +554,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_watch_store.cpp
         tests/media_browser/test_tmdb_client.cpp
+        tests/media_browser/test_http_request.cpp
         tests/media_browser/test_tmdb_tv.cpp
         tests/media_browser/test_media_ref.cpp
         tests/media_browser/test_mb_filter_persistence.cpp
@@ -811,6 +819,13 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # (controller.cpp is in no test target).
         src/app/shuffle_queue.cpp
         src/app/playlist_cursor.cpp
+        # Controller::update_state (video_active debounce) and NEXT/PREV/
+        # Master Shuffle stepping incl. the load-next retry loop, against a
+        # fake VideoPlayer. controller.cpp itself stays kiosk-only: the
+        # tests define Controller::load_item_media and RetroArchLauncher's
+        # constructor (tests/app/controller_test_doubles.cpp, globbed above).
+        src/app/controller_playback.cpp
+        src/utils/path_resolver.cpp
         # main.cpp's playlist playback control (SELECT/NEXT/PREV, auto-
         # advance, failed-item skip, stall watchdog) against a fake
         # transport, and the web-admin playlist reload's re-anchoring.
@@ -828,8 +843,10 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/mb_filter_persistence.cpp
         src/utils/config.cpp
         src/utils/services_env.cpp
-        # playlist_loader is here for the trim/loop parsing tests; it pulls in
-        # yaml-cpp, hence the extra include/link directories below.
+        # playlist_loader is here for the trim/loop parsing tests and the
+        # all-fields fixture shared with the web admin's Python tests
+        # (test_playlist_yaml_fixture.cpp); it pulls in yaml-cpp, hence the
+        # extra include/link directories below.
         src/app/playlist_loader.cpp
         # platform_profile backs filter_for_platform (the Pi 4 game-system
         # gate) — pure logic, no Linux-only deps.
@@ -838,7 +855,9 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
     target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES}
-        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only)
+        ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only
+        # settings_persistence.cpp writes on a background thread.
+        pthread)
     target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
@@ -889,7 +908,8 @@ if(UTILS_TEST_SOURCES)
         src/utils/bmp_writer.cpp
         src/utils/screenshot_store.cpp)
     target_include_directories(test_utils_unit PRIVATE src)
-    target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
+    # pthread: latest_wins_worker.h (the background file-writer thread).
+    target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain pthread)
     target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME UtilsUnit COMMAND test_utils_unit)
 endif()

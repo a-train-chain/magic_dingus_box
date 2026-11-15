@@ -142,6 +142,14 @@ struct AppState {
     // Display state
     bool ui_visible_when_playing = true; // Tracks whether UI should be visible when video is active
 
+    // Set by Controller::load_next_item when its synchronous retry budget
+    // (Controller::kMaxSyncLoadRetries) ran out on items that exist but
+    // would not load; current_item_index is the last one that failed.
+    // PlaylistPlayback::tick_pipeline_error consumes it on the next frame
+    // and hands the item to video::PlaybackErrorPolicy like any other
+    // failed item (skip on, or give up after a run). Render thread only.
+    bool playlist_item_load_failed = false;
+
     // Thread-safe flags (accessed from GStreamer callbacks and main thread)
     std::atomic<bool> reset_display{false};       // Signal to reset display state (e.g. after VT switch)
     std::atomic<bool> video_active{false};        // True when video is actively playing

@@ -1,4 +1,5 @@
 #include "media_browser/tmdb_client.h"
+#include "media_browser/http/http_request.h"
 
 #include <curl/curl.h>
 #include <json/json.h>
@@ -15,12 +16,6 @@ constexpr const char* kApiBase = "https://api.themoviedb.org/3";
 // Poster image size. w500 is ~500px wide — plenty of quality for the
 // poster grid and far lighter on Pi SD-card IO / bandwidth than "original".
 constexpr const char* kImageBase = "https://image.tmdb.org/t/p/w500";
-
-static size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
-    auto* s = static_cast<std::string*>(ud);
-    s->append(static_cast<char*>(ptr), size * nmemb);
-    return size * nmemb;
-}
 
 // Percent-encode an arbitrary UTF-8 string for safe embedding in a URL
 // query value. RFC 3986 unreserved characters pass through unchanged;
@@ -101,13 +96,6 @@ bool cancel_requested() {
     return t_cancel_flag && t_cancel_flag->load(std::memory_order_relaxed);
 }
 
-// libcurl progress callback: non-zero aborts the transfer with
-// CURLE_ABORTED_BY_CALLBACK. Same mechanism as ProwlarrClient's.
-int cancel_progress_cb(void* userdata, curl_off_t, curl_off_t,
-                       curl_off_t, curl_off_t) {
-    const auto* flag = static_cast<const std::atomic<bool>*>(userdata);
-    return flag && flag->load(std::memory_order_relaxed) ? 1 : 0;
-}
 }  // namespace
 
 TmdbClient::ScopedCancel::ScopedCancel(const std::atomic<bool>* flag)
@@ -151,56 +139,47 @@ std::string TmdbClient::http_get(const std::string& url) {
             set_error("cancelled");
             return {};
         }
-        CURL* curl = curl_easy_init();
-        if (!curl) {
-            set_error("curl init failed");
-            return {};
-        }
-        body.clear();
-        http_code = 0;
-
         // Privacy gap (accepted): this HTTPS call exits via the host
         // network, NOT via Gluetun, because the kiosk binary runs outside
         // Docker. ISPs see the SNI cleartext (api.themoviedb.org) on every
         // call. Metadata only — never reveals torrent activity. Documented
         // in magic_dingus_box_cpp/docs/MEDIA_BROWSER_VPN_SETUP.md "Privacy
         // notes". Future work: route through Radarr's metadata proxy.
-        curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  curl_write_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &body);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT,      "MagicDingusBox/1.0");
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        http::Request req;
+        req.url = url;
+        req.user_agent = "MagicDingusBox/1.0";
+        req.follow_redirects = true;
         // Force HTTP/1.1 — we observed TMDB's CDN occasionally negotiating
         // HTTP/2 and then failing the stream over the VPN tunnel (SSL
         // connect errors mid-handshake). HTTP/1.1 is rock-solid through
         // Gluetun's WireGuard interface and the keepalive savings of
         // HTTP/2 are irrelevant here (one HTTP request per movie open).
-        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
-                         CURL_HTTP_VERSION_1_1);
-        // Required when called from non-main threads (libcurl uses
-        // SIGALRM in its DNS resolver otherwise — would crash the
-        // future async path with a SIGSEGV in the signal handler).
-        // Harmless on the main thread; future-proofs the call site.
-        curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+        req.force_http_1_1 = true;
+        // NOSIGNAL (always set by the transport) is required when called
+        // from non-main threads (libcurl uses SIGALRM in its DNS resolver
+        // otherwise — a SIGSEGV in the signal handler).
+        //
         // Separate connect-timeout from total-timeout so a slow first
         // packet (TLS handshake) is bounded independently of the
         // overall budget. 8s connect handles a slow VPN-tunnel TLS
         // handshake; 25s total gives the request room to complete even
         // when concurrent artwork transfers are saturating the link
         // (the prior 10s budget was tripping under that load).
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT,        25L);
-        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE,  1L);
-        if (t_cancel_flag) {
-            curl_easy_setopt(curl, CURLOPT_NOPROGRESS,       0L);
-            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, cancel_progress_cb);
-            curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
-                             const_cast<std::atomic<bool>*>(t_cancel_flag));
-        }
+        req.connect_timeout_secs = 8;
+        req.timeout_secs = 25;
+        req.tcp_keepalive = true;
+        // The calling thread's cancel flag, if any (ScopedCancel): aborts
+        // the transfer with CURLE_ABORTED_BY_CALLBACK.
+        req.abort_flag = t_cancel_flag;
 
-        rc = curl_easy_perform(curl);
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        curl_easy_cleanup(curl);
+        auto resp = http::request(req);
+        if (resp.curl_code == CURLE_FAILED_INIT) {
+            set_error(resp.error);
+            return {};
+        }
+        rc = resp.curl_code;
+        http_code = resp.status;
+        body = std::move(resp.body);
 
         if (rc == CURLE_OK && http_code < 500) break;  // success or 4xx (don't retry)
         if (rc == CURLE_ABORTED_BY_CALLBACK || cancel_requested()) {
@@ -222,15 +201,16 @@ std::string TmdbClient::http_get(const std::string& url) {
     }
 
     if (rc != CURLE_OK) {
-        set_error(curl_easy_strerror(rc));
-        spdlog::error("[media_browser] TMDB HTTP failed after retries: {}", last_error());
+        const std::string err = curl_easy_strerror(rc);
+        set_error(err);
+        spdlog::error("[media_browser] TMDB HTTP failed after retries: {}", err);
         return {};
     }
     if (http_code >= 400) {
         std::ostringstream os;
         os << "TMDB HTTP " << http_code;
         set_error(os.str());
-        spdlog::error("[media_browser] {} body={}", last_error(), body);
+        spdlog::error("[media_browser] {} body={}", os.str(), body);
         return {};
     }
     return body;

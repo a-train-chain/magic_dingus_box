@@ -24,6 +24,8 @@ import pytest
 
 import serve
 
+from ._deps import need_module
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -90,7 +92,7 @@ def test_heartbeat_dir_prefers_ram():
 
 
 def test_options_are_valid_gunicorn_settings(tmp_path):
-    pytest.importorskip("gunicorn.config")
+    need_module("gunicorn.config")
     # In a fresh interpreter started from tmp_path: gunicorn.config computes
     # its chdir default (strip()ped cwd) once at IMPORT, so a checkout whose
     # path ends in a space ("magic_dingus_box ") can't build a Config()
@@ -149,6 +151,10 @@ class UInput:
 @pytest.fixture
 def live_server(tmp_path, request):
     server = request.param
+    if server == "gunicorn":
+        # Without gunicorn serve.py silently falls back to Werkzeug, so a
+        # "gunicorn" leg would pass while testing the wrong server.
+        need_module("gunicorn", "gunicorn.workers.gthread", "gunicorn.app.base")
     data = tmp_path / "data"
     data.mkdir()
     (data / "flask_secret.key").write_text(SECRET)
@@ -226,8 +232,7 @@ def _cookie() -> str:
 
 
 def _needs(*mods):
-    for m in mods:
-        pytest.importorskip(m)
+    need_module(*mods)
 
 
 # Generous on purpose: these bound a CONDITION, not a sleep, so a healthy
@@ -283,7 +288,6 @@ def test_security_hooks_and_single_startup(live_server):
 
 @pytest.mark.parametrize("live_server", ["gunicorn"], indirect=True)
 def test_launcher_runs_gunicorn(live_server):
-    pytest.importorskip("gunicorn")
     log = live_server["log"].read_text()
     assert "serving with gunicorn" in log, log
     assert "Booting worker" in log, log

@@ -30,7 +30,29 @@ inline void init(
         console_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
         sinks.push_back(console_sink);
 
-        // Optional file sink with rotation
+        // Optional file sink with rotation.
+        //
+        // SYNCHRONOUS ON PURPOSE (reviewed 2026-11 with the other render-
+        // loop file I/O). The render loop logs through this sink and pings
+        // the systemd watchdog, and the file is on the SD card, so a log
+        // write CAN stall behind a saturated card. It stays synchronous
+        // because the exposure is small and the alternative costs
+        // diagnostics:
+        //   - a log call is an fwrite into stdio's buffer; the write()
+        //     happens only once a few KB have accumulated or on WARN and above
+        //     (flush_on below). Nothing logs per frame — compare the status
+        //     file's 5 create+rename pairs per second, which is what the
+        //     2026-10-26 watchdog kills were sampled in;
+        //   - an async logger drops whatever is still queued when the
+        //     process dies, and the lines just before a crash or a watchdog
+        //     SIGABRT are the ones that explain it.
+        // Known coupling: the sink has ONE mutex, so a background thread
+        // stuck in this sink's write() also blocks the loop's next log
+        // call. If journalctl ever shows the loop stalled in a log call,
+        // move ONLY this file sink behind an spdlog::async_logger
+        // (overflow_policy::overrun_oldest) and keep the console sink —
+        // stdout goes to journald over a socket, not to the card —
+        // synchronous, so the journal still gets every line before a crash.
         if (!log_file_path.empty()) {
             // 5MB max file size, 3 rotated files
             auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(

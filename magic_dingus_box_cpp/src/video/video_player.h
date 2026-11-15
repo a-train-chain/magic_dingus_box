@@ -41,6 +41,12 @@ public:
     virtual double get_volume() const = 0;
     
     virtual void cleanup() = 0;
+
+    // Advance the backend's state machine (drain its message bus, poll its
+    // state). The kiosk calls this once per frame; Controller's blocking
+    // waits call it too so is_playing() can flip while they wait. Default
+    // no-op for backends whose state needs no polling.
+    virtual void update_state() {}
 };
 
 } // namespace video

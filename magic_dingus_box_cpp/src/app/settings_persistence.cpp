@@ -2,6 +2,7 @@
 #include "mb_filter_persistence.h"
 #include "../utils/config.h"
 #include "../utils/fsync_util.h"
+#include "../utils/latest_wins_worker.h"
 #include "../utils/logger.h"
 #include "../utils/services_env.h"
 #include <json/json.h>
@@ -66,21 +67,7 @@ std::string SettingsPersistence::get_settings_path() {
     return config::get_settings_file();
 }
 
-utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
-    std::string path = get_settings_path();
-
-    // Create directory if it doesn't exist
-    fs::path dir = fs::path(path).parent_path();
-    if (!fs::exists(dir)) {
-        std::error_code ec;
-        fs::create_directories(dir, ec);
-        if (ec) {
-            std::string error = "Failed to create config directory: " + ec.message();
-            LOG_ERROR("{}", error);
-            return utils::Result<>::fail(error);
-        }
-    }
-
+std::string SettingsPersistence::serialize(const AppState& state) {
     // Build JSON using JsonCpp
     Json::Value root;
 
@@ -150,29 +137,42 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     audio["retroarch_volume_offset_db"] = state.audio_settings.retroarch_volume_offset_db;
     root["audio"] = audio;
 
-    // Write to temporary file first for atomic save (crash-safe)
-    std::string tmp_path = path + ".tmp";
-    std::ofstream file(tmp_path);
-    if (!file.is_open()) {
-        std::string error = "Failed to open temp settings file for writing: " + tmp_path;
-        LOG_ERROR("{}", error);
-        return utils::Result<>::fail(error);
-    }
-
+    // Same bytes the old stream writer produced (it wrote the document,
+    // then std::endl).
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "  ";
-    std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
-    writer->write(root, &file);
-    file << std::endl;
+    return Json::writeString(builder, root) + "\n";
+}
+
+bool SettingsPersistence::write_file_durably(const std::string& path,
+                                             const std::string& body) {
+    // Create directory if it doesn't exist
+    fs::path dir = fs::path(path).parent_path();
+    if (!dir.empty() && !fs::exists(dir)) {
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (ec) {
+            LOG_ERROR("Failed to create config directory: {}", ec.message());
+            return false;
+        }
+    }
+
+    // Write to temporary file first for atomic save (crash-safe)
+    std::string tmp_path = path + ".tmp";
+    std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        LOG_ERROR("Failed to open temp settings file for writing: {}", tmp_path);
+        return false;
+    }
+    file.write(body.data(), static_cast<std::streamsize>(body.size()));
     file.close();
 
     // Check for write errors
     if (file.fail()) {
-        std::string error = "Failed to write settings to temp file: " + tmp_path;
-        LOG_ERROR("{}", error);
+        LOG_ERROR("Failed to write settings to temp file: {}", tmp_path);
         std::error_code ec;
         fs::remove(tmp_path, ec);
-        return utils::Result<>::fail(error);
+        return false;
     }
 
     // Durability: flush the temp file's DATA before the rename, or a
@@ -180,8 +180,9 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     // zero-length settings.json — which peek_is_crt_native() silently
     // reads as "reboot into CRT mode". Best-effort (see fsync_util.h):
     // a failed fsync degrades to exactly the old behavior, so it warns
-    // rather than failing the save. Saves happen only on operator
-    // actions, so the fsync cost is irrelevant here.
+    // rather than failing the save. This is the call that can take
+    // seconds on a busy card — the reason this whole function runs on the
+    // writer thread and never on the render loop.
     if (!utils::fsync_file(tmp_path)) {
         LOG_WARN("fsync of {} failed — save proceeds without durability guarantee", tmp_path);
     }
@@ -190,17 +191,105 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     std::error_code ec;
     fs::rename(tmp_path, path, ec);
     if (ec) {
-        std::string error = "Failed to rename settings file: " + ec.message();
-        LOG_ERROR("{}", error);
+        LOG_ERROR("Failed to rename settings file: {}", ec.message());
         fs::remove(tmp_path, ec);
-        return utils::Result<>::fail(error);
+        return false;
     }
 
     // Make the rename itself durable (directory entry update).
     (void)utils::fsync_parent_dir(path);
 
     LOG_DEBUG("Settings saved to {}", path);
+    return true;
+}
+
+namespace {
+
+// The background writer. Process-lifetime: main() ends in _exit() (after
+// flush_pending_saves), and on an ordinary return from main its destructor
+// finishes the pending save.
+utils::LatestWinsWorker& settings_writer() {
+    // The writer logs from its own thread, also while it drains during
+    // static destruction. Touch spdlog's registry first so it is
+    // constructed before — and therefore destroyed after — the worker.
+    (void)spdlog::default_logger();
+    static utils::LatestWinsWorker worker;
+    return worker;
+}
+
+// Main-thread-only: the last snapshot handed to the writer and where it
+// goes, kept for flush_pending_saves' one retry.
+struct LastSave {
+    std::string path;
+    std::string body;
+    SettingsPersistence::FileSink sink;
+};
+LastSave& last_save() {
+    static LastSave s;
+    return s;
+}
+
+SettingsPersistence::FileSink& test_sink() {
+    static SettingsPersistence::FileSink s;
+    return s;
+}
+
+void submit_last_save() {
+    // Captured by value: the job outlives this call, and a newer save
+    // overwrites last_save() while it runs.
+    const LastSave& s = last_save();
+    settings_writer().submit([path = s.path, body = s.body, sink = s.sink] {
+        return sink(path, body);
+    });
+}
+
+}  // namespace
+
+void SettingsPersistence::set_file_sink_for_tests(FileSink sink) {
+    test_sink() = std::move(sink);
+}
+
+utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
+    LastSave& s = last_save();
+    // Path and sink are resolved here, on the caller, so the job depends
+    // on nothing that can change before it runs.
+    s.path = get_settings_path();
+    s.body = serialize(state);
+    s.sink = test_sink() ? test_sink() : FileSink(&SettingsPersistence::write_file_durably);
+    submit_last_save();
     return utils::Result<>::ok();
+}
+
+bool SettingsPersistence::save_pending() {
+    return settings_writer().busy();
+}
+
+bool SettingsPersistence::flush_pending_saves(std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto& writer = settings_writer();
+    if (!writer.flush_until(deadline)) return false;
+    if (!writer.take_failure()) return true;
+    // The last save failed (card full or read-only at that moment). One
+    // more attempt: at shutdown this is the last chance to keep the
+    // operator's final change.
+    if (!last_save().sink) return false;
+    LOG_WARN("Last settings save failed — retrying once");
+    submit_last_save();
+    if (!writer.flush_until(deadline)) return false;
+    return !writer.take_failure();
+}
+
+utils::Result<> SettingsPersistence::reload_from_disk(AppState& state) {
+    // Sampled BEFORE the load. Only the main thread queues saves, so
+    // "nothing outstanding" here stays true for the whole load.
+    const bool save_outstanding = save_pending();
+    auto result = load_settings(state);
+    if (save_outstanding) {
+        LOG_INFO("Settings reload overtook an unfinished save — writing the "
+                 "reloaded settings back so the disk matches memory");
+        (void)save_settings(state);
+    }
+    return result;
 }
 
 bool SettingsPersistence::peek_is_crt_native() {

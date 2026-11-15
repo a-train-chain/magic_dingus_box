@@ -429,3 +429,19 @@ def _sanitize_filename(name: str, allowed_extensions: Optional[list[str]] = None
             raise ValueError(f"Filename must have one of these extensions: {', '.join(allowed_extensions)}")
 
     return basename
+
+
+# A ROM system is a directory under data/roms that the Content Manager
+# renders into HTML attributes and inline handlers (the playlist editor's
+# ROM library). _sanitize_filename only rejects path separators, so a
+# package entry like roms/x" onmouseover=.../a.bin used to create a
+# directory whose NAME was markup. Every real system is a short ASCII
+# token (nes, snes, genesis, ps1, atari7800, pcengine, arcade, n64,
+# dreamcast — the upload <select>, the shipped playlists' paths and
+# PlatformProfile::unsupported_game_systems).
+_ROM_SYSTEM_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _valid_rom_system(name: Any) -> bool:
+    """True when `name` is an acceptable data/roms/<system> directory name."""
+    return isinstance(name, str) and bool(_ROM_SYSTEM_RE.match(name))

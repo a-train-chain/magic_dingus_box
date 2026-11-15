@@ -20,6 +20,13 @@ on:
       - 'magic_dingus_box/web/tests/**'
       - '.github/workflows/test-ota.yml'
   workflow_dispatch:  # Allow manual trigger
+  # release.yml calls this whole file and gates publishing on it, exactly
+  # like test-local.yml. The path filters above belong to push and
+  # pull_request only: a called workflow has no path filter, so a tag whose
+  # commit touched none of the listed paths still runs the updater's tests.
+  # Nothing below reads a push/PR event payload (github.event.*,
+  # github.base_ref), so every job behaves the same under the call.
+  workflow_call:
 
 jobs:
   shell-tests:

@@ -23,23 +23,23 @@ from werkzeug.exceptions import HTTPException
 try:
     from admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
-        _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
+        _valid_rom_system, _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
         optional_size_cap_mb, success_response,
     )
     from admin_playlists import (
         _emulator_core_error, _playlist_filename_for_title, _playlist_summary,
-        format_playlist_yaml,
+        _time_bounds_error, format_playlist_yaml, load_playlist_yaml,
     )
     from admin_security import _is_within
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
-        _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
+        _valid_rom_system, _ZIP_TEXT_ENTRY_MAX, _ZipEntryTooLarge, BYTES_PER_GB, error_response,
         optional_size_cap_mb, success_response,
     )
     from .admin_playlists import (
         _emulator_core_error, _playlist_filename_for_title, _playlist_summary,
-        format_playlist_yaml,
+        _time_bounds_error, format_playlist_yaml, load_playlist_yaml,
     )
     from .admin_security import _is_within
 
@@ -94,7 +94,7 @@ def register(app, ctx) -> None:
             # Read and parse YAML content
             try:
                 yaml_content = file.read().decode('utf-8')
-                data = yaml.safe_load(yaml_content)
+                data = load_playlist_yaml(yaml_content)
             except UnicodeDecodeError:
                 return error_response("VALIDATION_ERROR", "File must be valid UTF-8 text")
             except yaml.YAMLError as e:
@@ -113,7 +113,7 @@ def register(app, ctx) -> None:
                     "Playlist must have an 'items' list"
                 )
 
-            bad_core = _emulator_core_error(data)
+            bad_core = _emulator_core_error(data) or _time_bounds_error(data)
             if bad_core:
                 return bad_core
             
@@ -327,7 +327,7 @@ def register(app, ctx) -> None:
                         # Capped: see _ZIP_TEXT_ENTRY_MAX.
                         yaml_content = _read_zip_entry_capped(
                             zf, playlist_file).decode('utf-8')
-                        playlist_data = yaml.safe_load(yaml_content)
+                        playlist_data = load_playlist_yaml(yaml_content)
                     except _ZipEntryTooLarge:
                         return error_response(
                             "VALIDATION_ERROR",
@@ -346,7 +346,8 @@ def register(app, ctx) -> None:
 
                     # Before ANY file is extracted: a refused package must
                     # leave nothing behind.
-                    bad_core = _emulator_core_error(playlist_data)
+                    bad_core = (_emulator_core_error(playlist_data)
+                                or _time_bounds_error(playlist_data))
                     if bad_core:
                         return bad_core
 
@@ -508,6 +509,10 @@ def register(app, ctx) -> None:
                     roms_skipped = 0
                     rom_renames = {}
                     for rom_entry, rom_system, rom_name in rom_files:
+                        # Same allowlist as upload_rom(): the system becomes
+                        # a directory name the Content Manager renders.
+                        if not _valid_rom_system(rom_system):
+                            continue
                         try:
                             safe_system = _sanitize_filename(rom_system)
                             safe_rom = _sanitize_filename(rom_name)

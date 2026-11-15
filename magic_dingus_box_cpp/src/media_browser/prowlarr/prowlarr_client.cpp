@@ -1,4 +1,5 @@
 #include "media_browser/prowlarr/prowlarr_client.h"
+#include "media_browser/http/http_request.h"
 
 #include <curl/curl.h>
 #include <json/json.h>
@@ -70,19 +71,9 @@ bool title_looks_adult(const std::string& title) {
     return false;
 }
 
-// curl write callback identical to the one in radarr_client.cpp /
-// mb_settings_screen.cpp. Duplicated rather than extracted to keep this
-// translation unit self-contained — the function is 4 lines.
-size_t write_cb(char* ptr, size_t size, size_t nmemb, std::string* out) {
-    out->append(ptr, size * nmemb);
-    return size * nmemb;
-}
-
-int abort_progress_cb(void* userdata, curl_off_t, curl_off_t,
-                      curl_off_t, curl_off_t) {
-    const auto* abort = static_cast<const std::atomic<bool>*>(userdata);
-    return abort && abort->load(std::memory_order_relaxed) ? 1 : 0;
-}
+// Prowlarr is a localhost service (127.0.0.1:9696, published from
+// Gluetun's netns): 3 s connect bound.
+constexpr long kConnectTimeoutSecs = 3;
 
 // URL-encode a query string component using libcurl's encoder. Returns
 // the input unchanged if curl init fails (defensive — should never
@@ -682,103 +673,57 @@ std::string ProwlarrClient::http_get_long(const std::string& path, int timeout_s
 
 ProwlarrClient::HttpGetResult
 ProwlarrClient::http_get_result(const std::string& path, int timeout_secs) {
-    std::string url = cfg_.base_url + path;
-
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        return {{}, "curl init failed"};
+    http::Request req;
+    req.url = cfg_.base_url + path;
+    req.headers = {"X-Api-Key: " + cfg_.api_key, "Accept: application/json"};
+    req.timeout_secs = timeout_secs;
+    req.connect_timeout_secs = kConnectTimeoutSecs;
+    // NOSIGNAL (always set by the transport) is required here: the search
+    // worker calls this off the main thread, and libcurl's default DNS
+    // resolver uses SIGALRM otherwise. abort_ cuts a search short on
+    // cancel()/destruction.
+    req.abort_flag = &abort_;
+    auto resp = http::request(req);
+    if (resp.curl_code == CURLE_FAILED_INIT) return {{}, std::move(resp.error)};
+    if (!resp.transport_ok()) return {{}, "curl: " + resp.error};
+    if (resp.status >= 400) {
+        return {{}, "Prowlarr HTTP " + std::to_string(resp.status)};
     }
-
-    std::string body;
-    curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(timeout_secs));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
-    // NOSIGNAL is required when curl is invoked from a non-main thread
-    // (libcurl's default DNS resolver uses SIGALRM otherwise). Without
-    // this, the search worker can crash the kiosk with SIGSEGV on the
-    // signal-handling path.
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS,     0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, abort_progress_cb);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA,   &abort_);
-
-    struct curl_slist* hdrs = nullptr;
-    std::string auth = "X-Api-Key: " + cfg_.api_key;
-    hdrs = curl_slist_append(hdrs, auth.c_str());
-    hdrs = curl_slist_append(hdrs, "Accept: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
-
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-    curl_slist_free_all(hdrs);
-    curl_easy_cleanup(curl);
-
-    if (rc != CURLE_OK) {
-        return {{}, std::string("curl: ") + curl_easy_strerror(rc)};
-    }
-    if (http_code >= 400) {
-        return {{}, "Prowlarr HTTP " + std::to_string(http_code)};
-    }
-    return {std::move(body), {}};
+    return {std::move(resp.body), {}};
 }
 
 std::string ProwlarrClient::http_put(const std::string& path,
                                      const std::string& body) {
-    std::string url = cfg_.base_url + path;
-
-    CURL* curl = curl_easy_init();
-    if (!curl) {
+    http::Request req;
+    req.method = http::Method::Put;
+    req.url = cfg_.base_url + path;
+    req.headers = {"X-Api-Key: " + cfg_.api_key, "Accept: application/json",
+                   "Content-Type: application/json"};
+    req.body = body;
+    req.timeout_secs = cfg_.timeout_secs;
+    req.connect_timeout_secs = kConnectTimeoutSecs;
+    auto resp = http::request(req);
+    if (resp.curl_code == CURLE_FAILED_INIT) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        set_error("curl init failed");
+        set_error(resp.error);
         return {};
     }
-
-    std::string resp;
-    curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
-    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST,  "PUT");
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
-                     static_cast<long>(body.size()));
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
-
-    struct curl_slist* hdrs = nullptr;
-    std::string auth = "X-Api-Key: " + cfg_.api_key;
-    hdrs = curl_slist_append(hdrs, auth.c_str());
-    hdrs = curl_slist_append(hdrs, "Accept: application/json");
-    hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
-
-    CURLcode rc = curl_easy_perform(curl);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-    curl_slist_free_all(hdrs);
-    curl_easy_cleanup(curl);
-
-    if (rc != CURLE_OK) {
+    if (!resp.transport_ok()) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        set_error(std::string("curl: ") + curl_easy_strerror(rc));
+        set_error("curl: " + resp.error);
         return {};
     }
-    if (http_code >= 400) {
+    if (resp.status >= 400) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        set_error("Prowlarr HTTP " + std::to_string(http_code));
+        set_error("Prowlarr HTTP " + std::to_string(resp.status));
         return {};
     }
     // Some Prowlarr endpoints respond with 202 Accepted + empty body on
     // a successful PUT (the entity is queued for an internal config
     // reload). Return a single space so callers can distinguish "empty
     // body but successful 2xx" from "transport failure" via empty().
-    if (resp.empty()) return " ";
-    return resp;
+    if (resp.body.empty()) return " ";
+    return std::move(resp.body);
 }
 
 }  // namespace media_browser
