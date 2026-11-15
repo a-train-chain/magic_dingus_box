@@ -1,8 +1,12 @@
 # Tube CRT engine (Sound Factory port) — design
 
-Status: APPROVED by the owner 2026-11-15. Nothing here is
-built. Nothing has been measured on a Pi yet; every cost in this document
-is an expectation until Phase 0 replaces it with a number.
+Status: APPROVED by the owner 2026-11-15. **Amended the same day** after
+Phase 0 (two timing rounds on the owner's Pi 5, raw logs in
+`docs/engineering/measurements/2026-11-15-tube-phase0*-journal.txt`) and the
+owner's frame-rate decision. §1, §2 and §5–§7 are built (plans 1 and 2).
+§3, §4, §8, §9, Approaches, Acceptance, Build order and Risks now describe
+what plan 3 (`docs/superpowers/plans/2026-11-15-tube-crt-renderer.md`)
+builds; every number in them is measured unless it says otherwise.
 
 ## Intent
 
@@ -31,7 +35,8 @@ Pi 5.
   Content Manager** on a phone or laptop, and a change from either shows on
   the TV within a fraction of a second.
 - Smooth playback on a 2 GB Pi 5 at 1080p60 with a playlist video playing,
-  for every shipped look (acceptance numbers below).
+  for every shipped look: a **lean** look holds 60 fps, a **rich** look an
+  even 30 fps (§4, acceptance numbers below).
 - A still look on a still menu still lets the box rest (the redraw gate
   keeps working).
 - Pi 4B units behave exactly as today.
@@ -85,42 +90,81 @@ Pi 5.
 
 ## Approaches
 
-Three were considered.
+**What was chosen before anything was measured.** Three were considered.
+**A**, a faithful port of `crt.metal` as ONE GLSL ES shader, each effect
+skipped by a uniform test at its neutral value — chosen. **B**, the same
+shader compiled per look with only the effects that are on — held in
+reserve. **C**, growing the Enhanced shader under its seven sliders —
+rejected (the sliders would not match Sound Factory's, and Enhanced works
+on gamma-encoded colour, where giving back the mask's light looks wrong).
+The data model (copied row table, look table and row-to-input arithmetic)
+was common to A and B and is built.
 
-**A. Faithful port as a new engine — chosen.** Translate `crt.metal`
-effect for effect into one GLSL ES shader. Copy the pure-C++ row table,
-look table and row-to-shader mapping (`data/DisplayCrt.h`,
-`data/CrtLooks.h`, `panel/TubeInputs.h` minus `simd` and the pointer
-twin). One shader serves every look; each effect is skipped by a uniform
-test when its row is at its neutral value, as in Sound Factory. Trade-off:
-the Pi's driver may not fully skip a switched-off effect, so a light look
-could cost more than it should. Only measurement tells.
+**What the measurements showed** (Pi 5 2 GB, V3D 7.1, Mesa 25.0.7, Modern
+TV 1920×1080@60, picture 1440×1080, a playlist video playing, Media
+Browser stack up; GPU ms per frame):
 
-**B. Faithful port, compiled per look — held in reserve.** Same as A, but
-the shader is assembled from per-effect blocks and a lean variant is
-compiled for the set of effects that are on. Off costs exactly nothing.
-Trade-off: a hitch when a slider crosses zero during tuning, and more
-combinations to test. If Phase 0 shows switched-off effects still costing
-time under A, the build moves to B. Nothing the owner sees changes.
+- A plain copy of the picture costs **1.8 ms**. The budget for a look to
+  hold **60 fps with a video playing is about 8 ms** of tube GPU time
+  (5.1 ms held 60 fps with 0.3–0.7% late; 12.5 ms ran 52–60 fps, 3–16%
+  late). A look at **15.6 ms held a rock-steady 30 fps** (33.33 ms, max
+  33.42).
+- **A is dead.** The one shader costs **20 ms with every effect off**
+  (1302 instructions, the GPU drops to 2-thread mode); the six looks cost
+  27–61 ms.
+- **B helps and is not enough.** Compiled per look, PVM is 15.6 ms and TV
+  43 ms; a compiled variant pays for its own effects even with their rows
+  at neutral; a big program's first draw is a 285–645 ms hitch.
+- **"Pipeline 2"** (the spike's restructure: hardware sRGB decode, a
+  signal pass, a line pass, a small output pass with the mask from a
+  texture and the glass baked, the glow chain, the afterglow history)
+  brings the heavy looks from 43–60 ms to **~30 ms** and leaves the light
+  ones at **14–19 ms**. Per pass: a single output pass with bend +
+  scanlines + mask + roll-off is **7–9 ms** by itself; **every extra
+  full-picture pass costs 2–4 ms whatever it computes**; the
+  quarter-resolution glow chain ~3 ms; afterglow 2–4.5 ms; a signal pass
+  at half width saves 2.2–4.5 ms; **a signal pass with nothing to do
+  still costs 3 ms**; the cheap beam saves 0.7–1.7 ms; the bend in the
+  vertex stage saves nothing; an 8-bit signal texture saves 0.3 ms.
+  Programs are 130–282 instructions, first draw ≤ 34 ms.
+- **Mesa's shader compiler hung for nine minutes** on one compile-time
+  variant (the bench's "everything, sharpness 50" set, right after the six
+  looks): the render thread sat in `libgallium` at 100% of a core until the
+  process was killed. On a customer box that is a frozen TV, a watchdog
+  restart, and the same hang on the next start.
+- Kiosk CPU stayed at 8–17% of one core and ~1 GB stayed available: the
+  limit is the GPU.
 
-**C. Grow the Enhanced shader — rejected.** Add effects one at a time
-under the existing seven sliders. Small steps, but the sliders would not
-match Sound Factory's (so looks would not transfer), and Enhanced works on
-gamma-encoded colour, where giving back the mask's brightness does not
-look right.
+Conclusion: no arrangement reaches 8 ms for a look with glow or afterglow
+at 1440×1080; the Pi 5 holds 60 fps with a video only for a look that is
+essentially one output pass.
 
-The owner chose A, with B as the fallback.
+**What is chosen now: pipeline 2, two frame classes, a fixed program
+table.** The owner's decision (below) splits the looks: a **Lean60** look
+is one output pass (plus a baked glass texture, a mask texture and, when
+ABL is on, a tiny mean probe) and draws at 60 fps; a **Rich30** look adds
+whatever passes its rows need (glow chain, signal pass, line pass,
+afterglow history) and draws an even 30 fps. The class is derived from the
+setting, never chosen (§3). Programs come from a small, closed table that
+is compiled in CI and compiled-and-drawn on a Pi 5 before the feature is
+switched on (§3); no program is ever assembled from an arbitrary
+combination of rows. Approach C stays rejected.
 
 ## What the owner decided
 
 - Scope: main menu and playlist videos first; games later.
 - Controls: preset looks **and all 45 rows on the TV menu**, and the same
   45 rows in the Content Manager with live update.
-- Approach A.
+- Approach A (before the measurements; superseded by them — see
+  Approaches).
+- **Frame rate, after Phase 0: "Both, per look."** A lean look runs at
+  60 fps and a rich look at 30 fps, and the row table marks which rows
+  force 30 fps. (Of the four options put to him — all 30 fps, all lean at
+  60 fps, both per look, 720p output — this one.)
 
-Everything below this line that is not one of those three is the
-author's call, marked **(call)** where it is a choice the owner may want
-to change.
+Everything below this line that is not one of those is the author's or
+the controller's call, marked **(call)** where it is a choice the owner
+may want to change.
 
 ## Design
 
@@ -196,102 +240,246 @@ restored onto a Pi 4B) **runs as Enhanced without rewriting the file**
 
 ### 3. Rendering
 
-The Tube engine reuses Enhanced's substrate: `begin_scene_fbo()` redirects
-video + UI into the scene FBO; `end_scene_fbo_and_composite()` draws the
-result to the screen; bezel and toast are drawn afterwards, unaffected, as
-today. The Media Browser gate stays.
+**Substrate.** The Tube engine reuses Enhanced's: `begin_scene_fbo()`
+redirects video + UI into the scene FBO (sized to the framebuffer);
+`end_scene_fbo_and_composite()` draws the result to the screen; bezel and
+toast are drawn afterwards, unaffected, as today. The Media Browser gate
+stays: the MB never draws through any CRT engine. Every non-batched GL call
+the tube makes is preceded by `flush_ui_batch()`, and every GL object it
+owns is released by `reset_gl()` (a game's return) and `cleanup()` and
+rebuilt on its next frame. `renderer_crt.cpp` and `main.cpp` decide the
+engine with `app::effective_crt_engine(crt_engine, app::tube_offered(state))`.
 
-**The Settings menu is drawn through the tube (call).** It is drawn
-inside the scene today, so Enhanced already affects it, and Sound
-Factory's own settings screen is tuned through its tube the same way: the
+**The Settings menu is drawn through the tube (call).** Unchanged: it is
+drawn inside the scene, Sound Factory tunes its tube the same way, and the
 menu's text is where a change to the mask, scanlines or sharpness is
-easiest to judge. Draw order does not change. The moving and bending rows
-are bounded by the ported caps (jitter ±0.25 mm of a 197 mm picture, and
-so on), so the menu is expected to stay readable at every row's 100;
-Phase 0 checks this on the TV with the Everything look and every wear row
-at 100. If it does not hold, the fallback is to draw the Settings menu
-after the composite, like the toast.
+easiest to judge. Under a Rich30 look the menu moves at 30 fps. The moving
+rows are bounded by the ported caps; the hardware acceptance checks the
+menu is readable with Everything and every wear row at 100. If it is not,
+the fallback is to draw the Settings menu after the composite, like the
+toast.
 
-**The boot intro (call).** The intro video is drawn through the tube, as
-it is through Enhanced today. When the saved engine is Tube and the board
-gate is open, the Tube shader is compiled at startup with the renderer's
-other shaders (before the intro's first frame and before READY=1), and
-the warm-up plays on the first Tube frame, which is the start of the
-intro. Otherwise the shader is compiled the first time the engine is
-switched to Tube in the menu or from the web page; that hitch must stay
-far inside the 10 s watchdog (measured in Phase 0).
+**The boot intro (call).** Drawn through the tube, as through Enhanced
+today. When the saved engine is Tube and Tube is offered, the programs the
+startup look needs are built before the intro's first frame (before
+READY=1, well inside the 10 s watchdog: at most 7 programs at ≤ 50 ms
+each, measured), and the warm-up plays over the start of the intro.
 
-**The picture rectangle.** The tube is drawn over the 4:3 content area
-only (1440×1080 at 1080p, 960×720 at 720p), not the whole framebuffer;
-the pillarbox bars are cleared to black. That is 25% fewer pixels than
-full-screen. Source and output are 1:1 in that rectangle. The tube's
-"opening" is that rectangle with Sound Factory's corner radius and margin
-scaled to it and straight edges (`arcX = arcY = 1`); the walnut-specific
-arcs do not come across. Bezel art draws on top as today; how each bezel's
-opening sits against the curved picture is for the owner's eye and may
-need a per-bezel follow-up.
+**The picture rectangle (call).** The tube draws over the **content
+area main.cpp already computes** — the 4:3 rectangle in Modern TV
+(1440×1080 at 1080p, 960×720 at 720p), the whole output in CRT Native, and
+the whole output for a full-screen channel film. That computation moves
+into one pure function (`video::content_rects`) that both the drawing and
+the tube use; the tube never recomputes it. The pillarbox bars are cleared
+to black. Consequences:
 
-**Passes**, each allocated and run only while a row needs it:
+- *The Channel Guide's picture window* is part of the scene, so the guide,
+  its window and the video in it are drawn through the tube together.
+- *A full-screen channel film* (no cabinet art) is a 1920×1080 picture,
+  1.33× the pixels the budgets were measured at, so it always draws as
+  **Rich30**, whatever the look (a film is 30 fps or less). Per-film
+  picture fill (`video/picture_placement`) only changes where the video
+  sits inside that picture; the tube does not see it.
+- *Bezels with a recorded opening*: the tube's opening is the content
+  area, not the bezel's window; the bezel art is drawn on top as today and
+  covers the tube's rounded corners and rim where its window is smaller.
+  Lining the bend up with each bezel's window is a follow-up for the
+  owner's eye; the opening data exists for it.
+- *CRT Native* (owner question 1 in the Addendum, answered **(call)**):
+  the picture's fit, corner radius and margin are neutral too — no inset,
+  no rounded corners, flat fit 1 — on top of §5's neutral rows. A real tube
+  draws its own corners.
 
-| Pass | Size | When |
-|---|---|---|
-| Scene FBO (exists) | framebuffer | Tube on |
-| Quarter picture | 1/4 × 1/4 | GLOW > 0 or CHROMA BLEED > 0 |
-| Glow blur (separable, H then V) | 1/4 × 1/4 | GLOW > 0; sigma from GLOW SIZE |
-| Line raster (5-tap tent per line) | width × lines | TRUE RASTER > 0 |
-| Tube pass | picture rectangle | always |
-| History (afterglow) | picture rectangle | AFTERGLOW > 0 |
+**Frame class (call).** A pure function of the resolved setting and the
+picture: **Rich30** if any of these rows is away from neutral — GLOW,
+AFTERGLOW, SHARPNESS (neutral 50), CONVERGENCE, CHROMA BLEED, TRUE RASTER,
+COLOUR DRIFT — or the picture is larger than 1440×1080 (a full-screen
+film); otherwise **Lean60**. Rows a CRT Native picture draws at neutral
+count as neutral there. Everything else is allowed at 60 fps: scanline
+depth and size, the mask and its strength and size, beam swell, curvature
+and the glass rows, tone and colour temperature, brightness, noise,
+jitter, flicker, hum, ABL and breathing, the rolling band, tracking,
+flagging and purity. The seven rows carry a "forces 30 fps" flag from the
+same source, which the TV menu and the web page show beside them, and the
+Look row shows "60 fps" or "30 fps". GLOW SIZE alone forces nothing (it
+sizes a glow that is off at GLOW 0).
 
-The existing bloom FBOs are Enhanced's and are not shared; the Tube engine
-owns its textures and frees them when the engine is switched away.
+**The shipped looks in two classes (call).** As copied from Sound Factory
+every look is rich (each has GLOW > 0 and SHARPNESS ≠ 50), so "both, per
+look" needs a choice: **PVM and Monitor become Lean60** — PVM's GLOW 8,
+AFTERGLOW 10, SHARPNESS 63 and Monitor's GLOW 5, SHARPNESS 60 go to 0, 0
+and 50 — so the default look (PVM) and the crisp one hold 60 fps and still
+move nothing. **Trinitron, TV, Arcade and Everything stay Rich30**, with
+their costly rows lowered by the hardware acceptance where they miss 24 ms.
+These are box-only columns like the two size rows; the Sound Factory parity
+script lists them as deliberate differences.
 
-**Afterglow costs more here than on the Mac.** Sound Factory writes the
-screen and the history in one pass (two render targets). The Pi's screen
-is the default framebuffer, which cannot be paired with a texture target,
-so with AFTERGLOW on the tube draws into the history texture (reading the
-previous one) and is then copied to the screen: one extra full-rectangle
-copy per frame. With AFTERGLOW at 0 none of this exists, as in Sound
-Factory (`crtFragmentNoAfterglow`).
+**The pipeline (call).** The spike's pipeline 2, with these fixed choices:
 
-**Linear light.** The tube's arithmetic is in linear light, as in Sound
-Factory. The scene FBO stays as it is (gamma-encoded RGBA8; UI and video
-drawing are untouched), so the shader decodes on sampling and encodes on
-output; the intermediate textures (quarter, lines, history) use an sRGB
-format so dark tones keep their precision. Exact method is the builder's.
+| Pass | Program | Size | Exists when | Class |
+|---|---|---|---|---|
+| Glass bake | `glass` | picture | rebuilt on a setting or size change, never per frame | both |
+| Mask tile | — (CPU) | one period, NEAREST + REPEAT | rebuilt on mask, pitch or strength change | both |
+| Mean probe | `quarter` | 64×48 → mip to 1×1 | ABL or BREATHING > 0; 5 times a second | both |
+| Quarter picture | `quarter` | ¼ × ¼ | GLOW > 0 or CHROMA BLEED > 0 | rich |
+| Glow blur H, then V | `blur` | ¼ × ¼ | GLOW > 0; sigma from GLOW SIZE | rich |
+| Signal | one of four `sig_*` | picture height × (picture width, or half when CHROMA BLEED or TRUE RASTER > 0) | SHARPNESS ≠ 50, CONVERGENCE, CHROMA BLEED, COLOUR DRIFT or TRUE RASTER | rich |
+| Lines (5-tap tent per line) | `lines` | signal width × lines | TRUE RASTER > 0 | rich |
+| Output | one of ten `out_*` | picture | always | both |
+| History → screen | `copy_encode` | picture | AFTERGLOW > 0 (the output draws into the history) | rich |
 
-**Precision and time.** `precision highp float`. No raw time uniform: the
-CPU computes every moving phase in double precision once per frame (hum
-roll, flicker, the rolling band, drift, flagging, the noise seed, the
-jitter frame) and hands the shader wrapped phases. No effect may jump when
-a clock wraps; a test holds each phase continuous across its wrap.
+- **Hardware sRGB decode.** While Tube draws, the scene texture is stored
+  as `SRGB8_ALPHA8` and written with `GL_FRAMEBUFFER_SRGB_EXT` off
+  (`GL_EXT_sRGB_write_control`), so the UI and video bytes are exactly
+  today's, and the tube samples it with `GL_DECODE_EXT`
+  (`GL_EXT_texture_sRGB_decode`): the texture unit decodes before it
+  filters, in linear light as Metal does, and no `pow` runs. When Tube
+  stops drawing the scene goes back to `RGBA8`. Without the extensions (a
+  dev machine) the same programs decode in the shader (exact sRGB).
+- **A lean look is ONE pass.** Its tone (contrast, saturation) and the
+  three line displacements (jitter, tracking, flagging) are folded into the
+  output pass, which reads the scene directly; a signal pass that would do
+  only that costs 3 ms and is never run. A rich look with a signal pass
+  does tone and displacements there instead, once per signal texel.
+- The bend stays per pixel (the vertex mesh bought nothing). The signal
+  and line textures are `RGBA16F` where the driver renders half floats
+  (sharpness overshoots above 1), else `SRGB8_ALPHA8`. Quarter, glow and
+  history are `SRGB8_ALPHA8`. The glass is `RGBA8` with its light stored
+  ×32 (it is never above 0.02), so a 1440×1080 picture's textures stay
+  under 32 MiB in every class (worst case: a full-width signal, the
+  afterglow pair and the glass, ~32.3 MB).
+- **The beam** is Sound Factory's per-channel beam in every program. The
+  cheap beam (one sigma from luma, 0.7–1.7 ms cheaper) is a per-class
+  table constant the hardware acceptance may switch on — for the rich
+  class if a tv-class look needs it, for the lean class only if a lean
+  look misses 8 ms with the exact beam.
 
-**Brightness limit and breathing** need the picture's average light. It is
-taken from the quarter picture (mip to 1×1) and read back
-**asynchronously** (pixel buffer object + fence) about five times a
-second, smoothed with Sound Factory's 0.1 s constant. Never a blocking
-read. While the read is unavailable the last value holds.
+**A fixed program table (call).** Nineteen programs, listed in plan 3,
+and nothing else is ever compiled: `glass`, `quarter`, `blur`,
+`copy_encode`; four signal programs (`sig_sharp`, `sig_sharp_chroma`,
+`sig_guns`, `sig_guns_chroma`); `lines`; two lean outputs
+(`out_lean_still`, `out_lean_moving`); eight rich outputs (source: scene,
+signal, signal + raster, raster only; each to the screen or into the
+afterglow history). The mask type is data (the tile), not a variant. Inside
+a program the cheap blocks (tone, tint, noise, flicker, hum, the band,
+purity, power, ABL) are switched by uniform tests, which cost nothing
+measurable in a program of this size; the variants split only where the
+measurements found a structural cost — an extra pass, multi-tap reads, a
+different target. Every reachable setting maps to exactly one row per pass
+(a pure function with an exhaustive test), every program is compiled by a
+GLSL ES validator in CI on every push, and every program is compiled and
+drawn once on a Pi 5 before the feature is switched on.
+Programs are built when Tube starts drawing or when the setting's plan
+needs one not yet built — never per frame, and at most a handful at a time
+(≤ 50 ms each, measured).
 
-**Shader failure.** If the Tube shader fails to compile or a pass's FBO is
-incomplete, the kiosk logs it once and draws the Enhanced path (and
-Classic below that), as Enhanced already falls back today.
+**A compile that hangs.** A program build and its first draw are bracketed
+by a marker file in `/dev/shm` (memory, not the SD card; it survives a
+kiosk restart and not a reboot). A kiosk that finds the marker at start
+died inside a build — the watchdog killed a hang — so it draws Enhanced
+instead of Tube until the next reboot, logs the program's name as an
+ERROR and says so in the status the web page reads. The owner's settings
+are not changed.
 
-### 4. Resting, and moving at field rate
+**Linear light.** Unchanged in intent: the arithmetic is in linear light;
+UI and video drawing are untouched (the scene's bytes are today's).
 
-The redraw gate (`app/redraw_gate.h`) must keep working:
+**Precision and time.** `precision highp float`; no raw time uniform. The
+CPU computes each moving phase in double once a frame and hands the shader
+wrapped values. **Speed rows no longer jump while tuned (call; owner
+question 2 in the Addendum):** the rolling band's, colour drift's and
+flagging's phases are *accumulated* by the renderer — each frame adds
+`dt / period` (dt capped at 0.1 s), wrapped to one cycle — instead of
+`seconds / period`, so a step of BAND SPEED, DRIFT SPEED or BEND SPEED
+changes only how fast the effect moves from where it is. Tracking keeps
+Sound Factory's behaviour: changing any tracking row restarts its slip
+clock, so the new setting auditions at once. Hum, flicker, noise, jitter
+and degauss have fixed periods and stay derived from the clock.
 
-- A look with no moving row on a static menu draws nothing once it has
-  settled. "Settled" is Sound Factory's `tubeSettleFrames`: each drawn
-  change owes the frames the afterglow needs to decay to 0.02% and the
-  brightness limiter needs to travel, whichever is longer.
+**Brightness limit and breathing.** The picture's average light comes from
+a mean probe: five times a second the scene is drawn into a 64×48 target
+(`quarter`, about 3,000 pixels), mipped to 1×1 and read back
+**asynchronously** (a pixel-pack buffer and a fence, polled without
+waiting). The limiter steps toward it on the frames' own clock with Sound
+Factory's 0.1 s constant (`stepBrightnessLimitTo`, including its "from rest"
+rule). Never a blocking read; while no read has landed the last value
+holds. The probe costs well under 0.3 ms on the frames it runs, so **ABL
+and breathing are allowed in the lean class (call)**; the hardware
+acceptance confirms the probe's cost, and if it does not hold, ABL and
+BREATHING join the 30 fps rows (one table line).
+
+**GPU timing.** No GPU state is read back in production frames, except
+the mean probe. A debug variable, `MDB_TUBE_GPU_TIMING=1`, wraps each pass
+in a `GL_TIME_ELAPSED` query, reads each result four frames later without
+waiting, and logs per-pass averages once every 10 s; it is how the
+hardware acceptance measures, and nothing else reads it.
+
+**Failure.** A program that fails to compile or link, or a target that is
+incomplete, logs once and the frame draws through Enhanced (and Classic
+below that), as Enhanced already falls back today; Tube is retried only
+when the setting or the engine changes.
+
+### 4. Resting, and the two frame rates **(call)**
+
+**Lean60** draws on every vblank whenever the kiosk draws — video, input,
+animation — exactly as Classic and Enhanced do. **Rich30 is a true, even
+30 fps:** while a rich look draws, every frame is presented exactly two
+vblanks after the previous one (at a 60 Hz mode; 25 fps at 50 Hz; a mode
+under 48 Hz already presents at most 30 times a second and is left
+alone). Video, the UI, the guide and the toast all move at 30 fps then.
+
+How (extending the existing 30 fps machinery in `utils/frame_pacing.h` and
+the redraw gate, not a second mechanism):
+
+- The CRT field-rate path (`crt_field_rate`) skips the iteration after a
+  drawn one and sleeps past the skipped vblank, leaving the next frame
+  ~14.6 ms to render. That is enough for a lean look (≤ 8 ms) and is what
+  a lean look with a moving row uses on a static menu — 30 fps there, as
+  Sound Factory renders moving effects.
+- A rich frame needs up to 24 ms of GPU, which cannot start 18.75 ms after
+  the previous flip and still make the second vblank. So Rich30 renders
+  **immediately after the previous flip** and **holds the present**: just
+  before `present()`, the loop sleeps until one refresh plus an eighth past
+  the previous flip completed (`utils::present_hold`), so the page flip is
+  queued after the intermediate vblank and lands on the next one. A frame
+  whose GPU work finishes early waits; one that takes up to ~31 ms still
+  lands on time.
+- **Video frames:** the appsink (5 buffers, `drop`, `sync`) keeps
+  decoding on the clock; each drawn frame shows the newest decoded frame.
+  A 30 fps video shows every frame; 24 and 25 fps videos show each frame
+  for one or two 33 ms frames (at 60 fps today: two or three 16.7 ms
+  vblanks). Audio is unaffected.
+- **Input:** the loop polls input once per iteration, so under Rich30
+  once per 33 ms instead of once per 16.7 ms; the worst added latency is
+  one 30 fps frame. Nothing is dropped (evdev queues).
+- **Watchdog:** pinged once per iteration — every 33 ms under Rich30, far
+  inside `WatchdogSec=10`. The hold is a bounded sleep (≤ 18.75 ms), never
+  a wait on the GPU.
+- **The redraw gate** keeps its skip logic: a static menu under a still
+  look rests once settled, in either class; an input or a
+  signature change draws on the iteration it happens, and under Rich30
+  that frame is held to the cadence. Under Tube the Classic/Enhanced
+  flicker and interlacing values are not drawn and do not keep the menu
+  awake.
+
+Resting rules (pure, unit-tested, a function of the resolved setting, the
+transitions and the settle debt):
+
+- A still look on a static menu rests once settled (only the gate's
+  250 ms safety net draws, as for every engine today). "Settled" is
+  Sound Factory's `tubeSettleFrames`: the frames the afterglow needs to
+  decay to 0.02% and the limiter needs to travel, whichever is longer,
+  drawn at 30 fps.
 - A look with a moving row (NOISE, JITTER, FLICKER, HUM BAR, ROLLING BAND,
-  COLOUR DRIFT, TOP EDGE BEND, and TRACKING SLIP while a slip is in
-  flight) draws at 30 fps on a static menu, through the existing
-  `crt_time_effects` field-rate path. Tracking sleeps between slips, as in
-  Sound Factory.
-- During video the loop draws every frame regardless.
-
-The gate's decision stays pure and unit-tested: a function of the resolved
-setting and the settle debt.
+  COLOUR DRIFT, TOP EDGE BEND, and TRACKING while a slip is in flight), a
+  warm-up or a degauss in progress, or settle debt left, draws at 30 fps on
+  a static menu: lean through the field-rate path, rich as continuous
+  drawing under the present hold.
+- During video the loop draws every frame of its class.
+- The Channel Guide (which uses a guide-inputs signature, not
+  `wants_continuous_redraw`) is a static menu like any other: it redraws on
+  its own signature (at most once a second) and otherwise follows the rules
+  above.
 
 ### 5. Sizes
 
@@ -314,7 +502,8 @@ Sound Factory sizes effects in millimetres of its 197 mm panel. On a TV:
 **CRT Native mode** (a real tube through the HDMI converter) **(call)**:
 the rows that imitate what a real tube already does are drawn at neutral
 there — SCANLINES, TRUE RASTER, the mask, CURVATURE, RIM, GLASS BLACK,
-REFLECTION — and shown as not applicable. The signal, supply and wear rows
+REFLECTION — and shown as not applicable; the picture's fit, corner
+radius and margin are neutral there too (§3). The signal, supply and wear rows
 still work.
 
 ### 6. Controls
@@ -323,6 +512,10 @@ still work.
 page needs the same keys, labels, hints, groups and look values; it gets
 them from a JSON file generated from the table and checked in, with a test
 on each side that fails when the two differ. No hand-kept second list.
+*Added after Phase 0:* the same file carries each row's "forces 30 fps"
+flag and each look's frame rate (§3 "Frame class"); the TV tags those rows
+"30 fps" in their sublabel and the Look row reads "Look: TV · 30 fps"; the
+web page tags the same rows and shows the rate the kiosk reports.
 
 **On the TV** (Settings → Display):
 
@@ -410,37 +603,60 @@ files, and is deleted on clones by `first_boot.sh`.
 The shader's power, warm-up, spot and degauss inputs come across. Two uses
 are wired in this project:
 
-- **Warm-up** (Sound Factory's 1.5 s) when the Tube engine starts drawing:
-  at kiosk start (over the start of the intro, §3), and when the engine is
-  switched to Tube.
-- **Degauss** as a menu action and a button on the web page.
+- **Warm-up** (Sound Factory's 1.5 s) when the Tube engine starts
+  drawing: at kiosk start (over the start of the intro, §3), and when the
+  effective engine becomes Tube (from the menu or the web page). Not after
+  a game returns, not after the Media Browser closes: the tube was never
+  switched off.
+- **Degauss** on request: the TV menu and the web page each add one to
+  `tube_live.degauss_requests` (plan 2); the renderer starts Sound
+  Factory's 1.4 s decaying wobble whenever that counter has risen since the
+  last frame it drew, and counts it "moving" for 1.5 s so a static menu
+  shows it whole.
 
 Not wired now: the power-off collapse to a dot.
 
-### 9. When a look is too heavy
+### 9. When a look is too heavy **(call)**
 
-Every shipped look is tuned to pass the acceptance numbers. A custom mix
-can still exceed the GPU. The kiosk counts frames that miss their vblank
-while the Tube engine draws and logs the count per minute in the journal
-next to the existing UI draw-call line. If video is playing and misses are
-sustained, it shows one toast ("This CRT look is too heavy for smooth
-video") and flags it in the status the web page reads. It does not change
-the owner's settings **(call)**.
+Every shipped look is tuned to pass its class's budget (Acceptance). A
+custom mix can still exceed it — a Lean60 mix whose output pass is too big
+for 8 ms, or a Rich30 mix of every costly row. While the Tube engine draws,
+the kiosk counts presents that miss their class's cadence (an interval
+over half a refresh past 16.7 ms for Lean60, past 33.3 ms for Rich30) and
+logs the count per minute in the journal next to the UI draw-call line. If
+a video is playing and more than 5% of frames over 30 s miss, it shows one
+toast ("This CRT look is too heavy for smooth video") and sets
+`too_heavy` in the status the web page reads, until the setting changes.
+It does not change the owner's settings.
 
 ## Acceptance
 
 On a 2 GB Pi 5, Modern TV at 1920×1080@60, a 960×720 H.264 playlist video
-playing, for **each of the six looks**:
+playing, for **each of the six looks**, measured with
+`MDB_TUBE_GPU_TIMING=1` (§3) and the present intervals (call):
 
-- At least 99% of frames are presented on their vblank over a 10-minute
-  run. A look that fails has its costliest rows lowered in the box's look
-  table until it passes.
+- **Lean60:** all tube passes together ≤ **8 ms** of GPU per frame at
+  1440×1080, and ≥ **99%** of frames presented on their vblank over a
+  10-minute run.
+- **Rich30:** all tube passes together ≤ **24 ms** of GPU per frame at
+  1440×1080, and ≥ **99%** of frames presented at the 33.3 ms cadence over
+  a 10-minute run.
+- A look that misses its class's budget has its costly rows lowered in
+  the box's look table until it passes (the tv-class looks are expected to
+  need glow and afterglow lowered or off); the owner retunes by eye
+  afterwards. A lean look that misses 8 ms with the exact beam may take the
+  cheap beam (§3) before any row is lowered.
+- Each look on a full-screen channel film (1920×1080 picture, Rich30):
+  ≥ 99% at the 33.3 ms cadence.
 - 30 minutes in the enclosure with no throttling (`vcgencmd
   get_throttled` stays `0x0`).
 - `MemAvailable` falls by less than 32 MB with the engine on.
-- On the static main menu: a look with no moving row reaches zero draws
-  per second after settling; a look with moving rows draws at no more than
-  30 fps.
+- On the static main menu: a still look falls to the redraw gate's idle
+  rate after settling (its 250 ms safety net: 4 draws a second, as Classic
+  and Enhanced today — the original "zero" was never what the gate does);
+  a look with moving rows draws at no more than 30 fps.
+- Every program in the table compiles, links and draws once on the Pi 5,
+  each first draw ≤ 50 ms, none in 2-thread mode for the lean outputs.
 
 On a Pi 4B: with the same release, screenshots of Classic and Enhanced
 match the previous release, and no Tube row or tab is offered.
@@ -450,20 +666,23 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
 
 ## Build order
 
-0. **Measure first (throwaway spike allowed).** The shader ported and
-   wired behind an environment variable on the owner's Pi 5 at 1080p with
-   video playing; each effect group timed on and off. Its results decide:
-   A or B; which rows the shipped looks can afford; shader compile time.
-   Results are written down in `docs/engineering/`. Everything after this
-   step is built to the normal standard; the spike's code is not kept
-   without going back through review.
+0. **Measure first** — done (Phase 0, two rounds, 2026-11-15; the spike on
+   branch `spike/tube-phase0` is a reference only and is never merged).
 1. The pure core: rows, looks, resolver, mapping, persistence, the board
-   gate — with tests.
-2. The renderer: shader, passes, resting and field rate, fallback.
-3. The TV menu.
-4. The Content Manager tab and live tuning.
-5. Hardware validation on both boards; the owner retunes the six looks on
-   his TV.
+   gate — built (plan 1).
+2. The controls: TV menu, Content Manager tab, live tuning — plan 2.
+3. The renderer (plan 3), in this order: one hardware task that isolates
+   the compiler hang with the spike; the pure parts (CRT Native fit and
+   accumulated phases, frame class, the two-class look table, the program
+   table, the shaders and their CI validation, the per-frame driver, the
+   cadence, the pacing and timing monitors, the build guard); the GL
+   parts, inert until switched on; the 30 fps tags in the controls; then
+   hardware: every program compiled and drawn, the per-look budgets
+   (lowering rows where needed), the Pi 4B and the policy override.
+4. **Switching it on** is plan 3's last task, after the hardware
+   acceptance: it flips `app::kTubeRendererReady`. Until then no task
+   changes what any box shows. The owner retunes the six looks on his TV
+   after it.
 
 ## Testing
 
@@ -482,12 +701,23 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
   100); phase continuity across clock wraps; settle debt; resolver and
   moved keys; persistence round-trip including old files and bad values;
   the board gate; the redraw-gate decision; the menu's edit-mode logic;
-  the request parser.
-- **Shader:** the GLSL is compiled in CI on every push (test-only tooling,
-  builder's choice; a new package must follow CLAUDE.md's dependency
-  rule). Rendered-pixel checks like Sound Factory's WASH/TONE/PITCH/FLASH
-  legs are wanted where they can run without a Pi; what cannot run off the
-  box is checked on hardware with `screenshot_request` and listed as such.
+  the request parser. Added for the renderer: the frame class and the
+  "forces 30 fps" flag; every reachable setting maps to one program-table
+  row per pass, with exactly the capabilities it needs; target sizes and
+  bytes; the uniform list each program declares; the accumulated phases
+  (no jump on a speed step, wrap, dt cap); CRT Native's neutral fit; the
+  mask tile's average; the limiter's step; warm-up and degauss from the
+  request counter; the present hold and the gate under both classes; the
+  pacing monitor; the build guard.
+- **Shader:** every program in the table, assembled by the same pure
+  function the kiosk uses (both decode paths), is written out by a test and
+  compiled by `glslangValidator` as GLSL ES 3.00 in a CI job of its own on
+  every push. `glslang-tools` is CI-only tooling, not a kiosk dependency
+  (it is no `-dev` package, so `system_deps_parity.bats` does not list it);
+  on a Mac `brew install glslang`. The kiosk binary carries a marker string
+  from the embedded sources, asserted by the `kiosk-build` job and
+  `release.yml`. Rendered-pixel checks are done on hardware with
+  `screenshot_request` and listed as such; nothing renders off the box.
 - **Web (pytest):** validation, CSRF, the gate-closed answer, the request
   file's atomicity and sequence, the generated row file matching the C++
   table; `manager_display.js` follows the classic-script load-order rules.
@@ -496,25 +726,36 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
 ## Left to the builder
 
 - The file protocol's exact shape (§7), within its stated requirements.
-- How the shader decodes and encodes sRGB, the blur's tap count, texture
-  formats, how the mean is mipped.
-- How the shader source is organised so that a move to approach B is a
-  change of assembly, not a rewrite.
-- CI shader-compile tooling.
+- The blur's tap count and the embedding of the shader files (both
+  decided in plan 3; the sRGB method, texture formats, the mean's mip and
+  the shader organisation are now decided in §3).
 - The web tab's layout and styling, within the Content Manager's existing
   look.
 - File and symbol names.
 
 ## Risks
 
-- **The Pi 5 cannot afford the heavier rows at 1080p.** Mitigations in
-  order: approach B; lower those rows in the shipped looks; the too-heavy
-  warning for custom mixes. Phase 0 exists to find this out before
-  anything else is built.
-- **Afterglow's extra copy** and the history's read/write are the most
-  memory traffic this adds, during software video decode.
+- **A lean look cannot hold 8 ms.** The output pass alone measured 7–9 ms
+  (7.0 ms in the bench for PVM/Monitor, ~9 ms live with the video
+  decoding beside it). Mitigations in order: the cheap beam for the lean
+  class; a lower-cost look (scanline depth 0 removes the beam); moving the
+  look to Rich30 by giving it back its Sound Factory sharpness. Found by
+  the hardware acceptance before anything is switched on.
+- **The tv-class looks cannot hold 24 ms as shipped** (26–31 ms
+  measured). Expected: half-width signal, then glow and afterglow lowered
+  or off (18 ms measured without them).
+- **The compiler hang.** Isolated first (plan 3's first task); every
+  program is then compiled and drawn on the Pi 5 before the switch-on, and
+  a hang that still happens on a box costs one boot's worth of Tube, not a
+  restart loop (§3). A Mesa update can bring a new one: re-run the
+  program-table hardware check when the OS image's Mesa changes.
+- **Rich30 doubles input latency** on the screens it covers (16.7 → 33 ms
+  worst case). Accepted for rich looks; the default look is lean (plan 3).
+- **Afterglow's history** read/write and copy is still the most memory
+  traffic this adds, during software video decode.
 - **Looks tuned for a 7.9-inch panel at arm's length will not look right
-  on a living-room TV as copied.** Expected; step 5 is the retune.
+  on a living-room TV as copied.** Expected; the owner's retune follows
+  the switch-on.
 - **Two shaders drift apart.** Mitigated by shared keys, a pinned table,
   and porting Sound Factory's tests; not eliminated.
 - **Two pending designs touch the same screen** (`2026-11-12` crop toggle
@@ -535,7 +776,8 @@ core was rebased onto current `main` before it was proposed. Re-checked
 against current `main`:
 
 - **Unchanged since:** `renderer_crt.cpp`, `renderer_shaders.cpp`,
-  `crt_time.h`, `redraw_gate.h`. The rendering analysis in §3 and §4 stands.
+  `crt_time.h`, `redraw_gate.h`. The rendering analysis in §3 and §4 stood
+  then; *superseded:* §3 and §4 were rewritten after Phase 0.
 - **The two "pending" designs in Risks have landed** (crop toggle, channel
   guide), along with movie channels. The "whoever lands second re-checks"
   duty is now the tube's. The renderer plan must compose with the guide's
@@ -564,6 +806,9 @@ against current `main`:
 - `renderer_crt.cpp` and `main.cpp`'s `begin_scene_fbo` path still gate on
   `enhanced_crt_enabled` alone. Plan 3 switches them to
   `app::effective_crt_engine(crt_engine, profile.tube_crt_engine)`.
+  *Updated:* plan 2 introduced `app::tube_offered(state)` (the board gate
+  AND the renderer-ready constant); plan 3 uses
+  `effective_crt_engine(crt_engine, tube_offered(state))`.
 - Rows are written only through `tube::set_row` / `tube::set_mask` (or
   validated with `tube::is_row_value` first): `tube::resolve()` does not
   range-check. This binds Plan 2's request parser.
@@ -572,6 +817,9 @@ against current `main`:
   `tube_signal_motion` must never run twice on the same uniforms. A
   renderer with no quarter-resolution pass zeroes glow, chroma bleed, ABL
   and breathing on the still uniforms, as Sound Factory's does.
+  *Updated:* plan 3 changes the per-frame API for accumulated phases (§3
+  "Precision and time"), and its ABL mean comes from a separate probe, so
+  ABL and breathing are zeroed only when that probe cannot run.
 - `TubeUniforms` is not laid out for a uniform block; upload it field by
   field.
 - The MASK row has a label but no hint lines: Sound Factory's hint depends
@@ -583,7 +831,12 @@ against current `main`:
   (Plan 2) until the renderer plan flips it, so a release between the two
   plans is safe: it offers nothing new.
 
-### Open, for the owner, before the renderer plan
+### Open, for the owner, before the renderer plan — answered (calls)
+
+Both now have working answers, flagged **(call)** in §3 for the owner:
+(1) CRT Native's fit, corner radius and margin are neutral; (2) the three
+speed rows' phases are accumulated by the renderer. The questions as they
+were put:
 
 1. **CRT Native still insets the picture.** §5 draws scanlines, raster,
    mask, curvature, rim, glass black and reflection at neutral on a real
