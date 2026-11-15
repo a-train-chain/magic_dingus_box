@@ -1011,7 +1011,9 @@ for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revo
 done
 # Recovery identity/history and desired fallback are per-box, like VPN keys.
 # prepare also removes them from the artifact; this covers older donor images.
-rm -rf /var/lib/magic-dingus/vpn_recovery /run/mdb-vpn-recovery
+# (Not /run/mdb-vpn-recovery: tmpfs never reaches an image, and removing it
+# under a running watcher would orphan its single-instance controller.lock.)
+rm -rf /var/lib/magic-dingus/vpn_recovery
 rm -f "$INSTALL_DIR/config/vpn_recovery.json" "$INSTALL_DIR/config/vpn_recovery.json.lock"
 
 # The VPN tunnel event log (gluetun_cascade_restart.sh) is the SOURCE box's
