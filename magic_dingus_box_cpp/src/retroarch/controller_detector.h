@@ -21,19 +21,21 @@ enum class ControllerType {
 // resolve_mapping_for_pad() in controller_mapping.h.
 ControllerType match_vid_pid(uint16_t vid, uint16_t pid);
 
-// Scan /dev/input/js* lexicographically and return the first recognized type.
-// Reads VID/PID from /sys/class/input/jsN/device/id/{vendor,product}.
-// Returns UNKNOWN if no joystick is present or the VID/PID doesn't match any
-// supported device.
+// Return the first recognized legacy type from the same filtered, numeric
+// event-device inventory as detect_connected_controllers(). UNKNOWN when
+// no gamepad has a known VID/PID; modern automatic mapping uses pad metadata.
 ControllerType detect_primary_controller();
+// Explicit filesystem roots for offline inventory inspection and tests.
+ControllerType detect_primary_controller(const std::string& input_dir,
+                                         const std::string& class_input_dir);
 
 // Short human-readable identifier for logs ("N64_ADAPTER", "PS_STYLE_DRAGONRISE",
 // "UNKNOWN"). Guaranteed not to throw.
 std::string controller_type_name(ControllerType t);
 
-// One physical joystick node, as enumerated from /dev/input/js*.
-// `port` is the 0-based index in lexicographic js-node order (js0 -> 0,
-// js1 -> 1, ...), phone remote skipped; port N here is player N+1. This is
+// One gamepad event device, as enumerated from /dev/input/eventN.
+// `port` is the 0-based index in numeric event-node order (event2 before
+// event10), phone remote and auxiliaries skipped; port N is player N+1. This is
 // NOT necessarily RetroArch's own joypad order (its udev driver enumerates
 // the udev DB in syspath order and counts the phone remote) -- the launcher
 // pins each player to its pad with write_port_reservations().
@@ -60,19 +62,16 @@ struct DetectedPad {
     std::vector<uint16_t> abs_codes;   // ascending EV_ABS codes (incl. hats)
 };
 
-// Enumerate /dev/input/js* lexicographically (same walk as
-// detect_primary_controller()) and return one DetectedPad per node, in
-// port order. VID/PID come from /sys/class/input/jsN/device/id/{vendor,
-// product} (0000 on any read/parse failure, same as detect_primary_controller);
-// `name` comes from the sysfs device/name line. Returns an empty vector if
-// no /dev/input/js* nodes exist -- callers must treat that as "fall back to
-// the existing single-mapping path", not as an error.
-//
-// This does NOT replace detect_primary_controller(): the autoconfig-file
-// emission branch in retroarch_launcher.cpp still calls that function for
-// its single ControllerType decision. This is for per-port mapping
-// resolution (see resolve_mapping_for_pad() in controller_mapping.h),
-// which needs every connected pad's own VID/PID, not just the first match.
+// Enumerate canonical /dev/input/eventN nodes in numeric order, without
+// opening or grabbing them. Classify sysfs capabilities with the kiosk's
+// shared joystick policy and skip the phone remote, motion/touch/digitizer
+// nodes, and incomplete classification reads. Aliases are never scanned;
+// distinct same-model pads retain separate ports. VID/PID read failures
+// stay 0000 so reservation emission can leave those devices unreserved.
+// Empty inventory preserves the launcher's existing single-mapping fallback.
 std::vector<DetectedPad> detect_connected_controllers();
+// Explicit filesystem roots, with the same policy as the live scan.
+std::vector<DetectedPad> detect_connected_controllers(const std::string& input_dir,
+                                                     const std::string& class_input_dir);
 
 } // namespace retroarch

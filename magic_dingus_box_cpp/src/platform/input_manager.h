@@ -163,22 +163,6 @@ private:
     InputAction map_axis_to_action(uint8_t axis, int16_t value);
     InputAction map_key_to_action(uint16_t code);
 
-    // The ROTATE decision for a main-stick X axis: deadzone + fire-on-change
-    // + hold-to-repeat at ROTATE_REPEAT_HZ. Extracted from
-    // map_axis_to_action's `axis == 0` branch so the overlay path
-    // (arbitrary ABS code) and the hardcoded path (ABS_X) are literally the
-    // same code and share last_rotate_dir_/last_rotate_time_ -- they can
-    // never drift apart, and only one of the two ever runs per event.
-    //
-    // `deflection` is signed distance from the axis's REST CENTRE, not the raw
-    // evdev value: an axis reporting 0..255 rests at 127, so comparing its raw
-    // value against a symmetric deadzone would read "hard right" forever. The
-    // hardcoded ABS_X path passes the raw value with AXIS_DEADZONE, which is
-    // exactly what it always did (centre 0, threshold 5000); the overlay path
-    // passes a value centred and a threshold scaled by the device's reported
-    // min/max (Device::AxisNorm).
-    InputAction rotate_from_axis_value(int32_t deflection, int32_t deadzone);
-
     // Deadzone for a signed-16-bit axis: ~15% of half-range. Also the
     // numerator of the proportional threshold derived for other ranges, so a
     // signed-16 axis normalizes back to exactly this value (see
@@ -207,11 +191,6 @@ private:
     static constexpr size_t MAX_RAW_EVENTS = 4096;
 
     static constexpr const char* PHONE_REMOTE_NAME = "MagicDingus Phone Remote";
-
-    // State tracking for axes/hats
-    int last_rotate_dir_;
-    double last_rotate_time_;
-    static constexpr double ROTATE_REPEAT_HZ = 8.0;
 
     // D-pad hold-to-repeat
     static constexpr double DPAD_INITIAL_DELAY = 0.4;

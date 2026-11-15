@@ -1,4 +1,5 @@
 #include "input_manager.h"
+#include "menu_stick_navigation.h"
 #include "udev_wake.h"
 #include "input_mapping.h"
 #include "input_device_info.h"
@@ -142,6 +143,24 @@ struct InputManager::Device {
         return AxisNorm{0, InputManager::AXIS_DEADZONE, false};
     }
 
+    struct MenuStickAxis {
+        MenuStickNavigation navigation;
+        InputAction action = InputAction::NONE;
+    };
+    // Per-device, per-axis holds; independent from physical D-pad latches.
+    std::map<uint16_t, MenuStickAxis> menu_sticks;
+
+    int update_menu_stick(uint16_t code, int32_t value, InputAction action) {
+        const bool has_range = libevdev_get_abs_info(dev, code) != nullptr;
+        const int32_t minimum = has_range ? libevdev_get_abs_minimum(dev, code) : -32768;
+        const int32_t maximum = has_range ? libevdev_get_abs_maximum(dev, code) : 32767;
+        auto& stick = menu_sticks[code];
+        stick.action = action;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return stick.navigation.update(minimum, maximum, value, now);
+    }
+
     // Populate axis_norm from libevdev's reported ranges.
     //
     // Axes in the wild are NOT all signed 16-bit: the cheap DragonRise /
@@ -197,11 +216,7 @@ struct InputManager::Device {
     }
 };
 
-InputManager::InputManager()
-    : last_rotate_dir_(0)
-    , last_rotate_time_(0.0)
-{
-}
+InputManager::InputManager() = default;
 
 InputManager::~InputManager() {
     cleanup();
@@ -637,6 +652,8 @@ std::vector<InputEvent> InputManager::poll() {
                 }
                 dpad_held_x_ = 0;
                 dpad_held_y_ = 0;
+                device->menu_sticks.clear();
+                device->dpad_x_8bit_last = device->dpad_y_8bit_last = 0;
                 rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                 continue;
             }
@@ -895,15 +912,9 @@ std::vector<InputEvent> InputManager::poll() {
                         dpad_held_x_ = 0;
                     }
                 } else if (ev.code == ABS_Y) {
-                    // Analog Stick Y for ROTATE_VERTICAL
-                    // Deadzone check (simple)
-                    if (ev.value < -16000) { // Up
-                         input_ev.action = InputAction::ROTATE_VERTICAL;
-                         input_ev.delta = -1;
-                    } else if (ev.value > 16000) { // Down
-                         input_ev.action = InputAction::ROTATE_VERTICAL;
-                         input_ev.delta = 1;
-                    }
+                    input_ev.delta = device->update_menu_stick(
+                        ev.code, ev.value, InputAction::ROTATE_VERTICAL);
+                    if (input_ev.delta != 0) input_ev.action = InputAction::ROTATE_VERTICAL;
                 // ADDITIVE MENU-NAV OVERLAY (axes). Reached ONLY for codes none
                 // of the branches above handled, and because these are
                 // `else if`s a code the overlay DOES claim never also reaches
@@ -942,17 +953,9 @@ std::vector<InputEvent> InputManager::poll() {
                 // learned to consult the overlay first.
                 } else if (device->overlay && device->overlay->nav_x_abs >= 0 &&
                            static_cast<int>(ev.code) == device->overlay->nav_x_abs) {
-                    // Same fire-on-change / hold-repeat logic the hardcoded
-                    // ABS_X path uses, on this pad's actual stick-X code, with
-                    // the deadzone scaled to the range this axis really
-                    // reports (a 0..255 axis rests at 127 and could never
-                    // cross a raw +/-5000 threshold in either direction).
-                    const Device::AxisNorm n = device->axis_threshold(ev.code);
-                    const int32_t deflection = ev.value - n.centre;
-                    input_ev.action = rotate_from_axis_value(deflection, n.deadzone);
-                    if (input_ev.action == InputAction::ROTATE) {
-                        input_ev.delta = (deflection > 0) ? 1 : (deflection < 0) ? -1 : 0;
-                    }
+                    input_ev.delta = device->update_menu_stick(
+                        ev.code, ev.value, InputAction::ROTATE);
+                    if (input_ev.delta != 0) input_ev.action = InputAction::ROTATE;
                 } else if (device->overlay && device->overlay->seek_abs >= 0 &&
                            static_cast<int>(ev.code) == device->overlay->seek_abs) {
                     // Same deadzone the hardcoded C-stick path uses, likewise
@@ -964,6 +967,10 @@ std::vector<InputEvent> InputManager::poll() {
                     } else if (deflection < -n.deadzone) {
                         input_ev.action = InputAction::SEEK_LEFT;
                     }
+                } else if (ev.code == ABS_X) {
+                    input_ev.delta = device->update_menu_stick(
+                        ev.code, ev.value, InputAction::ROTATE);
+                    if (input_ev.delta != 0) input_ev.action = InputAction::ROTATE;
                 } else {
                     // Regular axis movement
                     input_ev.action = map_axis_to_action(ev.code, ev.value);
@@ -1050,6 +1057,15 @@ std::vector<InputEvent> InputManager::poll() {
             devices_.end());   // ~Device closes fd + frees libevdev
     }
 
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    for (auto& device : devices_) {
+        if (raw_capture_ && device->is_joystick && device->name != PHONE_REMOTE_NAME) continue;
+        for (auto& entry : device->menu_sticks) {
+            const int delta = entry.second.navigation.poll(now_ms);
+            if (delta != 0) events.push_back({entry.second.action, delta, false});
+        }
+    }
     generate_dpad_repeats(events);
     return events;
 }
@@ -1103,48 +1119,8 @@ InputAction InputManager::map_button_to_action(uint16_t code, bool /*pressed*/) 
     return mapping::joystick_button_action(code);
 }
 
-// Extracted verbatim from map_axis_to_action's `axis == 0` branch so the
-// overlay path can reuse it for a pad whose stick-X is NOT ABS_X. Both
-// callers therefore share last_rotate_dir_/last_rotate_time_ and behave
-// identically; at most one of them runs for any given event.
-//
-// `deflection` is signed distance from the axis's rest centre and `deadzone`
-// the threshold in that same unit. The hardcoded ABS_X caller passes the raw
-// value with AXIS_DEADZONE, which is centre 0 / threshold 5000 -- literally
-// the constants this function used to hardcode, so that path is unchanged.
-// The overlay caller passes a centred value and a threshold scaled from the
-// device's reported min/max, which is what makes an unsigned-range axis work.
-InputAction InputManager::rotate_from_axis_value(int32_t deflection, int32_t deadzone) {
-    const int32_t value = deflection;
-
-    int dir = 0;
-    if (value > deadzone) {
-        dir = 1;
-    } else if (value < -deadzone) {
-        dir = -1;
-    }
-
-    if (dir != 0) {
-        auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (dir != last_rotate_dir_) {
-            // Direction changed - fire immediately
-            last_rotate_dir_ = dir;
-            last_rotate_time_ = now;
-            return InputAction::ROTATE;
-        } else if (now - last_rotate_time_ >= (1.0 / ROTATE_REPEAT_HZ)) {
-            // Same direction held - fire at repeat rate
-            last_rotate_time_ = now;
-            return InputAction::ROTATE;
-        }
-    }
-    if (dir == 0) {
-        last_rotate_dir_ = 0;
-    }
-    return InputAction::NONE;
-}
-
 InputAction InputManager::map_axis_to_action(uint8_t axis, int16_t value) {
-    // Axis 0 = X (left/right) -> ROTATE
+    // Menu-navigation axes are handled by the per-device stick state.
     // Axis 3 = C-stick horizontal -> NEXT/PREV
     // Axis 2 = C-stick vertical -> unused
 
@@ -1153,9 +1129,7 @@ InputAction InputManager::map_axis_to_action(uint8_t axis, int16_t value) {
     // which is what AXIS_DEADZONE is.
     const int32_t deadzone = AXIS_DEADZONE;  // ~15% of half-range
 
-    if (axis == 0) {
-        return rotate_from_axis_value(value, AXIS_DEADZONE);
-    } else if (axis == 3) {
+    if (axis == 3) {
         // C-stick horizontal
         if (value > deadzone) {
             return InputAction::SEEK_RIGHT;
@@ -1200,7 +1174,10 @@ const MenuNavOverlay* InputManager::resolve_overlay(Device& device) {
 }
 
 void InputManager::set_auto_overlay_fn(AutoOverlayFn fn) {
-    for (auto& device : devices_) device->overlay = nullptr;
+    for (auto& device : devices_) {
+        device->overlay = nullptr;
+        device->menu_sticks.clear();
+    }
     auto_overlay_fn_ = std::move(fn);
     for (auto& device : devices_) {
         device->auto_overlay_resolved = false;
@@ -1217,6 +1194,7 @@ void InputManager::set_menu_overlays(std::map<uint32_t, MenuNavOverlay> overlays
     // crash on the next button press.
     for (auto& device : devices_) {
         device->overlay = nullptr;
+        device->menu_sticks.clear();
     }
     overlays_ = std::move(overlays);
     for (auto& device : devices_) {
@@ -1245,6 +1223,7 @@ void InputManager::set_raw_capture(bool enabled) {
     for (auto& device : devices_) {
         device->dpad_x_8bit_last = 0;
         device->dpad_y_8bit_last = 0;
+        device->menu_sticks.clear();
     }
 }
 
