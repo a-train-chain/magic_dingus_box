@@ -23,6 +23,9 @@
 
 namespace app {
 
+// The file's format version (the web page reads it; a test compares it to the file).
+inline constexpr int kTubeRowsJsonVersion = 1;
+
 namespace detail {
 
 inline std::string json_str(std::string_view s) {
@@ -48,7 +51,7 @@ inline std::string tube_rows_json() {
     using detail::json_str;
     const std::string i2 = "  ", i4 = "    ", i6 = "      ", i8 = "        ";
     std::string o = "{\n";
-    o += i2 + "\"version\": 1,\n";
+    o += i2 + "\"version\": " + std::to_string(kTubeRowsJsonVersion) + ",\n";
     o += i2 + "\"row_min\": " + std::to_string(tube::kRowMin) + ",\n";
     o += i2 + "\"row_max\": " + std::to_string(tube::kRowMax) + ",\n";
     o += i2 + "\"default_look\": " + json_str(tube::look_name(tube::kLookDefault)) + ",\n";

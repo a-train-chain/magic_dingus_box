@@ -30,6 +30,9 @@ PARITY = _load_parity()
 ROWS_H = (TUBE / "tube_rows.h").read_text("utf-8")
 LOOKS_H = (TUBE / "tube_looks.h").read_text("utf-8")
 GROUPS_H = (TUBE / "tube_groups.h").read_text("utf-8")
+INPUTS_H = (TUBE / "tube_inputs.h").read_text("utf-8")
+APP_H = (REPO / "magic_dingus_box_cpp" / "src" / "app" / "app_state.h").read_text("utf-8")
+JSON_H = (REPO / "magic_dingus_box_cpp" / "src" / "app" / "tube_rows_json.h").read_text("utf-8")
 
 
 def _block(pattern: str, text: str) -> str:
@@ -75,11 +78,63 @@ def test_groups_match_kGroups():
         assert group["title"] == label[0] + label[1:].lower()
 
 
+def _triples(block_pattern: str, count: int, text: str = GROUPS_H):
+    triples = re.findall(r'\{"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"\}', _block(block_pattern, text))
+    assert len(triples) == count
+    return triples
+
+
+def test_mask_words_and_hints_match_kMaskChoices():
+    triples = _triples(r"kMaskChoices\{\{(.*?)\}\};", 5)
+    assert [(c["word"], *c["hint"]) for c in DATA["mask"]["choices"]] == triples
+
+
+def test_look_words_and_hints_match_kLookChoices():
+    triples = _triples(r"kLookChoices\{\{(.*?)\}\};", 6)
+    assert [(lk["word"], *lk["hint"]) for lk in DATA["looks"]] == triples
+
+
+def test_mask_row_label_and_native_neutrality():
+    m = re.search(r'kMaskRowInfo\{"([^"]*)",\s*"",\s*""\}', GROUPS_H)
+    assert m, "kMaskRowInfo not found"
+    assert DATA["mask"]["label"] == m.group(1)
+    # In CRT Native the mask reads as none: tube_inputs.h says it in code (below) and
+    # beside neutral_in_crt_native. The generator writes the flag as a literal.
+    assert re.search(r"picture\.crt_native \? Mask::none : resolved\.mask", INPUTS_H), \
+        "the CRT Native mask rule was not found in tube_inputs.h"
+    assert re.search(r'"crt_native_neutral\\": true', JSON_H), "generator's mask flag not found"
+    assert DATA["mask"]["crt_native_neutral"] is True
+
+
+def test_row_crt_native_neutral_matches_the_owned_list():
+    owned = re.findall(r"Effect::(\w+)",
+                       _block(r"kOwnedByTheTube\{(.*?)\};", INPUTS_H))
+    assert len(owned) == 8
+    assert {r["key"] for r in DATA["rows"] if r["crt_native_neutral"]} == set(owned)
+    assert len([r for r in DATA["rows"] if r["crt_native_neutral"]]) == 8
+
+
+def test_header_constants():
+    assert DATA["row_min"] == int(_block(r"kRowMin\s*=\s*(-?\d+);", ROWS_H))
+    assert DATA["row_max"] == int(_block(r"kRowMax\s*=\s*(-?\d+);", ROWS_H))
+    assert DATA["default_look"] == _block(r"kLookDefault\s*=\s*Look::(\w+);", ROWS_H)
+    assert DATA["version"] == int(_block(r"kTubeRowsJsonVersion\s*=\s*(\d+);", JSON_H))
+    assert set(DATA) == {"version", "row_min", "row_max", "default_look", "engines", "rows",
+                         "mask", "groups", "looks"}
+
+
 def test_steps():
+    size_step = int(_block(r"kSizeRowStep\s*=\s*(\d+);", LOOKS_H))
+    m = re.search(r"row_step\(Effect e\)[^{]*\{\s*return \(e == Effect::(\w+) \|\| e == Effect::(\w+)\)"
+                  r" \? kSizeRowStep : (\d+);", GROUPS_H)
+    assert m, "row_step not found in tube_groups.h"
+    sized, other = {m.group(1), m.group(2)}, int(m.group(3))
     for row in DATA["rows"]:
-        assert row["step"] == (10 if row["key"] in ("lineSize", "maskSize") else 5), row["key"]
+        assert row["step"] == (size_step if row["key"] in sized else other), row["key"]
 
 
 def test_engines():
-    assert [e["key"] for e in DATA["engines"]] == ["classic", "enhanced", "tube"]
-    assert [e["word"] for e in DATA["engines"]] == ["Classic", "Enhanced", "Tube"]
+    names = re.findall(r'"([^"]*)"', _block(r"kCrtEngineNames\{(.*?)\};", APP_H))
+    words = re.findall(r'"([^"]*)"', _block(r"kCrtEngineWords\{(.*?)\};", APP_H))
+    assert len(names) == len(words) == 3
+    assert DATA["engines"] == [{"key": n, "word": w} for n, w in zip(names, words)]
