@@ -55,6 +55,14 @@ option(BUILD_TESTS "Build unit test targets" ON)
 # toast.cpp from the build even when the flag was set.
 option(ENABLE_MEDIA_BROWSER "Build experimental Media Browser feature" OFF)
 
+# The Tube renderer's GLSL files, embedded at configure time into
+# ${CMAKE_BINARY_DIR}/generated/tube/tube_shader_sources.h (on the kiosk's and
+# test_app_unit's include paths). Each file is a configure dependency.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTubeShaders.cmake)
+set(TUBE_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
+embed_tube_shaders(${CMAKE_CURRENT_SOURCE_DIR}/src/tube/shaders
+    ${TUBE_GENERATED_DIR}/tube/tube_shader_sources.h)
+
 if(BUILD_KIOSK)
     # DRM/KMS, GBM, EGL, OpenGL ES
     pkg_check_modules(DRM REQUIRED libdrm)
@@ -408,6 +416,8 @@ if(BUILD_KIOSK)
         ${CURL_INCLUDE_DIRS}
         ${SQLITE3_INCLUDE_DIRS}
         src/
+        # tube/tube_shader_sources.h (cmake/EmbedTubeShaders.cmake)
+        ${TUBE_GENERATED_DIR}
     )
 
     # Link libraries
@@ -936,7 +946,9 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/bezel_catalog.cpp
         src/utils/stb_image_impl.cpp
     )
-    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
+    # ${TUBE_GENERATED_DIR}: tube/tube_shader_sources.h, for test_tube_shaders.cpp.
+    target_include_directories(test_app_unit PRIVATE src ${TUBE_GENERATED_DIR}
+        ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES}
         ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only

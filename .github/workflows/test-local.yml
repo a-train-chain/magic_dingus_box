@@ -171,9 +171,40 @@ jobs:
           strings "$B" | grep -q "READY=1" || { echo "FATAL: no sd_notify (libsystemd-dev?)"; exit 1; }
           strings "$B" | grep -qi "prowlarr" || { echo "FATAL: Media Browser not compiled in"; exit 1; }
           strings "$B" | grep -q "/connect?code=" || { echo "FATAL: pairing QR target missing"; exit 1; }
+          strings "$B" | grep -q "TUBE_GLSL_TABLE_V1" || { echo "FATAL: tube shaders not embedded"; exit 1; }
           if strings "$B" | grep -q "compiled without HAVE_GPIOD"; then
             echo "FATAL: GPIO compiled out (libgpiod-dev?)"; exit 1
           fi
+
+  # The Tube renderer's fixed program table, every program assembled exactly as
+  # the kiosk embeds it (test_tube_shaders.cpp writes them out) and compiled by
+  # the Khronos reference validator: 19 programs + 9 with shader scene decode +
+  # the vertex shader. A shader that fails here would fail on the Pi at runtime.
+  tube-shaders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libjsoncpp-dev libyaml-cpp-dev glslang-tools
+
+      - name: Configure (tests only, no kiosk)
+        run: >
+          cmake -S magic_dingus_box_cpp -B build
+          -DBUILD_KIOSK=OFF
+          -DENABLE_MEDIA_BROWSER=OFF
+
+      - name: Build test_app_unit
+        run: cmake --build build --target test_app_unit -j"$(nproc)"
+
+      - name: Write the assembled programs
+        run: MDB_WRITE_TUBE_GLSL="$RUNNER_TEMP/glsl" ./build/test_app_unit "[tube_shaders]"
+
+      - name: Validate them with glslangValidator
+        run: bash magic_dingus_box_cpp/scripts/dev/check_tube_shaders.sh "$RUNNER_TEMP/glsl"
 
   # The Flask web-admin pytest suite (playlist CRUD, OTA endpoints,
   # pairing, backup/restore, storage eligibility, upload staging).
