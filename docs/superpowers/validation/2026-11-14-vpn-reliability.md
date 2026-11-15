@@ -28,8 +28,11 @@ On Linux root, with the existing production `magic` account's NOPASSWD sudo abil
 
 ```sh
 MDB_TEST_ROOT_BOUNDARY=1 MDB_TEST_OTA_USER=magic python3 -m unittest discover \
-  -s magic_dingus_box_cpp/scripts/tests -p test_vpn_recovery_cli.py
+  -s magic_dingus_box_cpp/scripts/tests -p test_vpn_recovery_cli.py \
+  -k test_linux_root_owned_intent
 ```
+
+Run the ordinary full suite as the unprivileged account; the command above selects only the Linux root-boundary fixture. Several ordinary CLI tests deliberately mock an unprivileged identity and cannot run meaningfully as real root.
 
 This fixture creates temporary root-owned 0600 intent/lock, genuinely drops the OTA child to the unprivileged account, uses real sudo state helpers, checks uid/euid/gid/HOME/file ownership, and cleans its temporary tree. Docker observations alone are stubbed; production intent and containers are untouched. Missing Linux/root/sudo prerequisites must be recorded as an unfulfilled deployment gate. The ordinary package suite also exercises real isolated HTTP qBit localhost/127.0.0.1 Netscape-cookie handoff, including curl session expiry 0; it contacts no production qBit.
 
@@ -58,6 +61,8 @@ Required assertions include:
 - Exactly one observed global UDP/eth0 VPN firewall endpoint matches the selected target. INFO `Using protonvpn servers from file ... more recent` attests the fixture file through the real adapter and actual default INFO logging.
 - Endpoint blackholes exist before and after the transitions. With VPN explicitly stopped, OUTPUT policy is DROP, a separate numeric TCP probe fails, and the real DNS/TCP/TLS traffic adapter fails. The harness verifies GNU wget availability, BusyBox timeout availability, and actual inner-child termination so missing tools cannot masquerade as firewall success.
 - A disposable Docker stop produces the actual `TimeNano Actor.ID` event fields consumed by the controller.
+
+Catalog identity binds the complete validated provider, including timestamp, all server fields, duplicates and ordered IP lists. Only the outer server-array order is canonicalized for hashing: the pinned image sorts that array while flushing `servers.json`. The original snapshot and candidate selection order remain intact. INFO file-wins evidence and matching disk identity are both still required.
 
 The recipe has a 180s aggregate command deadline. Each direct command is bounded to 10s or remaining time; protected HTTP remains bounded by the adapter (8s/remaining); startup/tunnel transition waits are at most 25s each within the aggregate budget. The container's traffic child uses BusyBox `timeout 3` with GNU wget `--tries=1 --timeout=1`; its host-side caller has a 1.3s cap. Cleanup gets a separate 3s ownership inspect plus 7s remove bound. SIGINT/SIGTERM trigger the same cleanup path; SIGKILL/power loss cannot be trapped.
 

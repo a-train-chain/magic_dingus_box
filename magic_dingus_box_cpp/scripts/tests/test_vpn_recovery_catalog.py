@@ -60,6 +60,36 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(candidates[0].public_key, 'uUM9J8bziO0yZfsdYoruEfP3m6YuSu+Mek9W/J8mT1Y=')
         self.assertEqual(eligible_candidates(cat, ['Nowhere']), [])
 
+    def test_identity_survives_gluetun_server_sort_without_changing_selection_order(self):
+        before = copy.deepcopy(self.provider)
+        original = validate_catalog(self.provider, NOW)
+        # v3.41.3 flush.go sorts Canada, Netherlands, United States.
+        reordered = copy.deepcopy(self.provider)
+        reordered['servers'] = [reordered['servers'][i] for i in (0, 1, 4, 5, 2, 3)]
+        self.assertEqual(validate_catalog(reordered, NOW).identity, original.identity)
+        self.assertEqual(self.provider, before)
+        self.assertEqual(original.provider, before)
+        self.assertEqual([c.country for c in eligible_candidates(original, [])],
+                         ['Canada', 'Canada', 'United States', 'United States',
+                          'United States', 'United States', 'Netherlands', 'Netherlands'])
+
+    def test_identity_binds_all_provider_server_fields_and_ip_order(self):
+        original = validate_catalog(self.provider, NOW).identity
+        changes = [lambda p: p.update(timestamp=p['timestamp']-1),
+                   lambda p: p.update(extra='metadata'),
+                   lambda p: p['servers'][0].update(city='Other city'),
+                   lambda p: p['servers'][0].update(port_forward=False),
+                   lambda p: p['servers'][0].update(wgpubkey=p['servers'][1]['wgpubkey']),
+                   lambda p: p['servers'][0].update(ips=['84.20.16.2']),
+                   lambda p: p['servers'][2]['ips'].reverse(),
+                   lambda p: p['servers'].append(copy.deepcopy(p['servers'][0])),
+                   lambda p: p['servers'].pop()]
+        for change in changes:
+            with self.subTest(change=change):
+                changed = copy.deepcopy(self.provider)
+                change(changed)
+                self.assertNotEqual(validate_catalog(changed, NOW).identity, original)
+
     def test_schema_key_ip_and_timestamp_validation(self):
         mutations = [lambda p: p.update(version=3), lambda p: p.update(version=True),
                      lambda p: p.update(timestamp=NOW+1), lambda p: p.update(timestamp=-1),

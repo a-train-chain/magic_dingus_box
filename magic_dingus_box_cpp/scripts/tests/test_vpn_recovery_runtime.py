@@ -668,6 +668,30 @@ class RuntimeTests(unittest.TestCase):
                 self.assertFalse(status['ready'])
                 self.assertFalse(any(c[0]=='put' for c in self.a.calls))
 
+    def test_real_catalog_attestation_accepts_sorted_file_but_requires_content_and_info(self):
+        import subprocess
+        from vpn_recovery.runtime import SystemAdapters
+        snapshot = self.a.catalog
+        provider = copy.deepcopy(snapshot.provider)
+        provider['servers'] = [provider['servers'][i] for i in (0, 1, 4, 5, 2, 3)]
+        path = self.paths.services/'config/gluetun/servers.json'
+        atomic_json(path, {'version': 1, 'protonvpn': provider})
+        log = 'INFO [storage] Using protonvpn servers from file which are 361 days more recent'
+        calls = []
+        def runner(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, log, '')
+        adapter = SystemAdapters(self.paths, runner)
+        self.assertTrue(adapter.attest_catalog(GEN, snapshot, time.monotonic()+3))
+        self.assertEqual(calls, [['docker', 'logs', '--since', GEN['started_at'],
+                                  '--tail', '1000', GEN['container_id']]])
+        log = ''
+        self.assertFalse(adapter.attest_catalog(GEN, snapshot, time.monotonic()+3))
+        log = 'INFO [storage] Using protonvpn servers from file which are 361 days more recent'
+        provider['servers'][0]['city'] = 'Changed after load'
+        atomic_json(path, {'version': 1, 'protonvpn': provider})
+        self.assertFalse(adapter.attest_catalog(GEN, snapshot, time.monotonic()+3))
+
     def test_unique_public_endpoint_only(self):
         rule='-A OUTPUT -d 84.20.16.29/32 -o eth0 -p udp -m udp --dport 51820 -j ACCEPT\n'
         self.assertEqual(parse_endpoint(rule),'84.20.16.29')

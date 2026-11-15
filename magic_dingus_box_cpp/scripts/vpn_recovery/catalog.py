@@ -113,7 +113,13 @@ def validate_catalog(provider, now):
                     raise ValueError('invalid public key')
             except (ValueError, TypeError):
                 raise ValueError('invalid public key') from None
-    payload = json.dumps(provider, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    # Gluetun v3.41.3 flush.go sorts the server array when persisting it.
+    # Bind every field and duplicate, but make identity independent of that
+    # serialization order. Keep the snapshot's original candidate/IP ordering.
+    canonical = dict(provider)
+    canonical['servers'] = sorted(servers, key=lambda server: json.dumps(
+        server, sort_keys=True, separators=(',', ':'), allow_nan=False))
+    payload = json.dumps(canonical, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
     if len(payload) > MAX_BYTES:
         raise ValueError('oversized catalog')
     catalog = Catalog(copy.deepcopy(provider), hashlib.sha256(payload).hexdigest(), timestamp)
