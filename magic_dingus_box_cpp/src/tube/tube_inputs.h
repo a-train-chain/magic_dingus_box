@@ -29,6 +29,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 #include "tube/tube_looks.h"
 #include "tube/tube_rows.h"
@@ -65,6 +66,25 @@ struct TubeUniforms {
     float vignette, rim;
     float noise, jitter, glassBlack, reflection, abl, breathe, chromaBleed;
     std::array<float, 3> tint;  // r g b
+
+    // What one frame owns: tube_frame_phases() writes these, each already
+    // wrapped, so no float the shader reads grows with the kiosk's uptime.
+    float humPhase;                      // 0..1 of the hum bar's roll
+    float flickerWave;                   // 0.6 sin(37.7 t) + 0.4 sin(61.3 t + 1.7)
+    float noiseSeed;                     // fract(frame * 0.618) * 913
+    float jitterSeed;                    // frame mod 1024
+    float degaussPhaseA, degaussPhaseB;  // 31 t and 27 t, radians wrapped to 2 pi
+    float jitterBias;                    // -0.5 at rest; tube_signal_motion() moves it
+
+    // Written by the renderer alone: the limiter's level, the power animations,
+    // the degauss wobble's decay, the power-off dot, the warm-up's light.
+    float ablLevel, power, degauss, spot, warmupGain;
+
+    // The optional character: tube_character_frame() writes these once a frame.
+    float rollAmount, rollPosition, rollHalfWidth, rollTint;
+    float trackingOffset, trackingPosition, trackingHalfWidth, driftOffset;
+    float flagOffset, flagExtent;
+    float purityAmount, purityX, purityY, purityRadius, purityR, purityG, purityB;
 };
 
 // The rows a real CRT already draws for itself: on one, these read as 0 (and the
@@ -167,6 +187,8 @@ inline TubeUniforms tube_neutral(const Picture& picture) noexcept {
     u.contrast = 1.0f;
     u.saturation = 1.0f;
     u.tint = {1.0f, 1.0f, 1.0f};
+    u.power = u.warmupGain = 1.0f;
+    u.jitterBias = -0.5f;
     return u;
 }
 
@@ -247,6 +269,196 @@ inline TubeUniforms tube_uniforms_for(const Resolved& resolved, const Picture& p
     u.abl = fraction(row(Effect::abl));
     u.breathe = static_cast<float>(row(Effect::breathing) * 0.01);
     return u;
+}
+
+// ---- What one frame owns ---------------------------------------------------
+//
+// Ported from Sound Factory's panel/TubeInputs.h (tubeWarmupGain,
+// tubeSignalMotion, tubeCharacterStrength, tubeTracking*, tubeCharacterFrame,
+// tubeSettleFrames and their constants), commit 4ef74a6. What differs:
+//   - Sound Factory hands its shader raw `time` and `frame` floats and does
+//     sin(time * 37.7), time / humPeriod, hash(line, frame) and
+//     fract(frame * 0.618) per pixel. The kiosk runs for weeks and a float
+//     seconds-since-start loses the precision those need, so each term is
+//     worked here in double once a frame and handed over wrapped:
+//     tube_frame_phases().
+//   - A millimetre is `u.pxPerMm` pixels: the source is the output.
+//   - No bypass: `enabled` is the one switch.
+
+// Seconds per roll of the hum bar: 60 Hz mains against a 59.94 Hz field beat.
+inline constexpr double kHumPeriodSeconds = 16.7;
+
+namespace detail {
+
+constexpr double kTwoPi = 6.283185307179586;
+
+// `x` wrapped into [0, period), as a float that is still below `period`.
+inline float wrapped(double x, double period) noexcept {
+    const double w = x - std::floor(x / period) * period;
+    const float f = static_cast<float>(w);
+    return f >= static_cast<float>(period) || f < 0.0f ? 0.0f : f;
+}
+
+inline double smooth(double x) noexcept {
+    x = std::clamp(x, 0.0, 1.0);
+    return x * x * (3.0 - 2.0 * x);
+}
+
+// A row as a 0..1 fraction, clamped.
+inline double row_fraction(const Resolved& resolved, Effect effect) noexcept {
+    return std::clamp(resolved.effects[index_of(effect)] / 100.0, 0.0, 1.0);
+}
+
+// Optional character's curve: the row itself up to 0.3, reaching `ceiling` at 1.
+inline double character_strength(double value, double ceiling) noexcept {
+    const double x = std::clamp(value, 0.0, 1.0);
+    const double t = std::clamp((x - 0.3) / 0.7, 0.0, 1.0);
+    return x + (ceiling - 1.0) * t * t * (3.0 - 2.0 * t);
+}
+
+}  // namespace detail
+
+// THE FRAME'S PHASES, from `seconds` since the kiosk started and the frame's
+// count. All the wrapping is here, in double, so the shader only ever sees
+// small numbers.
+inline void tube_frame_phases(TubeUniforms& u, double seconds, std::uint64_t frame) noexcept {
+    const double f = static_cast<double>(frame);
+    u.humPhase = detail::wrapped(seconds / kHumPeriodSeconds, 1.0);
+    u.flickerWave = static_cast<float>(0.6 * std::sin(seconds * 37.7) + 0.4 * std::sin(seconds * 61.3 + 1.7));
+    u.noiseSeed = static_cast<float>(std::fmod(f * 0.618, 1.0) * 913.0);
+    u.jitterSeed = static_cast<float>(frame % 1024u);
+    u.degaussPhaseA = detail::wrapped(seconds * 31.0, detail::kTwoPi);
+    u.degaussPhaseB = detail::wrapped(seconds * 27.0, detail::kTwoPi);
+}
+
+// A compressed impression of cathode warm-up, not a model-specific simulation:
+// a full-sized raster, 0.2 s dark, then light emerging and settling by 1.5 s.
+// At rest exactly 1.
+inline constexpr double kWarmupSeconds = 1.5;
+inline double warmup_gain(double seconds) noexcept {
+    if (seconds <= 0.2) return 0.0;
+    if (seconds < 0.8) return 0.8 * detail::smooth((seconds - 0.2) / 0.6);
+    return 0.8 + 0.2 * detail::smooth((seconds - 0.8) / 0.7);
+}
+
+// Refines the signal and supply rows once a frame, never a saved control: 15%
+// of JITTER's displacement budget goes to correlated line motion, and FOCUS
+// softens a little with rising light, but only through an already-active filter
+// (neutral sharpness adds no texture reads).
+inline void tube_signal_motion(TubeUniforms& u, double seconds, double amount, double rising_light) noexcept {
+    const double mix = std::clamp(amount, 0.0, 1.0);
+    const auto share = static_cast<float>(u.jitter >= 0.0f && u.jitter <= 1.0f ? 0.15 * mix : 0.0);
+    u.jitterBias = -0.5f + share / (1.0f - share) *
+                               static_cast<float>(0.5 * (0.65 * std::sin(seconds * 2.1) + 0.35 * std::sin(seconds * 3.7)));
+    u.jitter *= 1.0f - share;  // malformed rows still reach the shader's own cap
+    if (u.sharpness != 1.0f)
+        u.sharpness *= static_cast<float>(1.0 - 0.03 * mix * std::clamp(static_cast<double>(u.breathe), 0.0, 1.0) *
+                                                    std::clamp(rising_light, 0.0, 1.0));
+}
+
+// TRACKING: one slip every period, lasting the duration (RECOVERY).
+inline double tracking_duration(const Resolved& resolved) noexcept {
+    return 0.12 + detail::row_fraction(resolved, Effect::trackingRecovery);
+}
+inline double tracking_period(const Resolved& resolved) noexcept {
+    return 60.0 - 56.0 * detail::row_fraction(resolved, Effect::trackingRate);
+}
+// True while a slip is under way, plus one clean frame after it settles.
+inline bool tracking_moving(const Resolved& resolved, double elapsed) noexcept {
+    return resolved.effects[index_of(Effect::tracking)] > 0 &&
+           std::fmod(std::max(0.0, elapsed), tracking_period(resolved)) < tracking_duration(resolved) + 0.05;
+}
+
+// THE OPTIONAL CHARACTER, once a frame: the rolling band, the tracking slip,
+// colour drift, flagging and the purity patch. Disabled, every field is 0.
+inline void tube_character_frame(TubeUniforms& u, const Resolved& resolved, double seconds, double tracking_elapsed,
+                                 bool enabled) noexcept {
+    u.rollAmount = u.rollPosition = u.rollHalfWidth = u.rollTint = 0.0f;
+    u.trackingOffset = u.trackingPosition = u.driftOffset = 0.0f;
+    u.trackingHalfWidth = u.flagOffset = u.flagExtent = 0.0f;
+    u.purityAmount = u.purityX = u.purityY = u.purityRadius = u.purityR = u.purityG = u.purityB = 0.0f;
+    if (!enabled) return;
+    const auto row = [&resolved](Effect effect) { return detail::row_fraction(resolved, effect); };
+    const double px_per_mm = u.pxPerMm;
+    constexpr double kTwoPi = detail::kTwoPi;
+    if (row(Effect::rollBand) > 0.0) {
+        u.rollAmount = static_cast<float>(detail::character_strength(row(Effect::rollBand), 2.0));
+        u.rollPosition =
+            static_cast<float>(std::fmod(std::max(0.0, seconds) / (30.0 - 24.0 * row(Effect::rollSpeed)), 1.0));
+        u.rollHalfWidth = static_cast<float>((4.0 + 26.0 * row(Effect::rollWidth)) * px_per_mm / u.outH);
+        u.rollTint = static_cast<float>(2.0 * row(Effect::rollTint) - 1.0);
+    }
+    if (tracking_moving(resolved, tracking_elapsed)) {
+        const double period = tracking_period(resolved), elapsed = std::max(0.0, tracking_elapsed);
+        const double phase = std::fmod(elapsed, period), cycle = std::floor(elapsed / period);
+        const double duration = tracking_duration(resolved), attack = duration * (0.08 / 0.55);
+        const double envelope =
+            detail::smooth(phase / attack) * (1.0 - detail::smooth((phase - attack) / (duration - attack)));
+        u.trackingHalfWidth = static_cast<float>((1.0 + 15.0 * row(Effect::trackingWidth)) * px_per_mm / u.outH);
+        u.trackingOffset = static_cast<float>(1.2 * px_per_mm * detail::character_strength(row(Effect::tracking), 3.0) *
+                                              envelope * std::cos((phase - attack) / duration * 9.9));
+        u.trackingPosition = static_cast<float>(0.15 + 0.70 * std::fmod(0.37 + cycle * 0.61803398875, 1.0));
+    }
+    if (row(Effect::colorDrift) > 0.0)
+        u.driftOffset = static_cast<float>(0.25 * px_per_mm * detail::character_strength(row(Effect::colorDrift), 3.0) *
+                                           std::sin(seconds * kTwoPi / (24.0 - 18.0 * row(Effect::driftSpeed))));
+    if (row(Effect::flagging) > 0.0) {
+        const double phase = seconds * kTwoPi / (12.0 - 10.0 * row(Effect::flagSpeed));
+        u.flagOffset = static_cast<float>(4.0 * px_per_mm * row(Effect::flagging) *
+                                          (0.8 * std::sin(phase) + 0.2 * std::sin(phase * 2.0)));
+        u.flagExtent = static_cast<float>(0.05 + 0.30 * row(Effect::flagHeight));
+    }
+    if (row(Effect::purity) > 0.0) {
+        const double angle = (-0.375 + row(Effect::purityPosition)) * kTwoPi;
+        u.purityAmount = static_cast<float>(row(Effect::purity));
+        u.purityX = static_cast<float>(0.5 + 0.50 * std::cos(angle));
+        u.purityY = static_cast<float>(0.5 + 0.50 * std::sin(angle));
+        u.purityRadius = static_cast<float>(10.0 + 60.0 * row(Effect::puritySize));
+        const double hue = row(Effect::purityHue) * kTwoPi;
+        u.purityR = static_cast<float>(0.5 + 0.5 * std::cos(hue));
+        u.purityG = static_cast<float>(0.5 + 0.5 * std::cos(hue - 2.094395102393195));
+        u.purityB = static_cast<float>(0.5 + 0.5 * std::cos(hue + 2.094395102393195));
+    }
+}
+
+// What changes on screen with nothing else changing: the rows that move every
+// frame. TRACKING is asked separately, through tracking_moving(), because it
+// sleeps between slips.
+inline bool moves_on_its_own(const Resolved& resolved) noexcept {
+    constexpr std::array<Effect, 7> kMoving{Effect::noise, Effect::jitter,     Effect::flicker, Effect::hum,
+                                            Effect::rollBand, Effect::colorDrift, Effect::flagging};
+    for (const Effect effect : kMoving)
+        if (resolved.effects[index_of(effect)] > 0) return true;
+    return false;
+}
+
+// The brightness limiter's time constant, seconds.
+inline constexpr double kAblSeconds = 0.1;
+
+// What "landed" means, for the afterglow's trail and the limiter alike: 0.02 %.
+inline constexpr double kSettledWithin = 0.0002;
+
+// How often a settling frame renders when nothing else is drawing: every second
+// 60 Hz tick.
+inline constexpr double kSettleFramesPerSecond = 30.0;
+
+// HOW MANY RENDERED FRAMES A PICTURE OWES, ITSELF INCLUDED, before the GPU can
+// rest. Two things left to land, each to kSettledWithin, and the debt is
+// whichever needs longer:
+//   - THE AFTERGLOW decays per rendered frame; the strongest channel keeps
+//     `persistence * 0.75` a frame: 4 frames at AFTERGLOW 10, 6 at 30, 30 at 100.
+//   - THE LIMITER runs on the clock and owes frames only while it has distance
+//     to travel (`abl_distance`): 26 across the whole range, none for a picture
+//     as bright as the last.
+inline int settle_frames(const TubeUniforms& u, double abl_distance) noexcept {
+    constexpr double kStrongestKept = 0.75;
+    const double kept = std::clamp(static_cast<double>(u.persistence), 0.0, 1.0) * kStrongestKept;
+    double frames = kept > 0.0 ? std::ceil(std::log(kSettledWithin) / std::log(kept)) : 0.0;
+    const double distance = std::abs(abl_distance);
+    if ((u.abl > 0.0f || u.breathe > 0.0f) && distance > kSettledWithin)
+        frames = std::max(frames,
+                          std::ceil(kAblSeconds * std::log(distance / kSettledWithin) * kSettleFramesPerSecond));
+    return static_cast<int>(frames);
 }
 
 }  // namespace tube
