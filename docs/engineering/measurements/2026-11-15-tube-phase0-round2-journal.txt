@@ -1,0 +1,351 @@
+[2026-11-15 12:27:08.575] [warning] tube spike: ENABLED from MDB_TUBE_SPIKE_DIR=/home/magic/tube-spike/shaders (measurement build, never ship)
+[2026-11-15 12:27:09.882] [info] tube spike: GL_RENDERER=V3D 7.1.10.2 GL_VERSION=OpenGL ES 3.1 Mesa 25.0.7-2+rpt4 GLSL=OpenGL ES GLSL ES 3.10
+[2026-11-15 12:27:09.882] [info] tube spike: relevant extensions: GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_disjoint_timer_query GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_NV_generate_mipmap_sRGB
+[2026-11-15 12:27:09.882] [info] tube spike: sRGB write control true / decode control true / half-float targets true / GPU timers true
+[2026-11-15 12:27:10.007] [info] tube spike: program tube [(none)] (fullscreen.vert + tube.frag) compiled in 22.6 ms + linked in 96.9 ms (gamma mode 0)
+[2026-11-15 12:27:10.084] [info] tube spike: program tube_afterglow [AFTERGLOW] (fullscreen.vert + tube.frag) compiled in 12.9 ms + linked in 63.1 ms (gamma mode 0)
+[2026-11-15 12:27:10.092] [info] tube spike: program lines [LINE_PREPASS] (fullscreen.vert + tube.frag) compiled in 2.9 ms + linked in 5.1 ms (gamma mode 0)
+[2026-11-15 12:27:10.096] [info] tube spike: program downsample [(none)] (fullscreen.vert + downsample.frag) compiled in 1.2 ms + linked in 3.6 ms (gamma mode 0)
+[2026-11-15 12:27:10.103] [info] tube spike: program blur [(none)] (fullscreen.vert + blur.frag) compiled in 4.0 ms + linked in 2.6 ms (gamma mode 0)
+[2026-11-15 12:27:10.112] [info] tube spike: program copy_lin [ENCODE_OUTPUT] (fullscreen.vert + copy.frag) compiled in 6.8 ms + linked in 2.0 ms (gamma mode 0)
+[2026-11-15 12:27:10.115] [info] tube spike: program copy_raw [(none)] (fullscreen.vert + copy.frag) compiled in 0.9 ms + linked in 2.1 ms (gamma mode 0)
+[2026-11-15 12:27:10.115] [info] tube spike: pipeline-1 programs (re)built in 227.2 ms (render thread stalled that long); pipeline-2 programs build on first use
+[2026-11-15 12:27:10.116] [info] tube spike: control.json applied: pvm mask=grille abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:27:10.128] [info] tube spike: scene texture re-specified as SRGB8_ALPHA8 (writes unencoded) 1920x1080 (FBO status 0x8cd5)
+[2026-11-15 12:27:10.154] [info] tube spike: drawing pvm mask=grille into 1440x1080: lines=270.0 maskPitch=3 glow=0.08 sigma=2.93px persistence=0.10 raster=0.00 chromaBleed=0.00px
+[2026-11-15 12:27:10.160] [info] tube spike: program signal [SIG_TONE SIG_SHARP SCENE_HW_DECODE] (fullscreen.vert + v2_signal.frag) compiled in 1.7 ms + linked in 3.3 ms (gamma mode 0)
+[2026-11-15 12:27:10.182] [info] tube spike: program downsample [SCENE_HW_DECODE] (fullscreen.vert + downsample.frag) compiled in 19.5 ms + linked in 2.8 ms (gamma mode 0)
+[2026-11-15 12:27:10.187] [info] tube spike: program glass [(none)] (fullscreen.vert + v2_glass.frag) compiled in 1.4 ms + linked in 3.0 ms (gamma mode 0)
+[2026-11-15 12:27:10.220] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL OUT_POWER AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 2.6 ms + linked in 30.8 ms (gamma mode 0)
+[2026-11-15 12:27:10.261] [info] tube spike: allocated glass (baked) 1440x1080 (RGBA16F)
+SHADER-DB-GLSL48 - MESA_SHADER_FRAGMENT shader: 58 inst, 4 threads, 0 loops, 24 uniforms, 9 max-temps, 0:0 spills:fills, 0 sfu-stalls, 58 inst-and-stalls, 2 nops
+[2026-11-15 12:27:10.427] [info] tube spike: first draw with glass bake took 157.4 ms (includes any compile deferred to first use)
+[2026-11-15 12:27:10.427] [info] tube spike: glass baked 1440x1080 in 157.41 ms (rim 0.45 vignette 0.20 glassBlack 0.30 reflection 0.15)
+[2026-11-15 12:27:10.428] [info] tube spike: mask texture type 1 pitch 3 strength 0.48: 3x1 RGBA8
+[2026-11-15 12:27:10.435] [info] tube spike: allocated signal 1440x1080 (RGBA16F)
+[2026-11-15 12:27:10.440] [info] tube spike: allocated history 0 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:27:10.443] [info] tube spike: allocated history 1 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:27:10.443] [info] tube spike: allocated quarter 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:27:10.444] [info] tube spike: allocated glow blur tmp 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:27:10.444] [info] tube spike: allocated glow 360x270 (SRGB8_ALPHA8)
+SHADER-DB-GLSL45 - MESA_SHADER_FRAGMENT shader: 43 inst, 4 threads, 0 loops, 22 uniforms, 8 max-temps, 0:0 spills:fills, 0 sfu-stalls, 43 inst-and-stalls, 2 nops
+[2026-11-15 12:27:10.471] [info] tube spike: first draw with downsample took 14.1 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL30 - MESA_SHADER_FRAGMENT shader: 60 inst, 4 threads, 1 loops, 16 uniforms, 18 max-temps, 0:0 spills:fills, 0 sfu-stalls, 60 inst-and-stalls, 6 nops
+[2026-11-15 12:27:10.474] [info] tube spike: first draw with blur H took 3.0 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL42 - MESA_SHADER_FRAGMENT shader: 72 inst, 4 threads, 0 loops, 27 uniforms, 12 max-temps, 0:0 spills:fills, 0 sfu-stalls, 72 inst-and-stalls, 2 nops
+[2026-11-15 12:27:10.485] [info] tube spike: first draw with signal took 9.8 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL51 - MESA_SHADER_FRAGMENT shader: 229 inst, 4 threads, 0 loops, 68 uniforms, 26 max-temps, 0:0 spills:fills, 1 sfu-stalls, 230 inst-and-stalls, 8 nops
+[2026-11-15 12:27:10.501] [info] tube spike: first draw with output took 16.2 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL33 - MESA_SHADER_FRAGMENT shader: 33 inst, 4 threads, 0 loops, 12 uniforms, 7 max-temps, 0:0 spills:fills, 0 sfu-stalls, 33 inst-and-stalls, 1 nops
+[2026-11-15 12:27:10.510] [info] tube spike: first draw with copy_lin took 8.3 ms (includes any compile deferred to first use)
+[2026-11-15 12:27:11.673] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 2.6 ms + linked in 5.1 ms (gamma mode 0)
+SHADER-DB-GLSL54 - MESA_SHADER_FRAGMENT shader: 171 inst, 4 threads, 0 loops, 44 uniforms, 19 max-temps, 0:0 spills:fills, 0 sfu-stalls, 171 inst-and-stalls, 8 nops
+[2026-11-15 12:27:11.699] [info] tube spike: first draw with output took 14.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:27:18.598] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 234 frames presented (234 through the tube, tube passes drawn on 234), flip-to-flip mean 34.41 ms max 50.40 ms, late(>25.0 ms) 233 of 233 @60Hz
+[2026-11-15 12:27:18.598] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 230 frames sampled, 0 dropped): glow 3.00 signal 4.54 lines 0.00 output 7.52 hist 4.23 present 0.00 = 19.28 ms
+[2026-11-15 12:27:28.614] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 292 frames presented (292 through the tube, tube passes drawn on 292), flip-to-flip mean 34.30 ms max 250.01 ms, late(>25.0 ms) 292 of 292 @60Hz
+[2026-11-15 12:27:28.614] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 292 frames sampled, 0 dropped): glow 2.91 signal 4.46 lines 0.00 output 7.13 hist 4.14 present 0.00 = 18.64 ms
+[2026-11-15 12:27:38.614] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 298 frames presented (298 through the tube, tube passes drawn on 298), flip-to-flip mean 33.56 ms max 50.03 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 12:27:38.614] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 298 frames sampled, 0 dropped): glow 2.93 signal 4.44 lines 0.00 output 7.05 hist 4.17 present 0.00 = 18.58 ms
+[2026-11-15 12:27:48.614] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 298 frames presented (298 through the tube, tube passes drawn on 298), flip-to-flip mean 33.56 ms max 50.02 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 12:27:48.614] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 298 frames sampled, 0 dropped): glow 2.91 signal 4.45 lines 0.00 output 7.07 hist 4.28 present 0.00 = 18.71 ms
+[2026-11-15 12:27:55.782] [info] tube spike: bench 11 starting: 69 configurations, one a frame
+[2026-11-15 12:27:55.782] [info] tube spike: control.json applied: pvm mask=grille abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:27:55.786] [info] tube spike: allocated bench target 1440x1080 (RGBA8)
+SHADER-DB-GLSL36 - MESA_SHADER_FRAGMENT shader: 14 inst, 4 threads, 0 loops, 7 uniforms, 4 max-temps, 0:0 spills:fills, 0 sfu-stalls, 14 inst-and-stalls, 1 nops
+[2026-11-15 12:27:55.793] [info] tube spike: first draw with copy_raw took 3.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:27:55.853] [info] tube spike: bench 11 [1/69] copy                                         1440x1080 wall med 1.802 min 1.769 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 1.78 hist -1.00 | -
+[2026-11-15 12:27:55.882] [info] tube spike: allocated quarter 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:27:55.882] [info] tube spike: allocated glow blur tmp 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:27:55.882] [info] tube spike: allocated glow 360x270 (SRGB8_ALPHA8)
+SHADER-DB-GLSL27 - MESA_SHADER_FRAGMENT shader: 99 inst, 4 threads, 0 loops, 27 uniforms, 19 max-temps, 0:0 spills:fills, 0 sfu-stalls, 99 inst-and-stalls, 2 nops
+[2026-11-15 12:27:55.890] [info] tube spike: first draw with downsample took 4.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:27:55.894] [info] tube spike: allocated history 0 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:27:55.899] [info] tube spike: allocated history 1 1440x1080 (SRGB8_ALPHA8)
+SHADER-DB-GLSL21 - MESA_SHADER_FRAGMENT shader: 1467 inst, 2 threads, 0 loops, 383 uniforms, 64 max-temps, 0:0 spills:fills, 20 sfu-stalls, 1487 inst-and-stalls, 93 nops
+[2026-11-15 12:27:56.373] [info] tube spike: first draw with tube_afterglow took 470.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:27:57.360] [info] tube spike: bench 11 [2/69] pvm                                          1440x1080 wall med 27.537 min 27.459 ms | gpu glow 3.26 sig -1.00 lines -1.00 out 22.08 hist 2.13 | qgth
+SHADER-DB-GLSL18 - MESA_SHADER_FRAGMENT shader: 1472 inst, 2 threads, 0 loops, 362 uniforms, 64 max-temps, 0:0 spills:fills, 21 sfu-stalls, 1493 inst-and-stalls, 93 nops
+[2026-11-15 12:27:57.998] [info] tube spike: first draw with tube took 593.7 ms (includes any compile deferred to first use)
+[2026-11-15 12:27:58.939] [info] tube spike: bench 11 [3/69] monitor                                      1440x1080 wall med 27.033 min 26.829 ms | gpu glow 2.47 sig -1.00 lines -1.00 out 24.49 hist -1.00 | qgt
+[2026-11-15 12:27:58.981] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.4s: 217 frames presented (217 through the tube, tube passes drawn on 217), flip-to-flip mean 33.49 ms max 50.01 ms, late(>25.0 ms) 214 of 214 @60Hz
+[2026-11-15 12:27:58.981] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 217 frames sampled, 0 dropped): glow 2.93 signal 4.45 lines 0.00 output 7.04 hist 4.14 present 0.00 = 18.55 ms
+[2026-11-15 12:27:58.983] [info] tube spike: allocated lines 1440x270 (SRGB8_ALPHA8)
+SHADER-DB-GLSL24 - MESA_SHADER_FRAGMENT shader: 130 inst, 4 threads, 1 loops, 30 uniforms, 27 max-temps, 0:0 spills:fills, 1 sfu-stalls, 131 inst-and-stalls, 9 nops
+[2026-11-15 12:27:59.001] [info] tube spike: first draw with lines took 11.4 ms (includes any compile deferred to first use)
+[2026-11-15 12:27:59.001] [info] tube spike: allocated history 0 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:27:59.001] [info] tube spike: allocated history 1 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:28:00.966] [info] tube spike: bench 11 [4/69] trinitron                                    1440x1080 wall med 51.304 min 51.083 ms | gpu glow 3.97 sig -1.00 lines 4.98 out 40.13 hist 2.13 | qglth
+[2026-11-15 12:28:03.284] [info] tube spike: bench 11 [5/69] tv                                           1440x1080 wall med 60.174 min 59.977 ms | gpu glow 4.60 sig -1.00 lines 4.97 out 48.32 hist 2.13 | qglth
+[2026-11-15 12:28:05.604] [info] tube spike: bench 11 [6/69] arcade                                       1440x1080 wall med 59.920 min 59.699 ms | gpu glow 5.02 sig -1.00 lines 4.97 out 47.65 hist 2.13 | qglth
+[2026-11-15 12:28:07.921] [info] tube spike: bench 11 [7/69] everything                                   1440x1080 wall med 60.244 min 59.918 ms | gpu glow 4.60 sig -1.00 lines 4.98 out 48.36 hist 2.15 | qglth
+[2026-11-15 12:28:09.850] [info] tube spike: bench 11 [8/69] everything sharpness=50                      1440x1080 wall med 50.928 min 50.730 ms | gpu glow 4.60 sig -1.00 lines 2.58 out 41.47 hist 2.13 | qglth
+[2026-11-15 12:28:09.881] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.9s: 5 frames presented (5 through the tube, tube passes drawn on 5), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:28:09.881] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 5 frames sampled, 0 dropped): glow 2.89 signal 4.41 lines 0.00 output 7.04 hist 4.14 present 0.00 = 18.47 ms
+[2026-11-15 12:28:11.840] [info] tube spike: bench 11 [9/69] everything convergence=0                     1440x1080 wall med 50.223 min 50.043 ms | gpu glow 4.61 sig -1.00 lines 4.97 out 38.36 hist 2.14 | qglth
+[2026-11-15 12:28:13.990] [info] tube spike: bench 11 [10/69] everything chromaBleed=0                     1440x1080 wall med 55.020 min 54.826 ms | gpu glow 4.60 sig -1.00 lines 4.97 out 43.20 hist 2.13 | qglth
+[2026-11-15 12:28:15.645] [info] tube spike: bench 11 [11/69] everything raster=0                          1440x1080 wall med 44.781 min 44.675 ms | gpu glow 4.53 sig -1.00 lines -1.00 out 38.02 hist 2.12 | qgth
+[2026-11-15 12:28:15.682] [info] tube spike: allocated lines 1440x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:17.967] [info] tube spike: bench 11 [12/69] everything scanlines=0                       1440x1080 wall med 60.335 min 59.990 ms | gpu glow 4.60 sig -1.00 lines 4.97 out 48.42 hist 2.13 | qglth
+[2026-11-15 12:28:20.185] [info] tube spike: bench 11 [13/69] everything mask=none                         1440x1080 wall med 56.797 min 55.433 ms | gpu glow 4.81 sig -1.00 lines 5.04 out 43.94 hist 2.40 | qglth
+[2026-11-15 12:28:20.214] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.3s: 5 frames presented (5 through the tube, tube passes drawn on 5), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:28:20.214] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 5 frames sampled, 0 dropped): glow 3.01 signal 4.46 lines 0.00 output 7.00 hist 4.11 present 0.00 = 18.58 ms
+[2026-11-15 12:28:22.289] [info] tube spike: bench 11 [14/69] everything glow=0                            1440x1080 wall med 56.544 min 56.348 ms | gpu glow 1.07 sig -1.00 lines 4.97 out 48.20 hist 2.13 | qlth
+[2026-11-15 12:28:22.332] [info] tube spike: allocated glow blur tmp 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:22.332] [info] tube spike: allocated glow 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:24.583] [info] tube spike: bench 11 [15/69] everything afterglow=0                       1440x1080 wall med 59.320 min 58.737 ms | gpu glow 4.44 sig -1.00 lines 4.97 out 49.78 hist -1.00 | qglt
+[2026-11-15 12:28:24.615] [info] tube spike: allocated history 0 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:28:24.615] [info] tube spike: allocated history 1 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:28:26.899] [info] tube spike: bench 11 [16/69] everything afterglow=100                     1440x1080 wall med 60.248 min 59.943 ms | gpu glow 4.61 sig -1.00 lines 4.97 out 48.35 hist 2.13 | qglth
+[2026-11-15 12:28:29.181] [info] tube spike: bench 11 [17/69] everything noise=0                           1440x1080 wall med 58.903 min 58.684 ms | gpu glow 4.59 sig -1.00 lines 4.98 out 47.08 hist 2.14 | qglth
+[2026-11-15 12:28:31.504] [info] tube spike: bench 11 [18/69] everything jitter=0                          1440x1080 wall med 60.266 min 59.988 ms | gpu glow 4.61 sig -1.00 lines 4.97 out 48.41 hist 2.14 | qglth
+[2026-11-15 12:28:31.531] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 11.3s: 5 frames presented (5 through the tube, tube passes drawn on 5), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:28:31.531] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 5 frames sampled, 0 dropped): glow 2.92 signal 4.45 lines 0.00 output 7.06 hist 4.11 present 0.00 = 18.54 ms
+[2026-11-15 12:28:33.809] [info] tube spike: bench 11 [19/69] everything hum=0                             1440x1080 wall med 60.160 min 59.945 ms | gpu glow 4.59 sig -1.00 lines 4.97 out 48.33 hist 2.13 | qglth
+[2026-11-15 12:28:36.126] [info] tube spike: bench 11 [20/69] everything flicker=0                         1440x1080 wall med 60.151 min 59.948 ms | gpu glow 4.59 sig -1.00 lines 4.97 out 48.31 hist 2.12 | qglth
+[2026-11-15 12:28:38.410] [info] tube spike: bench 11 [21/69] everything curvature=0                       1440x1080 wall med 58.918 min 58.671 ms | gpu glow 4.58 sig -1.00 lines 4.97 out 47.11 hist 2.13 | qglth
+[2026-11-15 12:28:40.747] [info] tube spike: bench 11 [22/69] everything glass=0 (vignette rim glassBlack reflection) 1440x1080 wall med 60.199 min 60.011 ms | gpu glow 4.61 sig -1.00 lines 4.98 out 48.35 hist 2.15 | qglth
+[2026-11-15 12:28:43.124] [info] tube spike: bench 11 [23/69] everything wear=100 (rollBand tracking colorDrift flagging purity) 1440x1080 wall med 62.098 min 61.861 ms | gpu glow 4.60 sig -1.00 lines 4.97 out 50.23 hist 2.12 | qglth
+[2026-11-15 12:28:43.164] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 11.6s: 5 frames presented (5 through the tube, tube passes drawn on 5), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:28:43.164] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 5 frames sampled, 0 dropped): glow 2.97 signal 4.69 lines 0.00 output 7.16 hist 4.34 present 0.00 = 19.16 ms
+[2026-11-15 12:28:44.170] [info] tube spike: bench 11 [24/69] pvm -afterglow                               1440x1080 wall med 27.521 min 27.382 ms | gpu glow 3.10 sig -1.00 lines -1.00 out 24.37 hist -1.00 | qgt
+[2026-11-15 12:28:45.031] [info] tube spike: bench 11 [25/69] pvm -afterglow -glow                         1440x1080 wall med 25.115 min 24.997 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 25.06 hist -1.00 | t
+[2026-11-15 12:28:45.824] [info] tube spike: bench 11 [26/69] pvm ... -mask                                1440x1080 wall med 22.868 min 22.716 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 22.78 hist -1.00 | t
+[2026-11-15 12:28:46.624] [info] tube spike: bench 11 [27/69] pvm ... -scanlines                           1440x1080 wall med 22.845 min 22.667 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 22.79 hist -1.00 | t
+[2026-11-15 12:28:47.341] [info] tube spike: bench 11 [28/69] pvm ... -sharpness                           1440x1080 wall med 20.287 min 20.146 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 20.24 hist -1.00 | t
+[2026-11-15 12:28:48.058] [info] tube spike: bench 11 [29/69] pvm ... -picture (bright/contrast/sat/white 50) 1440x1080 wall med 20.320 min 20.091 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 20.27 hist -1.00 | t
+[2026-11-15 12:28:48.768] [info] tube spike: bench 11 [30/69] pvm ... -glass (curv vig rim black refl)     1440x1080 wall med 20.117 min 20.048 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 20.07 hist -1.00 | t
+[2026-11-15 12:28:49.468] [info] tube spike: bench 11 [31/69] pvm ... -supply (abl breathing) = MINIMAL TUBE 1440x1080 wall med 20.117 min 20.050 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 20.07 hist -1.00 | t
+[2026-11-15 12:28:49.504] [info] tube spike: allocated bench target 1920x1080 (RGBA8)
+[2026-11-15 12:28:49.599] [info] tube spike: bench 11 [32/69] copy FULL FRAME                              1920x1080 wall med 2.782 min 2.455 ms | gpu glow -1.00 sig -1.00 lines -1.00 out 2.73 hist -1.00 | -
+[2026-11-15 12:28:49.632] [info] tube spike: allocated quarter 480x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:49.632] [info] tube spike: allocated glow blur tmp 480x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:49.632] [info] tube spike: allocated glow 480x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:49.637] [info] tube spike: allocated lines 1920x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:49.643] [info] tube spike: allocated history 0 1920x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:28:49.650] [info] tube spike: allocated history 1 1920x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:28:52.767] [info] tube spike: bench 11 [33/69] everything FULL FRAME                        1920x1080 wall med 81.055 min 80.775 ms | gpu glow 7.51 sig -1.00 lines 6.62 out 63.87 hist 2.83 | qglth
+[2026-11-15 12:28:52.801] [info] tube spike: allocated bench target 1440x1080 (RGBA8)
+[2026-11-15 12:28:52.807] [info] tube spike: allocated glass (baked) 1440x1080 (RGBA16F)
+[2026-11-15 12:28:52.817] [info] tube spike: glass baked 1440x1080 in 4.37 ms (rim 0.45 vignette 0.20 glassBlack 0.30 reflection 0.15)
+[2026-11-15 12:28:52.817] [info] tube spike: mask texture type 1 pitch 3 strength 0.48: 3x1 RGBA8
+[2026-11-15 12:28:52.827] [info] tube spike: allocated signal 1440x1080 (RGBA16F)
+[2026-11-15 12:28:52.832] [info] tube spike: allocated history 0 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:28:52.837] [info] tube spike: allocated history 1 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:28:52.838] [info] tube spike: allocated quarter 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:52.838] [info] tube spike: allocated glow blur tmp 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:52.843] [info] tube spike: allocated glow 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:28:53.420] [info] tube spike: bench 11 [34/69] P2 pvm                                       1440x1080 wall med 17.104 min 16.907 ms | gpu glow 3.41 sig 4.41 lines -1.00 out 7.02 hist 2.12 | qgsoh hw f16 masktex
+[2026-11-15 12:28:53.448] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.3s: 11 frames presented (11 through the tube, tube passes drawn on 11), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:28:53.448] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 11 frames sampled, 0 dropped): glow 2.97 signal 4.47 lines 0.00 output 7.05 hist 4.15 present 0.00 = 18.63 ms
+[2026-11-15 12:28:53.461] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL] (fullscreen.vert + v2_output.frag) compiled in 7.4 ms + linked in 5.2 ms (gamma mode 0)
+[2026-11-15 12:28:53.468] [info] tube spike: glass baked 1440x1080 in 3.88 ms (rim 0.35 vignette 0.12 glassBlack 0.20 reflection 0.15)
+[2026-11-15 12:28:53.469] [info] tube spike: mask texture type 2 pitch 3 strength 0.30: 3x1 RGBA8
+SHADER-DB-GLSL57 - MESA_SHADER_FRAGMENT shader: 179 inst, 4 threads, 0 loops, 44 uniforms, 18 max-temps, 0:0 spills:fills, 0 sfu-stalls, 179 inst-and-stalls, 7 nops
+[2026-11-15 12:28:53.490] [info] tube spike: first draw with output took 13.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:28:53.946] [info] tube spike: bench 11 [35/69] P2 monitor                                   1440x1080 wall med 14.138 min 13.991 ms | gpu glow 2.60 sig 4.41 lines -1.00 out 6.98 hist -1.00 | qgso hw f16 masktex
+[2026-11-15 12:28:53.989] [info] tube spike: program signal [SIG_TONE SIG_SHARP SIG_CONV SIG_JITTER SCENE_HW_DECODE] (fullscreen.vert + v2_signal.frag) compiled in 2.0 ms + linked in 5.1 ms (gamma mode 0)
+[2026-11-15 12:28:53.996] [info] tube spike: program lines2 [(none)] (fullscreen.vert + v2_lines.frag) compiled in 4.5 ms + linked in 2.9 ms (gamma mode 0)
+[2026-11-15 12:28:54.006] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_RASTER OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL OUT_NOISE OUT_TINT OUT_FLICKER AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 2.8 ms + linked in 6.5 ms (gamma mode 0)
+[2026-11-15 12:28:54.013] [info] tube spike: glass baked 1440x1080 in 3.88 ms (rim 0.45 vignette 0.25 glassBlack 0.40 reflection 0.30)
+[2026-11-15 12:28:54.013] [info] tube spike: mask texture type 1 pitch 3 strength 0.48: 3x1 RGBA8
+[2026-11-15 12:28:54.015] [info] tube spike: allocated signal lines 1440x270 (RGBA16F)
+[2026-11-15 12:28:54.015] [info] tube spike: allocated history 0 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:28:54.015] [info] tube spike: allocated history 1 1440x1080 (SRGB8_ALPHA8)
+SHADER-DB-GLSL60 - MESA_SHADER_FRAGMENT shader: 159 inst, 4 threads, 0 loops, 52 uniforms, 20 max-temps, 0:0 spills:fills, 0 sfu-stalls, 159 inst-and-stalls, 9 nops
+[2026-11-15 12:28:54.035] [info] tube spike: first draw with signal took 13.0 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL63 - MESA_SHADER_FRAGMENT shader: 57 inst, 4 threads, 0 loops, 16 uniforms, 10 max-temps, 0:0 spills:fills, 0 sfu-stalls, 57 inst-and-stalls, 2 nops
+[2026-11-15 12:28:54.038] [info] tube spike: first draw with lines2 took 3.8 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL66 - MESA_SHADER_FRAGMENT shader: 268 inst, 2 threads, 0 loops, 67 uniforms, 44 max-temps, 0:0 spills:fills, 0 sfu-stalls, 268 inst-and-stalls, 7 nops
+[2026-11-15 12:28:54.070] [info] tube spike: first draw with output took 31.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:28:54.926] [info] tube spike: bench 11 [36/69] P2 trinitron                                 1440x1080 wall med 26.582 min 26.380 ms | gpu glow 4.10 sig 7.05 lines 2.03 out 11.01 hist 2.12 | qgsloh hw f16 masktex
+[2026-11-15 12:28:54.995] [info] tube spike: program signal [SIG_TONE SIG_SHARP SIG_CHROMA SIG_CONV SIG_JITTER SCENE_HW_DECODE] (fullscreen.vert + v2_signal.frag) compiled in 2.9 ms + linked in 9.9 ms (gamma mode 0)
+[2026-11-15 12:28:55.008] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_RASTER OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL OUT_NOISE OUT_TINT OUT_FLICKER OUT_HUM AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 3.9 ms + linked in 9.0 ms (gamma mode 0)
+[2026-11-15 12:28:55.016] [info] tube spike: glass baked 1440x1080 in 4.02 ms (rim 0.50 vignette 0.30 glassBlack 0.50 reflection 0.40)
+[2026-11-15 12:28:55.016] [info] tube spike: mask texture type 4 pitch 3 strength 0.45: 3x12 RGBA8
+SHADER-DB-GLSL69 - MESA_SHADER_FRAGMENT shader: 282 inst, 4 threads, 0 loops, 88 uniforms, 28 max-temps, 0:0 spills:fills, 0 sfu-stalls, 282 inst-and-stalls, 7 nops
+[2026-11-15 12:28:55.042] [info] tube spike: first draw with signal took 20.4 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL72 - MESA_SHADER_FRAGMENT shader: 281 inst, 2 threads, 0 loops, 72 uniforms, 44 max-temps, 0:0 spills:fills, 0 sfu-stalls, 281 inst-and-stalls, 7 nops
+[2026-11-15 12:28:55.078] [info] tube spike: first draw with output took 34.3 ms (includes any compile deferred to first use)
+[2026-11-15 12:28:56.060] [info] tube spike: bench 11 [37/69] P2 tv                                        1440x1080 wall med 30.530 min 30.379 ms | gpu glow 4.74 sig 9.99 lines 2.03 out 11.46 hist 2.12 | qgsloh hw f16 masktex
+[2026-11-15 12:28:56.108] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_RASTER OUT_RASTER_ONLY OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL OUT_NOISE OUT_FLICKER OUT_HUM AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 2.9 ms + linked in 6.3 ms (gamma mode 0)
+[2026-11-15 12:28:56.116] [info] tube spike: glass baked 1440x1080 in 3.87 ms (rim 0.50 vignette 0.30 glassBlack 0.50 reflection 0.30)
+[2026-11-15 12:28:56.116] [info] tube spike: mask texture type 3 pitch 6 strength 0.50: 6x8 RGBA8
+SHADER-DB-GLSL75 - MESA_SHADER_FRAGMENT shader: 261 inst, 4 threads, 0 loops, 66 uniforms, 32 max-temps, 0:0 spills:fills, 3 sfu-stalls, 264 inst-and-stalls, 7 nops
+[2026-11-15 12:28:56.152] [info] tube spike: first draw with output took 19.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:28:57.115] [info] tube spike: bench 11 [38/69] P2 arcade                                    1440x1080 wall med 29.630 min 29.448 ms | gpu glow 5.18 sig 10.01 lines 2.03 out 10.11 hist 2.12 | qgsloh hw f16 masktex
+[2026-11-15 12:28:57.157] [info] tube spike: glass baked 1440x1080 in 4.02 ms (rim 0.50 vignette 0.32 glassBlack 0.50 reflection 0.40)
+[2026-11-15 12:28:57.157] [info] tube spike: mask texture type 4 pitch 3 strength 0.45: 3x12 RGBA8
+[2026-11-15 12:28:58.165] [info] tube spike: bench 11 [39/69] P2 everything                                1440x1080 wall med 30.529 min 30.377 ms | gpu glow 4.74 sig 10.02 lines 2.03 out 11.46 hist 2.11 | qgsloh hw f16 masktex
+[2026-11-15 12:38:16.899] [warning] tube spike: ENABLED from MDB_TUBE_SPIKE_DIR=/home/magic/tube-spike/shaders (measurement build, never ship)
+[2026-11-15 12:38:18.283] [info] tube spike: GL_RENDERER=V3D 7.1.10.2 GL_VERSION=OpenGL ES 3.1 Mesa 25.0.7-2+rpt4 GLSL=OpenGL ES GLSL ES 3.10
+[2026-11-15 12:38:18.283] [info] tube spike: relevant extensions: GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_disjoint_timer_query GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_NV_generate_mipmap_sRGB
+[2026-11-15 12:38:18.283] [info] tube spike: sRGB write control true / decode control true / half-float targets true / GPU timers true
+[2026-11-15 12:38:18.404] [info] tube spike: program tube [(none)] (fullscreen.vert + tube.frag) compiled in 21.0 ms + linked in 94.6 ms (gamma mode 0)
+[2026-11-15 12:38:18.473] [info] tube spike: program tube_afterglow [AFTERGLOW] (fullscreen.vert + tube.frag) compiled in 13.5 ms + linked in 55.5 ms (gamma mode 0)
+[2026-11-15 12:38:18.485] [info] tube spike: program lines [LINE_PREPASS] (fullscreen.vert + tube.frag) compiled in 6.8 ms + linked in 5.1 ms (gamma mode 0)
+[2026-11-15 12:38:18.490] [info] tube spike: program downsample [(none)] (fullscreen.vert + downsample.frag) compiled in 1.0 ms + linked in 3.5 ms (gamma mode 0)
+[2026-11-15 12:38:18.494] [info] tube spike: program blur [(none)] (fullscreen.vert + blur.frag) compiled in 1.0 ms + linked in 3.4 ms (gamma mode 0)
+[2026-11-15 12:38:18.497] [info] tube spike: program copy_lin [ENCODE_OUTPUT] (fullscreen.vert + copy.frag) compiled in 0.9 ms + linked in 1.9 ms (gamma mode 0)
+[2026-11-15 12:38:18.499] [info] tube spike: program copy_raw [(none)] (fullscreen.vert + copy.frag) compiled in 0.7 ms + linked in 1.7 ms (gamma mode 0)
+[2026-11-15 12:38:18.499] [info] tube spike: pipeline-1 programs (re)built in 211.0 ms (render thread stalled that long); pipeline-2 programs build on first use
+[2026-11-15 12:38:18.499] [info] tube spike: control.json applied: pvm mask=grille abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:38:18.507] [info] tube spike: scene texture re-specified as SRGB8_ALPHA8 (writes unencoded) 1920x1080 (FBO status 0x8cd5)
+[2026-11-15 12:38:18.511] [info] tube spike: drawing pvm mask=grille into 1440x1080: lines=270.0 maskPitch=3 glow=0.08 sigma=2.93px persistence=0.10 raster=0.00 chromaBleed=0.00px
+[2026-11-15 12:38:18.516] [info] tube spike: program signal [SIG_TONE SIG_SHARP SCENE_HW_DECODE] (fullscreen.vert + v2_signal.frag) compiled in 1.5 ms + linked in 3.1 ms (gamma mode 0)
+[2026-11-15 12:38:18.521] [info] tube spike: program downsample [SCENE_HW_DECODE] (fullscreen.vert + downsample.frag) compiled in 2.7 ms + linked in 2.1 ms (gamma mode 0)
+[2026-11-15 12:38:18.525] [info] tube spike: program glass [(none)] (fullscreen.vert + v2_glass.frag) compiled in 1.1 ms + linked in 2.7 ms (gamma mode 0)
+[2026-11-15 12:38:18.535] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL OUT_POWER AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 2.6 ms + linked in 7.5 ms (gamma mode 0)
+[2026-11-15 12:38:18.543] [info] tube spike: allocated glass (baked) 1440x1080 (RGBA16F)
+[2026-11-15 12:38:18.564] [info] tube spike: first draw with glass bake took 12.4 ms (includes any compile deferred to first use)
+[2026-11-15 12:38:18.564] [info] tube spike: glass baked 1440x1080 in 12.46 ms (rim 0.45 vignette 0.20 glassBlack 0.30 reflection 0.15)
+[2026-11-15 12:38:18.564] [info] tube spike: mask texture type 1 pitch 3 strength 0.48: 3x1 RGBA8
+[2026-11-15 12:38:18.569] [info] tube spike: allocated signal 1440x1080 (RGBA16F)
+[2026-11-15 12:38:18.572] [info] tube spike: allocated history 0 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:38:18.575] [info] tube spike: allocated history 1 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:38:18.575] [info] tube spike: allocated quarter 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:38:18.575] [info] tube spike: allocated glow blur tmp 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:38:18.576] [info] tube spike: allocated glow 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:38:18.586] [info] tube spike: first draw with downsample took 5.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:38:18.589] [info] tube spike: first draw with blur H took 2.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:38:18.602] [info] tube spike: first draw with signal took 8.7 ms (includes any compile deferred to first use)
+[2026-11-15 12:38:18.618] [info] tube spike: first draw with output took 15.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:38:18.625] [info] tube spike: first draw with copy_lin took 7.6 ms (includes any compile deferred to first use)
+[2026-11-15 12:38:20.027] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 7.8 ms + linked in 5.6 ms (gamma mode 0)
+[2026-11-15 12:38:20.056] [info] tube spike: first draw with output took 14.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:38:26.929] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 245 frames presented (245 through the tube, tube passes drawn on 245), flip-to-flip mean 33.81 ms max 66.68 ms, late(>25.0 ms) 244 of 244 @60Hz
+[2026-11-15 12:38:26.929] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 241 frames sampled, 0 dropped): glow 2.93 signal 4.54 lines 0.00 output 7.39 hist 4.24 present 0.00 = 19.10 ms
+[2026-11-15 12:38:36.962] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 292 frames presented (292 through the tube, tube passes drawn on 292), flip-to-flip mean 34.36 ms max 250.00 ms, late(>25.0 ms) 292 of 292 @60Hz
+[2026-11-15 12:38:36.962] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 292 frames sampled, 0 dropped): glow 2.90 signal 4.55 lines 0.00 output 7.01 hist 4.23 present 0.00 = 18.69 ms
+[2026-11-15 12:38:46.996] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 298 frames presented (298 through the tube, tube passes drawn on 298), flip-to-flip mean 33.67 ms max 50.03 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 12:38:46.996] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 298 frames sampled, 0 dropped): glow 2.89 signal 4.43 lines 0.00 output 7.00 hist 4.56 present 0.00 = 18.88 ms
+[2026-11-15 12:38:52.946] [info] tube spike: control.json applied: pvm mask=grille abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:38:57.029] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 298 frames presented (298 through the tube, tube passes drawn on 298), flip-to-flip mean 33.67 ms max 50.01 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 12:38:57.029] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 298 frames sampled, 0 dropped): glow 2.91 signal 4.45 lines 0.00 output 7.02 hist 4.39 present 0.00 = 18.77 ms
+[2026-11-15 12:39:07.046] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.39 ms max 50.01 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:39:07.046] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 2.88 signal 4.41 lines 0.00 output 7.01 hist 4.55 present 0.00 = 18.84 ms
+[2026-11-15 12:39:16.479] [info] tube spike: control.json applied: pvm mask=grille abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:39:16.483] [info] tube spike: allocated signal 720x1080 (RGBA16F)
+[2026-11-15 12:39:17.079] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.44 ms max 50.03 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:39:17.079] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 2.91 signal 4.33 lines 0.00 output 7.01 hist 4.23 present 0.00 = 18.49 ms
+[2026-11-15 12:39:27.112] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 34.43 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:39:27.112] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 2.91 signal 2.23 lines 0.00 output 6.96 hist 4.22 present 0.00 = 16.32 ms
+[2026-11-15 12:39:37.145] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 33.38 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:39:37.146] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 2.91 signal 2.22 lines 0.00 output 6.94 hist 4.19 present 0.00 = 16.26 ms
+[2026-11-15 12:39:39.996] [info] tube spike: control.json applied: pvm mask=grille abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:39:40.008] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_BEAM_CHEAP OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 3.5 ms + linked in 7.1 ms (gamma mode 0)
+[2026-11-15 12:39:40.015] [info] tube spike: allocated signal 1440x1080 (RGBA16F)
+[2026-11-15 12:39:40.047] [info] tube spike: first draw with output took 15.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:39:47.179] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 298 frames presented (298 through the tube, tube passes drawn on 298), flip-to-flip mean 33.67 ms max 66.63 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 12:39:47.179] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 298 frames sampled, 0 dropped): glow 2.92 signal 3.80 lines 0.00 output 6.59 hist 4.30 present 0.00 = 17.61 ms
+[2026-11-15 12:39:57.212] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.44 ms max 50.00 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:39:57.212] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 2.89 signal 4.43 lines 0.00 output 6.34 hist 4.43 present 0.00 = 18.09 ms
+[2026-11-15 12:40:02.479] [info] tube spike: control.json applied: pvm mask=grille abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=1 mask_arith=0 tube_every=1
+[2026-11-15 12:40:02.487] [info] tube spike: program output [OUT_BEND OUT_MESH OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL AFTERGLOW] (v2_mesh.vert + v2_output.frag) compiled in 2.8 ms + linked in 4.9 ms (gamma mode 0)
+[2026-11-15 12:40:02.488] [info] tube spike: warp mesh 64x48 cells over 1440x1080
+[2026-11-15 12:40:02.513] [info] tube spike: first draw with output (mesh) took 14.0 ms (includes any compile deferred to first use)
+[2026-11-15 12:40:07.245] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=1 mask_arith=0 tube_every=1 10.0s: 299 frames presented (299 through the tube, tube passes drawn on 299), flip-to-flip mean 33.56 ms max 50.01 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:40:07.245] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 299 frames sampled, 0 dropped): glow 2.89 signal 4.41 lines 0.00 output 6.84 hist 4.38 present 0.00 = 18.52 ms
+[2026-11-15 12:40:17.262] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=1 mask_arith=0 tube_every=1 10.0s: 292 frames presented (292 through the tube, tube passes drawn on 292), flip-to-flip mean 34.30 ms max 266.68 ms, late(>25.0 ms) 292 of 292 @60Hz
+[2026-11-15 12:40:17.262] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 292 frames sampled, 0 dropped): glow 2.88 signal 4.40 lines 0.00 output 7.50 hist 4.25 present 0.00 = 19.04 ms
+[2026-11-15 12:40:25.962] [info] tube spike: control.json applied: pvm mask=grille abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=0 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:40:25.966] [info] tube spike: allocated signal 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:40:27.262] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=0 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 298 frames presented (298 through the tube, tube passes drawn on 298), flip-to-flip mean 33.56 ms max 50.25 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 12:40:27.262] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 298 frames sampled, 0 dropped): glow 2.89 signal 4.35 lines 0.00 output 7.44 hist 4.22 present 0.00 = 18.90 ms
+[2026-11-15 12:40:37.295] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=0 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 33.37 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:40:37.295] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 2.87 signal 4.12 lines 0.00 output 7.06 hist 4.22 present 0.00 = 18.28 ms
+[2026-11-15 12:40:47.312] [info] tube spike pacing: look=pvm pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=0 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 299 frames presented (299 through the tube, tube passes drawn on 299), flip-to-flip mean 33.50 ms max 50.03 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:40:47.312] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 299 frames sampled, 0 dropped): glow 2.88 signal 4.14 lines 0.00 output 7.02 hist 4.24 present 0.00 = 18.28 ms
+[2026-11-15 12:40:48.329] [info] tube spike: control.json applied: pvm mask=grille afterglow=0 abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:40:48.329] [info] tube spike: drawing pvm mask=grille afterglow=0 into 1440x1080: lines=270.0 maskPitch=3 glow=0.08 sigma=2.93px persistence=0.00 raster=0.00 chromaBleed=0.00px
+[2026-11-15 12:40:48.341] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL] (fullscreen.vert + v2_output.frag) compiled in 6.6 ms + linked in 4.9 ms (gamma mode 0)
+[2026-11-15 12:40:48.348] [info] tube spike: allocated signal 1440x1080 (RGBA16F)
+[2026-11-15 12:40:48.376] [info] tube spike: first draw with output took 15.5 ms (includes any compile deferred to first use)
+[2026-11-15 12:40:57.329] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 299 frames presented (299 through the tube, tube passes drawn on 299), flip-to-flip mean 33.50 ms max 66.67 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:40:57.329] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 299 frames sampled, 0 dropped): glow 2.88 signal 4.36 lines 0.00 output 8.91 hist 0.49 present 0.00 = 16.63 ms
+[2026-11-15 12:41:07.362] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 33.46 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:41:07.362] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 2.87 signal 4.39 lines 0.00 output 9.12 hist 0.00 present 0.00 = 16.38 ms
+[2026-11-15 12:41:11.829] [info] tube spike: control.json applied: pvm mask=grille glow=0 afterglow=0 abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=0 beam_cheap=1 warp_mesh=1 mask_arith=0 tube_every=1
+[2026-11-15 12:41:11.829] [info] tube spike: drawing pvm mask=grille glow=0 afterglow=0 into 1440x1080: lines=270.0 maskPitch=3 glow=0.00 sigma=2.93px persistence=0.00 raster=0.00 chromaBleed=0.00px
+[2026-11-15 12:41:11.837] [info] tube spike: program output [OUT_BEND OUT_MESH OUT_SCANLINES OUT_BEAM_CHEAP OUT_ROLLOFF OUT_MASK OUT_ABL] (v2_mesh.vert + v2_output.frag) compiled in 2.5 ms + linked in 5.0 ms (gamma mode 0)
+[2026-11-15 12:41:11.839] [info] tube spike: allocated signal 720x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:41:11.861] [info] tube spike: first draw with output (mesh) took 14.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:41:17.379] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=0 beam_cheap=1 warp_mesh=1 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.39 ms max 50.01 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:41:17.379] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 1.34 signal 3.18 lines 0.00 output 8.70 hist 0.00 present 0.00 = 13.21 ms
+[2026-11-15 12:41:27.412] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=0 beam_cheap=1 warp_mesh=1 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 33.84 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:41:27.412] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 0.00 signal 2.12 lines 0.00 output 8.23 hist 0.00 present 0.00 = 10.36 ms
+[2026-11-15 12:41:35.279] [info] tube spike: control.json applied: pvm mask=grille contrast=50 saturation=50 sharpness=50 glow=0 afterglow=0 abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:41:35.279] [info] tube spike: drawing pvm mask=grille contrast=50 saturation=50 sharpness=50 glow=0 afterglow=0 into 1440x1080: lines=270.0 maskPitch=3 glow=0.00 sigma=2.93px persistence=0.00 raster=0.00 chromaBleed=0.00px
+[2026-11-15 12:41:35.283] [info] tube spike: program signal [SCENE_HW_DECODE] (fullscreen.vert + v2_signal.frag) compiled in 1.3 ms + linked in 2.4 ms (gamma mode 0)
+[2026-11-15 12:41:35.290] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_ABL] (fullscreen.vert + v2_output.frag) compiled in 2.2 ms + linked in 4.8 ms (gamma mode 0)
+[2026-11-15 12:41:35.296] [info] tube spike: allocated signal 1440x1080 (RGBA16F)
+[2026-11-15 12:41:35.310] [info] tube spike: first draw with signal took 6.4 ms (includes any compile deferred to first use)
+[2026-11-15 12:41:35.325] [info] tube spike: first draw with output took 15.6 ms (includes any compile deferred to first use)
+[2026-11-15 12:41:37.445] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.44 ms max 66.82 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:41:37.445] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 0.00 signal 2.31 lines 0.00 output 8.37 hist 0.00 present 0.00 = 10.68 ms
+[2026-11-15 12:41:47.479] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 34.63 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:41:47.479] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 0.00 signal 3.06 lines 0.00 output 8.85 hist 0.00 present 0.00 = 11.91 ms
+[2026-11-15 12:41:57.512] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 34.14 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:41:57.512] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 0.00 signal 3.01 lines 0.00 output 8.78 hist 0.00 present 0.00 = 11.79 ms
+[2026-11-15 12:42:07.545] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 34.28 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:42:07.545] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 0.00 signal 3.01 lines 0.00 output 8.79 hist 0.00 present 0.00 = 11.80 ms
+[2026-11-15 12:42:17.579] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 33.84 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:42:17.579] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 0.00 signal 3.02 lines 0.00 output 8.81 hist 0.00 present 0.00 = 11.83 ms
+[2026-11-15 12:42:27.612] [info] tube spike pacing: look=pvm (custom) pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 301 frames presented (301 through the tube, tube passes drawn on 301), flip-to-flip mean 33.33 ms max 34.13 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:42:27.612] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 301 frames sampled, 0 dropped): glow 0.00 signal 3.04 lines 0.00 output 8.80 hist 0.00 present 0.00 = 11.84 ms
+[2026-11-15 12:42:29.346] [info] tube spike: control.json applied: tv mask=slot abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:42:29.346] [info] tube spike: drawing tv mask=slot into 1440x1080: lines=270.0 maskPitch=3 glow=0.22 sigma=4.94px persistence=0.30 raster=0.60 chromaBleed=10.99px
+[2026-11-15 12:42:29.359] [info] tube spike: program signal [SIG_TONE SIG_SHARP SIG_CHROMA SIG_CONV SIG_JITTER SCENE_HW_DECODE] (fullscreen.vert + v2_signal.frag) compiled in 2.3 ms + linked in 10.1 ms (gamma mode 0)
+[2026-11-15 12:42:29.364] [info] tube spike: program lines2 [(none)] (fullscreen.vert + v2_lines.frag) compiled in 1.9 ms + linked in 3.0 ms (gamma mode 0)
+[2026-11-15 12:42:29.374] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_RASTER OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL OUT_NOISE OUT_TINT OUT_FLICKER OUT_HUM AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 3.0 ms + linked in 7.0 ms (gamma mode 0)
+[2026-11-15 12:42:29.383] [info] tube spike: glass baked 1440x1080 in 4.63 ms (rim 0.50 vignette 0.30 glassBlack 0.50 reflection 0.40)
+[2026-11-15 12:42:29.383] [info] tube spike: mask texture type 4 pitch 3 strength 0.45: 3x12 RGBA8
+[2026-11-15 12:42:29.385] [info] tube spike: allocated signal lines 1440x270 (RGBA16F)
+[2026-11-15 12:42:29.391] [info] tube spike: allocated history 0 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:42:29.395] [info] tube spike: allocated history 1 1440x1080 (SRGB8_ALPHA8)
+[2026-11-15 12:42:29.395] [info] tube spike: allocated quarter 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:42:29.395] [info] tube spike: allocated glow blur tmp 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:42:29.395] [info] tube spike: allocated glow 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:42:29.423] [info] tube spike: first draw with signal took 19.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:42:29.427] [info] tube spike: first draw with lines2 took 3.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:42:29.460] [info] tube spike: first draw with output took 33.4 ms (includes any compile deferred to first use)
+[2026-11-15 12:42:37.629] [info] tube spike pacing: look=tv pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 216 frames presented (216 through the tube, tube passes drawn on 216), flip-to-flip mean 46.37 ms max 133.36 ms, late(>25.0 ms) 216 of 216 @60Hz
+[2026-11-15 12:42:37.629] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 216 frames sampled, 0 dropped): glow 3.08 signal 8.31 lines 1.51 output 10.96 hist 3.17 present 0.00 = 27.03 ms
+[2026-11-15 12:42:47.662] [info] tube spike pacing: look=tv pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 200 frames presented (200 through the tube, tube passes drawn on 200), flip-to-flip mean 50.17 ms max 66.67 ms, late(>25.0 ms) 200 of 200 @60Hz
+[2026-11-15 12:42:47.662] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 200 frames sampled, 0 dropped): glow 4.16 signal 10.07 lines 2.05 output 11.56 hist 4.32 present 0.00 = 32.16 ms
+[2026-11-15 12:42:52.962] [info] tube spike: control.json applied: tv mask=slot abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:42:52.973] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_RASTER OUT_BEAM_CHEAP OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL OUT_NOISE OUT_TINT OUT_FLICKER OUT_HUM AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 3.0 ms + linked in 7.1 ms (gamma mode 0)
+[2026-11-15 12:42:52.976] [info] tube spike: allocated signal 720x1080 (RGBA16F)
+[2026-11-15 12:42:52.979] [info] tube spike: allocated signal lines 720x270 (RGBA16F)
+[2026-11-15 12:42:53.014] [info] tube spike: first draw with output took 18.6 ms (includes any compile deferred to first use)
+[2026-11-15 12:42:57.695] [info] tube spike pacing: look=tv pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 213 frames presented (213 through the tube, tube passes drawn on 213), flip-to-flip mean 47.10 ms max 66.67 ms, late(>25.0 ms) 213 of 213 @60Hz
+[2026-11-15 12:42:57.785] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 213 frames sampled, 0 dropped): glow 4.21 signal 7.72 lines 1.58 output 10.64 hist 4.30 present 0.00 = 28.45 ms
+[2026-11-15 12:43:07.712] [info] tube spike pacing: look=tv pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 203 frames presented (203 through the tube, tube passes drawn on 203), flip-to-flip mean 49.34 ms max 133.34 ms, late(>25.0 ms) 203 of 203 @60Hz
+[2026-11-15 12:43:07.727] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 203 frames sampled, 0 dropped): glow 4.28 signal 5.55 lines 1.24 output 9.91 hist 4.73 present 0.00 = 25.72 ms
+[2026-11-15 12:43:15.469] [info] tube spike: control.json applied: tv mask=slot glow=0 afterglow=0 abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:43:15.469] [info] tube spike: drawing tv mask=slot glow=0 afterglow=0 into 1440x1080: lines=270.0 maskPitch=3 glow=0.00 sigma=4.94px persistence=0.00 raster=0.60 chromaBleed=10.99px
+[2026-11-15 12:43:15.487] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_RASTER OUT_BEAM_CHEAP OUT_ROLLOFF OUT_MASK OUT_ABL OUT_NOISE OUT_TINT OUT_FLICKER OUT_HUM] (fullscreen.vert + v2_output.frag) compiled in 6.8 ms + linked in 11.0 ms (gamma mode 0)
+[2026-11-15 12:43:15.519] [info] tube spike: first draw with output took 20.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:43:17.728] [info] tube spike pacing: look=tv (custom) pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 246 frames presented (246 through the tube, tube passes drawn on 246), flip-to-flip mean 40.72 ms max 82.85 ms, late(>25.0 ms) 246 of 246 @60Hz
+[2026-11-15 12:43:17.728] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 246 frames sampled, 0 dropped): glow 3.29 signal 5.18 lines 1.08 output 10.04 hist 3.19 present 0.00 = 22.78 ms
+[2026-11-15 12:43:27.762] [info] tube spike pacing: look=tv (custom) pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.44 ms max 50.01 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:43:27.762] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 0.64 signal 5.12 lines 1.02 output 11.22 hist 0.00 present 0.00 = 18.00 ms
+[2026-11-15 12:43:37.778] [info] tube spike pacing: look=tv (custom) pipeline=2 hw_srgb=1 signal_half_x=1 signal_fp16=1 beam_cheap=1 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 299 frames presented (299 through the tube, tube passes drawn on 299), flip-to-flip mean 33.50 ms max 66.61 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:43:37.778] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 299 frames sampled, 0 dropped): glow 0.65 signal 5.12 lines 1.01 output 11.21 hist 0.00 present 0.00 = 18.00 ms
+[2026-11-15 12:43:38.912] [info] tube spike: control.json applied: monitor mask=magentaGreen abl_level=0.50 pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1
+[2026-11-15 12:43:38.913] [info] tube spike: drawing monitor mask=magentaGreen into 1440x1080: lines=270.0 maskPitch=3 glow=0.05 sigma=1.92px persistence=0.00 raster=0.00 chromaBleed=0.00px
+[2026-11-15 12:43:38.921] [info] tube spike: glass baked 1440x1080 in 4.24 ms (rim 0.35 vignette 0.12 glassBlack 0.20 reflection 0.15)
+[2026-11-15 12:43:38.921] [info] tube spike: mask texture type 2 pitch 3 strength 0.30: 3x1 RGBA8
+[2026-11-15 12:43:38.926] [info] tube spike: allocated signal 1440x1080 (RGBA16F)
+[2026-11-15 12:43:38.926] [info] tube spike: allocated glow blur tmp 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:43:38.926] [info] tube spike: allocated glow 360x270 (SRGB8_ALPHA8)
+[2026-11-15 12:43:47.795] [info] tube spike pacing: look=monitor pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 288 frames presented (288 through the tube, tube passes drawn on 288), flip-to-flip mean 34.78 ms max 383.33 ms, late(>25.0 ms) 288 of 288 @60Hz
+[2026-11-15 12:43:47.795] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 288 frames sampled, 0 dropped): glow 2.07 signal 4.59 lines 0.13 output 9.43 hist 0.00 present 0.00 = 16.22 ms
+[2026-11-15 12:43:57.812] [info] tube spike pacing: look=monitor pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.39 ms max 49.79 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:43:57.812] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 2.25 signal 4.41 lines 0.00 output 8.99 hist 0.00 present 0.00 = 15.65 ms
+[2026-11-15 12:44:07.828] [info] tube spike pacing: look=monitor pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 297 frames presented (297 through the tube, tube passes drawn on 297), flip-to-flip mean 33.73 ms max 83.35 ms, late(>25.0 ms) 297 of 297 @60Hz
+[2026-11-15 12:44:07.828] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 297 frames sampled, 0 dropped): glow 2.25 signal 4.43 lines 0.00 output 9.15 hist 0.00 present 0.00 = 15.83 ms
+[2026-11-15 12:44:17.862] [info] tube spike pacing: look=monitor pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.44 ms max 50.02 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:44:17.862] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 2.25 signal 4.41 lines 0.00 output 9.16 hist 0.00 present 0.00 = 15.82 ms
+[2026-11-15 12:44:27.895] [info] tube spike pacing: look=monitor pipeline=2 hw_srgb=1 signal_half_x=0 signal_fp16=1 beam_cheap=0 warp_mesh=0 mask_arith=0 tube_every=1 10.0s: 300 frames presented (300 through the tube, tube passes drawn on 300), flip-to-flip mean 33.44 ms max 50.01 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:44:27.895] [info] tube spike gpu: per tube frame (GL_TIME_ELAPSED, 300 frames sampled, 0 dropped): glow 2.25 signal 4.40 lines 0.00 output 9.16 hist 0.00 present 0.00 = 15.81 ms
