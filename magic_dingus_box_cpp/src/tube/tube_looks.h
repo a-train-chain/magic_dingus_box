@@ -19,11 +19,13 @@
 //   flagSpeed purity puritySize purityHue purityPosition
 //
 // FRAME CLASS (Task 1b's decision, pvm_lean: no): no look differs from Sound Factory's
-// beyond the two TV-pixel columns above. PVM-lean would need the mean probe for PVM's
-// ABL 20 and breathing 15, and its measured run without the probe did not hold 60 fps.
-// So all six looks keep Sound Factory's values and draw at 30 fps (each has GLOW > 0 or
-// SHARPNESS != 50, or another row the lean set lacks). The 60 fps class is for a custom
-// mix that leaves every 30 fps row neutral (tube_frame_class.h).
+// beyond the two TV-pixel columns above. PVM's ABL 20 and breathing 15 need the
+// brightness probe; the probe stalls a frame at every run (91.5 % on time with it), so
+// it is out of the lean set. PVM-lean without the probe was NOT established: its one run
+// was a disturbed outlier, and Task 15's ten-minute soak decides it. Until then all six
+// looks keep Sound Factory's values and draw at 30 fps (each has GLOW > 0 or SHARPNESS
+// != 50, or another row the lean set lacks). The 60 fps class is for a custom mix that
+// leaves every 30 fps row neutral (tube_frame_class.h).
 //
 // Pure: standard library only, no I/O.
 #pragma once

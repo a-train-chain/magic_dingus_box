@@ -67,7 +67,7 @@ TEST_CASE("tube looks: whole-pixel sizes", "[tube]") {
 }
 
 TEST_CASE("tube looks: the classes Task 1b decided", "[tube]") {
-    constexpr bool kPvmLean = false;  // from Task 1b's table: pvm_lean
+    constexpr bool kPvmLean = false;  // from Task 1b's table: pvm_lean (not established without the probe; Task 15's soak decides)
     for (auto look : kLooks) {
         TubeSetting s;
         select_look(s, look);

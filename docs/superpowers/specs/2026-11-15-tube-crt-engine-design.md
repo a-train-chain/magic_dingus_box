@@ -312,8 +312,10 @@ pass on the Pi 5 ingredient by ingredient (the bend, the beam exact or
 cheap, tone, the three line displacements, noise/hum/flicker and the band,
 the brightness probe) and records the richest set that fits the lean budget
 with at least 99% of frames on their vblank. A row whose ingredient is not
-in that set forces 30 fps too. The provisional set, until that table
-exists, is everything except the seven, with the cheap beam. GLOW SIZE
+in that set forces 30 fps too. Measured and decided (Task 1b): the
+lean set is the bend, the beam (cheap form), tone and the line displacements;
+the motion block (noise, hum, flicker, rolling band, purity) and the probe
+(ABL, breathing) are not lean, so those rows draw at 30 fps too. GLOW SIZE
 alone forces nothing (it sizes a glow that is off at GLOW 0). The rows
 that force 30 fps carry a flag from the same source, which the TV menu and
 the web page show beside them, and the Look row shows "60 fps" or
@@ -322,11 +324,14 @@ misses the lean budget): every shipped look is Rich30, the Lean60 path stays
 for any custom mix that qualifies, and the owner is told.
 
 **The shipped looks in two classes (call).** As copied from Sound Factory
-every look is rich (each has GLOW > 0 and SHARPNESS ≠ 50). Task 1b decided
-(pvm_lean: no): PVM-lean needs the probe for its ABL 20 and breathing 15, and
-its run without the probe did not hold 60 fps. PVM and Monitor therefore stay
-exactly as Sound Factory has them, at 30 fps, and no look value changes. The
-60 fps class is for a custom mix that leaves every 30 fps row neutral. Trinitron, TV, Arcade
+every look is rich (each has GLOW > 0 and SHARPNESS ≠ 50). Task 1b
+decided pvm_lean: no. PVM's ABL 20 and breathing 15 need the brightness probe;
+the probe stalls a frame at every run (91.5 % on time with it), so it is out of
+the lean set. PVM-lean without the probe was not established: its one run was a
+disturbed outlier (78.8 % on time, max interval 283 ms), and Task 15's
+ten-minute runs decide it. Until then PVM and Monitor stay exactly as Sound
+Factory has them, at 30 fps, and no look value changes. The 60 fps class is
+for a custom mix that leaves every 30 fps row neutral. Trinitron, TV, Arcade
 and Everything stay Rich30, with rows taken to neutral by the hardware
 acceptance where they miss the rich budget (Acceptance's ladder).
 
@@ -336,7 +341,7 @@ table current; the parity script lists each cell as deliberate):
 | Look | Row | Sound Factory | Box | Why |
 |---|---|---|---|---|
 | all six | lineSize, maskSize | see plan 1 Task 2 | see plan 1 Task 2 | whole TV pixels (§5) |
-| pvm, monitor | (none) | Sound Factory's | the same | Task 1b: PVM-lean needs the probe for ABL 20 and breathing 15 and did not hold 60 fps without it, so no row differs |
+| pvm, monitor | (none) | Sound Factory's | the same | Task 1b: PVM-lean needs the probe (ABL 20, breathing 15), which is not lean; PVM-lean without it was not established (one disturbed run) and Task 15 decides, so no row differs for now |
 | rich looks | the rows the ladder neutralises | — | recorded by plan 3 Task 15 | the rich budget |
 
 **The pipeline (call).** The spike's pipeline 2, with these fixed choices:
@@ -345,7 +350,7 @@ table current; the parity script lists each cell as deliberate):
 |---|---|---|---|---|
 | Glass bake | `glass` | picture | rebaked only when a glass input (corner, margin, vignette, rim, glass black, reflection) or the picture size changes — ~4 ms, measured | both |
 | Mask tile | — (CPU) | one period, NEAREST + REPEAT | rebuilt on mask, pitch or strength change | both |
-| Mean probe | `quarter` | 64×64 → mip to 1×1 | ABL or BREATHING > 0; 5 times a second | both, if Task 1b allows it in the lean set |
+| Mean probe | `quarter` | 64×64 → mip to 1×1 | ABL or BREATHING > 0; 5 times a second | rich only: the probe stalls a frame at every run (91.5 % on time with it), so it is not in the lean set |
 | Quarter picture | `quarter` | ¼ × ¼ | GLOW > 0 or CHROMA BLEED > 0 | rich |
 | Glow blur H, then V | `blur` | ¼ × ¼ | GLOW > 0; sigma from GLOW SIZE | rich |
 | Signal | one of four `sig_*` | picture height × (picture width, or half when CHROMA BLEED or TRUE RASTER > 0) | SHARPNESS ≠ 50, CONVERGENCE, CHROMA BLEED, COLOUR DRIFT or TRUE RASTER | rich |
@@ -375,7 +380,7 @@ table current; the parity script lists each cell as deliberate):
   under 32 MiB in every class (worst case: a full-width signal, the
   afterglow pair and the glass, ~32.3 MB).
 - **The beam.** The lean programs use the beam form Task 1b chose
-  (provisionally the cheap beam: one sigma from luma, 0.7–1.7 ms cheaper);
+  (the cheap beam, as measured: one sigma from luma, 0.7–1.7 ms cheaper);
   the rich programs use Sound Factory's per-channel beam unless the
   acceptance ladder switches them to the cheap one.
 - **The owner must accept two softenings (calls).** (1) With CHROMA BLEED
@@ -444,8 +449,9 @@ polled without waiting). The limiter steps toward it on the frames' own
 clock with Sound Factory's 0.1 s constant (`stepBrightnessLimitTo`,
 including its "from rest" rule). Never a blocking read; while no read has
 landed the last value holds. The probe is expected to cost well under
-0.3 ms on the frames it runs; Task 1b prices it, and if it does not fit the
-lean set, ABL and BREATHING force 30 fps (the same table).
+0.3 ms on the frames it runs (measured 0.02 ms), but it stalls a frame each
+run, so Task 1b left it out of the lean set: ABL and BREATHING force 30 fps
+(the same table).
 
 **GPU timing.** No GPU state is read back in production frames, except
 the mean probe. A debug variable, `MDB_TUBE_GPU_TIMING=1`, wraps each pass
@@ -679,9 +685,10 @@ the frame class changes. It does not change the owner's settings.
 
 **The budgets are measured, not inferred (call).** Phase 0 bracketed them —
 60 fps held at 5.1 ms and missed at 12.5 ms; 30 fps held at 15.6–18.8 ms
-and fell to 20 fps at 25.7 ms — so the provisional values are **8 ms**
-(Lean60) and **24 ms** (Rich30) of tube GPU per frame at 1440×1080. Plan 3's
-Task 1b replaces them by rule: the largest measured GPU cost (timers on)
+and fell to 20 fps at 25.7 ms — so the starting values were 8 ms
+(Lean60) and 24 ms (Rich30) of tube GPU per frame at 1440×1080. Plan 3's
+Task 1b replaced them by rule, giving **11.8 ms** (Lean60) and **23.1 ms**
+(Rich30): the largest measured GPU cost (timers on)
 whose separate pacing run (timers off) still held ≥ 99% of frames at the
 class's cadence over 10 minutes with a video playing, **minus 0.5 ms**
 (Lean60) or **1.0 ms** (Rich30). The numbers below are those budgets.

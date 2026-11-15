@@ -33,7 +33,10 @@ struct LeanSet {
 inline constexpr LeanSet kLeanSet{true, true, true, true, true, false, false, true};
 
 // Frame-time budgets, ms at 1440x1080.
-inline constexpr double kLeanBudgetMs = 11.8;   // from Task 1b's table
+// from Task 1b's table. The budget is the measured total of the shipped lean set
+// (12.27 ms) minus a 0.5 ms guard band, by the plan's rule: it is NOT comparable to
+// kPassCosts.out_lean (12.3), and a "sum of costs <= budget" check would be wrong.
+inline constexpr double kLeanBudgetMs = 11.8;
 inline constexpr double kRichBudgetMs = 23.1;   // from Task 1b's table
 inline constexpr bool kRichBeamCheap = false;   // the acceptance ladder may flip it
 
