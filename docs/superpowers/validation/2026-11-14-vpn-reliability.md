@@ -163,7 +163,7 @@ Remove only disposable container/fixture and ephemeral staged tests/Bats created
 
 | Gate | UTC / evidence / result |
 |---|---|
-| Astra review and local pi5-test integration | Whole-branch review plus scoped fix review approved through code commit `2d68205`; local integration recorded below. |
+| Astra review and local pi5-test integration | Whole-branch review plus scoped fix review approved through code commit `2d68205`; local `pi5-test` fast-forward integration complete; no deleted paths or C++ source changes. |
 | Linux root/unprivileged identity + affected Bash 5 tests | Pending |
 | Cached pinned disposable contract and exact cleanup | Pending |
 | Fresh secure backup/baseline and scoped dry-run | Pending |
