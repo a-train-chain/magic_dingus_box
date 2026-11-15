@@ -413,7 +413,10 @@ if [ -f "${PAUSE_MARKER}" ]; then
 fi
 _compose_rc=0
 if [[ -f "$SCRIPT_DIR/vpn_recoveryctl.py" ]]; then
-    export MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)"
+    # Unreadable settings -> empty revision: every fenced step below then
+    # refuses (an empty value never matches), which is the intended fail-closed.
+    MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)" || MDB_VPN_SETTINGS_REVISION=""
+    export MDB_VPN_SETTINGS_REVISION
     python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" setup-start || _compose_rc=$?
 else
     # Package-absent rollback compatibility only.
@@ -2108,7 +2111,8 @@ if inj: print(",".join(inj))
         compose_lock 120 || _lock_rc=$?
         [ "${_lock_rc}" = "0" ] || { echo "ERROR: compose lock unavailable; Radarr repair deferred"; exit 1; }
         if [[ -n "${MDB_VPN_INHIBIT_TOKEN:-}" ]]; then
-            export MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)"
+            MDB_VPN_SETTINGS_REVISION="$(python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" settings-revision)" || MDB_VPN_SETTINGS_REVISION=""
+            export MDB_VPN_SETTINGS_REVISION
             python3 "$SCRIPT_DIR/vpn_recoveryctl.py" --base "$(dirname "$SERVICES_DIR")" --services "$SERVICES_DIR" check-operation || { compose_unlock; exit 3; }
         fi
         _restart_rc=0
