@@ -415,6 +415,9 @@ class Controller:
         self.api_failed=False; self.operation=read_json(paths.state/'operation.json')
         # Continuous-Ready start (monotonic); closes a recovery round once stable.
         self.ready_since=None
+        # Every supported maintenance owner/lifecycle change bumps the intent
+        # revision (never routine ticks): the selection may have changed.
+        self.last_intent_revision=read_intent(paths).get('revision')
         self.relinked=durable.get('relinked'); self.last_converge=-300
         self.last_converge_container=self.container_key(durable.get('last_converge_container'))
         last_converge_wall=durable.get('last_converge_wall')
@@ -612,7 +615,7 @@ class Controller:
                 # the previous server's here (candidate grace is unchanged).
                 for key in ('traffic_lost','port_lost','control_lost','traffic_unknown','port_unknown'):
                     self.state.pop(key,None)
-                self.state.update(started=now,had_port=False,port_was_present=False)
+                self.state.update(started=now,had_port=False,port_was_present=False,losses=[])
         elif ctx['action']=='restart_container' and result.get('submission'):
             self.api_failed=False
             self.load_pending={'snapshot':ctx.get('snapshot'),'old_container':self.container_key(ctx.get('generation') or ctx['observation']),
@@ -771,6 +774,10 @@ class Controller:
         o['relink_waiting']=needs_relink and not o['needs_relink']
         if not converge_due:o['needs_converge']=False
         restart_before = {key:self.state.get(key) for key in ('last_restart','candidate_until')}
+        intent_revision=read_intent(self.paths).get('revision')
+        if intent_revision!=self.last_intent_revision:
+            o['selection_reset']=True
+            self.last_intent_revision=intent_revision
         decision=decide(o,self.state,config,now,wall)
         self.state=decision['next_state']
         if decision.get('new_round'):

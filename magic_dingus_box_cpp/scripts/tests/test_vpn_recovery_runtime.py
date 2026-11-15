@@ -300,6 +300,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(statuses[-1]['ready'])
         self.assertEqual([c[0] for c in self.a.calls], ['put'])
 
+    def test_maintenance_revision_change_requests_selection_reset(self):
+        import os
+        seen=[]
+        import vpn_recovery.runtime as runtime
+        real=runtime.decide
+        def spy(o,*args,**kwargs):
+            seen.append(o.get('selection_reset')); return real(o,*args,**kwargs)
+        runtime.decide=spy
+        self.addCleanup(setattr,runtime,'decide',real)
+        self.tick(0); self.tick(10)
+        inhibit(self.paths,'op',os.getpid(),'operator selection')
+        release_inhibit(self.paths,'op')
+        self.tick(20); self.tick(30)
+        self.assertEqual(seen,[None,None,True,None])
+
     def test_settings_change_inside_lock_defers(self):
         self.tick(0)
         self.a.before_action=lambda: (self.paths.services/'.env').write_text('VPN_COUNTRIES=Netherlands\n')

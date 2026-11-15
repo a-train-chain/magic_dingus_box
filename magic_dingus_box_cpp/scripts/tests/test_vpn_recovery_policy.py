@@ -204,6 +204,28 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(self.step(t, api_failed=True, **dead)['action'], 'none', t)
         self.assertEqual(self.step(190, api_failed=True, **dead)['action'], 'restart_container')
 
+    def test_operator_selection_change_gets_first_lease_grace_and_clean_losses(self):
+        # Live first-lease row 2026-11-15: two earlier servers' lease losses
+        # plus the operator-selected server's first zero made "3 losses in
+        # 600 s" fire 6 s after the operator's PUT. A maintenance-owned change
+        # (runtime reports it as selection_reset) starts a fresh evaluation.
+        self.step(0)
+        for t in (10, 30):
+            self.step(t, port=0); self.step(t+10)
+        self.assertEqual(len(self.state['losses']), 2)
+        self.step(50, generation={**GEN, 'tunnel_ifindex': 3}, selection_reset=True, port=0)
+        self.assertEqual(self.state['losses'], [])
+        for t in range(60, 170, 10):
+            self.assertEqual(self.flapping(t, 3, traffic=True)['action'], 'none', t)
+        self.assertEqual(self.flapping(170, 3, traffic=True)['action'], 'rotate_server')
+
+    def test_selection_reset_while_inhibited_still_applies(self):
+        self.step(0)
+        self.step(10, port=0)
+        self.step(20, allowed=False, selection_reset=True, port=0)
+        self.assertNotIn('port_lost', self.state)
+        self.assertFalse(self.state['had_port'])
+
     def test_new_container_start_still_resets_clocks_and_grants_grace(self):
         self.step(0)
         for t in range(10, 50, 10):

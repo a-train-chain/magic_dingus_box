@@ -45,6 +45,13 @@ def decide(observation, state, config, now_mono, now_wall):
     s.setdefault('started', now)
     s.update(version=2, last_tick=now)
     s['losses'] = [t for t in s.get('losses', [])[-256:] if finite(t) and 0 <= now-t < 600]
+    if o.get('selection_reset'):
+        # A maintenance owner (operator/lifecycle) may have changed the
+        # selection: judge whatever is current on its own evidence, with the
+        # first-lease grace and no lease losses carried from other servers.
+        s.update(started=now, had_port=False, port_was_present=False, losses=[])
+        for k in ('port_lost', 'traffic_lost', 'control_lost', 'traffic_unknown', 'port_unknown'):
+            s.pop(k, None)
 
     def answer(action, reason, **extra):
         return dict(action=action, reason=reason, next_state=s, next_due=now+10, **extra)
