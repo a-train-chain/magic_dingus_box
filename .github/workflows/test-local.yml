@@ -36,6 +36,13 @@ jobs:
           cd tests/local
           python3 -m unittest discover -s . -p 'test_*.py' -v
 
+      # tests/vpn_fault: the attended live-fault helper's mock-only tests
+      # (no Docker, network or namespaces), same command as run_offline.sh.
+      - name: Run VPN fault-helper tests
+        run: |
+          cd tests/vpn_fault
+          python3 -m unittest discover -s . -p 'test_*.py' -v
+
   # BLOCKING ShellCheck gate over every tracked shell script (*.sh, *.bash,
   # and extensionless sh/bash-shebang files) at -S info. Config and the
   # three repo-wide exclusions live in .shellcheckrc; deliberate one-off

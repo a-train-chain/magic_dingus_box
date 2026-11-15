@@ -404,6 +404,19 @@ class RuntimeTests(unittest.TestCase):
         restored=restore_policy(durable, 10, self.a.wall()+10)
         self.assertEqual(restored['started'], -90)
         self.assertLessEqual(restore_policy(durable,10,self.a.wall()-1000).get('candidate_until',10),130)
+    def test_rotation_clock_is_translated_across_watcher_restart_and_reboot(self):
+        # rotated_at is a past monotonic timestamp like the loss clocks. Kept
+        # raw, a reboot (monotonic restarts near zero) would make it a future
+        # timer and the policy would discard ALL of its state.
+        durable = {'policy': {'version': 2, 'started': 900.0, 'rotated_at': 950.0,
+                              'candidate_until': 1070.0, 'traffic_lost': 955.0},
+                   'saved_mono': 1000.0, 'saved_wall': 5000.0}
+        same_boot = restore_policy(durable, 1010.0, 5010.0)
+        self.assertEqual(same_boot['rotated_at'], 1010.0-60.0)
+        rebooted = restore_policy(durable, 3.0, 5030.0)
+        self.assertLessEqual(rebooted['rotated_at'], 3.0)
+        self.assertEqual(rebooted['rotated_at'], 3.0-80.0)
+
     def test_one_candidate_is_not_recycled_without_backoff(self):
         only=copy.deepcopy(self.a.catalog.provider)
         only['servers']=only['servers'][:1]
@@ -647,6 +660,15 @@ class RuntimeTests(unittest.TestCase):
         saved=json.loads((self.paths.state/'controller.json').read_text())
         self.assertEqual(saved.get('last_selection',{}).get('hostname'),'node-ca-59.protonvpn.net')
         self.assertEqual(len(saved['failures']),1)
+
+    def test_a_server_failing_again_is_counted_once_per_failure(self):
+        server={'hostname':'node-us-119.protonvpn.net','endpoint_ip':'185.156.46.33','country':'United States'}
+        self.c._record_failure(server)
+        self.a.now+=3600
+        self.c._record_failure(server)
+        self.assertEqual(self.c.failures,[{'hostname':server['hostname'],'endpoint_ip':server['endpoint_ip'],
+                                           'failed_at':self.a.wall(),'count':2}])
+        self.assertEqual(self.c.round_attempts,['node-us-119.protonvpn.net'])
 
     def test_traffic_cadence_survives_nonzero_observation_duration(self):
         requested=[]

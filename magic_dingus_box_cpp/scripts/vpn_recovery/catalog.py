@@ -28,6 +28,10 @@ from .common import atomic_json, bounded_lock, load_config
 CATALOG_URL = 'https://raw.githubusercontent.com/qdm12/gluetun-servers/main/pkg/servers/protonvpn.json'
 MAX_BYTES = 8*1024*1024
 HISTORY_LIMIT = 256
+# A server that failed this many times, each within 24 h of the one before,
+# goes to the back of its pool (never out of it). The stored count is capped.
+REPEAT_FAILURES = 2
+REPEAT_COUNT_CAP = 16
 
 
 @dataclass(frozen=True)
@@ -144,8 +148,20 @@ def eligible_candidates(catalog, countries):
     return result
 
 
+def _count(value):
+    """A persisted repeat count; anything malformed reads as one failure."""
+    if type(value) is not int or value < 1:
+        return 1
+    return min(value, REPEAT_COUNT_CAP)
+
+
 def bounded_history(history, now):
-    """Latest failure per endpoint, 24h retention, at most 256 entries; no mutation."""
+    """Latest failure per endpoint, 24h retention, at most 256 entries; no mutation.
+
+    An entry carries 'count' only when it is 2 or more. Duplicate records keep
+    the highest count rather than adding up, so replaying or re-bounding a list
+    never inflates it; only record_failure() increments.
+    """
     if not isinstance(history, list) or not _finite(now):
         return []
     latest = {}
@@ -161,9 +177,42 @@ def bounded_history(history, now):
         except (ValueError, TypeError):
             continue
         key = (host, ip)
-        if key not in latest or failed > latest[key]['failed_at']:
-            latest[key] = {'hostname': host, 'endpoint_ip': ip, 'failed_at': failed}
+        count = _count(entry.get('count', 1))
+        if key in latest:
+            count = max(count, latest[key].get('count', 1))
+            failed = max(failed, latest[key]['failed_at'])
+        latest[key] = {'hostname': host, 'endpoint_ip': ip, 'failed_at': failed}
+        if count > 1:
+            latest[key]['count'] = count
     return sorted(latest.values(), key=lambda e: (e['failed_at'], e['hostname'], e['endpoint_ip']))[-HISTORY_LIMIT:]
+
+
+def record_failure(history, hostname, endpoint_ip, now):
+    """History plus one failure of this endpoint; no mutation.
+
+    The count grows while each failure lands within 24 h of the previous one
+    (bounded_history's retention), so a quiet day starts it over.
+    """
+    current = bounded_history(history, now)
+    try:
+        ip = str(ipaddress.ip_address(endpoint_ip))
+    except (ValueError, TypeError):
+        return current
+    prior = next((e for e in current if e['hostname'] == hostname and e['endpoint_ip'] == ip), None)
+    entry = {'hostname': hostname, 'endpoint_ip': ip, 'failed_at': now}
+    count = min(REPEAT_COUNT_CAP, prior.get('count', 1)+1) if prior else 1
+    if count > 1:
+        entry['count'] = count
+    return bounded_history([e for e in current if e is not prior]+[entry], now)
+
+
+def _network(ip):
+    """The block a failure is likely to share: IPv4 /24, IPv6 /48."""
+    try:
+        address = ipaddress.ip_address(ip)
+    except (ValueError, TypeError):
+        return None
+    return ipaddress.ip_network(f'{address}/{24 if address.version == 4 else 48}', strict=False)
 
 
 def select_candidate(candidates, history, preferred_countries, fallback_countries, now):
@@ -181,11 +230,24 @@ def select_candidate(candidates, history, preferred_countries, fallback_countrie
     fallback = [c for c in candidates if c.country in fallback_countries and c not in preferred]
     tried = {c.hostname for c in preferred if c.hostname in attempts}
     recent = {e['endpoint_ip']: e['failed_at'] for e in failures if now-e['failed_at'] < 1800}
+    # Proton lists same-block neighbours together (node-ca-59/60 are both
+    # 84.20.16.x), and a site-wide fault takes the whole block. Within a pool,
+    # prefer a server outside every block that just failed or was tried this
+    # round; never leave the pool (country) just to find one.
+    avoid = {_network(ip) for ip in recent}
+    avoid |= {_network(c.endpoint_ip) for c in candidates if c.hostname in attempts}
+    avoid.discard(None)
+    # A server that keeps failing goes after every other eligible one: once
+    # its 30-minute exclusion lapsed, node-us-119 (first in catalog order,
+    # never leased a port) was picked again and again, and leaving it hung
+    # Gluetun's settings request for two minutes each time (2026-11-15).
+    repeat = {e['endpoint_ip'] for e in failures if e.get('count', 1) >= REPEAT_FAILURES}
     pools = [preferred, fallback] if len(tried) < 2 else [fallback]
     for pool in pools:
-        for candidate in pool:
-            if candidate.hostname not in attempts and candidate.endpoint_ip not in recent:
-                return candidate
+        eligible = [c for c in pool if c.hostname not in attempts and c.endpoint_ip not in recent]
+        if eligible:
+            # min() keeps catalog order among equals.
+            return min(eligible, key=lambda c: (c.endpoint_ip in repeat, _network(c.endpoint_ip) in avoid))
     all_allowed = preferred+fallback
     # Already attempted servers require a new round even if a failure is absent.
     if all_allowed and all(c.endpoint_ip in recent for c in all_allowed):
