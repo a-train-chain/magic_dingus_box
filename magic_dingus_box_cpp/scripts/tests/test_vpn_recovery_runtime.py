@@ -32,7 +32,7 @@ class FakeAdapters:
         self.mono = lambda: self.now
         self.observation = dict(running=True, unit_active=True, configured=True, generation=GEN,
             traffic=True, port=0, qbit_synced=False, wan=True, endpoint='84.20.16.29',
-            dependents_ok=True, needs_converge=False, explicit_stop=False)
+            dependents_ok=True, namespaces_match=True, needs_converge=False, explicit_stop=False)
         raw = json.loads((Path(__file__).parent/'fixtures/vpn_recovery/proton-v4-sample.json').read_text())
         self.catalog = validate_catalog(raw, self.wall())
         self.control, self.ports, self.store = self, self, self
@@ -714,6 +714,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.a.calls[-1][0],'sync')
         self.a.observation['qbit_synced']=True
         self.a.now=330;self.assertTrue(restored.tick()['ready'])
+
+    def test_bootstrap_unknown_namespace_with_synced_qbit_is_not_ready(self):
+        self.a.observation.update(port=33013,qbit_synced=True,namespaces_match=None,
+                                  dependents_ok=False)
+        for t in [0,10,300]:
+            status=self.tick(t)
+            self.assertFalse(status['ready'])
+            self.assertIsNone(self.c.relinked)
+            self.assertIsNone(status['last_success'])
+        self.assertEqual(self.a.calls,[])
+        self.a.observation['namespaces_match']=True
+        self.assertFalse(self.tick(310)['ready'])
+        self.a.observation['dependents_ok']=True
+        verified=self.tick(320)
+        self.assertTrue(verified['ready'])
+        self.a.observation.update(namespaces_match=None,dependents_ok=False)
+        unknown=self.tick(330)
+        self.assertFalse(unknown['ready'])
+        self.assertEqual(unknown['last_success'],verified['last_success'])
+        # The adapter excludes paused heavy services from these aggregates.
+        self.a.observation.update(namespaces_match=True,dependents_ok=True,playback_paused=True)
+        self.assertTrue(self.tick(340)['ready'])
+        self.assertEqual(self.a.calls,[])
 
     def test_bootstrap_unknown_namespace_never_stamps_relink_proof(self):
         self.a.observation.update(port=33013,qbit_synced=False,namespaces_match=None)

@@ -105,6 +105,8 @@ def decide(observation, state, config, now_mono, now_wall):
         s['backoff_level'] = 0
         if not o.get('qbit_synced'):
             return answer('sync_port', 'Synchronizing port')
+        if o.get('namespaces_match') is not True or o.get('dependents_ok') is not True:
+            return answer('none', 'Verifying services')
         return answer('none', 'Ready')
 
     if now < s.get('candidate_until', 0):

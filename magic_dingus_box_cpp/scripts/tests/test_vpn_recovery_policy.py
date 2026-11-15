@@ -19,7 +19,8 @@ class PolicyTests(unittest.TestCase):
     def step(self, t, **changes):
         obs = dict(allowed=True, running=True, generation=GEN, traffic=True,
                    traffic_at=t, port=12345, port_at=t, qbit_synced=True,
-                   candidate_available=True, wan=True, selection_verified=True)
+                   candidate_available=True, wan=True, selection_verified=True,
+                   namespaces_match=True, dependents_ok=True)
         obs.update(changes)
         before = copy.deepcopy(self.state)
         result = decide(obs, self.state, CONFIG, t, 1800000000+t)
@@ -107,6 +108,14 @@ class PolicyTests(unittest.TestCase):
     def test_missing_tunnel_after_confirmation_restarts_instead_of_unusable_put(self):
         self.step(0,traffic=False,generation=None,port=None)
         self.assertEqual(self.step(60,traffic=False,generation=None,port=None)['action'],'restart_container')
+
+    def test_unknown_or_unavailable_dependents_never_prove_ready(self):
+        for namespaces,available in [(None,False),(None,True),(True,False)]:
+            with self.subTest(namespaces=namespaces,available=available):
+                result=self.step(0,namespaces_match=namespaces,dependents_ok=available)
+                self.assertNotEqual(result['reason'],'Ready')
+                self.assertEqual(result['action'],'none')
+        self.assertEqual(self.step(10)['reason'],'Ready')
 
     def test_relink_and_start_precede_unreachable_qbit_sync(self):
         self.assertEqual(self.step(0,needs_relink=True,qbit_synced=False)['action'],'relink_dependents')
