@@ -246,10 +246,12 @@ def select_candidate(candidates, history, preferred_countries, fallback_countrie
     avoid = {_network(ip) for ip in recent}
     avoid |= {_network(c.endpoint_ip) for c in candidates if c.hostname in attempts}
     avoid.discard(None)
-    # A server that keeps failing goes after every other eligible one: once
-    # its 30-minute exclusion lapsed, node-us-119 (first in catalog order,
-    # never leased a port) was picked again and again, and leaving it hung
-    # Gluetun's settings request for two minutes each time (2026-11-15).
+    # A server that keeps failing goes after every other eligible one, so a
+    # server first in catalog order is not picked again the moment its
+    # 30-minute exclusion lapses. Proton's port-forwarding refusals have been
+    # server-specific (2026-10). Caveat, 2026-11-15: the repeat "no lease"
+    # failures of node-us-119 that motivated this were Gluetun's, not the
+    # server's (see CLAUDE.md, Native VPN recovery).
     repeat = {e['endpoint_ip'] for e in failures if e.get('count', 1) >= REPEAT_FAILURES}
     pools = [preferred, fallback] if len(tried) < 2 else [fallback]
     for pool in pools:

@@ -346,10 +346,8 @@ class CatalogTests(unittest.TestCase):
                          'node-us-69.protonvpn.net')
 
     def test_a_server_that_keeps_failing_goes_to_the_back_of_its_pool(self):
-        # node-us-119 never got a first port lease twice in one afternoon
-        # (2026-11-15), and moving off it hung Gluetun's settings request for
-        # two minutes each time. Its 30-minute exclusion had lapsed, and being
-        # first in catalog order it was picked again.
+        # node-us-119 is first in the US catalog order: once its 30-minute
+        # exclusion lapsed after a failure, it was picked again (2026-11-15).
         self._add('node-us-69.protonvpn.net', 'United States', '89.187.170.135')
         candidates = [c for c in eligible_candidates(validate_catalog(self.provider, NOW), ['Canada', 'United States'])
                       if ':' not in c.endpoint_ip]

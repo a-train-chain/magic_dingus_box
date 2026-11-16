@@ -56,7 +56,7 @@ fault-helper tests") and in `tests/run_offline.sh --suite vpn-fault`.
 | `capability` | none: checks that the kernel and iproute2 can express the owned rules | the box can run the other modes |
 | `port-loss` | blocks NAT-PMP to the gateway while traffic keeps working | the controller rotates after ≥ 90 s of lost port, and the new server is Ready with qBittorrent's port in sync |
 | `first-lease` | a new same-country server that never gets a first port lease | the controller waits out the 120 s first-lease grace, then moves on |
-| `fallback` | blocks the current Canada server, then the second Canada server it picks | the controller tries two Canada servers, then lands on an allowed US server that becomes Ready with traffic and port in sync. Any US server counts: the projected first one may never lease, and moving past it is correct. |
+| `fallback` | blocks the current Canada server, then the second Canada server it picks | the controller tries two Canada servers, then lands on an allowed US server that becomes Ready with traffic and port in sync. Any US server counts. **Not yet passable with Gluetun v3.41.3:** the rotation away from the dead second Canada server races Gluetun's own restart loop and wedges it, so no US server leases (CLAUDE.md, Native VPN recovery). |
 
 ## Running one
 
