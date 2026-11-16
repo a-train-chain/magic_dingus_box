@@ -14,6 +14,8 @@
 // refresh and per menu rebuild, never per frame.
 #pragma once
 
+#include <optional>
+
 #include "app/app_state.h"
 #include "tube/tube_programs.h"
 #include "tube/tube_setting.h"
@@ -24,6 +26,28 @@ inline tube::NotDrawn tube_not_drawn(const AppState& state) noexcept {
     if (!state.tube_render.drawing) return {};
     return tube::plan_passes_and_drops(tube::resolve(state.display_settings.tube), state.tube_render.picture)
         .not_drawn;
+}
+
+// The engine a full-screen film gets with the saved setting at the current output: Tube,
+// or Enhanced when the look is too heavy for it (tube::tube_yields_to_enhanced, the same
+// decision the renderer makes per frame, for the film picture main.cpp reports: the whole
+// framebuffer). nullopt until the main loop has reported the output. Lets the controls warn
+// BEFORE a film plays.
+inline std::optional<CrtEngine> tube_film_engine(const AppState& state) noexcept {
+    const tube::Picture& film = state.tube_render.film_picture;
+    if (film.w <= 0.0 || film.h <= 0.0) return std::nullopt;
+    return tube::tube_yields_to_enhanced(tube::resolve(state.display_settings.tube), film) ? CrtEngine::Enhanced
+                                                                                          : CrtEngine::Tube;
+}
+
+// The engine drawing the picture on screen right now: the effective engine, except that
+// a Tube that is not drawing because Enhanced draws instead - a film it yields
+// (`yielding`), a tripped build guard or a failed build (`unavailable`) - reads Enhanced.
+inline CrtEngine tube_engine_on_screen(const AppState& state) noexcept {
+    const CrtEngine effective = effective_crt_engine(state.display_settings.crt_engine, tube_offered(state));
+    if (effective == CrtEngine::Tube && (state.tube_render.yielding || !state.tube_render.unavailable.empty()))
+        return CrtEngine::Enhanced;
+    return effective;
 }
 
 }  // namespace app

@@ -282,7 +282,8 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
     if (app::display_crt_rows(settings.crt_engine, tube_offered).tube) {
         auto& tube_setting = settings.tube;
         const bool crt_native = settings.mode == app::DisplayMode::CRT_NATIVE;
-        items.emplace_back(app::tube_look_label(tube_setting, crt_native), MenuSection::CYCLE_TUBE_LOOK,
+        items.emplace_back(app::tube_look_label(tube_setting, crt_native, app::tube_film_engine(*app_state_)),
+                           MenuSection::CYCLE_TUBE_LOOK,
                            app::tube_look_sublabel(), [this, &tube_setting]() {
                                tube::select_look(tube_setting, app::next_look(tube_setting.look));
                                rebuild_current_submenu();

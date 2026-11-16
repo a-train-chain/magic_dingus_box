@@ -657,3 +657,33 @@ def test_the_not_drawn_note_is_built_hidden_and_toggled_without_disabling_the_sl
     line = next(l for l in render.splitlines() if "tubeRowNotDrawn(kiosk, key)" in l)
     assert "disabled" not in line
     assert "els.notDrawn[key].style.display !==" in render
+
+
+def test_the_film_note_shows_only_when_films_use_enhanced():
+    result = run_js("""
+        return [tubeFilmNote({film_engine: 'enhanced'}), tubeFilmNote({film_engine: 'tube'}),
+                tubeFilmNote({}), tubeFilmNote({film_engine: null}), tubeFilmNote(null)];
+    """)
+    assert result == [
+        "Full-screen films use the Enhanced look with this setting (it is too heavy for a film).",
+        "", "", "", "",
+    ]
+
+
+def test_the_header_line_says_a_yielded_film_is_drawn_with_enhanced():
+    result = run_js("""
+        return [tubeRateText({frame_rate: 30, yielding: true}),
+                tubeRateText({frame_rate: 30, yielding: false}),
+                tubeRateText({frame_rate: 30}),
+                tubeRateText({frame_rate: 30, yielding: true, unavailable: 'build_hung'})];
+    """)
+    assert result[0] == "A full-screen film is playing: drawn with the Enhanced look."
+    assert result[1] == "30 fps" and result[2] == "30 fps"
+    assert result[3].startswith("Tube could not start on this box")
+
+
+def test_the_film_note_element_is_built_and_assigned_only_on_change():
+    src = DISPLAY_JS.read_text()
+    assert 'id="crtLookFilmNote"' in src
+    render = src[src.index("function renderCrtLook"):]
+    assert "els.filmNote.textContent !== filmText" in render

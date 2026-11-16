@@ -51,7 +51,9 @@ Json::Value json_word(std::string_view word) {
 Json::Value tube_status_json(const AppState& state) {
     const bool offered = tube_offered(state);
     const CrtEngine saved = state.display_settings.crt_engine;
-    const CrtEngine effective = effective_crt_engine(saved, offered);
+    // The engine drawing the picture on screen now (Enhanced while the tube yields a film
+    // or cannot draw); the saved one is "engine".
+    const CrtEngine effective = tube_engine_on_screen(state);
 
     Json::Value t(Json::objectValue);
     t["gate"] = offered;
@@ -82,6 +84,11 @@ Json::Value tube_status_json(const AppState& state) {
         ? state.tube_render.frame_rate
         : tube::frames_per_second(tube::setting_frame_class(resolved, crt_native));
     t["too_heavy"] = state.tube_render.too_heavy;
+    // A full-screen film the look is too heavy for is drawn by Enhanced: whether that is
+    // happening now, and what a film would get with this setting (null until known).
+    t["yielding"] = state.tube_render.yielding;
+    const std::optional<CrtEngine> film = tube_film_engine(state);
+    t["film_engine"] = film ? json_word(crt_engine_name(*film)) : Json::Value::null;
     // Every row a dropped effect silences (tube::not_drawn_rows: AFTERGLOW; GLOW and GLOW
     // SIZE), in drop order, as row keys; [] while the tube is not drawing. The page marks
     // exactly these. One plan_passes() per refresh.

@@ -123,3 +123,38 @@ TEST_CASE("tube menu logic: a row whose effect is not drawn says so", "[tube]") 
     CHECK(app::tube_value_sublabel(Effect::glowSize, both) == "how far the light scatters \xC2\xB7 not drawn");
     CHECK(app::tube_value_sublabel(Effect::brightness, both) == "the picture's overall light");
 }
+
+TEST_CASE("tube menu logic: which engine a full-screen film gets, and which draws the screen now", "[tube]") {
+    app::AppState state;
+    drawing_tube(state, tube::Look::tv, tube::Picture{1440.0, 1080.0, false});
+    // Before the main loop has run, the film picture is unknown.
+    CHECK_FALSE(app::tube_film_engine(state).has_value());
+    state.tube_render.film_picture = tube::Picture{1920.0, 1080.0, false};
+    CHECK(app::tube_film_engine(state) == CrtEngine::Enhanced);   // TV is too heavy for a film
+    tube::select_look(state.display_settings.tube, tube::Look::pvm);
+    CHECK(app::tube_film_engine(state) == CrtEngine::Tube);       // PVM fits without afterglow
+    state.tube_render.film_picture = tube::Picture{1280.0, 720.0, true};   // CRT Native: never yields
+    tube::select_look(state.display_settings.tube, tube::Look::everything);
+    CHECK(app::tube_film_engine(state) == CrtEngine::Tube);
+    // The engine drawing the picture on screen right now.
+    CHECK(app::tube_engine_on_screen(state) == CrtEngine::Tube);
+    state.tube_render.yielding = true;
+    CHECK(app::tube_engine_on_screen(state) == CrtEngine::Enhanced);
+    state.tube_render.yielding = false;
+    state.tube_render.unavailable = "build_hung";   // the guard tripped: Enhanced draws
+    CHECK(app::tube_engine_on_screen(state) == CrtEngine::Enhanced);
+    state.tube_render.unavailable = "build_failed";
+    CHECK(app::tube_engine_on_screen(state) == CrtEngine::Enhanced);
+    state.tube_render.unavailable.clear();
+    state.tube_renderer_ready = false;   // not offered: a saved Tube draws as Enhanced
+    CHECK(app::tube_engine_on_screen(state) == CrtEngine::Enhanced);
+}
+
+TEST_CASE("tube menu logic: the Look row says when films use Enhanced", "[tube]") {
+    using namespace tube;
+    TubeSetting s; select_look(s, Look::tv);
+    CHECK(app::tube_look_label(s, false, CrtEngine::Enhanced) == "Look: TV \xC2\xB7 30 fps \xC2\xB7 films: Enhanced");
+    CHECK(app::tube_look_label(s, false, CrtEngine::Tube) == "Look: TV \xC2\xB7 30 fps");
+    CHECK(app::tube_look_label(s, false, std::nullopt) == "Look: TV \xC2\xB7 30 fps");
+    CHECK(app::tube_look_label(s, false) == "Look: TV \xC2\xB7 30 fps");
+}

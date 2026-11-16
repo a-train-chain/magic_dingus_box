@@ -369,6 +369,38 @@ TEST_CASE("status_writer: the tube block lists the effects the box is not drawin
     REQUIRE(t["not_drawn"].empty());
 }
 
+TEST_CASE("status_writer: the tube block says which engine draws the screen and a film",
+          "[remote][status][tube]") {
+    app::AppState state;
+    tube_state(state);   // look tv
+    Json::Value t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_film.json");
+    REQUIRE(t["film_engine"].isNull());   // the main loop has not reported the output yet
+    REQUIRE(t["yielding"] == false);
+    REQUIRE(t["effective_engine"].asString() == "tube");
+    state.tube_render.film_picture = tube::Picture{1920.0, 1080.0, false};
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_film.json");
+    REQUIRE(t["film_engine"].asString() == "enhanced");
+    // A film on screen, yielded: Enhanced draws it, and nothing is "not drawn".
+    state.tube_render.yielding = true;
+    state.tube_render.picture = tube::Picture{1920.0, 1080.0, false};
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_film.json");
+    REQUIRE(t["yielding"] == true);
+    REQUIRE(t["effective_engine"].asString() == "enhanced");
+    REQUIRE(t["not_drawn"].empty());
+    // The guard tripped: Enhanced draws, and the field says so.
+    state.tube_render.yielding = false;
+    state.tube_render.unavailable = "build_hung";
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_film.json");
+    REQUIRE(t["effective_engine"].asString() == "enhanced");
+    REQUIRE(t["engine"].asString() == "tube");
+    // A look that fits a film.
+    state.tube_render.unavailable.clear();
+    tube::select_look(state.display_settings.tube, tube::Look::monitor);
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_film.json");
+    REQUIRE(t["film_engine"].asString() == "tube");
+    REQUIRE(t["effective_engine"].asString() == "tube");
+}
+
 TEST_CASE("status_writer: Tube not offered publishes the engine and the reason only",
           "[remote][status][tube]") {
     app::AppState state;

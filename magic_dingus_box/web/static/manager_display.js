@@ -252,6 +252,15 @@ function tubeRateTagShown(row, native) {
     return tubeRateTag(row) !== '' && !(native && !!row.crt_native_neutral);
 }
 
+/** The note under the look picker when full-screen films get the Enhanced look: the
+    kiosk decides (`film_engine`, tube::tube_yields_to_enhanced); '' for "tube" or a
+    kiosk from before the field. Plain text. */
+function tubeFilmNote(kiosk) {
+    return kiosk && kiosk.film_engine === 'enhanced'
+        ? 'Full-screen films use the Enhanced look with this setting (it is too heavy for a film).'
+        : '';
+}
+
 /** The note on a row whose effect the box is not drawing. */
 const TUBE_NOT_DRAWN_NOTE = 'Not drawn at this picture size';
 
@@ -274,7 +283,9 @@ function tubeLookOptionText(look, native) {
 
 /**
  * The frame-rate line in the header: "<n> fps", then the warning when the look is
- * too heavy for smooth video, or the unavailable notice (nothing else is true then).
+ * too heavy for smooth video, or the unavailable notice (nothing else is true then), or,
+ * while a full-screen film the look is too heavy for is on screen (`yielding`), that
+ * Enhanced is drawing it - no Tube frame rate is claimed then.
  * Plain text (the page sets it as textContent); '' when the kiosk reports no rate.
  */
 function tubeRateText(kiosk) {
@@ -285,6 +296,7 @@ function tubeRateText(kiosk) {
     if (kiosk.unavailable) {
         return 'Tube could not draw this look, so the box is showing the Enhanced look. Try a different look.';
     }
+    if (kiosk.yielding === true) return 'A full-screen film is playing: drawn with the Enhanced look.';
     if (!Number.isInteger(kiosk.frame_rate)) return '';
     const rate = `${kiosk.frame_rate} fps`;
     return kiosk.too_heavy ? `${rate}. This look is too heavy for smooth video on this TV` : rate;
@@ -508,6 +520,7 @@ function buildCrtLook(st) {
                 <label class="settings-description" for="crtLookLook" style="display: block; margin: 0.9rem 0 0.35rem;">Look</label>
                 <select id="crtLookLook" style="${sel} width: 100%;">${lookOptions}</select>
                 <p ${desc} id="crtLookLookHint"></p>
+                <p ${desc} id="crtLookFilmNote" style="display: none;"></p>
 
                 <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.9rem;">
                     <button class="btn-secondary small" id="crtLookReset">Reset to look</button>
@@ -525,6 +538,7 @@ function buildCrtLook(st) {
         rate: document.getElementById('crtLookRate'),
         look: document.getElementById('crtLookLook'),
         lookHint: document.getElementById('crtLookLookHint'),
+        filmNote: document.getElementById('crtLookFilmNote'),
         reset: document.getElementById('crtLookReset'),
         degauss: document.getElementById('crtLookDegauss'),
         mask: body.querySelector('[data-tube-mask]'),
@@ -601,6 +615,11 @@ function renderCrtLook() {
     els.look.disabled = waiting;
     const look = rows.looks.find(l => l.key === shown.look);
     els.lookHint.innerHTML = look ? crtLookHintHtml(look.hint) : '';
+    const filmText = tubeFilmNote(kiosk);
+    if (els.filmNote.textContent !== filmText) {
+        els.filmNote.textContent = filmText;
+        els.filmNote.style.display = filmText ? '' : 'none';
+    }
     els.reset.disabled = waiting;
     els.degauss.disabled = waiting || kiosk.effective_engine !== 'tube';
 
