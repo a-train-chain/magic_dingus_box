@@ -18,12 +18,14 @@ try:
         error_response, success_response,
     )
     from admin_security import _is_within
+    from upload_io import background_io
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _sanitize_filename, _staged_save_upload, _valid_rom_system,
         error_response, success_response,
     )
     from .admin_security import _is_within
+    from .upload_io import background_io
 
 
 # Systems whose libraries contain multi-disc titles, so an upload should
@@ -85,9 +87,10 @@ def register(app, ctx) -> None:
 
     @app.post("/admin/upload/rom/<system>")
     @require_csrf
+    @background_io
     def upload_rom(system):  # type: ignore[no-redef]
         """Upload ROM for specific system."""
-        # Spool + staging copy: two copies, exactly as for /admin/upload.
+        # Spool + staging file: two copies, exactly as for /admin/upload.
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:

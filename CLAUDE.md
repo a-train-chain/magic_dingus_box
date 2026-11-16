@@ -380,6 +380,33 @@ This guarantees correct compositing without X11/compositor overhead.
   `test_upload_compatibility.py` measures the gaps with the real ffmpeg.
 - **Per-video info `<data>/media_info.json`** (2026-11; kiosk ⇄ web file channel): `{"version":1,"videos":{"media/x.mp4":{"duration_s","display_aspect","crop":false}}}`, keyed by data-dir-relative playlist path or `movie:<tmdb_id>` for channel films. Only nondefault crop values are written: playlist paths default cropped (store `false` for whole), films default whole (store `true` for fill). Writers — the kiosk (`app/media_info.{h,cpp}`, background writer, never on the render loop) and the web admin (`web/media_info.py`, `media_probe.py`, `media_record.py`) — serialize on `flock` of the sidecar `media_info.json.lock`, never on the data file (replaced by rename). A web-side change touches the `media_info_reload_request` marker and the kiosk re-reads it. Videos with no length/shape recorded (on the box before the store existed) are filled once per web-admin process by `web/media_backfill.py` (a nice-10 thread, one ffprobe at a time, waiting while `/tmp/mdb_playback_services_paused` exists; `MAGIC_MEDIA_BACKFILL=0` disables, as the test conftest does). A playlist source known to be 4:3 is never stored or drawn uncropped (no control is offered for one). Clone prep ships a copy pruned to the shipping videos (`mdb_prune_media_info`). Backup/restore/import/migrate carry it; every deploy/OTA/release exclude list keeps it. The kiosk's CROP checkbox lives in the List overlay (past the last playlist) or the guide's Picture stop (above 00); the guide window always keeps a channel film whole.
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
+- **Uploads are paced so the kiosk's video reads go first** (2026-11,
+  `web/upload_io.py`). The Content Manager and the kiosk share one SD card.
+  - `create_app` sets `app.request_class = PacedUploadRequest`. A file part
+    in any request over 1 MiB spools to a named `upload_temp/spool_<hex>`.
+    The spool is written back with `sync_file_range` every
+    `MAGIC_UPLOAD_FLUSH_MIB` (default 1; 0 = off) and then dropped from
+    the page cache.
+  - A route keeps an upload with `save_upload()`: a hard link to the spool,
+    or a copy only where the link is refused. Never `f.save()` a spooled
+    upload — that copy was half of the problem.
+  - The upload routes carry `@background_io`: the thread's I/O runs in the
+    idle class, restored when the route returns.
+  - Measured on magicpi5 (`docs/superpowers/validation/2026-11-15-upload-sd-contention.md`):
+    - main's spool + copy stalled kiosk-like reads up to 4–7 s, reloaded
+      channels, blanked one for 3.7 min and once had the kiosk killed by
+      its watchdog;
+    - 1 MiB slices + idle class: worst read 0.35 s, no stall, and the
+      2.57 GB upload took 236 s instead of 463 s.
+  - What a kiosk read waits behind is how much write the card already has
+    queued, so **any new bulk writer to the SD card must pace itself the
+    same way**. A package import's extraction does not yet.
+  - The kiosk unit's `IOWeight=1000` does nothing on the Pi kernel (no
+    `io.weight`, no `io.cost`, no BFQ groups). Putting the kiosk in the
+    realtime I/O class, or switching to the BFQ scheduler, was measured and
+    does not fix this.
+  - `IMPORT_PEAK_MULTIPLIER` stays 2. The startup `upload_temp` sweep
+    removes spools left by a crash.
 - **Server: gunicorn, ONE worker, gthread threads** (`web/serve.py`, since
   2026-10). `magic-dingus-web.service` still runs
   `python3 -m magic_dingus_box.web.wsgi` — that line stays: boxes ran it

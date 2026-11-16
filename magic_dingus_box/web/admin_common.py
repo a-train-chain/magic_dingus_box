@@ -13,11 +13,19 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
 from flask import jsonify
+
+# Same dual import form as admin.py: flat when tests put web/ on sys.path,
+# package-relative in production.
+try:
+    from upload_io import save_upload
+except ImportError:  # pragma: no cover - exercised by whichever form runs
+    from .upload_io import save_upload
 
 
 # ===== SYSTEM MONITORING HELPERS =====
@@ -301,14 +309,15 @@ def _staged_save_upload(file_storage, dest: Path, mode: int = 0o644) -> None:
     rather than when it succeeds. Staging in the same directory keeps the
     os.replace atomic (one filesystem), and the dot-prefix + .tmp suffix
     keeps the staging file out of the extension globs the listings use.
+
+    The staging name is NOT created up front: save_upload hard-links a
+    spooled upload onto it (upload_io), which needs a free name, so a
+    multi-GB video or ROM is not written to the SD card a second time.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(dest.parent), prefix=f".{dest.name}.", suffix=".tmp")
-    os.close(fd)
-    tmp_path = Path(tmp_name)
+    tmp_path = dest.parent / f".{dest.name}.{uuid.uuid4().hex}.tmp"
     try:
-        file_storage.save(str(tmp_path))
+        save_upload(file_storage, tmp_path)
         os.chmod(tmp_path, mode)
         os.replace(tmp_path, dest)
     except BaseException:
