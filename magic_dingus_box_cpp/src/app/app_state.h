@@ -85,8 +85,8 @@ inline constexpr bool kTubeRendererReady = true;
 
 // What the Tube renderer is doing, refilled by the main loop every iteration. `drawing`: the tube
 // draws the picture; `frame_rate`: 60 (lean) or 30 (rich); `too_heavy`: video
-// presents ran late - more than half over 30 s, or more than 5% in each of 10
-// consecutive minutes, an interval over 100 ms (a box stall, not the look) starting
+// presents ran late - more than half in each of 3 consecutive minutes, or more
+// than 5% in each of 10 consecutive minutes, an interval over 100 ms (a box stall, not the look) starting
 // the evidence over (app::TubePacingMonitor, latched until the setting or the
 // frame class changes); `unavailable`: "" | "build_hung" | "build_failed";
 // `picture`: the picture the tube draws into (meaningful while `drawing`), which
