@@ -669,3 +669,35 @@ TEST_CASE("Tube menu: the open group's notes follow the renderer without a rebui
     sm.update();
     CHECK(afterglow_sub().find("not drawn") == std::string::npos);
 }
+
+TEST_CASE("Tube menu: the Display page follows the films answer and the tube's state", "[settings_menu][tube]") {
+    ui_test::fake_reset(); app::AppState state{}; offer_tube(state);
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    state.display_settings.menu_style = app::MenuStyle::ChannelGuide;
+    tube::select_look(state.display_settings.tube, tube::Look::tv);
+    SettingsMenuManager sm{&state}; sm.open();
+    sm.enter_submenu(MenuSection::DISPLAY);
+    CHECK(row(sm, "Look: ")->label.find("films") == std::string::npos);   // film picture not known yet
+    const uint64_t before = sm.redraw_signature();
+    sm.update();
+    CHECK(sm.redraw_signature() == before);   // nothing changed: no rebuild
+    state.tube_render.film_picture = tube::Picture{1920.0, 1080.0, false};   // the loop reports the output
+    sm.update();
+    CHECK(row(sm, "Look: ")->label.find("films: Enhanced") != std::string::npos);
+    state.display_settings.menu_style = app::MenuStyle::List;   // changed elsewhere: no full-screen films
+    sm.update();
+    CHECK(row(sm, "Look: ")->label.find("films") == std::string::npos);
+    // Degauss: pressable while the tube draws; while a film is handed to Enhanced it is
+    // shown greyed (no action), like the web page's button.
+    REQUIRE(row(sm, "Degauss")->action);
+    state.tube_render.yielding = true;
+    sm.update();
+    const MenuItem* degauss = row(sm, "Degauss");
+    REQUIRE(degauss);
+    CHECK_FALSE(degauss->action);
+    CHECK(degauss->section == MenuSection::INFO);
+    CHECK(degauss->sublabel == app::kTubeDegaussOffSublabel);
+    state.tube_render.yielding = false;
+    sm.update();
+    REQUIRE(row(sm, "Degauss")->action);
+}

@@ -187,3 +187,60 @@ TEST_CASE("tube menu logic: the Look row says when films use Enhanced", "[tube]"
     CHECK(app::tube_look_label(s, false, std::nullopt) == "Look: TV \xC2\xB7 30 fps");
     CHECK(app::tube_look_label(s, false) == "Look: TV \xC2\xB7 30 fps");
 }
+
+namespace {
+// A setting with `n` rows moved off the look (each to a value one away from the look's).
+tube::TubeSetting moved_rows(tube::Look look, int n) {
+    tube::TubeSetting s;
+    tube::select_look(s, look);
+    const tube::LookValues& base = tube::look_values(look);
+    for (int i = 0; i < n; ++i) {
+        const int v = base.effects[static_cast<std::size_t>(i)];
+        tube::set_row(s, tube::kEffects[static_cast<std::size_t>(i)], v < 100 ? v + 1 : v - 1);
+    }
+    return s;
+}
+}  // namespace
+
+TEST_CASE("tube menu logic: the Look label always fits its row", "[tube]") {
+    for (const tube::Look look : tube::kLooks)
+        for (const int moved : {0, 3, 12, 45})
+            for (const bool note : {false, true})
+                for (const bool crt_native : {false, true}) {
+                    const tube::TubeSetting s = moved_rows(look, moved == 45 ? 44 : moved);
+                    const std::string label = app::tube_look_label(
+                        s, crt_native, note ? std::optional<CrtEngine>(CrtEngine::Enhanced) : std::nullopt);
+                    INFO(label);
+                    CHECK(app::utf8_length(label) <= app::look_label_max_chars(crt_native));
+                    CHECK(label.rfind("Look: " + std::string(tube::look_choice(look).label), 0) == 0);
+                }
+    // The ladder, step by step (Modern TV, 47 characters).
+    using tube::Look;
+    const auto films = std::optional<CrtEngine>(CrtEngine::Enhanced);
+    CHECK(app::tube_look_label(moved_rows(Look::tv, 3), false, films) ==
+          "Look: TV (3 moved) \xC2\xB7 30 fps \xC2\xB7 films: Enhanced");          // 45: fits whole
+    CHECK(app::tube_look_label(moved_rows(Look::arcade, 3), false, films) ==
+          "Look: Arcade (+3) \xC2\xB7 30 fps \xC2\xB7 films: Enhanced");          // "(n moved)" -> "(+n)"
+    CHECK(app::tube_look_label(moved_rows(Look::everything, 12), false, films) ==
+          "Look: Everything \xC2\xB7 30 fps \xC2\xB7 films: Enhanced");           // then dropped
+    // CRT Native (30 characters).
+    CHECK(app::tube_look_label(moved_rows(Look::tv, 0), true, std::nullopt) == "Look: TV \xC2\xB7 30 fps");
+    CHECK(app::tube_look_label(moved_rows(Look::everything, 12), true, std::nullopt) ==
+          "Look: Everything \xC2\xB7 30 fps");   // the overflow that existed before
+    // (A films note in CRT Native exists only in a 1080p framebuffer before the restart.)
+    CHECK(app::tube_look_label(moved_rows(Look::tv, 0), true, films) ==
+          "Look: TV \xC2\xB7 films: Enh.");          // abbreviated (31 with the rate), then the rate goes
+    CHECK(app::tube_look_label(moved_rows(Look::everything, 0), true, films) ==
+          "Look: Everything \xC2\xB7 films: Enh.");   // exactly 30
+}
+
+TEST_CASE("tube menu logic: Degauss counts only while the tube draws the screen", "[tube]") {
+    app::AppState state;
+    drawing_tube(state, tube::Look::tv, tube::Picture{1440.0, 1080.0, false});
+    CHECK(app::tube_degauss_live(state));
+    state.tube_render.yielding = true;   // a film handed to Enhanced
+    CHECK_FALSE(app::tube_degauss_live(state));
+    state.tube_render.yielding = false;
+    state.tube_render.unavailable = "build_hung";
+    CHECK_FALSE(app::tube_degauss_live(state));
+}
