@@ -65,12 +65,18 @@ public:
             if (video_window_.front().second) --video_late_;
             video_window_.pop_front();
         }
-        if (!toast_shown_ && too_heavy()) toast_shown_ = toast_pending_ = true;
+        if (!heavy_ && window_too_heavy()) heavy_ = toast_pending_ = true;
     }
 
     // Every 60 s; the first call only starts the window.
     std::optional<Report> take_report(Clock::time_point now) {
-        if (!window_start_) { window_start_ = now; return std::nullopt; }
+        if (!window_start_) {  // the first call starts the window: earlier presents are dropped
+            window_start_ = now;
+            const auto cls = report_.cls;
+            report_ = Report{};
+            report_.cls = cls;
+            return std::nullopt;
+        }
         if (now - *window_start_ < std::chrono::seconds(60)) return std::nullopt;
         Report out = report_;
         report_ = Report{};
@@ -79,13 +85,19 @@ public:
         return out;
     }
 
-    // The last 30 s of video presents span at least 30 s and more than 5% were late.
-    bool too_heavy() const {
+    // Latched: once the last 30 s of video presents (spanning at least 30 s) were more
+    // than 5% late, stays true until reset() - the status says so "until the setting or
+    // the frame class changes", however the window moves on.
+    bool too_heavy() const { return heavy_; }
+
+private:
+    bool window_too_heavy() const {
         if (!streak_start_ || video_window_.empty()) return false;
         if (video_window_.back().first - *streak_start_ < kWindow) return false;
         return video_late_ * 20 > video_window_.size();
     }
 
+public:
     // True once per look/class: reset() re-arms it.
     bool take_toast() { return std::exchange(toast_pending_, false); }
 
@@ -95,7 +107,7 @@ public:
         video_window_.clear();
         video_late_ = 0;
         streak_start_.reset();
-        toast_pending_ = toast_shown_ = false;
+        toast_pending_ = heavy_ = false;
         last_present_.reset();
     }
 
@@ -105,7 +117,7 @@ private:
     std::optional<Clock::time_point> last_present_, window_start_, streak_start_;
     std::deque<std::pair<Clock::time_point, bool>> video_window_;
     std::size_t video_late_ = 0;
-    bool toast_pending_ = false, toast_shown_ = false;
+    bool toast_pending_ = false, heavy_ = false;
 };
 
 }  // namespace app

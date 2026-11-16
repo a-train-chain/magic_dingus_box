@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <sstream>
 
@@ -45,19 +46,72 @@ TEST_CASE("tube build guard: a directory at the marker path trips and does not t
     std::filesystem::remove_all(path);
 }
 
-TEST_CASE("tube build guard: a tripped guard stays tripped after end() or an outside removal", "[tube]") {
+namespace {
+std::string read_all(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+}
+void write_all(const std::string& path, const std::string& text) {
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << text;
+}
+struct LogSilence {  // begin() on a tripped guard warns; keep the test output clean
+    std::shared_ptr<spdlog::logger> previous = spdlog::default_logger();
+    std::ostringstream out;
+    LogSilence() {
+        auto l = std::make_shared<spdlog::logger>("q", std::make_shared<spdlog::sinks::ostream_sink_mt>(out));
+        spdlog::set_default_logger(l);
+    }
+    ~LogSilence() { spdlog::set_default_logger(previous); }
+};
+}  // namespace
+
+TEST_CASE("tube build guard: a tripped guard never writes or removes the marker", "[tube]") {
+    LogSilence quiet;
     const auto path = temp_marker("mdb-tube-build-test-stay");
-    { app::TubeBuildGuard g(path); g.begin("glass"); }
+    write_all(path, "sig_guns_chroma");
     app::TubeBuildGuard a(path);
     REQUIRE(a.tripped());
-    a.end();
-    REQUIRE_FALSE(std::filesystem::exists(path));
-    REQUIRE(a.tripped()); REQUIRE(a.tripped_program() == "glass");
-    { app::TubeBuildGuard g(path); g.begin("glass"); }
-    app::TubeBuildGuard b(path);
+    a.begin("glass"); a.end();
+    REQUIRE(read_all(path) == "sig_guns_chroma");
+    REQUIRE(a.tripped()); REQUIRE(a.tripped_program() == "sig_guns_chroma");
+    app::TubeBuildGuard fresh(path);
+    REQUIRE(fresh.tripped()); REQUIRE(fresh.tripped_program() == "sig_guns_chroma");
     std::filesystem::remove(path);                                            // someone else removes it
-    REQUIRE(b.tripped());
-    REQUIRE_NOTHROW(b.end());                                                 // already gone
+    REQUIRE(a.tripped());
+    REQUIRE_NOTHROW(a.end());
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("tube build guard: end without begin removes nothing; begin twice then end leaves no file", "[tube]") {
+    const auto path = temp_marker("mdb-tube-build-test-arm");
+    std::filesystem::remove(path);
+    app::TubeBuildGuard g(path);
+    write_all(path, "not ours");                                              // appears after construction
+    g.end();
+    REQUIRE(read_all(path) == "not ours");
+    std::filesystem::remove(path);
+    g.begin("a"); g.begin("b");
+    REQUIRE(read_all(path) == "b");
+    g.end();
+    REQUIRE_FALSE(std::filesystem::exists(path));
+}
+
+TEST_CASE("tube build guard: the program name is safe to log", "[tube]") {
+    const auto path = temp_marker("mdb-tube-build-test-safe");
+    write_all(path, std::string("a\nb\x01" "c\xff") + std::string(400, 'z'));
+    app::TubeBuildGuard g(path);
+    REQUIRE(g.tripped());
+    REQUIRE(g.tripped_program().size() == 256);
+    REQUIRE(g.tripped_program().substr(0, 8) == "a?b?c?zz");
+    for (const char c : g.tripped_program()) REQUIRE((c >= 0x20 && c <= 0x7E));
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("tube build guard: a path under a regular file is no marker", "[tube]") {
+    const auto file = temp_marker("mdb-tube-build-test-notdir");
+    write_all(file, "x");
+    REQUIRE_FALSE(app::TubeBuildGuard(file + "/marker").tripped());
+    std::filesystem::remove(file);
 }
 
 TEST_CASE("tube build guard: begin in a missing directory warns and continues", "[tube]") {

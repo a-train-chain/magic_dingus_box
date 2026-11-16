@@ -11,17 +11,19 @@ namespace app {
 
 namespace {
 constexpr std::size_t kMaxMarkerBytes = 4096;
+constexpr std::size_t kMaxProgramChars = 256;
 constexpr const char* kUnknownProgram = "unknown";
 }  // namespace
 
 TubeBuildGuard::TubeBuildGuard(std::string marker_path) : path_(std::move(marker_path)) {
     std::error_code ec;
     const auto status = std::filesystem::symlink_status(path_, ec);
-    // "Not found" is the clean case. Any other answer, including an error stat could
-    // not explain, is treated as a marker: the cost of a false trip is one boot on the
-    // old engine, the cost of a miss is a second hang.
-    if (ec == std::errc::no_such_file_or_directory || (!ec && status.type() == std::filesystem::file_type::not_found))
-        return;
+    // "Not found" is the clean case, with or without an error code (a parent that is
+    // not a directory reports ENOTDIR and type not_found). Any other answer, including
+    // an error stat could not explain, is treated as a marker. A false trip is safe by
+    // design: nothing clears a marker this process did not arm, so Tube stays off until
+    // the next REBOOT (/dev/shm survives a kiosk restart). A miss would be a second hang.
+    if (status.type() == std::filesystem::file_type::not_found) return;
     tripped_ = true;
     if (!ec && status.type() == std::filesystem::file_type::regular) {
         std::ifstream in(path_, std::ios::binary);
@@ -31,6 +33,10 @@ TubeBuildGuard::TubeBuildGuard(std::string marker_path) : path_(std::move(marker
             text.resize(static_cast<std::size_t>(in.gcount()));
             while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
                 text.pop_back();
+            // The name reaches the journal: printable ASCII only, bounded.
+            if (text.size() > kMaxProgramChars) text.resize(kMaxProgramChars);
+            for (char& c : text)
+                if (c < 0x20 || c > 0x7E) c = '?';
             program_ = std::move(text);
         }
     }
@@ -38,16 +44,28 @@ TubeBuildGuard::TubeBuildGuard(std::string marker_path) : path_(std::move(marker
 }
 
 void TubeBuildGuard::begin(std::string_view programs) {
+    // A tripped guard's marker is the diagnosis of a hang: never overwritten.
+    if (tripped_) {
+        LOG_WARN("tube build guard: tripped by {}; not writing a new marker", program_);
+        return;
+    }
     std::ofstream out(path_, std::ios::binary | std::ios::trunc);
     if (out) {
         out.write(programs.data(), static_cast<std::streamsize>(programs.size()));
         out.flush();
         out.close();
     }
-    if (!out) LOG_WARN("tube build guard: could not write {}; building without a marker", path_);
+    if (!out) {
+        LOG_WARN("tube build guard: could not write {}; building without a marker", path_);
+        return;
+    }
+    armed_ = true;
 }
 
 void TubeBuildGuard::end() {
+    // Only a marker this instance wrote is ours to remove.
+    if (!armed_) return;
+    armed_ = false;
     std::error_code ec;
     std::filesystem::remove(path_, ec);
 }

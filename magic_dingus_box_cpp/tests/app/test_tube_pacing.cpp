@@ -59,6 +59,26 @@ TEST_CASE("tube pacing: reset re-arms the toast for the new look", "[tube]") {
     m.reset(); t += 1s; heavy(); REQUIRE(m.take_toast());                     // new look: once more
 }
 
+TEST_CASE("tube pacing: too heavy is latched until reset", "[tube]") {
+    app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+    for (int i = 0; i < 1900; ++i) { t += (i % 10 == 0) ? 33333us : 16667us; m.on_present(t, FrameClass::Lean60, 60, true); }
+    REQUIRE(m.too_heavy());
+    for (int i = 0; i < 100; ++i) { t += 16667us; m.on_present(t, FrameClass::Lean60, 60, false); }   // a menu
+    REQUIRE(m.too_heavy());
+    t += 400ms; m.on_present(t, FrameClass::Lean60, 60, true);                                        // a gap
+    for (int i = 0; i < 2000; ++i) { t += 16667us; m.on_present(t, FrameClass::Lean60, 60, true); }  // recovered
+    REQUIRE(m.too_heavy());
+    m.reset(); REQUIRE_FALSE(m.too_heavy());
+}
+
+TEST_CASE("tube pacing: presents before the first take_report are not in it", "[tube]") {
+    app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+    for (int i = 0; i < 5; ++i) { t += 16667us; m.on_present(t, FrameClass::Lean60, 60, true); }
+    REQUIRE(m.take_report(t) == std::nullopt);
+    t += 16667us; m.on_present(t, FrameClass::Lean60, 60, true);
+    auto r = m.take_report(t + 60s); REQUIRE(r); REQUIRE(r->presents == 1);
+}
+
 TEST_CASE("tube gpu timing: one line every ten seconds", "[tube]") {
     tube::PassTimingAverager a; using P = tube::PassTimingAverager::Pass;
     REQUIRE_FALSE(a.take_line(0.0));
