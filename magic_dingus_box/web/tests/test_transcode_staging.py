@@ -462,3 +462,112 @@ def test_unreadable_show_everything_upload_still_records_crop_false(
     assert list(status.values())[0]["status"] == "complete"
     assert media_info.load(temp_data_dir) == {"media/clip.mp4": {"crop": False}}
     assert _marker(temp_data_dir).exists()
+
+
+# ---------------------------------------------------------------------------
+# A big upload is written to the SD card ONCE.
+#
+# Every upload route used to copy werkzeug's spool to a second file
+# (FileStorage.save) before anything else: a 2.57 GB upload meant 2.57 GB
+# read back from the card and 2.57 GB written again, while the kiosk played
+# video from the same card (Pi 5, 2026-11-15: seconds-long freezes). The
+# spool is now a named file in upload_temp that save_upload hard-links on.
+# These requests are over upload_io.SMALL_REQUEST_BYTES, so they take the
+# spooled path a real upload takes.
+# ---------------------------------------------------------------------------
+
+import upload_io  # noqa: E402
+from werkzeug.datastructures import FileStorage  # noqa: E402
+
+_BIG = os.urandom(2 * 1024 * 1024)
+
+
+@pytest.fixture
+def no_copies(monkeypatch):
+    def copied(self, dst, buffer_size=16384):
+        raise AssertionError(f"upload copied to {dst} instead of linked")
+    monkeypatch.setattr(FileStorage, "save", copied)
+
+
+@pytest.fixture
+def io_classes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(upload_io, "_ioprio_get", lambda: 0)
+    monkeypatch.setattr(upload_io, "_ioprio_set", calls.append)
+    return calls
+
+
+def _upload_temp_empties(data_dir: Path) -> bool:
+    # The job deletes its input just after reporting 'complete'.
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not any((data_dir / "upload_temp").iterdir()):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_upload_and_transcode_feeds_ffmpeg_the_spool_itself(
+        client, temp_data_dir: Path, slow_echo_bin, no_copies, io_classes):
+    resp = client.post(
+        "/admin/upload-and-transcode",
+        data={"file": (io.BytesIO(_BIG), "clip.mov")},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200, resp.get_json()
+    job = resp.get_json()["data"]["job_id"]
+    assert _wait_all(client, [job])[job]["status"] == "complete"
+    # The echo stub copies ffmpeg's input to its output: the bytes ffmpeg
+    # read are exactly the bytes uploaded.
+    assert (temp_data_dir / "media" / "clip.mp4").read_bytes() == _BIG
+    assert _upload_temp_empties(temp_data_dir), "spool or input left behind"
+    assert io_classes == [upload_io.IOPRIO_IDLE, 0]
+
+
+def test_smart_upload_direct_publishes_the_spool_itself(
+        client, temp_data_dir: Path, stub_bin: Path, monkeypatch, no_copies,
+        io_classes):
+    monkeypatch.setenv("FFPROBE_STUB_WIDTH", "1280")
+    monkeypatch.setenv("FFPROBE_STUB_HEIGHT", "720")
+    resp = client.post(
+        "/admin/smart-upload",
+        data={"file": (io.BytesIO(_BIG), "clip.mp4"),
+              "normalize_audio": "false"},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["data"]["action"] == "direct"
+    assert (temp_data_dir / "media" / "clip.mp4").read_bytes() == _BIG
+    assert list((temp_data_dir / "upload_temp").iterdir()) == []
+    assert io_classes == [upload_io.IOPRIO_IDLE, 0]
+
+
+@pytest.mark.parametrize("url,dest", [
+    ("/admin/upload", "media/clip.mp4"),
+    ("/admin/upload/rom/nes", "roms/nes/clip.mp4"),
+])
+def test_staged_uploads_link_the_spool_into_place(
+        client, temp_data_dir: Path, no_copies, io_classes, url, dest):
+    resp = client.post(
+        url, data={"file": (io.BytesIO(_BIG), "clip.mp4")},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200, resp.get_json()
+    out = temp_data_dir / dest
+    assert out.read_bytes() == _BIG
+    assert oct(out.stat().st_mode & 0o777) == "0o644"
+    assert [p.name for p in out.parent.iterdir()] == ["clip.mp4"], (
+        "no staging file may survive")
+    assert list((temp_data_dir / "upload_temp").iterdir()) == []
+    assert io_classes == [upload_io.IOPRIO_IDLE, 0]
+
+
+def test_a_link_the_filesystem_refuses_falls_back_to_a_copy(
+        client, temp_data_dir: Path, monkeypatch):
+    # e.g. data/media on another filesystem than upload_temp
+    def refuse(src, dst):
+        raise OSError(18, "Invalid cross-device link")
+    monkeypatch.setattr(upload_io.os, "link", refuse)
+    resp = client.post(
+        "/admin/upload", data={"file": (io.BytesIO(_BIG), "clip.mp4")},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200, resp.get_json()
+    assert (temp_data_dir / "media" / "clip.mp4").read_bytes() == _BIG
+    assert list((temp_data_dir / "upload_temp").iterdir()) == []

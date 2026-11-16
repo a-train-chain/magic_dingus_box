@@ -31,6 +31,7 @@ try:
     import media_info
     import media_probe
     from media_record import record_media_info
+    from upload_io import background_io, save_upload
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _sanitize_filename, _staged_save_upload, error_response,
@@ -39,6 +40,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_security import _is_within
     from . import media_info, media_probe
     from .media_record import record_media_info
+    from .upload_io import background_io, save_upload
 
 
 def _max_transcodes_for(pi_model: str, env_value: Optional[str]) -> int:
@@ -218,13 +220,14 @@ def register(app, ctx) -> None:
 
     @app.post("/admin/upload")
     @require_csrf
+    @background_io
     def upload_media():  # type: ignore[no-redef]
         """Upload video file."""
         # Ahead of request.files for the reason given in _storage_precondition:
-        # touching it spools the body to the card. TWO copies here, not one:
-        # werkzeug's spool lives until the request ends, and
-        # _staged_save_upload copies it into a staging file beside the target
-        # before the rename (the rename itself duplicates nothing).
+        # touching it spools the body to the card. Budgeted as TWO copies:
+        # werkzeug's spool lives until the request ends, and when the spool
+        # cannot be hard-linked into place (upload_io.save_upload) the
+        # staging file beside the target is a full copy of it.
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
@@ -659,10 +662,12 @@ def register(app, ctx) -> None:
 
     @app.post("/admin/upload-and-transcode")
     @require_csrf
+    @background_io
     def upload_and_transcode():  # type: ignore[no-redef]
         """Upload video file and transcode it on the Pi."""
-        # Two copies: werkzeug's spool + the saved original during the
-        # request; then the original sits in upload_temp for the whole job
+        # Two copies at the peak: the original (the request's spool, linked
+        # to its transcode_input name — upload_io.save_upload; a full copy
+        # where it can't be linked) sits in upload_temp for the whole job
         # while ffmpeg writes the .part next to the media library.
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
@@ -704,9 +709,10 @@ def register(app, ctx) -> None:
         output_path = _reserve_media_output(Path(original_name).stem + ".mp4")
         output_name = output_path.name
 
-        # Save uploaded file
+        # Hand the spool on under the job's name: a hard link, not a second
+        # multi-GB write to the card the kiosk is playing from (upload_io).
         try:
-            f.save(str(temp_input))
+            save_upload(f, temp_input)
         except BaseException:
             _release_media_output(output_path)
             raise
@@ -857,11 +863,13 @@ def register(app, ctx) -> None:
 
     @app.post("/admin/smart-upload")
     @require_csrf
+    @background_io
     def smart_upload():  # type: ignore[no-redef]
         """Smart upload: probe video and decide whether to transcode or direct upload."""
-        # Two copies on every branch: werkzeug's spool + the probe copy during
-        # the request, then the original + ffmpeg's .part if it transcodes
-        # (the direct branch renames the probe copy, adding nothing).
+        # Budgeted as two copies on every branch: werkzeug's spool + the
+        # probe file (a hard link to the spool — upload_io.save_upload — or a
+        # full copy where it can't be linked), then the original + ffmpeg's
+        # .part if it transcodes (the direct branch renames the probe file).
         _no_space = _storage_precondition(
             (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
         if _no_space:
@@ -894,7 +902,7 @@ def register(app, ctx) -> None:
         # Save to temp location for probing
         job_id = str(uuid.uuid4())
         temp_input = upload_temp_dir / f"probe_{job_id}_{original_name}"
-        f.save(str(temp_input))
+        save_upload(f, temp_input)
 
         # Probe the video
         probe_result = probe_video(temp_input, resolution)

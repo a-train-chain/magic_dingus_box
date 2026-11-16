@@ -36,10 +36,12 @@ try:  # noqa: E402
     from detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
     import media_backfill
     import vpn_settings
+    from upload_io import PacedUploadRequest
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
     from . import media_backfill
     from . import vpn_settings
+    from .upload_io import PacedUploadRequest
 
 try:
     from remote.uinput_writer import UinputWriter
@@ -228,6 +230,9 @@ def _late_bound(name: str):
 
 def create_app(data_dir: Path, config=None) -> Flask:
     app = Flask(__name__)
+    # Large uploads spool to a paced, named file in upload_temp (UPLOAD_SPOOL_DIR
+    # below) so they cannot starve the kiosk's video reads — see upload_io.py.
+    app.request_class = PacedUploadRequest
 
     # flask-sock for the Phone Remote WebSocket.
     try:
@@ -310,6 +315,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
     os.environ["TMPDIR"] = str(upload_temp_dir)
     import tempfile
     tempfile.tempdir = str(upload_temp_dir)
+    app.config["UPLOAD_SPOOL_DIR"] = str(upload_temp_dir)
 
     # Sweep leftovers from previous runs. Transcode inputs, probe files,
     # import staging ZIPs and ffmpeg-stderr temps all rely on in-process
@@ -406,14 +412,17 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # last slice of the card is gone, not after.
     STORAGE_HEADROOM_BYTES = 512 * 1024 * 1024
 
-    # Every multipart upload is spooled to the card by werkzeug (TMPDIR is
-    # the SD card) and that spool lives until the request ends, so EVERY
-    # upload route holds at least two copies at its peak:
+    # Every large multipart upload is spooled to the card (upload_io's
+    # SpoolFile in upload_temp) and that spool lives until the request ends.
+    # Peak footprint per route:
     #   import-package    spool + extracted media (the ZIP is read in place)
-    #   /admin/upload     spool + the staging copy that is renamed into place
-    #   transcode routes  spool + the saved original during the request, then
-    #                     the original + ffmpeg's .part until the encode ends
-    # Video barely compresses, so two copies of the request size it is.
+    #   /admin/upload     the spool, hard-linked into place; spool + a full
+    #                     staging copy where the link is refused
+    #   transcode routes  the original (the spool, linked to its job name),
+    #                     then the original + ffmpeg's .part until the encode
+    #                     ends
+    # Video barely compresses, so two copies of the request size it is —
+    # the worst case of every route, kept even where the link saves one.
     IMPORT_PEAK_MULTIPLIER = 2
 
     def _storage_precondition(needed_bytes: int):
