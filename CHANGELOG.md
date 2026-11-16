@@ -67,6 +67,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Whole-picture movie framing.** Channel films use the full screen
   without cabinet art, preserve the whole picture by default, and remember
   a per-film fill choice. The guide window always shows the whole picture.
+- **Tube, a new CRT engine (Pi 5).** Settings → Display → CRT Engine
+  now offers Tube beside Classic and Enhanced on Pi 5 boxes. Pick one of
+  six looks (PVM, Monitor, Trinitron, TV, Arcade or Everything) and
+  adjust any of its effects on the TV or in the Content Manager's new CRT
+  Look tab; the TV changes as you go. There is a Degauss button too.
+  Tube draws at 30 frames a second (the box otherwise draws at 60). To
+  keep that pace on a 1080p screen, the TV and Everything looks leave out
+  afterglow, and Trinitron, TV, Arcade and Everything show full-screen
+  films with the Enhanced look; the controls say when either happens.
+  Your box keeps the engine it uses now until you pick Tube, and Pi 4B
+  boxes are unchanged.
 
 ### Changed
 - **One press to watch in Pick Ahead.** Tap the knob / Select to watch the
@@ -81,11 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is labeled OFF AIR with its return time where space allows, and the last
   film's NEXT points to the next morning's film. Live films still stop at
   1 AM; manually chosen programmes finish whole.
-- **Groundwork for a more realistic CRT look.** The settings for a new
-  CRT engine (preset looks, 44 adjustable effects and a Pi 5-only
-  switch) are now stored by the box. Nothing looks different yet: the
-  picture and the Settings menu are unchanged until the engine itself
-  ships.
 
 ### Fixed
 - **No more TV restarts while a big upload is copying.** Saving

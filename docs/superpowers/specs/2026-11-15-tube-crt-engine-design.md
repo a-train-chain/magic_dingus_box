@@ -837,6 +837,15 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
    anything is deployed to a box's `/opt`. Until then no task changes what
    any box shows. The owner retunes the six looks on his TV after it.
 
+   *Status, 2026-11-15:* the switch-on change exists — branch
+   `tube-crt-switch-on`, a draft pull request stacked on the renderer's —
+   and is held as a draft until the remaining hardware acceptance (the
+   film hand-over to Enhanced as built, a game and return, a display-mode
+   change, 50/90/120 Hz, CRT Native, long pacing runs, a Pi 4B) has run.
+   It flips the constant, removes the `MDB_TUBE_PREVIEW` option and the
+   forced-hang hook, and keeps `MDB_TUBE_VALIDATE=1` as a developer switch
+   in the normal build. Nothing in it is deployed to a box.
+
 ## Testing
 
 - **Pure C++ (Mac):** pinned look table; row-to-input curves against
