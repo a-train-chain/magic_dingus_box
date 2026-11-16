@@ -254,7 +254,12 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                      (settings.enhanced_crt_enabled ? "Enhanced" : "Classic"),
                  MenuSection::TOGGLE_ENHANCED_CRT, "Classic / Enhanced",
                  [&]() {
-                     settings.enhanced_crt_enabled = !settings.enhanced_crt_enabled;
+                     // Through the setter so crt_engine and the old flag
+                     // stay in step. Classic/Enhanced only for now: a saved
+                     // Tube reads "Enhanced" here and toggles to Classic.
+                     settings.set_crt_engine(settings.enhanced_crt_enabled
+                                                 ? app::CrtEngine::Classic
+                                                 : app::CrtEngine::Enhanced);
                      rebuild_current_submenu();
                      app::SettingsPersistence::save_settings(*app_state_);
                  }),

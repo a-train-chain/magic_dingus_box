@@ -12,6 +12,7 @@
 #include <shared_mutex>
 
 #include "guide_nav.h"
+#include "tube/tube_setting.h"
 
 namespace app {
 
@@ -30,6 +31,20 @@ enum class MenuStyle {
 };
 
 enum class GuideMode { Live, PickAhead };
+
+// Which CRT engine draws the effects. Classic is the v1.4.3 procedural
+// overlay, Enhanced the FBO shader pipeline, Tube the look-based engine
+// ported from Sound Factory (Pi 5 only — see
+// platform::PlatformProfile::tube_crt_engine). Persisted in
+// config/settings.json as display.crt_engine ("classic"/"enhanced"/"tube").
+enum class CrtEngine { Classic, Enhanced, Tube };
+
+// The engine that actually draws: a saved Tube on a board whose gate is
+// closed (a Pi 5 backup restored onto a Pi 4B) draws as Enhanced. Applied at
+// draw time only; the saved choice is never rewritten because of the gate.
+constexpr CrtEngine effective_crt_engine(CrtEngine saved, bool tube_gate) noexcept {
+    return (saved == CrtEngine::Tube && !tube_gate) ? CrtEngine::Enhanced : saved;
+}
 
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
 // ALSA `amixer numid=3` method — see app/audio_router.h. Sink names are
@@ -557,7 +572,28 @@ public:
         // doesn't suit their CRT.
         //
         // Persisted in config/settings.json as display.enhanced_crt_enabled.
+        //
+        // Since the Tube engine this flag is DERIVED from crt_engine below
+        // (true for Enhanced and Tube) and kept in step by set_crt_engine();
+        // never assign it directly. It stays because the renderer and
+        // main.cpp read it, and because a kiosk rolled back to an older
+        // release knows only this key — Tube must read there as Enhanced.
         bool enhanced_crt_enabled = false;
+
+        // The engine the user chose (see CrtEngine). Change it through
+        // set_crt_engine() only. The board gate is NOT applied here: what
+        // draws is effective_crt_engine(crt_engine, gate).
+        CrtEngine crt_engine = CrtEngine::Classic;
+
+        // The Tube engine's look and the rows moved on top of it. Kept (and
+        // persisted as display.tube) whichever engine is chosen, so switching
+        // away from Tube and back loses nothing.
+        tube::TubeSetting tube;
+
+        void set_crt_engine(CrtEngine engine) {
+            crt_engine = engine;
+            enhanced_crt_enabled = (engine != CrtEngine::Classic);
+        }
 
         // Media Browser playback wood-frame toggle (v1.6.x).
         //   true  — wood-frame overlay stays visible during movie playback,
