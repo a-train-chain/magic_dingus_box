@@ -202,3 +202,60 @@ TEST_CASE("tube pacing: the late threshold agrees with the held cadence of each 
     // Lean at 120 Hz: held to two vblanks (16.67 ms); late past 20.8 ms.
     CHECK(app::TubePacingMonitor::cadence_vblanks(FrameClass::Lean60, 120) == 2);
 }
+
+TEST_CASE("tube pacing: a look that is really too heavy still latches at 20, 15 and 12 fps", "[tube]") {
+    for (const auto step : {50000us, 66667us, 83333us}) {
+        app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+        for (const auto end = t + 31s; t < end;) { t += step; m.on_present(t, FrameClass::Rich30, 60, true); }
+        REQUIRE(m.too_heavy()); REQUIRE(m.take_toast());
+    }
+}
+
+TEST_CASE("tube pacing: a box that stalls every few seconds is not too heavy", "[tube]") {
+    // Hardware, Pi 5, 1080p, 2026-11-16: the PVM look (19 of 23 ms) while the Media
+    // Browser's containers restarted - page flips waited 48-514 ms, 475 of 1173 late.
+    app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+    m.take_report(t);
+    for (const auto end = t + 120s; t < end;) {
+        t += 120ms; m.on_present(t, FrameClass::Rich30, 60, true);            // a stall
+        for (int i = 0; i < 48; ++i) { t += (i % 2 == 0) ? 50000us : 33333us; m.on_present(t, FrameClass::Rich30, 60, true); }
+    }
+    auto r = m.take_report(t); REQUIRE(r); REQUIRE(r->late * 2 > r->presents);   // more than half late
+    REQUIRE_FALSE(m.too_heavy()); REQUIRE_FALSE(m.take_toast());
+}
+
+TEST_CASE("tube pacing: a stall counts in the report, a gap does not", "[tube]") {
+    app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+    m.take_report(t);
+    m.on_present(t += 33333us, FrameClass::Rich30, 60, true);
+    m.on_present(t += 150ms, FrameClass::Rich30, 60, true);                    // a stall: a late present
+    m.on_present(t += 33333us, FrameClass::Rich30, 60, true);
+    m.on_present(t += 251ms, FrameClass::Rich30, 60, true);                    // a gap: nothing
+    m.on_present(t += 33333us, FrameClass::Rich30, 60, false);
+    m.on_present(t += 150ms, FrameClass::Rich30, 60, false);                   // a stall without video
+    auto r = m.take_report(t + 60s); REQUIRE(r);
+    REQUIRE(r->presents == 5); REQUIRE(r->late == 2);
+    REQUIRE(r->video_presents == 3); REQUIRE(r->video_late == 1);
+}
+
+TEST_CASE("tube pacing: a stall restarts the ten minutes", "[tube]") {
+    Feed f; f.minutes(9, 6);
+    f.t += 150ms; f.m.on_present(f.t, FrameClass::Rich30, 60, true);          // a stall
+    f.minutes(9, 6); REQUIRE_FALSE(f.m.too_heavy());
+    f.minutes(1, 6); f.run(2s, 6); REQUIRE(f.m.too_heavy());
+}
+
+TEST_CASE("tube pacing: a stall is an interval over 100 ms", "[tube]") {
+    for (const auto stall : {100000us, 100001us}) {
+        Feed f; f.run(20s, 100);
+        f.t += stall; f.m.on_present(f.t, FrameClass::Rich30, 60, true);
+        f.run(11s, 100);
+        CHECK(f.m.too_heavy() == (stall == 100000us));                         // 100 ms stays in the streak
+        auto r = f.m.take_report(f.t); REQUIRE_FALSE(r);
+    }
+    app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+    m.take_report(t);
+    m.on_present(t += 33333us, FrameClass::Rich30, 60, true);
+    m.on_present(t += 100ms, FrameClass::Rich30, 60, true);                    // exactly 100 ms: late
+    auto r = m.take_report(t + 60s); REQUIRE(r); REQUIRE(r->presents == 2); REQUIRE(r->late == 1);
+}

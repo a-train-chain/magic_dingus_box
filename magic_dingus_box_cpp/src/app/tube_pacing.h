@@ -8,8 +8,8 @@
 // ever counts as a present that is not late; one after a gap counts nothing.
 //
 // TOO HEAVY (latched until reset()) needs video playing throughout - a gap over 250 ms,
-// a negative interval or a present without video breaks the streak and clears all
-// evidence - and either:
+// a negative interval, a stall (below) or a present without video breaks the streak and
+// clears all evidence - and either:
 //  (a) FAST: the last 30 s of video presents, spanning at least 30 s, were more than
 //      HALF late; or
 //  (b) SUSTAINED: each of the last 10 consecutive full minutes of the streak (60 s
@@ -22,6 +22,13 @@
 // A look that really is too heavy is late on nearly every frame (77% measured: the TV
 // look on a full-screen film at 20 fps), so (a) still catches it in 30 s, and (b) a look
 // that is only somewhat over budget, all the time.
+// A STALL - an interval over 100 ms (and at most 250 ms) - counts in the report as a
+// late present but clears the streak, and the next video present starts a new one: on
+// the same Pi 5 (2026-11-16) the PVM look (19 of 23 ms) latched (a) while the Media
+// Browser's containers restarted - page flips waited 48-514 ms, 475 of 1173 presents
+// late in one minute. A look that is really too heavy presents every 50 ms (20 fps), at
+// worst 66-83 ms (the heaviest measured, Everything on a film, is 33 ms of GPU); an
+// interval over 100 ms is the flip itself waiting, not the look's drawing.
 #pragma once
 
 #include <chrono>
@@ -82,7 +89,12 @@ public:
         }
         ++report_.presents;
         if (late) ++report_.late;
-        if (!video_playing) {
+        const bool stall = had_previous && interval > kStall;
+        if (!video_playing || stall) {
+            if (video_playing) {  // a stall: in the report, but evidence about the box, not the look
+                ++report_.video_presents;
+                ++report_.video_late;
+            }
             clear_streak();
             return;
         }
@@ -162,6 +174,7 @@ public:
     }
 
 private:
+    static constexpr std::chrono::milliseconds kStall{100};  // longer: the box stalled, not the look
     static constexpr std::chrono::seconds kFastWindow{30};  // rule (a): more than half late
     static constexpr std::chrono::seconds kMinute{60};      // rule (b): more than 5% late
     static constexpr int kSustainedMinutes = 10;            //   in each of this many minutes

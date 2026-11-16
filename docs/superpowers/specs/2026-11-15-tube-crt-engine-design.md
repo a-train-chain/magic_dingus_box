@@ -757,7 +757,12 @@ first rule, more than 5% over 30 s, fired against shipped looks on a busy
 box: Pi 5, 1080p, 2026-11-16, 12-13% late for two minutes while the Media
 Browser's containers restarted after a game and 20% for half a minute
 after a game, against 0.3-0.8% in quiet minutes; a look really too heavy
-is late on nearly every frame — TV on a full-screen film, 77%.)
+is late on nearly every frame — TV on a full-screen film, 77%.) A present
+more than 100 ms after the last (a stall) is counted late in the journal
+but starts the evidence over: on the same box the PVM look (19 of 23 ms)
+tripped the half-late rule while the containers restarted and page flips
+waited 48–514 ms, while a look really too heavy presents every 50 ms, at
+worst 66–83 ms.
 
 ## Acceptance
 
