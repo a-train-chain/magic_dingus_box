@@ -925,8 +925,10 @@ int main(int /* argc */, char* /* argv */[]) {
     // lambda keeps one name for both callers (main loop + game-loading
     // progress callback) and reads `mode` live, as the old inline code did.
     platform::FramePresenter frame_presenter(display, egl, mode_info);
+    // Returns false when the frame was dropped (not on screen, and it will
+    // not be): the main loop then draws again — see redraw_dropped_frame.
     auto present_frame = [&]() {
-        frame_presenter.present(mode.width, mode.height);
+        return frame_presenter.present(mode.width, mode.height);
     };
     // The display stack the game hand-off tears down and restores
     // (app/game_handoff_kiosk.h).
@@ -1029,6 +1031,11 @@ int main(int /* argc */, char* /* argv */[]) {
     int64_t crt_last_drawn_field = 0;
     bool crt_field_rate_logged = false;
     auto last_present_done = std::chrono::steady_clock::now();
+    // The presenter dropped the last drawn frame (a page flip from an
+    // earlier frame was still pending, or the kernel refused this one).
+    // What that frame drew is not on screen, so the redraw gate must not
+    // treat the screen as up to date: the next iteration draws again.
+    bool redraw_dropped_frame = false;
 
     // UI draw calls per drawn frame (MDB_BATCH_UI A/B), reported per minute.
     struct {
@@ -2281,7 +2288,8 @@ int main(int /* argc */, char* /* argv */[]) {
             // A pending screenshot must be drawn, or it would capture
             // whatever stale buffer the skip streak left behind.
             gate_in.forced = display_reset_this_iteration ||
-                             screenshot_capture.poll(gate_now);
+                             screenshot_capture.poll(gate_now) ||
+                             redraw_dropped_frame;
             gate_in.content_signature = sig.value();
             draw_this_frame = redraw_gate.should_draw(gate_in, gate_now);
             crt_field_rate_this_iteration = gate_in.crt_field_rate;
@@ -3123,7 +3131,7 @@ int main(int /* argc */, char* /* argv */[]) {
 
             // Present the GBM buffer to the display using page flip
             // Use shared lambda
-            present_frame();
+            redraw_dropped_frame = !present_frame();
             last_present_done = std::chrono::steady_clock::now();
 
             // UI draw calls per drawn frame, reported per minute (first
