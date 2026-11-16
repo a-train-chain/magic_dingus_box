@@ -461,10 +461,9 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         return utils::Result<>::fail("Movie requires a worker-published absolute local path");
     std::optional<std::string> missing;
     if (!movie) {
-        // stat()s of the SD card on the render loop. On magicpi5 at 23:37 on
-        // 2026-11-15 (an unpaced upload) ~4 s passed here — these calls or
-        // page faults in them; the log line says which
-        // (utils/stall_report.h).
+        // stat()s of the SD card on the render loop. Logged when slow, with
+        // the page faults that made it slow (utils/stall_report.h): 254 ms
+        // and one fault at worst on magicpi5 under a 2 GiB unpaced write.
         utils::SlowSection slow("load_playlist_item's missing-file check");
         missing = missing_video_file(item, playlist_directory);
     }

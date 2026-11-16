@@ -8,10 +8,10 @@
 //   - a MAJOR PAGE FAULT: the kiosk's own code or data, evicted by the
 //     page-cache flood, read back from the same card.
 // The fix differs (move the call off the loop, vs keep the pages
-// resident), and the journal alone cannot tell them apart. On magicpi5
-// (2026-11-15 23:37) a channel reload spent ~4 s between "joining" and
-// "Starting playlist transition" — path resolution, or faults in it — then
-// sat in stop() until the watchdog's SIGABRT.
+// resident), and the journal cannot tell them apart — nor time them: under
+// write saturation journald stamps lines seconds after they were written
+// (5-11 s on magicpi5, 2026-11-16; a killed kiosk's last lines were stamped
+// after its SIGABRT).
 //
 // So a slow stretch is logged with the calling thread's major-fault count
 // during it: "+0" means a blocking call. Logged to std::cerr (the journal,
