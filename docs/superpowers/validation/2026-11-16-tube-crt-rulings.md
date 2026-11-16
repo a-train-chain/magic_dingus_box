@@ -11,7 +11,7 @@ afterglow, films fall back to Enhanced, finish before deploying) are not listed 
 |---|---|---|
 | All six looks run at 30 fps; none was retuned to reach 60 | You asked for Sound Factory's values unchanged; the trial "PVM lean" look missed its own smoothness rule | The default look is 30 fps where a retuned one could have been 60 |
 | Noise, hum, flicker, rolling band, purity, ABL and breathing force 30 fps | Measured as groups that could not hold 60 fps | Someone using only hum or flicker gets 30 fps where 60 may have been possible |
-| The "This CRT look is too heavy" notice needs more than half the frames late for 30 s, or more than 5 % late in each of ten minutes in a row | The first rule (5 % over 30 s) fired against the shipped TV look twice when the box was briefly busy | A look that is only slightly too heavy is reported after ten minutes, not 30 seconds |
+| The "This CRT look is too heavy" notice needs three whole minutes in a row with more than half the frames late, or ten in a row above 5 %; a frame gap over 100 ms counts as the box stalling and restarts the count | The first rule (5 % over 30 s) and the second (half over 30 s) both fired against shipped looks while the box was briefly busy — three times on 2026-11-16, once on the lightest look | A look that really is too heavy is reported after three minutes, not 30 seconds |
 | A look never loses glow or afterglow unless that actually gets it under budget | Losing effects for the same 20 fps helps nobody | A look that is over budget keeps its effects and runs late |
 | Only a real full-screen film is handed to Enhanced, not any large picture | The first version also handed the menus to Enhanced in one transient state | None found |
 | When Tube cannot start, the screen says so in plain words: "Tube could not start on this box, so it is showing the Enhanced look. Restart the box to try again." / "Tube could not draw this look… Try a different look." | The first wording was internal jargon | Wording only |
@@ -46,6 +46,8 @@ afterglow, films fall back to Enhanced, finish before deploying) are not listed 
 | One worker was allowed onto the Pi for an off-screen shader tool | It could not disturb the TV; the other session agreed | Noise on the shared box |
 | No test kiosk on your TV without your say, and never with a time limit | A film you had resumed on a test kiosk was interrupted on 2026-11-15 | — |
 | A change that stopped the notice judging frames under a menu was written and then backed out, unpushed | Clean re-measurements showed menus were not the cause | None; the branches stayed as reviewed |
+| "Continue on with your recommendations" was read as: merge #33 then #34 in order and leave other refresh rates test-only — not as leave to run the on-box update rehearsal or to tag | Those two change your box or publish something | One more question to you |
+| #34 was merged after a joint hardware check of all three changes in one binary, pinned to the tested commit | All three change the kiosk's main loop | A day's delay at most |
 
 ## 4. Left as they are (known, small)
 
@@ -54,6 +56,7 @@ afterglow, films fall back to Enhanced, finish before deploying) are not listed 
   changes, a game starts or the picture is resized.
 - CRT Native keeps the signal rows (chroma bleed, convergence) and drops the rows a real tube draws itself; on a
   flat panel in CRT Native that reads as colour fringing with no scanlines. This is the design's call.
-- The rule for the notice needs ten unbroken minutes of video for its slow path; a box that stalls for a
-  quarter second inside that time starts the count again.
-- Small test gaps noted by reviewers: no test at exactly 5 % late in a minute, none at exactly 30 s.
+- The rule for the notice needs unbroken minutes of video; a box that stalls for a tenth of a second inside
+  that time starts the count again, so a box that stalls every minute never shows the notice.
+- Small test gaps noted by reviewers: no test at exactly 5 % late in a minute; two stale comments in
+  `tube_pacing.h`.
