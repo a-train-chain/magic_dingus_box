@@ -342,66 +342,102 @@ inline std::size_t target_bytes(const PassPlan& plan, const TargetSizes& t, bool
 }
 
 // The plan's predicted GPU time a frame, ms: the measured price of each pass it runs
-// (tube_budget.h; the signal at half width costs half_width_factor of its full-width
-// price, afterglow is the net cost on top of the output) scaled by the picture's pixels
-// against the reference it was measured at. The glass is rebaked only when it changes,
-// so it is not a per-frame cost.
-inline double predicted_ms(const PassPlan& plan, const TargetSizes& t, const PassCosts& c = kPassCosts) noexcept {
+// (tube_budget.h, kPassCosts: each signal program at the width it runs at; the output at
+// its into-the-history price plus the copy pass when afterglow is on, else at its
+// to-the-screen price; a wide glow's blur by its radius) scaled by the picture's pixels
+// against the reference it was measured at. `glow_sigma` is glow_sigma_px() for the
+// setting and picture (only read when the plan blurs a glow). The glass is rebaked only
+// when it changes, so it is not a per-frame cost.
+inline double predicted_ms(const PassPlan& plan, const TargetSizes& t, float glow_sigma,
+                           const PassCosts& c = kPassCosts) noexcept {
     double ms = 0.0;
     if (plan.mean_probe) ms += c.probe;
     if (plan.quarter) ms += c.quarter;
-    if (plan.glow) ms += plan.glow_half ? c.glow_blur_half : c.glow_blur;
+    if (plan.glow) {
+        ms += plan.glow_half
+                  ? c.glow_blur_half_base + c.glow_blur_half_per_radius * blur_params(plan, glow_sigma).radius
+                  : c.glow_blur;
+    }
     if (plan.signal) {
-        double sig = c.sig_sharp;
+        SignalPrice sig = c.sig_sharp;
         switch (*plan.signal) {
             case Program::sig_sharp_chroma: sig = c.sig_sharp_chroma; break;
             case Program::sig_guns: sig = c.sig_guns; break;
             case Program::sig_guns_chroma: sig = c.sig_guns_chroma; break;
             default: break;
         }
-        ms += plan.signal_half ? sig * c.half_width_factor : sig;
+        ms += plan.signal_half ? sig.half : sig.full;
     }
-    if (plan.lines) ms += plan.signal_half ? c.lines_half : c.lines_full;
+    if (plan.lines) ms += c.lines;
     const std::uint32_t caps = program_caps(plan.output);
-    if (is_lean_output(plan.output))
+    if (is_lean_output(plan.output)) {
         ms += c.out_lean;
-    else if (caps & kCapRasterOnly)
-        ms += c.out_rich_raster_only;
-    else if (caps & kCapRaster)
-        ms += c.out_rich_raster;
-    else
-        ms += c.out_rich;
-    if (plan.afterglow) ms += c.history;
+    } else {
+        const OutputPrice& out = (caps & kCapRasterOnly) ? c.out_rich_raster_only
+                                 : (caps & kCapRaster)   ? c.out_rich_raster
+                                                         : c.out_rich;
+        ms += plan.afterglow ? out.into_history + c.history : out.to_screen;
+    }
     const double pixels = static_cast<double>(t.pic_w) * static_cast<double>(t.pic_h);
     return ms * (pixels / kReferencePicturePixels);
 }
 
-// The plan for a resolved setting drawn into `picture`. A picture larger than the
-// reference (a full-screen film) is always Rich30; when its predicted cost exceeds the
-// rich budget it drops the afterglow pass, then (if still over) the glow passes, and
-// stops there (design section 3). The driver must then draw with those rows at 0.
-inline PassPlan plan_passes(const Resolved& resolved, const Picture& picture) noexcept {
+// The effects a setting asks for that its plan does NOT draw, because the look cannot
+// afford them at this picture (plan_passes' ladder). Row keys "afterglow" and "glow".
+struct NotDrawn {
+    bool afterglow = false, glow = false;
+    bool any() const noexcept { return afterglow || glow; }
+    bool operator==(const NotDrawn& o) const noexcept { return afterglow == o.afterglow && glow == o.glow; }
+    bool operator!=(const NotDrawn& o) const noexcept { return !(*this == o); }
+};
+
+// A plan and what it left out.
+struct PlannedPasses {
+    PassPlan plan;
+    NotDrawn not_drawn;
+};
+
+// THE ONE PLACE A LOOK GIVES WAY (owner's decision, 2026-11-15). The plan for a resolved
+// setting drawn into `picture`; when its predicted cost exceeds the rich budget, at ANY
+// picture size, it drops the afterglow pass, then (if still over) the glow passes, and
+// stops there (design section 3). No row's value changes: the setting is kept, and the
+// effect is drawn again as soon as the setting or the picture can afford it. A picture
+// larger than the reference (a full-screen film) is always Rich30; a lean plan has
+// neither effect, so it never drops anything, and dropping never changes the class. The
+// decision reads the setting and the picture only (never a frame's timing), so it cannot
+// flap from frame to frame. The driver must then draw with those rows at 0 (apply_plan);
+// the status, the TV menu and the web page read `not_drawn` from here.
+inline PlannedPasses plan_passes_and_drops(const Resolved& resolved, const Picture& picture) noexcept {
     const TubeUniforms still = tube_uniforms_for(resolved, picture);
     const bool larger = picture.w * picture.h > kReferencePicturePixels;
-    const bool wide = glow_is_wide(glow_sigma_px(resolved, picture));
+    const float sigma = glow_sigma_px(resolved, picture);
+    const bool wide = glow_is_wide(sigma);
     Needs n = needs_of(still, resolved);
     const auto plan = [&] {
         PassPlan q = plan_for(n, larger);
         q.glow_half = q.glow && wide;
         return q;
     };
-    PassPlan p = plan();
-    if (!larger) return p;
-    const auto over = [&] { return predicted_ms(p, target_sizes(p, picture, still)) > kRichBudgetMs; };
+    PlannedPasses out{plan(), {}};
+    if (out.plan.cls != FrameClass::Rich30) return out;
+    const auto over = [&] {
+        return predicted_ms(out.plan, target_sizes(out.plan, picture, still), sigma) > kRichBudgetMs;
+    };
     if (n.afterglow && over()) {
         n.afterglow = false;
-        p = plan();
+        out.not_drawn.afterglow = true;
+        out.plan = plan();
     }
     if (n.glow && over()) {
         n.glow = false;
-        p = plan();
+        out.not_drawn.glow = true;
+        out.plan = plan();
     }
-    return p;
+    return out;
+}
+
+inline PassPlan plan_passes(const Resolved& resolved, const Picture& picture) noexcept {
+    return plan_passes_and_drops(resolved, picture).plan;
 }
 
 // The still uniforms as the plan draws them: a row whose pass the plan dropped reads 0.

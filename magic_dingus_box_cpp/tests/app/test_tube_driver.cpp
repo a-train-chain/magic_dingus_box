@@ -161,10 +161,17 @@ TEST_CASE("tube driver: a full-screen picture whose plan drops glow draws no glo
     REQUIRE(f.u.glow == 0.0f);
     REQUIRE(f.u.persistence == 0.0f);
     REQUIRE(f.glow_sigma == 0.0f);
-    // The same look at the reference size keeps both.
+    // The same look at the reference size keeps the glow; it cannot afford afterglow there
+    // either (the rule applies at every picture size), so its persistence reads 0 too.
     const DriverFrame ref = d.frame(s, k1080, 2.1, 0);
-    REQUIRE(ref.plan.glow); REQUIRE(ref.u.glow > 0.0f); REQUIRE(ref.u.persistence > 0.0f);
+    REQUIRE(ref.plan.glow); REQUIRE(ref.u.glow > 0.0f);
+    REQUIRE_FALSE(ref.plan.afterglow); REQUIRE(ref.u.persistence == 0.0f);
     REQUIRE(ref.glow_sigma > 0.0f);
+    // Trinitron at the reference size affords both.
+    TubeSetting trin; select_look(trin, Look::trinitron);
+    const DriverFrame both = d.frame(trin, k1080, 2.2, 0);
+    REQUIRE(both.plan.glow); REQUIRE(both.plan.afterglow);
+    REQUIRE(both.u.glow > 0.0f); REQUIRE(both.u.persistence > 0.0f);
 }
 
 TEST_CASE("tube driver: no mean is asked for on a plan without the probe, and the limiter rests", "[tube]") {
