@@ -28,6 +28,12 @@
 # Env:
 #   OTA_WORK        work dir (default: $TMPDIR/mdb-ota-rehearsal); logs land in $OTA_WORK/logs
 #   OTA_OLD_REF     default v1.9.14         OTA_NEW_REF  default HEAD
+#   OTA_NEW_VERSION stamp the NEW artifacts with this X.Y.Z (default: VERSION at
+#                   OTA_NEW_REF). Needed whenever OLD is the latest release:
+#                   main's VERSION equals it until the next stable is cut.
+#   OTA_BOX_IMAGE   box image name (default mdb-ota-box:trixie). It is built
+#                   once, from the OLD release's install_deps.sh, and reused:
+#                   give each OLD its own name.
 #   OTA_BIN_IMAGE   image the release binary is built in (default mdb-pisim:trixie;
 #                   arm64v8/debian:trixie reproduces release.yml exactly)
 #   OTA_BUILD_CPUS  cpuset for the binary build (default 0-3: nproc=4, like the
@@ -166,15 +172,19 @@ cmd_artifacts() {
     ensure_pisim
     local new_sha old_sha
     new_sha="$(git_rev "${NEW_REF}")"; old_sha="$(git_rev "${OLD_REF}")"
-    NEW_VER="$(git -C "${REPO}" show "${new_sha}:VERSION" | tr -d '[:space:]')"
+    # OTA_NEW_VERSION stamps the version the release tag will (main's VERSION
+    # trails until the stable release), through the same build-source steps
+    # the derived follow-ups below use.
+    NEW_VER="${OTA_NEW_VERSION:-$(git -C "${REPO}" show "${new_sha}:VERSION" | tr -d '[:space:]')}"
+    [[ "${NEW_VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "NEW version must be X.Y.Z (the derived follow-ups bump its patch): ${NEW_VER}"
     OLD_VER="$(git -C "${REPO}" show "${old_sha}:VERSION" | tr -d '[:space:]')"
     say "old ${OLD_REF} = ${old_sha:0:7} (VERSION ${OLD_VER}); new ${NEW_REF} = ${new_sha:0:7} (VERSION ${NEW_VER})"
     printf 'OLD_VER=%s\nNEW_VER=%s\nOLD_SHA=%s\nNEW_SHA=%s\n' "${OLD_VER}" "${NEW_VER}" "${old_sha}" "${new_sha}" > "${WORK}/versions.env"
 
     # Cached artifacts are only valid for the commit they were built from.
-    if [[ "$(cat "${WORK}/release/.built_from" 2>/dev/null)" != "${new_sha}" ]]; then
+    if [[ "$(cat "${WORK}/release/.built_from" 2>/dev/null)" != "${new_sha} ${NEW_VER}" ]]; then
         rm -rf "${WORK}/release" && mkdir -p "${WORK}/release"
-        echo "${new_sha}" > "${WORK}/release/.built_from"
+        echo "${new_sha} ${NEW_VER}" > "${WORK}/release/.built_from"
     fi
     git_archive "${new_sha}" "${WORK}/new.tar"
     git_archive "${old_sha}" "${WORK}/old.tar"

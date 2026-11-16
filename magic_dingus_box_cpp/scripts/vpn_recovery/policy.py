@@ -14,6 +14,8 @@ import copy
 import math
 
 UNKNOWN_TOLERANCE_S = 30
+TRAFFIC_LOSS_S = 60       # verified traffic loss before a server is judged
+CANDIDATE_GRACE_S = 120   # a new selection's grace, sized for a slow first port lease
 # A tun0 seen this recently in the same container means a missing tun0 is one
 # more restart of Gluetun's own retry loop, not a dead control path.
 TUNNEL_GAP_S = 30
@@ -37,7 +39,7 @@ def decide(observation, state, config, now_mono, now_wall):
     s = copy.deepcopy(state) if isinstance(state, dict) and state.get('version') == 2 else {}
     # Malformed timers and backwards monotonic clocks discard in-process state.
     timers = ('started', 'last_tick', 'port_lost', 'traffic_lost', 'control_lost', 'candidate_until', 'backoff_until', 'last_restart',
-              'traffic_unknown', 'port_unknown', 'tunnel_seen')
+              'traffic_unknown', 'port_unknown', 'tunnel_seen', 'rotated_at')
     if any(k in s and (not finite(s[k]) or s[k] > now and k not in ('candidate_until', 'backoff_until')) for k in timers):
         s = {}
     if not isinstance(s.get('losses', []), list):
@@ -50,7 +52,7 @@ def decide(observation, state, config, now_mono, now_wall):
         # selection: judge whatever is current on its own evidence, with the
         # first-lease grace and no lease losses carried from other servers.
         s.update(started=now, had_port=False, port_was_present=False, losses=[])
-        for k in ('port_lost', 'traffic_lost', 'control_lost', 'traffic_unknown', 'port_unknown'):
+        for k in ('port_lost', 'traffic_lost', 'control_lost', 'traffic_unknown', 'port_unknown', 'rotated_at'):
             s.pop(k, None)
 
     def answer(action, reason, **extra):
@@ -68,7 +70,8 @@ def decide(observation, state, config, now_mono, now_wall):
     def restart(reason):
         if 'last_restart' in s and now-s['last_restart'] < 600:
             return answer('none', 'Restart rate limited')
-        s.update(last_restart=now, candidate_until=now+120)
+        s.update(last_restart=now, candidate_until=now+CANDIDATE_GRACE_S)
+        s.pop('rotated_at', None)
         return answer('restart_container', reason)
 
     if not o.get('running'):
@@ -83,10 +86,10 @@ def decide(observation, state, config, now_mono, now_wall):
         s['generation'] = generation
         if not tunnel_only:
             s.update(started=now, had_port=False, port_was_present=False)
-            for k in ('port_lost', 'traffic_lost', 'control_lost', 'traffic_unknown', 'port_unknown', 'tunnel_seen'):
+            for k in ('port_lost', 'traffic_lost', 'control_lost', 'traffic_unknown', 'port_unknown', 'tunnel_seen', 'rotated_at'):
                 s.pop(k, None)
             if had_generation:
-                s['candidate_until'] = now+120
+                s['candidate_until'] = now+CANDIDATE_GRACE_S
     if generation is not None:
         s['tunnel_seen'] = now
     traffic = o.get('traffic')
@@ -141,6 +144,7 @@ def decide(observation, state, config, now_mono, now_wall):
     if traffic is True and port and o.get('selection_verified', True):
         # A healthy fallback is sticky; historical penalties remain in runtime.
         s.pop('candidate_until', None)
+        s.pop('rotated_at', None)
         s.pop('backoff_until', None)
         s['backoff_level'] = 0
         if not o.get('qbit_synced'):
@@ -149,8 +153,23 @@ def decide(observation, state, config, now_mono, now_wall):
             return answer('none', 'Verifying services')
         return answer('none', 'Ready')
 
+    # A failed rotation request (Gluetun v3.41.3 can hang a settings PUT for
+    # 2 min) left no candidate to wait for: escalate one loss window after
+    # the rotation instead of after the full grace. A server that recovers
+    # meanwhile is Ready first (which clears rotated_at), so never restarted.
+    abandoned = (bool(o.get('api_failed')) and finite(s.get('rotated_at'))
+                 and now-s['rotated_at'] >= TRAFFIC_LOSS_S)
     if now < s.get('candidate_until', 0):
-        return answer('none', 'Waiting for candidate')
+        # A candidate whose own new tunnel has carried no verified traffic
+        # for a whole loss window is dead: judge it now rather than idle
+        # out the grace that exists for a slow first port lease. Unknown
+        # samples, a tunnel not yet the candidate's, or working traffic
+        # without a port all keep the full grace.
+        dead = (traffic is False and o.get('selection_verified') is True and not o.get('api_failed')
+                and finite(s.get('rotated_at')) and finite(s.get('traffic_lost'))
+                and now-max(s['traffic_lost'], s['rotated_at']) >= TRAFFIC_LOSS_S)
+        if not (dead or abandoned):
+            return answer('none', 'Waiting for candidate')
     new_round = False
     if 'backoff_until' in s:
         if now < s['backoff_until']:
@@ -159,11 +178,11 @@ def decide(observation, state, config, now_mono, now_wall):
         new_round = True
     control_down = (o.get('control_available') is False
                     and now-s.get('control_lost', now) >= (90 if s.get('had_port') else 120))
-    failure = (traffic is False and now-s.get('traffic_lost', now) >= 60
+    failure = (traffic is False and now-s.get('traffic_lost', now) >= TRAFFIC_LOSS_S
                or port == 0 and ((not s.get('had_port') and now-s['started'] >= 120)
                                   or s.get('had_port') and now-s.get('port_lost', now) >= 90
                                   or len(s['losses']) >= 3)
-               or control_down
+               or control_down or abandoned
                or o.get('selection_failed') is True)
     if not failure:
         return answer('none', 'Recovering port forwarding' if traffic is True and port == 0 else 'Verifying VPN')
@@ -182,5 +201,6 @@ def decide(observation, state, config, now_mono, now_wall):
         level = level if type(level) is int and 0 <= level <= 2 else 0
         s.update(backoff_until=now+(120, 300, 600)[level], backoff_level=min(2, level+1))
         return answer('none', 'Recovery backoff')
-    s['candidate_until'] = now+120
+    s['candidate_until'] = now+CANDIDATE_GRACE_S
+    s['rotated_at'] = now
     return answer('rotate_server', 'Recovering port forwarding' if traffic is True else 'Recovering VPN', new_round=new_round)
