@@ -191,6 +191,26 @@ services:
     image: qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027
     container_name: mdb_gluetun
     logging: *default-logging
+    # One restart authority. Where the native VPN recovery controller owns
+    # recovery (Proton + WireGuard + port forwarding: the same condition as
+    # the healthcheck's native branch below, and the controller's own gate),
+    # Gluetun's restart-on-failed-healthcheck is turned off. With it on,
+    # Gluetun v3.41.3 treats a stop that cancels its in-flight startup check
+    # as a health failure and restarts again, so the controller's server
+    # switch landing while Gluetun restart-looped on a dead server started
+    # two restart sequences that cancelled each other: 236 sub-second
+    # restarts, no port forwarding, then a settings request that hung ~2 min
+    # (magicpi5 2026-11-15, 4 of 4 fallback runs). Every other configuration
+    # keeps Gluetun's self-restart. Changes apply when the container is next
+    # created (`compose up -d` at boot or a reconfigure).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        if [ "$$VPN_SERVICE_PROVIDER" = protonvpn ] && [ "$$VPN_TYPE" = wireguard ] && [ "$$VPN_PORT_FORWARDING" = on ];
+        then export HEALTH_RESTART_VPN=off; fi;
+        exec /gluetun-entrypoint "$$@"
+      - gluetun-entrypoint
     cap_add:
       - NET_ADMIN
     devices:

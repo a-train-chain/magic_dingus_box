@@ -45,6 +45,50 @@ assert '/tmp/.pf_seen' in check
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
+@test "Gluetun's own health restart is off exactly where the native controller owns recovery" {
+    # Gluetun v3.41.3 treats a stop that cancels its in-flight startup check
+    # as a health failure and restarts again. With its own restart on, the
+    # controller's server switch (stop + start) landing while Gluetun
+    # restart-loops on a dead server started two restart sequences that
+    # cancelled each other: 236 sub-second restarts, no port forwarding, a
+    # wedged VPN loop (magicpi5 2026-11-15, 4 of 4 fallback runs). Run the
+    # real entrypoint wrapper with a stub Gluetun that prints its setting.
+    run python3 -c "
+import os, subprocess, tempfile, yaml
+svc = yaml.safe_load(open('$COMPOSE'))['services']['gluetun']
+entry = svc['entrypoint']
+assert entry[:2] == ['/bin/sh', '-c'], entry
+script = entry[2].replace('\$\$', '\$')
+assert 'exec /gluetun-entrypoint' in script, script
+# The same three-clause condition as the healthcheck's native branch.
+check = svc['healthcheck']['test'][1].replace('\$\$', '\$')
+native = '[ \"\$VPN_SERVICE_PROVIDER\" = protonvpn ] && [ \"\$VPN_TYPE\" = wireguard ] && [ \"\$VPN_PORT_FORWARDING\" = on ]'
+assert native in check and native in script, (check, script)
+stub = tempfile.mkdtemp()
+probe = os.path.join(stub, 'gluetun')
+open(probe, 'w').write('#!/bin/sh\necho \"restart=\${HEALTH_RESTART_VPN-unset} args=\$*\"\n')
+os.chmod(probe, 0o755)
+script = script.replace('/gluetun-entrypoint', probe)
+cases = {('protonvpn', 'wireguard', 'on'): 'restart=off',
+         ('custom', 'wireguard', 'on'): 'restart=unset',
+         ('protonvpn', 'openvpn', 'on'): 'restart=unset',
+         ('protonvpn', 'wireguard', 'off'): 'restart=unset'}
+for (provider, kind, forwarding), want in cases.items():
+    env = {'PATH': '/usr/bin:/bin', 'VPN_SERVICE_PROVIDER': provider, 'VPN_TYPE': kind,
+           'VPN_PORT_FORWARDING': forwarding}
+    out = subprocess.run(['/bin/sh', '-c', script] + entry[3:], env=env,
+                         capture_output=True, text=True, check=True).stdout.strip()
+    assert out == want + ' args=', (provider, kind, forwarding, out)
+# An operator's explicit HEALTH_RESTART_VPN is never overridden off-native.
+env = {'PATH': '/usr/bin:/bin', 'VPN_SERVICE_PROVIDER': 'custom', 'VPN_TYPE': 'wireguard',
+       'VPN_PORT_FORWARDING': 'off', 'HEALTH_RESTART_VPN': 'on'}
+out = subprocess.run(['/bin/sh', '-c', script] + entry[3:], env=env, capture_output=True, text=True, check=True).stdout
+assert out.startswith('restart=on'), out
+assert not any(e.startswith('HEALTH_RESTART_VPN=') for e in svc['environment']), 'set it only in the wrapper'
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
 @test "WireGuard keepalive is on, as a Go duration (Proton configs ask for 25)" {
     run python3 -c "
 import yaml
