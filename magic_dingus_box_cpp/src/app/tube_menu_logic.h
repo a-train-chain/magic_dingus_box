@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "app/tube_not_drawn.h"
 #include "tube/tube_frame_class.h"
 #include "tube/tube_groups.h"
 #include "tube/tube_inputs.h"
@@ -78,6 +79,33 @@ inline std::string tube_look_label(const tube::TubeSetting& setting, bool crt_na
 // "30 fps" for a row that forces the 30 fps class when moved off neutral, else "".
 inline std::string_view tube_rate_tag(tube::Effect effect) noexcept {
     return tube::forces_30fps(effect) ? "30 fps" : "";
+}
+
+// Whether a row's effect is one the box is not drawing (app::tube_not_drawn): AFTERGLOW
+// when afterglow gave way, GLOW when glow did, and GLOW SIZE with it (it sizes a glow
+// that is not drawn).
+inline bool tube_row_not_drawn(tube::Effect effect, const tube::NotDrawn& not_drawn) noexcept {
+    switch (effect) {
+        case tube::Effect::afterglow: return not_drawn.afterglow;
+        case tube::Effect::glow:
+        case tube::Effect::glowSize: return not_drawn.glow;
+        default: return false;
+    }
+}
+
+// The note such a row wears. Shortened from "not drawn at this size": with it, GLOW's
+// sublabel ran to 62 characters against 47 for the longest elsewhere in the menu. The
+// web page, which has the room, says "Not drawn at this picture size".
+inline constexpr std::string_view kTubeNotDrawnTag = "not drawn";
+
+// A value row's sublabel: the row's hint, " · 30 fps" when the row forces the 30 fps
+// class, then " · not drawn" when its effect is not being drawn.
+inline std::string tube_value_sublabel(tube::Effect effect, const tube::NotDrawn& not_drawn) {
+    std::string out(tube::row_info(effect).hint1);
+    const std::string_view rate_tag = tube_rate_tag(effect);
+    if (!rate_tag.empty()) out += " \xC2\xB7 " + std::string(rate_tag);
+    if (tube_row_not_drawn(effect, not_drawn)) out += " \xC2\xB7 " + std::string(kTubeNotDrawnTag);
+    return out;
 }
 
 // The six look words, in kLooks order, joined by " · ".

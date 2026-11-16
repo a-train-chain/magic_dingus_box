@@ -349,6 +349,7 @@ public:
         bool drawing = false;
         tube::FrameClass cls = tube::FrameClass::Lean60;
         bool moving = false;
+        tube::Picture picture{0.0, 0.0, false};   // what the tube draws into (app::tube_not_drawn)
     };
     // Whether the tube draws this iteration (a Tube frame as above, and
     // TubeRenderer::available()), and its frame class and motion from

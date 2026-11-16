@@ -612,3 +612,36 @@ TEST_CASE("Tube menu: only the Display page and a group show Tube state", "[sett
     REQUIRE(sm.get_current_submenu() == MenuSection::TUBE_GROUP);
     CHECK(sm.page_shows_tube_state());
 }
+
+TEST_CASE("Tube menu: a row whose effect is not drawn at this size says so", "[settings_menu][tube]") {
+    ui_test::fake_reset(); app::AppState state{}; offer_tube(state);
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    tube::select_look(state.display_settings.tube, tube::Look::tv);
+    state.tube_render.drawing = true;
+    state.tube_render.picture = tube::Picture{1440.0, 1080.0, false};
+    SettingsMenuManager sm{&state}; sm.enter_submenu(MenuSection::DISPLAY);
+    press(sm, "Light");
+    REQUIRE(sm.get_current_submenu() == MenuSection::TUBE_GROUP);
+    const std::string tag = " \xC2\xB7 not drawn";
+    const auto ends_with_tag = [&](const char* prefix) {
+        const MenuItem* item = row(sm, prefix);
+        REQUIRE(item);
+        return item->sublabel.size() >= tag.size() &&
+               item->sublabel.compare(item->sublabel.size() - tag.size(), tag.size(), tag) == 0;
+    };
+    CHECK(ends_with_tag("AFTERGLOW"));
+    CHECK_FALSE(ends_with_tag("GLOW:"));
+    CHECK_FALSE(ends_with_tag("GLOW SIZE"));
+    // A full-screen picture drops the glow too; GLOW SIZE then sizes nothing.
+    state.tube_render.picture = tube::Picture{1920.0, 1080.0, false};
+    press(sm, "Back");
+    press(sm, "Light");
+    CHECK(ends_with_tag("AFTERGLOW"));
+    CHECK(ends_with_tag("GLOW:"));
+    CHECK(ends_with_tag("GLOW SIZE"));
+    // The renderer not drawing: no note.
+    state.tube_render.drawing = false;
+    press(sm, "Back");
+    press(sm, "Light");
+    CHECK_FALSE(ends_with_tag("AFTERGLOW"));
+}

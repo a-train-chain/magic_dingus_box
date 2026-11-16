@@ -427,6 +427,7 @@ Renderer::TubeStatus Renderer::tube_status(const app::AppState& state, double no
     status.drawing = true;
     status.cls = peek.cls;
     status.moving = peek.moving;
+    status.picture = picture;
     return status;
 }
 

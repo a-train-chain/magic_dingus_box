@@ -339,6 +339,34 @@ TEST_CASE("status_writer: the tube block carries the frame rate, too_heavy and u
     REQUIRE(t["unavailable"].asString() == "build_hung");
 }
 
+TEST_CASE("status_writer: the tube block lists the effects the box is not drawing",
+          "[remote][status][tube]") {
+    app::AppState state;
+    tube_state(state);   // look tv
+    // Not drawing (before the first frame, the Media Browser, a film it does not draw): none.
+    Json::Value t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_nd.json");
+    REQUIRE(t["not_drawn"].isArray());
+    REQUIRE(t["not_drawn"].empty());
+    // Drawing the 4:3 picture of a 1080p Modern TV: TV cannot afford its afterglow.
+    state.tube_render.drawing = true;
+    state.tube_render.picture = tube::Picture{1440.0, 1080.0, false};
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_nd.json");
+    REQUIRE(t["not_drawn"].size() == 1u);
+    REQUIRE(t["not_drawn"][0].asString() == "afterglow");
+    REQUIRE(t["frame_rate"].asInt() == 60);   // the renderer's own rate, unchanged by this
+    // A full-screen picture: afterglow, then glow, in drop order.
+    state.tube_render.picture = tube::Picture{1920.0, 1080.0, false};
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_nd.json");
+    REQUIRE(t["not_drawn"].size() == 2u);
+    REQUIRE(t["not_drawn"][0].asString() == "afterglow");
+    REQUIRE(t["not_drawn"][1].asString() == "glow");
+    // A look that affords everything at the reference size.
+    state.tube_render.picture = tube::Picture{1440.0, 1080.0, false};
+    tube::select_look(state.display_settings.tube, tube::Look::trinitron);
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_nd.json");
+    REQUIRE(t["not_drawn"].empty());
+}
+
 TEST_CASE("status_writer: Tube not offered publishes the engine and the reason only",
           "[remote][status][tube]") {
     app::AppState state;

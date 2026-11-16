@@ -617,3 +617,37 @@ def test_look_picker_drops_the_rate_in_crt_native():
         return [tubeLookOptionText(tv, false), tubeLookOptionText(tv, true)];
     """)
     assert result == ["TV \u00b7 30 fps", "TV"]
+
+
+def test_a_row_the_box_is_not_drawing_is_marked_from_the_status_list():
+    result = run_js("""
+        const k = {not_drawn: ['afterglow']};
+        const both = {not_drawn: ['afterglow', 'glow']};
+        return {
+            afterglow: [tubeRowNotDrawn(k, 'afterglow'), tubeRowNotDrawn(both, 'afterglow')],
+            glow: [tubeRowNotDrawn(k, 'glow'), tubeRowNotDrawn(both, 'glow')],
+            glowSize: [tubeRowNotDrawn(k, 'glowSize'), tubeRowNotDrawn(both, 'glowSize')],
+            hum: tubeRowNotDrawn(both, 'hum'),
+            older_kiosk: [tubeRowNotDrawn({}, 'afterglow'), tubeRowNotDrawn({not_drawn: null}, 'glow'),
+                          tubeRowNotDrawn(null, 'glow')],
+            note: TUBE_NOT_DRAWN_NOTE,
+        };
+    """)
+    assert result["afterglow"] == [True, True]
+    assert result["glow"] == [False, True]
+    assert result["glowSize"] == [False, True]  # it sizes a glow that is not drawn (as on the TV)
+    assert result["hum"] is False
+    assert result["older_kiosk"] == [False, False, False]  # absent reads as empty
+    assert result["note"] == "Not drawn at this picture size"
+
+
+def test_the_not_drawn_note_is_built_hidden_and_toggled_without_disabling_the_slider():
+    src = DISPLAY_JS.read_text()
+    # Built once per row, hidden, next to the label; the text is the constant (escaped).
+    assert 'data-tube-notdrawn="${escapeHtml(key)}"' in src
+    assert "escapeHtml(TUBE_NOT_DRAWN_NOTE)" in src
+    # Shown from the status, display changed only when it differs; never touches .disabled.
+    render = src[src.index("function renderCrtLook"):]
+    line = next(l for l in render.splitlines() if "tubeRowNotDrawn(kiosk, key)" in l)
+    assert "disabled" not in line
+    assert "els.notDrawn[key].style.display !==" in render

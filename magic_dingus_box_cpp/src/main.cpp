@@ -2234,6 +2234,7 @@ int main(int /* argc */, char* /* argv */[]) {
             state.tube_render.frame_rate = tube::frames_per_second(tube_now.cls);
             state.tube_render.too_heavy = tube_pacing.too_heavy();
             state.tube_render.unavailable = std::string(ui_renderer.tube_unavailable_reason());
+            state.tube_render.picture = tube_now.picture;
         }
 
         // ── Redraw gate ──────────────────────────────────────────────────

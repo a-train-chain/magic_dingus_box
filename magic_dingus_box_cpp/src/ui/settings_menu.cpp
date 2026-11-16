@@ -849,6 +849,7 @@ std::vector<MenuItem> SettingsMenuManager::build_tube_group_submenu() {
         const tube::Group& group = tube::kGroups[tube_group_index_];
         const tube::Resolved resolved = tube::resolve(app_state_->display_settings.tube);
         const bool crt_native = app_state_->display_settings.mode == app::DisplayMode::CRT_NATIVE;
+        const tube::NotDrawn not_drawn = app::tube_not_drawn(*app_state_);
         const auto not_applicable = [&items](std::string_view label) {
             items.emplace_back(app::tube_na_label(label), MenuSection::INFO,
                                std::string(app::kTubeNaSublabel));
@@ -870,11 +871,8 @@ std::vector<MenuItem> SettingsMenuManager::build_tube_group_submenu() {
                 continue;
             }
             const bool editing = tube_edit_.active && !tube_edit_.mask && tube_edit_.effect == effect;
-            std::string sublabel(info.hint1);
-            const std::string_view rate_tag = app::tube_rate_tag(effect);
-            if (!rate_tag.empty()) sublabel += " \xC2\xB7 " + std::string(rate_tag);
             items.emplace_back(app::tube_value_label(effect, resolved.effects[tube::index_of(effect)], editing),
-                               MenuSection::TUBE_VALUE, std::move(sublabel),
+                               MenuSection::TUBE_VALUE, app::tube_value_sublabel(effect, not_drawn),
                                [this, effect]() { begin_tube_edit(effect); });
         }
     }

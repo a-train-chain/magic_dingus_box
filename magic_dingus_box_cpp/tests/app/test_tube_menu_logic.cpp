@@ -76,3 +76,50 @@ TEST_CASE("tube menu logic: the Look row says its rate; forcing rows are tagged"
     REQUIRE(app::tube_rate_tag(tube::Effect::glow) == "30 fps");
     REQUIRE(app::tube_rate_tag(tube::Effect::brightness).empty());
 }
+
+namespace {
+void drawing_tube(app::AppState& state, tube::Look look, tube::Picture picture) {
+    state.platform_profile.tube_crt_engine = true;
+    state.tube_renderer_ready = true;
+    state.display_settings.set_crt_engine(CrtEngine::Tube);
+    tube::select_look(state.display_settings.tube, look);
+    state.tube_render.drawing = true;
+    state.tube_render.picture = picture;
+}
+}  // namespace
+
+TEST_CASE("tube menu logic: what is not drawn is the renderer's plan for the real picture", "[tube]") {
+    const tube::Picture ref{1440.0, 1080.0, false};
+    const tube::Picture film{1920.0, 1080.0, false};
+    app::AppState tv, trinitron, tv_film;
+    drawing_tube(tv, tube::Look::tv, ref);
+    drawing_tube(trinitron, tube::Look::trinitron, ref);
+    drawing_tube(tv_film, tube::Look::tv, film);
+    CHECK(app::tube_not_drawn(tv) == tube::NotDrawn{true, false});
+    CHECK(app::tube_not_drawn(tv) ==
+          tube::plan_passes_and_drops(tube::resolve(tv.display_settings.tube), ref).not_drawn);
+    CHECK_FALSE(app::tube_not_drawn(trinitron).any());
+    CHECK(app::tube_not_drawn(tv_film) == tube::NotDrawn{true, true});
+    // Not drawing (the Media Browser, another engine, before the first frame): nothing.
+    tv.tube_render.drawing = false;
+    CHECK_FALSE(app::tube_not_drawn(tv).any());
+    CHECK_FALSE(app::tube_not_drawn(app::AppState{}).any());
+}
+
+TEST_CASE("tube menu logic: a row whose effect is not drawn says so", "[tube]") {
+    using tube::Effect;
+    const tube::NotDrawn none{}, ag{true, false}, both{true, true};
+    CHECK_FALSE(app::tube_row_not_drawn(Effect::afterglow, none));
+    CHECK(app::tube_row_not_drawn(Effect::afterglow, ag));
+    CHECK_FALSE(app::tube_row_not_drawn(Effect::glow, ag));
+    CHECK_FALSE(app::tube_row_not_drawn(Effect::glowSize, ag));
+    CHECK(app::tube_row_not_drawn(Effect::glow, both));
+    CHECK(app::tube_row_not_drawn(Effect::glowSize, both));   // it sizes a glow that is not drawn
+    for (const Effect e : tube::kEffects)
+        if (e != Effect::afterglow && e != Effect::glow && e != Effect::glowSize) CHECK_FALSE(app::tube_row_not_drawn(e, both));
+    // The sublabel: the hint, the rate tag, then the note.
+    CHECK(app::tube_value_sublabel(Effect::afterglow, none) == "the phosphor lingers \xC2\xB7 30 fps");
+    CHECK(app::tube_value_sublabel(Effect::afterglow, ag) == "the phosphor lingers \xC2\xB7 30 fps \xC2\xB7 not drawn");
+    CHECK(app::tube_value_sublabel(Effect::glowSize, both) == "how far the light scatters \xC2\xB7 not drawn");
+    CHECK(app::tube_value_sublabel(Effect::brightness, both) == "the picture's overall light");
+}

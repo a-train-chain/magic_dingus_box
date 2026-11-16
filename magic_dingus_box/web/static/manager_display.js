@@ -252,6 +252,20 @@ function tubeRateTagShown(row, native) {
     return tubeRateTag(row) !== '' && !(native && !!row.crt_native_neutral);
 }
 
+/** The note on a row whose effect the box is not drawing. */
+const TUBE_NOT_DRAWN_NOTE = 'Not drawn at this picture size';
+
+/** Whether the box is not drawing a row's effect: the kiosk lists, in its status's
+    `not_drawn`, the effects the look cannot afford at the picture it draws into (the
+    kiosk decides that, tube::plan_passes_and_drops; the page only reads it). GLOW SIZE
+    follows GLOW, as on the TV (app::tube_row_not_drawn): it sizes a glow that is not
+    drawn. A kiosk from before the field publishes none: nothing is marked. The row
+    stays editable; its value is kept and drawn again once the look can afford it. */
+function tubeRowNotDrawn(kiosk, key) {
+    const list = kiosk && Array.isArray(kiosk.not_drawn) ? kiosk.not_drawn : [];
+    return list.includes(key === 'glowSize' ? 'glow' : key);
+}
+
 /** A look's picker text: its word, plus its Modern TV rate. In CRT Native the rate
     may not apply, so it is left out (the live header rate stays). */
 function tubeLookOptionText(look, native) {
@@ -467,7 +481,7 @@ function buildCrtLook(st) {
         const hint = isMask ? '' : crtLookHintHtml(row.hint);
         return `<div data-tube-line="${escapeHtml(key)}" style="padding: 0.6rem 0; border-top: 1px solid var(--bg-mid);">
                     <div style="display: flex; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.3rem;">
-                        <strong>${escapeHtml(row.label)}${tubeRateTag(row) ? ` <span class="settings-description" data-tube-rate="${escapeHtml(key)}" style="font-weight: normal; font-size: 0.8rem;">${escapeHtml(tubeRateTag(row))}</span>` : ''}</strong>
+                        <strong>${escapeHtml(row.label)}${tubeRateTag(row) ? ` <span class="settings-description" data-tube-rate="${escapeHtml(key)}" style="font-weight: normal; font-size: 0.8rem;">${escapeHtml(tubeRateTag(row))}</span>` : ''}${isMask ? '' : ` <span class="settings-description" data-tube-notdrawn="${escapeHtml(key)}" style="display: none; font-weight: normal; font-size: 0.8rem;">${escapeHtml(TUBE_NOT_DRAWN_NOTE)}</span>`}</strong>
                         <span data-tube-moved="${escapeHtml(key)}" style="color: var(--accent); font-size: 0.8rem;">moved</span>
                     </div>
                     ${control}
@@ -514,7 +528,7 @@ function buildCrtLook(st) {
         reset: document.getElementById('crtLookReset'),
         degauss: document.getElementById('crtLookDegauss'),
         mask: body.querySelector('[data-tube-mask]'),
-        ranges: {}, nums: {}, moved: {}, hints: {}, na: {}, rates: {},
+        ranges: {}, nums: {}, moved: {}, hints: {}, na: {}, rates: {}, notDrawn: {},
     };
     body.querySelectorAll('[data-tube-row]').forEach(el => { els.ranges[el.dataset.tubeRow] = el; });
     body.querySelectorAll('[data-tube-num]').forEach(el => { els.nums[el.dataset.tubeNum] = el; });
@@ -522,6 +536,7 @@ function buildCrtLook(st) {
     body.querySelectorAll('[data-tube-hint]').forEach(el => { els.hints[el.dataset.tubeHint] = el; });
     body.querySelectorAll('[data-tube-rate]').forEach(el => { els.rates[el.dataset.tubeRate] = el; });
     body.querySelectorAll('[data-tube-na]').forEach(el => { els.na[el.dataset.tubeNa] = el; });
+    body.querySelectorAll('[data-tube-notdrawn]').forEach(el => { els.notDrawn[el.dataset.tubeNotdrawn] = el; });
 
     els.engine.addEventListener('change', () => crtLookSend({ op: 'engine', engine: els.engine.value }));
     els.look.addEventListener('change', () => crtLookSend({ op: 'look', look: els.look.value }));
@@ -606,6 +621,8 @@ function renderCrtLook() {
         if (na && st.held === range) st.held = null;
         els.na[key].style.display = na ? '' : 'none';
         if (els.rates[key]) els.rates[key].style.display = tubeRateTagShown(rowByKey[key], native) ? '' : 'none';
+        const notDrawn = tubeRowNotDrawn(kiosk, key) ? '' : 'none';
+        if (els.notDrawn[key] && els.notDrawn[key].style.display !== notDrawn) els.notDrawn[key].style.display = notDrawn;
         els.moved[key].style.visibility = moved.includes(key) ? 'visible' : 'hidden';
         if (st.held === range) return;  // never repaint a slider the pointer is holding
         const value = shown.values[key];

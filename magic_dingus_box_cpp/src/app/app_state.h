@@ -15,6 +15,7 @@
 #include <cstddef>
 
 #include "guide_nav.h"
+#include "tube/tube_inputs.h"   // tube::Picture (TubeRenderStatus)
 #include "tube/tube_setting.h"
 
 namespace app {
@@ -93,12 +94,15 @@ inline constexpr bool kTubeRendererReady = false;
 // (only when kTubeRendererReady; the defaults otherwise). `drawing`: the tube
 // draws the picture; `frame_rate`: 60 (lean) or 30 (rich); `too_heavy`: video
 // presents ran late (app::TubePacingMonitor, latched until the setting or the
-// frame class changes); `unavailable`: "" | "build_hung" | "build_failed".
+// frame class changes); `unavailable`: "" | "build_hung" | "build_failed";
+// `picture`: the picture the tube draws into (meaningful while `drawing`), which
+// app::tube_not_drawn() plans against - the renderer's own plan for it.
 struct TubeRenderStatus {
     bool drawing = false;
     int frame_rate = 60;
     bool too_heavy = false;
     std::string unavailable;
+    tube::Picture picture{0.0, 0.0, false};
 };
 
 // The op log's progress and the Degauss presses. In memory only.

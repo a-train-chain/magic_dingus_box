@@ -422,3 +422,12 @@ def test_kiosk_tube_counts_an_integer_ts_too_big_for_a_float_as_stale(client, te
     assert r.status_code == 200 and r.get_json()["data"]["reason"] == "kiosk_not_running"
     r = post(client, [HUM])
     assert r.status_code == 409 and r.get_json()["error"]["details"]["reason"] == "kiosk_not_running"
+
+
+def test_the_not_drawn_list_passes_through_and_an_older_kiosk_without_it_still_works(client, temp_data_dir):
+    write_status(temp_data_dir, {**OPEN, "not_drawn": ["afterglow", "glow"]})
+    data = client.get("/admin/display/tube?state_only=1").get_json()["data"]
+    assert data["available"] is True and data["state"]["not_drawn"] == ["afterglow", "glow"]
+    write_status(temp_data_dir, OPEN)  # a kiosk from before the field: no key, still offered
+    data = client.get("/admin/display/tube?state_only=1").get_json()["data"]
+    assert data["available"] is True and "not_drawn" not in data["state"]
