@@ -27,7 +27,18 @@
 //   until a reboot). A compile or link failure, or an incomplete render target, removes the
 //   marker (a failure is not a hang) and records the plan as failed ("build_failed"): it is
 //   retried when prepare() is given a different plan, or after retry_builds(). A hang is
-//   never retried within a process.
+//   never retried within a process. The marker is also removed when Tube stops drawing
+//   (end_tube_scene), by release_gl() and by the destructor: programs that are not being
+//   drawn cannot hang, and a stale marker would read as a hang at the next restart.
+//
+// THE CALLING PATTERN (Task 12), every frame the engine is Tube:
+//     if (tube.prepare(frame.plan, scene_decode_for(tube.caps())) && tube.composite(...)) ...
+//     else  draw the Enhanced composite;  status reason = tube.unavailable_reason()
+//   ALWAYS call prepare(), even while unavailable_reason() is "build_failed": prepare() is
+//   what clears a failure once the plan has changed, so gating prepare() on available()
+//   would keep Tube off forever. prepare() is cheap when nothing changed (no allocation, no
+//   GL query). available() / unavailable_reason() are for status only. On an engine change
+//   call retry_builds() (beside FrameDriver::start); on leaving Tube, end_tube_scene().
 #pragma once
 
 #include <GLES3/gl3.h>
@@ -54,7 +65,10 @@ public:
     TubeRenderer(const TubeRenderer&) = delete;
     TubeRenderer& operator=(const TubeRenderer&) = delete;
 
-    bool available() const;                            // not hang-tripped, and no failure for the current plan
+    // Status only, never a gate on prepare(): false when the guard tripped at startup
+    // ("build_hung", for the life of the process) or a build failed and no prepare() with a
+    // different plan nor retry_builds() has cleared it since ("build_failed").
+    bool available() const;
     std::string_view unavailable_reason() const;       // "" | "build_hung" | "build_failed"
     const Caps& caps();                                // probed once per context (again after release_gl)
     void allow_builds();                               // main calls it right after READY=1; prepare() does nothing before
@@ -63,9 +77,13 @@ public:
     // (scene_decode_for(caps())) the scene texture is re-specified as SRGB8_ALPHA8 with
     // SKIP_DECODE, only when it is a new or resized texture or after release_gl() - never
     // per frame. FRAMEBUFFER_SRGB is turned off (when the context can) and LEFT off: the
-    // UI's already-encoded bytes are stored unchanged.
+    // UI's already-encoded bytes are stored unchanged. A texture recreated under the same
+    // name and size is noticed by its decode parameter (hardware path only). If the scene
+    // FBO is incomplete as SRGB8_ALPHA8 the texture goes back to RGBA8 and the failure is
+    // recorded ("build_failed") until retry_builds() or release_gl().
     void begin_scene(GLuint scene_tex, int w, int h);
-    // Back to RGBA8 (and FRAMEBUFFER_SRGB to its default, on): the engine left Tube.
+    // Back to RGBA8 (and FRAMEBUFFER_SRGB to its default, on): the engine left Tube. Also
+    // removes the guard's marker and forgets the plan (the next prepare() starts afresh).
     void end_tube_scene(GLuint scene_tex, int w, int h);
 
     // Compiles and links what the plan lacks, the marker written first. False: not

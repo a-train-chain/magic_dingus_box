@@ -103,6 +103,10 @@ TubeGlState::TubeGlState(bool have_srgb_switch) : srgb_switch_(have_srgb_switch)
     glGetIntegerv(GL_UNPACK_ROW_LENGTH, &unpack_row_length_);
     glGetIntegerv(GL_UNPACK_SKIP_ROWS, &unpack_skip_rows_);
     glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &unpack_skip_pixels_);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack_alignment_);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &pack_row_length_);
+    glGetIntegerv(GL_PACK_SKIP_ROWS, &pack_skip_rows_);
+    glGetIntegerv(GL_PACK_SKIP_PIXELS, &pack_skip_pixels_);
 }
 
 void TubeGlState::decode_scene(GLuint scene_tex) {
@@ -134,6 +138,10 @@ TubeGlState::~TubeGlState() {
     glPixelStorei(GL_UNPACK_ROW_LENGTH, unpack_row_length_);
     glPixelStorei(GL_UNPACK_SKIP_ROWS, unpack_skip_rows_);
     glPixelStorei(GL_UNPACK_SKIP_PIXELS, unpack_skip_pixels_);
+    glPixelStorei(GL_PACK_ALIGNMENT, pack_alignment_);
+    glPixelStorei(GL_PACK_ROW_LENGTH, pack_row_length_);
+    glPixelStorei(GL_PACK_SKIP_ROWS, pack_skip_rows_);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, pack_skip_pixels_);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(draw_fbo_));
     glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(read_fbo_));
     glViewport(viewport_[0], viewport_[1], viewport_[2], viewport_[3]);
@@ -298,6 +306,7 @@ void TubeRenderer::Impl::settle_marker() {
 
 void TubeRenderer::Impl::record_failure(const char* what) {
     failed = true;
+    prepared_ok = false;
     failed_plan = current_plan;
     failed_decode = current_decode;
     write_marker("");   // a failure is not a hang
@@ -364,6 +373,8 @@ bool TubeRenderer::Impl::ensure_targets(const tube::PassPlan& plan, const tube::
         GLenum fmt;
         int levels;
     };
+    // An incomplete target - an RGBA16F one included - is a build failure for this plan, as
+    // the brief has it; it is not retried with the SRGB8_ALPHA8 fallback format.
     // Formats (colour space, binding): the quarter, glow, history and mean targets are
     // SRGB8_ALPHA8 holding LINEAR light - the passes drawing into them run with
     // FRAMEBUFFER_SRGB on, so the hardware encodes on write and decodes on read. Signal and
@@ -408,7 +419,9 @@ bool TubeRenderer::Impl::ensure_targets(const tube::PassPlan& plan, const tube::
 void TubeRenderer::Impl::upload_mask(const tube::MaskTile& tile) {
     const std::size_t texels = static_cast<std::size_t>(std::max(tile.w, 0)) * static_cast<std::size_t>(std::max(tile.h, 0));
     if (tile.w <= 0 || tile.h <= 0 || tile.rgb.size() != texels * 3) {
+        // A missing or stale mask samples black or wrong: not a picture to show.
         LOG_ERROR("tube: mask tile {}x{} with {} bytes - not uploaded", tile.w, tile.h, tile.rgb.size());
+        record_failure("the mask tile was malformed");
         return;
     }
     std::vector<std::uint8_t> rgba(texels * 4);
@@ -451,14 +464,15 @@ void TubeRenderer::Impl::bind_quad(const GlEnv& env) {
     glBufferData(GL_ARRAY_BUFFER, sizeof(kQuad), kQuad, GL_DYNAMIC_DRAW);
 }
 
-// Spike ensure_glass: drawn into its own RGBA8 target at the picture's size, timed between
-// two glFinish() calls as the spike measured it (~4 ms on the Pi 5). That is a GPU wait on
-// the main loop - accepted because it happens only when the glass changes (a setting or
-// picture size change, or a rebuilt context), never per frame, and it is the glass
-// program's FIRST draw, where Mesa compiles its real variant under the guard's marker.
+// Spike ensure_glass, into its own RGBA8 target at the picture's size - without the
+// spike's two glFinish() calls: the glass re-bakes on every frame a glass row changes
+// (live tuning), and each finish drained the queued frame before the bake. Mesa compiles a
+// program's real variant synchronously inside its first draw call, so the guard's marker
+// still covers that compile without a finish.
 bool TubeRenderer::Impl::bake_glass(const GlEnv& env, const tube::TubeUniforms& u) {
     ProgramSlot& g = slot(tube::Program::glass);
     if (!g.id || !glass.made()) return false;
+    const bool first_draw = !g.drawn;
     glBindFramebuffer(GL_FRAMEBUFFER, glass.fbo);
     glViewport(0, 0, glass.w, glass.h);
     glDisable(GL_SCISSOR_TEST);
@@ -466,16 +480,42 @@ bool TubeRenderer::Impl::bake_glass(const GlEnv& env, const tube::TubeUniforms& 
     glUseProgram(g.id);
     upload_tube_uniforms(g, u);
     bind_quad(env);
-    glFinish();
+    // A query still in flight from an earlier bake is not reused (that would wait).
+    const bool timed = caps.timer_query && !glass_query_pending;
+    if (timed) {
+        if (!glass_query) glGenQueries(1, &glass_query);
+        begin_query(GL_TIME_ELAPSED_EXT, glass_query);
+    }
     const auto t0 = Clock::now();
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    glFinish();
-    const double ms = ms_since(t0);
+    const double submit_ms = ms_since(t0);
+    if (timed) {
+        end_query(GL_TIME_ELAPSED_EXT);
+        glass_query_pending = true;
+        glass_query_first_draw = first_draw;
+    }
     mark_drawn(tube::Program::glass);
     glass_valid = true;
-    LOG_INFO("tube: glass baked in {:.2f} ms ({}x{}, rim {:.2f} vignette {:.2f} glassBlack {:.2f} reflection {:.2f})",
-             ms, glass.w, glass.h, u.rim, u.vignette, u.glassBlack, u.reflection);
+    LOG_INFO("tube: glass bake submitted in {:.2f} ms CPU{} ({}x{}, rim {:.2f} vignette {:.2f} glassBlack {:.2f} "
+             "reflection {:.2f}){}",
+             submit_ms, first_draw ? ", including the glass program's first-draw compile" : "", glass.w, glass.h,
+             u.rim, u.vignette, u.glassBlack, u.reflection, timed ? "; GPU time follows" : "");
     return true;
+}
+
+void TubeRenderer::Impl::poll_glass_timing() {
+    if (!glass_query_pending) return;
+    GLuint available = 0;
+    glGetQueryObjectuiv(glass_query, GL_QUERY_RESULT_AVAILABLE, &available);
+    if (!available) return;   // a later frame
+    glass_query_pending = false;
+    GLint disjoint = 0;
+    glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+    if (disjoint) return;   // the GPU's clock jumped: the result means nothing
+    GLuint64 ns = 0;
+    get_query_ui64(glass_query, GL_QUERY_RESULT, &ns);
+    LOG_INFO("tube: glass baked in {:.2f} ms GPU{}", static_cast<double>(ns) / 1.0e6,
+             glass_query_first_draw ? " (including the glass program's first-draw compile)" : "");
 }
 
 void TubeRenderer::Impl::release() {
@@ -491,6 +531,11 @@ void TubeRenderer::Impl::release() {
     mean_fence = nullptr;
     if (!queries.empty()) glDeleteQueries(static_cast<GLsizei>(queries.size()), queries.data());
     queries.clear();
+    if (glass_query) glDeleteQueries(1, &glass_query);
+    glass_query = 0;
+    glass_query_pending = false;
+    prepared_ok = false;
+    scene_srgb_failed = false;   // a new context gets one more try
     scene_tex = 0;
     scene_w = scene_h = 0;
     scene_format = 0;
@@ -503,7 +548,11 @@ void TubeRenderer::Impl::release() {
 
 TubeRenderer::TubeRenderer(std::string guard_path) : impl_(std::make_unique<Impl>(std::move(guard_path))) {}
 
-TubeRenderer::~TubeRenderer() = default;
+// No GL. Removes a marker this instance wrote (a file, not GL): a kiosk shutting down
+// mid-window is not a hang. A watchdog SIGABRT runs no destructor, so a real hang keeps it.
+TubeRenderer::~TubeRenderer() {
+    if (impl_) impl_->write_marker("");
+}
 
 bool TubeRenderer::available() const { return !impl_->guard.tripped() && !impl_->failed; }
 
@@ -522,9 +571,10 @@ void TubeRenderer::allow_builds() { impl_->builds_allowed = true; }
 
 void TubeRenderer::retry_builds() {
     Impl& m = *impl_;
-    if (!m.failed) return;
+    if (!m.failed && !m.scene_srgb_failed) return;
     m.failed = false;
     m.failed_plan.reset();
+    m.scene_srgb_failed = false;
     LOG_INFO("tube: build failure cleared; the next prepare tries again");
 }
 
@@ -546,15 +596,41 @@ void TubeRenderer::begin_scene(GLuint scene_tex, int w, int h) {
         m.scene_h = h;
         m.scene_format = GL_RGBA8;
     }
-    if (scene_decode_for(c) == tube::SceneDecode::Hardware && m.scene_format != GL_SRGB8_ALPHA8) {
+    const bool hw = scene_decode_for(c) == tube::SceneDecode::Hardware;
+    if (hw && m.scene_format == GL_SRGB8_ALPHA8) {
+        // A texture this class specified carries SKIP_DECODE; one the Renderer recreated
+        // under the same name and size has the default (DECODE). One client-side query a
+        // frame catches a recreation nobody told us about (no release_gl()). On the shader
+        // path there is nothing to read: the caller's release_gl() is the only defence there.
+        GLint bound = 0, decode = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+        glBindTexture(GL_TEXTURE_2D, scene_tex);
+        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SRGB_DECODE_EXT, &decode);
+        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(bound));
+        if (decode != GL_SKIP_DECODE_EXT) {
+            LOG_WARN("tube: scene texture {} was recreated without release_gl(); specifying it again", scene_tex);
+            m.scene_format = GL_RGBA8;
+        }
+    }
+    if (hw && !m.scene_srgb_failed && m.scene_format != GL_SRGB8_ALPHA8) {
         TubeGlState state(c.srgb_write_control);
         glBindTexture(GL_TEXTURE_2D, scene_tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SRGB_DECODE_EXT, GL_SKIP_DECODE_EXT);
         const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        m.scene_format = GL_SRGB8_ALPHA8;
-        LOG_INFO("tube: scene texture re-specified as SRGB8_ALPHA8 (written unencoded) {}x{} (FBO status 0x{:x})", w,
-                 h, status);
+        if (status == GL_FRAMEBUFFER_COMPLETE) {
+            m.scene_format = GL_SRGB8_ALPHA8;
+            LOG_INFO("tube: scene texture re-specified as SRGB8_ALPHA8 (written unencoded) {}x{}", w, h);
+        } else {
+            // Back to what the old engine expects, and Tube off until retry_builds() /
+            // release_gl(): a hardware-decode program reading RGBA8 would draw wrong colours.
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SRGB_DECODE_EXT, GL_DECODE_EXT);
+            m.scene_format = GL_RGBA8;
+            m.scene_srgb_failed = true;
+            LOG_ERROR("tube: scene FBO incomplete with an SRGB8_ALPHA8 texture (0x{:x}); scene kept RGBA8", status);
+            m.record_failure("the scene texture could not be made SRGB8_ALPHA8");
+        }
     }
     // Deliberately NOT restored: the scene is drawn after this with encoding off.
     if (c.srgb_write_control) glDisable(GL_FRAMEBUFFER_SRGB_EXT);
@@ -567,8 +643,15 @@ void TubeRenderer::end_tube_scene(GLuint scene_tex, int w, int h) {
         TubeGlState state(c.srgb_write_control);
         glBindTexture(GL_TEXTURE_2D, scene_tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SRGB_DECODE_EXT, GL_DECODE_EXT);   // the default again
         LOG_INFO("tube: scene texture back to RGBA8 {}x{}", w, h);
     }
+    // Tube stopped drawing: undrawn programs cannot hang anything now, and a marker left
+    // behind would read as a hang at the next unrelated restart. The next prepare() writes
+    // it again for whatever is still undrawn.
+    m.write_marker("");
+    m.current_plan.reset();
+    m.prepared_ok = false;
     m.scene_tex = 0;
     m.scene_w = m.scene_h = 0;
     m.scene_format = 0;
@@ -579,7 +662,10 @@ void TubeRenderer::end_tube_scene(GLuint scene_tex, int w, int h) {
 
 bool TubeRenderer::prepare(const tube::PassPlan& plan, tube::SceneDecode decode) {
     Impl& m = *impl_;
-    if (!m.builds_allowed || m.guard.tripped()) return false;
+    if (!m.builds_allowed || m.guard.tripped() || m.scene_srgb_failed) return false;
+    // The fast path: nothing changed since a prepare() that succeeded (see Impl::prepared_ok).
+    if (m.prepared_ok && m.current_decode == decode && m.current_plan && *m.current_plan == plan) return true;
+    m.prepared_ok = false;
     if (m.failed) {
         if (m.failed_plan == plan && m.failed_decode == decode) return false;
         m.failed = false;   // a different plan: try again
@@ -613,6 +699,7 @@ bool TubeRenderer::prepare(const tube::PassPlan& plan, tube::SceneDecode decode)
             return false;
         }
     }
+    m.prepared_ok = true;
     return true;
 }
 

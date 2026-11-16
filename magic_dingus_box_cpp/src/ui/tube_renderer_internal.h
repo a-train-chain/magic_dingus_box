@@ -57,8 +57,9 @@ struct TubeField {
     const char* name;
     float tube::TubeUniforms::*member;
 };
-using TU = tube::TubeUniforms;
-inline constexpr TubeField kTubeFields[] = {
+namespace tube_fields {
+using TU = tube::TubeUniforms;   // scoped: only this table's lines use the short name
+inline constexpr TubeField kTable[] = {
     {"outW", &TU::outW}, {"outH", &TU::outH}, {"pxPerMm", &TU::pxPerMm},
     {"curvature", &TU::curvature}, {"cornerPx", &TU::cornerPx}, {"marginPx", &TU::marginPx}, {"flatFit", &TU::flatFit},
     {"scanlines", &TU::scanlines}, {"lines", &TU::lines}, {"raster", &TU::raster},
@@ -86,9 +87,11 @@ inline constexpr TubeField kTubeFields[] = {
     {"purityRadius", &TU::purityRadius}, {"purityR", &TU::purityR}, {"purityG", &TU::purityG},
     {"purityB", &TU::purityB},
 };
+}  // namespace tube_fields
+inline constexpr const auto& kTubeFields = tube_fields::kTable;
 inline constexpr std::size_t kTubeFieldCount = sizeof(kTubeFields) / sizeof(kTubeFields[0]);
 // + tint (three floats): every TubeUniforms member is in the table.
-static_assert(sizeof(TU) == (kTubeFieldCount + 3) * sizeof(float), "a TubeUniforms field is missing from kTubeFields");
+static_assert(sizeof(tube::TubeUniforms) == (kTubeFieldCount + 3) * sizeof(float), "a TubeUniforms field is missing from kTubeFields");
 
 // The programs' own uniforms (tube_programs.h's uniforms_for, the `u` names).
 enum class OwnUniform : std::uint8_t {
@@ -151,7 +154,8 @@ struct Target {
 // the outer's moment). Saved: draw and read framebuffer, viewport, scissor test and box,
 // blend enable/funcs/equations, clear colour, FRAMEBUFFER_SRGB (when the context has the
 // switch), the active unit and TEXTURE_2D on units 0..7, the program, the VAO, the array
-// buffer, the pixel pack/unpack buffers and the unpack alignment, row length and skips.
+// buffer, the pixel pack/unpack buffers, and the pack and unpack alignment, row length
+// and skips (Task 11's mean-probe read-back changes the pack side).
 // decode_scene() turns the scene texture's hardware decode on; the destructor turns it
 // back to SKIP_DECODE first, so anyone else reading the scene sees today's raw bytes.
 // glGet* of this state is answered from Mesa's client-side copy: no GPU sync.
@@ -173,6 +177,7 @@ private:
     GLint active_unit_ = 0, tex2d_[kTubeTextureUnits]{};
     GLint program_ = 0, vao_ = 0, array_buffer_ = 0, pack_buffer_ = 0, unpack_buffer_ = 0;
     GLint unpack_alignment_ = 4, unpack_row_length_ = 0, unpack_skip_rows_ = 0, unpack_skip_pixels_ = 0;
+    GLint pack_alignment_ = 4, pack_row_length_ = 0, pack_skip_rows_ = 0, pack_skip_pixels_ = 0;
     GLuint decoded_scene_ = 0;
 };
 
@@ -216,8 +221,20 @@ struct TubeRenderer::Impl {
     //     ahead). settle_marker() removes the marker once the plan has nothing undrawn.
     // A built-but-undrawn program that leaves the plan stays built; the marker stops
     // naming it, and names it again when a plan that draws it is prepared.
+    //
+    // WHERE THE MARKER IS REMOVED: settle_marker() once the plan has nothing undrawn; a
+    // prepare() whose plan has nothing undrawn; record_failure(); end_tube_scene() (Tube
+    // stopped drawing, so nothing undrawn can hang - it also forgets current_plan, so the
+    // next prepare() writes the marker again); release_gl(); ~TubeRenderer(). The guard's
+    // end() only ever removes a marker this process armed.
     std::optional<tube::PassPlan> current_plan;
     tube::SceneDecode current_decode = tube::SceneDecode::Shader;
+    // THE FAST PATH: true after a prepare() that returned true for current_plan and
+    // current_decode, until anything that could change its answer - release_gl(),
+    // end_tube_scene(), a recorded failure. prepare() with the same plan and decode then
+    // returns true before any allocation or GL query. The drawn state need not be compared:
+    // drawing only shrinks the undrawn set, and settle_marker() keeps the marker in step.
+    bool prepared_ok = false;
     std::string marker_text;   // what the marker on disk says; "" = no marker written by us
     void mark_drawn(tube::Program p) { slot(p).drawn = true; }
     void settle_marker();
@@ -226,6 +243,10 @@ struct TubeRenderer::Impl {
 
     // The build-failure record: cleared by a different plan or retry_builds().
     bool failed = false;
+    // The scene texture would not make a complete framebuffer as SRGB8_ALPHA8: sticky (a
+    // different plan does not clear it, or every frame would try again) until
+    // retry_builds() or release_gl(); prepare() refuses meanwhile.
+    bool scene_srgb_failed = false;
     std::optional<tube::PassPlan> failed_plan;
     tube::SceneDecode failed_decode = tube::SceneDecode::Shader;
     void record_failure(const char* what);
@@ -257,7 +278,17 @@ struct TubeRenderer::Impl {
     //
     // The glass bake (DriverFrame::glass_changed), into `glass` at the picture's size. The
     // glass program's first draw: it is marked drawn here. False: no glass program or target.
+    // Never waits on the GPU: with caps.timer_query the bake is timed by a GL_TIME_ELAPSED_EXT
+    // query that poll_glass_timing() reads on a LATER frame, once its result is available;
+    // without it (or while an earlier bake's query is still pending) only the CPU submit time
+    // is logged. A first bake's time includes Mesa's first-draw compile of the program, and
+    // the log line says so.
     bool bake_glass(const GlEnv& env, const tube::TubeUniforms& u);
+    // Task 11's composite calls this once a frame (cheap when nothing is pending): logs a
+    // finished bake query's time, never waiting for one that is not.
+    void poll_glass_timing();
+    GLuint glass_query = 0;
+    bool glass_query_pending = false, glass_query_first_draw = false;
 
     // Every TubeUniforms field the program lists, and tint.
     static void upload_tube_uniforms(const ProgramSlot& s, const tube::TubeUniforms& u);
