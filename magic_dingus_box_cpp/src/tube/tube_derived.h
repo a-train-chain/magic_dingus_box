@@ -17,9 +17,8 @@
 // tint, purity's amount and hue) stay in the GLSL on the raw uniform, so the
 // shader bounds them whatever the CPU uploads.
 //
-// The renderer uploads the fields by name (ui/tube_renderer_internal.h
-// kDerivedFields; a static_assert there keeps the table complete) to the programs
-// whose uniforms_of() lists them.
+// The renderer uploads the fields by name (kDerivedFields below; a static_assert
+// keeps the table complete) to the programs whose uniforms_of() lists them.
 //
 // Pure: standard library only, no I/O, no GL.
 #pragma once
@@ -84,6 +83,60 @@ struct TubeDerived {
     float dInvSigW, dInvSigH;      // 1.0 / signal size
     float dChromaStep;             // chromaBleed / 2.5
 };
+
+// Every field by its GLSL name, for the renderer's upload table and the tools.
+struct DerivedField {
+    const char* name;
+    float TubeDerived::*member;
+};
+inline constexpr std::array<DerivedField, 44> kDerivedFields{{
+    DerivedField{"dInvW", &TubeDerived::dInvW},
+    DerivedField{"dInvH", &TubeDerived::dInvH},
+    DerivedField{"dInvHalfW", &TubeDerived::dInvHalfW},
+    DerivedField{"dInvHalfH", &TubeDerived::dInvHalfH},
+    DerivedField{"dAspect", &TubeDerived::dAspect},
+    DerivedField{"dOpenInvH", &TubeDerived::dOpenInvH},
+    DerivedField{"dOpenInvV", &TubeDerived::dOpenInvV},
+    DerivedField{"dBreatheInv", &TubeDerived::dBreatheInv},
+    DerivedField{"dDegaussAmp", &TubeDerived::dDegaussAmp},
+    DerivedField{"dBendInvX", &TubeDerived::dBendInvX},
+    DerivedField{"dBendInvY", &TubeDerived::dBendInvY},
+    DerivedField{"dBendB", &TubeDerived::dBendB},
+    DerivedField{"dFlatFitInv", &TubeDerived::dFlatFitInv},
+    DerivedField{"dLinesPerPx", &TubeDerived::dLinesPerPx},
+    DerivedField{"dLineHeight", &TubeDerived::dLineHeight},
+    DerivedField{"dLineTap", &TubeDerived::dLineTap},
+    DerivedField{"dRows", &TubeDerived::dRows},
+    DerivedField{"dInvRows", &TubeDerived::dInvRows},
+    DerivedField{"dBeamRange", &TubeDerived::dBeamRange},
+    DerivedField{"dRollGain", &TubeDerived::dRollGain},
+    DerivedField{"dRollStart", &TubeDerived::dRollStart},
+    DerivedField{"dRollRoom", &TubeDerived::dRollRoom},
+    DerivedField{"dRollRoomInv", &TubeDerived::dRollRoomInv},
+    DerivedField{"dInvMaskW", &TubeDerived::dInvMaskW},
+    DerivedField{"dInvMaskH", &TubeDerived::dInvMaskH},
+    DerivedField{"dAblGain", &TubeDerived::dAblGain},
+    DerivedField{"dGrainInvX", &TubeDerived::dGrainInvX},
+    DerivedField{"dGrainInvY", &TubeDerived::dGrainInvY},
+    DerivedField{"dHumScale", &TubeDerived::dHumScale},
+    DerivedField{"dHumPhase", &TubeDerived::dHumPhase},
+    DerivedField{"dRollWidthInv", &TubeDerived::dRollWidthInv},
+    DerivedField{"dPurityCx", &TubeDerived::dPurityCx},
+    DerivedField{"dPurityCy", &TubeDerived::dPurityCy},
+    DerivedField{"dInvMm", &TubeDerived::dInvMm},
+    DerivedField{"dPurityRadiusInv", &TubeDerived::dPurityRadiusInv},
+    DerivedField{"dPowerGain", &TubeDerived::dPowerGain},
+    DerivedField{"dDecayR", &TubeDerived::dDecayR},
+    DerivedField{"dDecayG", &TubeDerived::dDecayG},
+    DerivedField{"dDecayB", &TubeDerived::dDecayB},
+    DerivedField{"dTrackWidthInv", &TubeDerived::dTrackWidthInv},
+    DerivedField{"dFlagExtentInv", &TubeDerived::dFlagExtentInv},
+    DerivedField{"dInvSigW", &TubeDerived::dInvSigW},
+    DerivedField{"dInvSigH", &TubeDerived::dInvSigH},
+    DerivedField{"dChromaStep", &TubeDerived::dChromaStep},
+}};
+static_assert(sizeof(TubeDerived) == kDerivedFields.size() * sizeof(float),
+              "a TubeDerived field is missing from kDerivedFields (it would never be uploaded)");
 
 namespace detail {
 // GLSL's smoothstep, in float.

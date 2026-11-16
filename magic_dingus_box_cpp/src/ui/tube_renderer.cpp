@@ -262,6 +262,11 @@ bool TubeRenderer::Impl::build(tube::Program p, tube::SceneDecode decode) {
                 known = true;
                 if (loc >= 0) s.uploads.push_back({static_cast<std::uint8_t>(f), loc});
             }
+        for (std::size_t f = 0; f < tube::kDerivedFields.size() && !known; ++f)
+            if (name == tube::kDerivedFields[f].name) {
+                known = true;
+                if (loc >= 0) s.derived_uploads.push_back({static_cast<std::uint8_t>(f), loc});
+            }
         if (!known && name == "tint") {
             known = true;
             s.tint = loc;
@@ -449,7 +454,7 @@ bool TubeRenderer::Impl::ensure_targets(const tube::PassPlan& plan, const tube::
 // counted DOWN from the top; it is widened to RGBA here, because ES 3.0 has no RGB-data
 // path into an RGBA8 texture. Rows go up in the order the tile stores them, top row first:
 // GL's row 0 is then the tile's top row (v = 0..1/h), which is what output.frag reads -
-// `texture(maskTex, (floor(p) + 0.5) / uMaskSize)` with p TOP-DOWN (p.y = outH -
+// `texture(maskTex, (floor(p) + 0.5) * vec2(dInvMaskW, dInvMaskH))` with p TOP-DOWN (p.y = outH -
 // gl_FragCoord.y), so p.y in [0, 1) lands on row 0, the top. No flip.
 void TubeRenderer::Impl::upload_mask(const tube::MaskTile& tile) {
     const std::size_t texels = static_cast<std::size_t>(std::max(tile.w, 0)) * static_cast<std::size_t>(std::max(tile.h, 0));
@@ -484,9 +489,12 @@ void TubeRenderer::Impl::upload_mask(const tube::MaskTile& tile) {
     LOG_INFO("tube: mask uploaded {}x{} RGBA8", tile.w, tile.h);
 }
 
-void TubeRenderer::Impl::upload_tube_uniforms(const ProgramSlot& s, const tube::TubeUniforms& u) {
+void TubeRenderer::Impl::upload_tube_uniforms(const ProgramSlot& s, const tube::TubeUniforms& u,
+                                              const tube::TubeDerived& d) {
     for (const ProgramSlot::Upload& up : s.uploads) glUniform1f(up.location, u.*(kTubeFields[up.field].member));
     if (s.tint >= 0) glUniform3f(s.tint, u.tint[0], u.tint[1], u.tint[2]);
+    for (const ProgramSlot::Upload& up : s.derived_uploads)
+        glUniform1f(up.location, d.*(tube::kDerivedFields[up.field].member));
 }
 
 void TubeRenderer::Impl::bind_quad(const GlEnv& env) {
@@ -513,7 +521,7 @@ bool TubeRenderer::Impl::bake_glass(const GlEnv& env, const tube::TubeUniforms& 
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     glUseProgram(g.id);
-    upload_tube_uniforms(g, u);
+    upload_tube_uniforms(g, u, tube::TubeDerived{});   // the glass reads no derived value
     bind_quad(env);
     // A query still in flight from an earlier bake is not reused (that would wait).
     const bool timed = caps.timer_query && !glass_query_pending;

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "tube_renderer.h"
+#include "../tube/tube_derived.h"
 #include "../tube/tube_gpu_timing.h"
 
 // Extension tokens (GL_EXT_sRGB_write_control, GL_EXT_texture_sRGB_decode,
@@ -48,11 +49,13 @@ namespace ui {
 //   returns is resolved ONCE into its slot:
 //     - a TubeUniforms float field -> ProgramSlot::uploads gets {field index, location}
 //       (only when the location is >= 0; three names are declared but unread, -1 is legal);
+//     - a tube::kDerivedFields name -> ProgramSlot::derived_uploads, the same way;
 //     - "tint"                      -> ProgramSlot::tint;
 //     - one of kOwnUniformNames     -> ProgramSlot::own[OwnUniform] (-1 when absent);
 //     - one of kSamplerUnits         -> glUniform1i(location, unit) at build, never again.
-//   Each frame: upload_tube_uniforms(slot, frame.u) sends every TubeUniforms field the
-//   program lists; the pass then sets its own with slot.own[...] and binds its textures to
+//   Each frame: upload_tube_uniforms(slot, frame.u, derived) sends every TubeUniforms and
+//   TubeDerived field the program lists (the derived values are worked out once a frame,
+//   on the stack, by tube::tube_derived); the pass then sets its own with slot.own[...] and binds its textures to
 //   kSamplerUnits' units.
 
 struct TubeField {
@@ -97,11 +100,11 @@ static_assert(sizeof(tube::TubeUniforms) == (kTubeFieldCount + 3) * sizeof(float
 
 // The programs' own uniforms (tube_programs.h's uniforms_for, the `u` names).
 enum class OwnUniform : std::uint8_t {
-    uSceneMap, uSceneClamp, uPicSize, uDstSize, uDir, uSigma, uRadius, uOrigin, uSrcOffset, uSigSize, uMaskSize, count
+    uSceneMap, uSceneClamp, uPicTexel, uDstTexel, uDir, uRadius, uWeights, uInvWeightSum, uOrigin, uSrcOffset, count
 };
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(OwnUniform::count)> kOwnUniformNames{
-    "uSceneMap", "uSceneClamp", "uPicSize", "uDstSize", "uDir", "uSigma",
-    "uRadius",   "uOrigin",     "uSrcOffset", "uSigSize", "uMaskSize"};
+    "uSceneMap", "uSceneClamp", "uPicTexel", "uDstTexel",  "uDir",
+    "uRadius",   "uWeights",    "uInvWeightSum", "uOrigin", "uSrcOffset"};
 
 // Every sampler and the texture unit it reads, fixed for the life of a program (the
 // spike's assignment). `ui` (the scene) and `src` share unit 0: no program has both.
@@ -133,6 +136,7 @@ struct ProgramSlot {
         GLint location;
     };
     std::vector<Upload> uploads;
+    std::vector<Upload> derived_uploads;   // field: index into tube::kDerivedFields
     GLint tint = -1;
     std::array<GLint, static_cast<std::size_t>(OwnUniform::count)> own{};
 
@@ -314,8 +318,8 @@ struct TubeRenderer::Impl {
     GLuint glass_query = 0;
     bool glass_query_pending = false, glass_query_first_draw = false;
 
-    // Every TubeUniforms field the program lists, and tint.
-    static void upload_tube_uniforms(const ProgramSlot& s, const tube::TubeUniforms& u);
+    // Every TubeUniforms field the program lists, tint, and every TubeDerived field it lists.
+    static void upload_tube_uniforms(const ProgramSlot& s, const tube::TubeUniforms& u, const tube::TubeDerived& d);
     // The renderer's VAO with a clip-space full-target quad in its VBO (attr 0 position,
     // attr 1 texCoord, four floats a vertex: renderer.cpp's layout).
     static void bind_quad(const GlEnv& env);

@@ -237,3 +237,20 @@ TEST_CASE("tube derived: a texel's size in uv", "[tube]") {
     REQUIRE(texel_size(360, 270) == std::array<float, 2>{1.0f / 360.0f, 1.0f / 270.0f});
     REQUIRE(texel_size(0, -3) == std::array<float, 2>{1.0f, 1.0f});
 }
+
+TEST_CASE("tube derived: the upload table names every field once", "[tube]") {
+    TubeDerived d{};
+    auto* f = reinterpret_cast<float*>(&d);
+    for (std::size_t i = 0; i < kDerivedFields.size(); ++i) f[i] = static_cast<float>(i + 1);
+    std::vector<bool> seen(kDerivedFields.size(), false);
+    std::vector<std::string> names;
+    for (const DerivedField& field : kDerivedFields) {
+        const auto at = static_cast<std::size_t>(d.*(field.member)) - 1;
+        REQUIRE_FALSE(seen[at]);   // each member once
+        seen[at] = true;
+        INFO(field.name);
+        REQUIRE(field.name[0] == 'd');
+        for (const std::string& n : names) REQUIRE(n != field.name);
+        names.emplace_back(field.name);
+    }
+}

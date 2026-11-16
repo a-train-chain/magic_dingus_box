@@ -243,8 +243,8 @@ void TubeRenderer::Impl::run_mean_probe(const GlEnv& env, video::IRect pic) {
     target(mean.fbo, 0, 0, mean.w, mean.h);
     framebuffer_srgb(caps.srgb_write_control, true);
     glUseProgram(q.id);
-    uniform2f(q, OwnUniform::uPicSize, static_cast<float>(pic.w), static_cast<float>(pic.h));
-    uniform2f(q, OwnUniform::uDstSize, static_cast<float>(mean.w), static_cast<float>(mean.h));
+    uniform2f(q, OwnUniform::uPicTexel, tube::texel_size(pic.w, pic.h)[0], tube::texel_size(pic.w, pic.h)[1]);
+    uniform2f(q, OwnUniform::uDstTexel, tube::texel_size(mean.w, mean.h)[0], tube::texel_size(mean.w, mean.h)[1]);
     scene_uniforms(q, env, pic);
     bind_unit(0, env.scene_tex);
     draw_pass(tube::Program::quarter);
@@ -373,10 +373,14 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
         return false;
     }
 
+    // The values the shaders would otherwise work out per pixel from uniforms alone, once
+    // for the frame (on the stack: no allocation), now that the mask and signal sizes are known.
+    const tube::TubeDerived derived = tube::tube_derived(f.u, tube::DerivedSizes{std::max(mask_w, 1), std::max(mask_h, 1),
+                                                                                 std::max(signal.w, 1), std::max(signal.h, 1)});
     const auto use = [&](tube::Program p) -> const ProgramSlot& {
         const ProgramSlot& s = slot(p);
         glUseProgram(s.id);
-        upload_tube_uniforms(s, f.u);
+        upload_tube_uniforms(s, f.u, derived);
         return s;
     };
     const auto read_scene = [&] { bind_unit(0, env.scene_tex); };
@@ -392,8 +396,9 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
         timer_begin(Pass::quarter);
         target(quarter.fbo, 0, 0, quarter.w, quarter.h);
         const ProgramSlot& q = use(tube::Program::quarter);
-        uniform2f(q, OwnUniform::uPicSize, static_cast<float>(pic.w), static_cast<float>(pic.h));
-        uniform2f(q, OwnUniform::uDstSize, static_cast<float>(quarter.w), static_cast<float>(quarter.h));
+        const auto pic_texel = tube::texel_size(pic.w, pic.h), dst_texel = tube::texel_size(quarter.w, quarter.h);
+        uniform2f(q, OwnUniform::uPicTexel, pic_texel[0], pic_texel[1]);
+        uniform2f(q, OwnUniform::uDstTexel, dst_texel[0], dst_texel[1]);
         scene_uniforms(q, env, pic);
         read_scene();
         draw_pass(tube::Program::quarter);
@@ -402,10 +407,12 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
     if (plan.glow) {
         timer_begin(Pass::glow);
         const ProgramSlot& b = use(tube::Program::blur);
-        const float sigma = std::max(f.glow_sigma, 0.1f);
-        const int radius = std::min(static_cast<int>(std::ceil(3.0f * sigma)), 24);   // blur.frag MAX_RADIUS
-        if (b.loc(OwnUniform::uSigma) >= 0) glUniform1f(b.loc(OwnUniform::uSigma), sigma);
-        if (b.loc(OwnUniform::uRadius) >= 0) glUniform1i(b.loc(OwnUniform::uRadius), radius);
+        // The weights depend on sigma alone: worked out here once, not per tap per pixel.
+        const tube::BlurWeights w = tube::blur_weights(f.glow_sigma);
+        if (b.loc(OwnUniform::uRadius) >= 0) glUniform1i(b.loc(OwnUniform::uRadius), w.radius);
+        if (b.loc(OwnUniform::uWeights) >= 0)
+            glUniform1fv(b.loc(OwnUniform::uWeights), static_cast<GLsizei>(w.weight.size()), w.weight.data());
+        if (b.loc(OwnUniform::uInvWeightSum) >= 0) glUniform1f(b.loc(OwnUniform::uInvWeightSum), w.inv_sum);
         target(glow_tmp.fbo, 0, 0, glow_tmp.w, glow_tmp.h);
         uniform2f(b, OwnUniform::uDir, 1.0f, 0.0f);
         bind_unit(0, quarter.tex);
@@ -422,7 +429,6 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
         timer_begin(Pass::signal);
         target(signal.fbo, 0, 0, signal.w, signal.h);
         const ProgramSlot& s = use(*plan.signal);
-        uniform2f(s, OwnUniform::uSigSize, static_cast<float>(signal.w), static_cast<float>(signal.h));
         scene_uniforms(s, env, pic);
         bind_unit(4, quarter.made() ? quarter.tex : black());
         read_scene();
@@ -471,7 +477,6 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
         uniform2f(o, OwnUniform::uOrigin, 0.0f, 0.0f);
     else
         uniform2f(o, OwnUniform::uOrigin, static_cast<float>(pic.x), static_cast<float>(yb));
-    uniform2f(o, OwnUniform::uMaskSize, static_cast<float>(std::max(mask_w, 1)), static_cast<float>(std::max(mask_h, 1)));
     scene_uniforms(o, env, pic);
     draw_pass(plan.output);
     timer_end();

@@ -18,6 +18,10 @@
 //   - at half width the texture is half as wide: each texel samples the scene
 //     at the boundary of two source pixels and the output pass interpolates it
 //     back.
+//
+// The d* uniforms are values this file used to work out per pixel from uniforms
+// alone, now worked out once a frame (tube/tube_derived.h). The caps (jitter's,
+// and the tracking and flagging clamps) stay here, on the raw uniforms.
 
 // DRIVER HAZARD (measured: docs/engineering/measurements/2026-11-15-tube-hang-isolation.txt).
 // The Pi 5's shader compiler (Mesa V3D) hung, 4 runs of 4, on this program built
@@ -30,16 +34,20 @@
 #error SIG_GUNS without SIG_SHARP is a known compiler hang on the Pi 5 when chroma joins it
 #endif
 
-uniform float outW, outH, pxPerMm, lines;
+uniform float outW, outH, pxPerMm;
 uniform float sharpness, contrast, saturation;
 uniform float jitter, jitterSeed, jitterBias;
-uniform float trackingOffset, trackingPosition, trackingHalfWidth, flagOffset, flagExtent;
-uniform vec2 uSigSize;          // the signal texture, texels
+uniform float trackingOffset, trackingPosition, flagOffset;
+// tube_derived.h
+uniform float dInvW, dInvH, dLinesPerPx, dTrackWidthInv, dFlagExtentInv;
+uniform float dInvSigW, dInvSigH;   // 1 / the signal texture's size, texels
 #ifdef SIG_GUNS
 uniform float convergence, driftOffset;
+uniform float dInvHalfW, dInvHalfH;
 #endif
 #ifdef SIG_CHROMA
 uniform float chromaBleed;
+uniform float dChromaStep;      // chromaBleed / 2.5
 uniform sampler2D quarter;      // the quarter picture (sRGB, linear on read)
 #endif
 
@@ -47,15 +55,22 @@ out vec4 fragColor;
 
 vec2 srcSize() { return vec2(outW, outH); }
 
+// GLSL's smoothstep(0.0, edge, x) with 1.0 / edge handed in (tube_derived.h).
+float rampTo(float x, float invEdge)
+{
+    float t = clamp(x * invEdge, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
 vec3 sampleUI(vec2 sp)
 {
-    vec2 uv = sp / srcSize();
+    vec2 uv = sp * vec2(dInvW, dInvH);   // sp / srcSize()
     vec3 c = uiTex(uv);
 #ifdef SIG_SHARP
     // SHARPNESS: the signal's horizontal bandwidth. Kept compiled in every signal
     // program (the DRIVER HAZARD above) and switched off here when neutral.
     if (sharpness != 1.0) {
-        vec2 dx = vec2(1.0 / srcSize().x, 0.0);
+        vec2 dx = vec2(dInvW, 0.0);        // 1.0 / srcSize().x
         vec3 l = uiTex(uv - dx), r = uiTex(uv + dx);
         c = max(mix((l + 2.0 * c + r) * 0.25, c, sharpness), 0.0);   // > 1 overshoots: crisper
     }
@@ -85,25 +100,25 @@ vec3 gunsRead(vec3 atR, vec3 atG, vec3 atB, vec2 iq, bool bleeds)
 void main()
 {
     // this texel's top-down source position, picture px
-    vec2 uvTop = vec2(gl_FragCoord.x / uSigSize.x, 1.0 - gl_FragCoord.y / uSigSize.y);
+    vec2 uvTop = vec2(gl_FragCoord.x * dInvSigW, 1.0 - gl_FragCoord.y * dInvSigH);
     vec2 sp = uvTop * srcSize();
-    float yN = sp.y / srcSize().y;      // stands in for crt.metal's p.y / outSize.y
+    float yN = sp.y * dInvH;            // stands in for crt.metal's p.y / outSize.y
     float mm = pxPerMm;                 // uiPxPerMm: the source is the picture
     // JITTER: each line's horizontal sync lands a hair late or early.
     // THE CAP (crt.metal): +-0.25 mm a line at 1.
     if (jitter > 0.0) {
-        float lineNo = floor(sp.y / (srcSize().y / lines));
+        float lineNo = floor(sp.y * dLinesPerPx);   // sp.y / (srcSize().y / lines)
         sp.x += min(jitter, 1.0) * 0.50 * mm * (hash(vec2(lineNo, jitterSeed)) + jitterBias);
     }
     // TRACKING: a brief local sync slip, with soft boundaries.
     if (trackingOffset != 0.0) {
         float dist = abs(yN - trackingPosition);
-        float strip = 1.0 - smoothstep(0.0, max(trackingHalfWidth, 0.0001), dist);
+        float strip = 1.0 - rampTo(dist, dTrackWidthInv);
         sp.x += clamp(trackingOffset, -3.6 * mm, 3.6 * mm) * strip;
     }
     // FLAGGING: the top of the picture bends sideways.
     if (flagOffset != 0.0) {
-        float top = 1.0 - smoothstep(0.0, max(flagExtent, 0.001), yN);
+        float top = 1.0 - rampTo(yN, dFlagExtentInv);
         sp.x += clamp(flagOffset, -4.0 * mm, 4.0 * mm) * top * top;
     }
     // Chroma bleed and the guns below: never in a build without SIG_SHARP (the
@@ -118,13 +133,13 @@ void main()
     if (bleeds) {
         vec3 w = vec3(0.0);
         for (int k = 0; k < 6; ++k)
-            w += rgbToYiq(texture(quarter, flipV((sp + vec2((float(k) - 2.5) / 2.5 * chromaBleed, 0.0)) / srcSize())).rgb);
+            w += rgbToYiq(texture(quarter, flipV((sp + vec2((float(k) - 2.5) * dChromaStep, 0.0)) * vec2(dInvW, dInvH))).rgb);
         iq = w.yz / 6.0;
     }
 #endif
 #ifdef SIG_GUNS
     // CONVERGENCE (misregistration grows toward the edges) + COLOUR DRIFT.
-    vec2 off = (sp / (srcSize() * 0.5) - 1.0) * convergence + vec2(driftOffset, 0.0);
+    vec2 off = (sp * vec2(dInvHalfW, dInvHalfH) - 1.0) * convergence + vec2(driftOffset, 0.0);
     vec3 c = gunsRead(sampleUI(sp + off), sampleUI(sp), sampleUI(sp - off), iq, bleeds);
 #else
     vec3 g = sampleUI(sp);

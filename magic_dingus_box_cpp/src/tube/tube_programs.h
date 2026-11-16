@@ -446,36 +446,40 @@ inline std::vector<std::string_view> uniforms_for(ShaderFile file, bool reads_sc
     if (reads_scene) add({"ui", "uSceneMap", "uSceneClamp"});
     switch (file) {
         case ShaderFile::glass: add({"outW", "outH", "cornerPx", "rim", "vignette", "glassBlack", "reflection"}); break;
-        case ShaderFile::quarter: add({"uPicSize", "uDstSize"}); break;
-        case ShaderFile::blur: add({"src", "uDir", "uSigma", "uRadius"}); break;
+        case ShaderFile::quarter: add({"uPicTexel", "uDstTexel"}); break;
+        case ShaderFile::blur: add({"src", "uDir", "uRadius", "uWeights", "uInvWeightSum"}); break;
         case ShaderFile::copy_encode: add({"src", "uOrigin", "uSrcOffset"}); break;
         case ShaderFile::signal:
-            add({"outW", "outH", "pxPerMm", "lines", "sharpness", "contrast", "saturation", "jitter", "jitterSeed",
-                 "jitterBias", "trackingOffset", "trackingPosition", "trackingHalfWidth", "flagOffset", "flagExtent",
-                 "uSigSize"});
-            if (has("SIG_GUNS")) add({"convergence", "driftOffset"});
-            if (has("SIG_CHROMA")) add({"chromaBleed", "quarter"});
+            add({"outW", "outH", "pxPerMm", "sharpness", "contrast", "saturation", "jitter", "jitterSeed", "jitterBias",
+                 "trackingOffset", "trackingPosition", "flagOffset", "dInvW", "dInvH", "dLinesPerPx",
+                 "dTrackWidthInv", "dFlagExtentInv", "dInvSigW", "dInvSigH"});
+            if (has("SIG_GUNS")) add({"convergence", "driftOffset", "dInvHalfW", "dInvHalfH"});
+            if (has("SIG_CHROMA")) add({"chromaBleed", "dChromaStep", "quarter"});
             break;
-        case ShaderFile::lines: add({"outW", "outH", "lines", "signalTex"}); break;
+        case ShaderFile::lines: add({"dInvH", "dRows", "dInvRows", "dLineHeight", "dLineTap", "dInvSigW", "signalTex"}); break;
         case ShaderFile::output:
-            add({"outW", "outH", "marginPx", "flatFit", "pxPerMm", "maskStrength", "maskGain", "maskPitch",
-                 "brightness", "tint", "power", "degauss", "degaussPhaseA", "degaussPhaseB", "spot", "warmupGain",
-                 "uOrigin", "uMaskSize", "glassTex", "maskTex"});
+            add({"outW", "outH", "maskStrength", "maskGain", "maskPitch", "brightness", "tint", "power", "degauss",
+                 "degaussPhaseA", "degaussPhaseB", "spot", "warmupGain", "uOrigin", "glassTex", "maskTex", "dInvW",
+                 "dInvH", "dInvHalfW", "dInvHalfH", "dAspect", "dOpenInvH", "dOpenInvV", "dDegaussAmp", "dPowerGain",
+                 "dRollGain", "dRollStart", "dRollRoom", "dRollRoomInv", "dInvMaskW", "dInvMaskH"});
             if (has("OUT_SIGNAL")) add({"signalTex"});
-            if (has("OUT_BEND")) add({"curvature"});
-            if (has("OUT_SCANLINES")) add({"scanlines", "lines", "beamMin", "beamMax"});
-            if (has("OUT_RASTER")) add({"raster", "lines", "linesTex", "scanlines", "beamMin", "beamMax"});
+            if (has("OUT_BEND"))
+                add({"dBendInvX", "dBendInvY", "dBendB"});
+            else
+                add({"dFlatFitInv"});
+            if (has("OUT_SCANLINES")) add({"scanlines", "beamMin", "dBeamRange", "dLinesPerPx"});
+            if (has("OUT_RASTER")) add({"raster", "linesTex", "scanlines", "beamMin", "dBeamRange", "dLinesPerPx", "dInvRows"});
             if (has("OUT_TONE")) add({"contrast", "saturation"});
             if (has("OUT_DISPLACE"))
-                add({"jitter", "jitterSeed", "jitterBias", "lines", "trackingOffset", "trackingPosition",
-                     "trackingHalfWidth", "flagOffset", "flagExtent"});
+                add({"pxPerMm", "jitter", "jitterSeed", "jitterBias", "dLinesPerPx", "trackingOffset", "trackingPosition",
+                     "dTrackWidthInv", "flagOffset", "dFlagExtentInv"});
             if (has("OUT_MOTION"))
-                add({"noise", "noiseSeed", "flicker", "flickerWave", "hum", "humPhase", "rollAmount", "rollPosition",
-                     "rollHalfWidth", "rollTint", "purityAmount", "purityX", "purityY", "purityRadius", "purityR",
-                     "purityG", "purityB"});
-            if (has("OUT_ABL")) add({"abl", "breathe", "ablLevel"});
+                add({"noise", "noiseSeed", "flicker", "flickerWave", "hum", "rollAmount", "rollPosition", "rollTint",
+                     "purityAmount", "purityR", "purityG", "purityB", "dGrainInvX", "dGrainInvY", "dHumScale",
+                     "dHumPhase", "dRollWidthInv", "dPurityCx", "dPurityCy", "dInvMm", "dPurityRadiusInv"});
+            if (has("OUT_ABL")) add({"dBreatheInv", "dAblGain"});
             if (has("OUT_GLOW")) add({"glow", "glowTex"});
-            if (has("OUT_HISTORY")) add({"persistence", "prev"});
+            if (has("OUT_HISTORY")) add({"dDecayR", "dDecayG", "dDecayB", "prev"});
             break;
     }
     return out;
@@ -483,8 +487,9 @@ inline std::vector<std::string_view> uniforms_for(ShaderFile file, bool reads_sc
 }  // namespace detail
 
 // The uniforms a program declares and reads: TubeUniforms fields by their member
-// names (the renderer uploads these from the frame's uniforms) and the program's
-// own, prefixed `u` or a sampler's name (the renderer sets these itself). Follows the
+// names (the renderer uploads these from the frame's uniforms), TubeDerived fields
+// (tube_derived.h, prefixed `d`: worked out once a frame from those) and the
+// program's own, prefixed `u` or a sampler's name (the renderer sets these itself). Follows the
 // defines, so the lean outputs list what the lean set compiles in. Task 6's tests
 // check every name is declared in the program's assembled source, and every
 // uniform the enabled code reads is listed.

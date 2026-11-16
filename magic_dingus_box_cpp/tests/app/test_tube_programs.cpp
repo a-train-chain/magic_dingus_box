@@ -248,8 +248,8 @@ TEST_CASE("tube programs: each program names its uniforms once", "[tube]") {
             if (u == name) return true;
         return false;
     };
-    REQUIRE(has(Program::out_rich_scene_ag, "persistence"));
-    REQUIRE_FALSE(has(Program::out_rich_scene, "persistence"));
+    REQUIRE(has(Program::out_rich_scene_ag, "dDecayR"));   // persistence * 0.68, once a frame
+    REQUIRE_FALSE(has(Program::out_rich_scene, "dDecayR"));
     REQUIRE(has(Program::sig_guns, "convergence"));
     REQUIRE_FALSE(has(Program::sig_sharp, "convergence"));
     REQUIRE(has(Program::out_lean_still, "uSceneMap"));
