@@ -75,7 +75,7 @@ kiosk_status.json; pictures from the kiosk's own screenshot request.
       I first blamed the Settings menu and then the guide; the clean runs in section 6 show neither is the cause.
       Changed afterwards (tube-crt-renderer a681cf5, reviewed): too_heavy now needs more than half the presents late over
       30 s, or more than 5% late in each of ten consecutive minutes. A look that really is too heavy measured 77%
-      late (TV on a full-screen film, window 5). NOT yet re-run on hardware with that change.
+      late (TV on a full-screen film, window 5). Re-run on hardware in window 7 (section 9a).
    b. NOT a Tube defect, found here: on main, one "Page flip wait timed out" leaves the kiosk failing nearly
       every later page flip until it restarts.
       09:16:06.726 "Page flip wait timed out" (85 s after the game ended, during the container restart), then
@@ -87,7 +87,28 @@ kiosk_status.json; pictures from the kiosk's own screenshot request.
       next flip is EBUSY and falls back to SetCrtc, and the late flip event then satisfies the NEXT flip's wait,
       so the loop stays one event behind. Proposed to the owner as its own task; not fixed in these branches.
 
-NOT COVERED: a real Pi 4B; 50, 90, 100, 120 and 144 Hz displays; CRT Native and a display-mode change with Tube
-picked; a degauss pressed while a film is handed to Enhanced; an OTA install and rollback on either board; a
-hardware re-run of the changed too-heavy rule; the shipping binary installed under /opt (it has only run from a
-home directory as a transient unit).
+9. WINDOW 7, the same day 11:41-11:56, binary from 0b01e60 (sha256 ee23f4c5030e..., the too-heavy rule of a681cf5)
+   The box was restored afterwards as before (production kiosk active, NRestarts 0, binary 1e858f05771f6727,
+   settings.json identical, output back at 1920x1080@60, no failed units).
+   a. THE CHANGED TOO-HEAVY RULE. TV look; an NES game started 11:42:30 and ended 11:42:53; the kiosk's resume
+      started the four containers at 11:42:56. Presents / late per minute after that:
+        1659 / 231 (13.9%)   1795 / 8   1798 / 5   1799 / 3   1799 / 3
+      too_heavy stayed false and no notice was shown (the first rule needed only 5% over 30 s). No flip-wait
+      timeout and no ret=-16 line in this window.
+   b. A DISPLAY-MODE CHANGE with Tube picked (Settings -> Display -> Mode: Modern TV -> CRT Native, 11:48:35):
+      "Display mode -> CRT_NATIVE; output resolution 1920x1080 -> 1280x720 deferred to next restart"; the picture
+      became the whole 1920x1080 frame at once: one new program (out_rich_signal, 77.3 ms compile+link, first
+      real draw 0.3 ms), targets re-made (glass 1920x1080, signal 960x1080, quarter 480x270), mask 1x1; status
+      crt_native true, not_drawn ["afterglow","glow","glowSize"]; the Bezel row left the Display page and the
+      label read "Look: TV · 30 fps". Pacing in that state: 1799 / 4, 1797 / 7. No error, no marker left.
+   c. CRT NATIVE AFTER THE RESTART (1280x720@60, logical canvas 640x480): scene texture 1280x720, targets glass
+      1280x720, history 1280x720 x2, signal 640x720, quarter 320x180, glow 160x90, mask 1x1; status crt_native
+      true, not_drawn [] (afterglow drawn), frame_rate 30, film_engine "tube". The picture is drawn with the
+      signal rows (chroma bleed, convergence) and without scanlines, mask or curvature, as designed. Pacing: the
+      first minute after start-up 1682 / 131; the next three minutes logged no late present with video.
+   Not done: a degauss pressed while a film is handed to Enhanced (no film was yielded in this window).
+
+NOT COVERED: a real Pi 4B (none was on the network: a sweep found only this Pi 5); 50, 90, 100, 120 and 144 Hz
+displays; a degauss pressed while a film is handed to Enhanced; ten-minute pacing for the looks other than
+Arcade; an OTA install and rollback on real hardware of either board; the shipping binary installed under /opt
+(it has only run from a home directory as a transient unit).
