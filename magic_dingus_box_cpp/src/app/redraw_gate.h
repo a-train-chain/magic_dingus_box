@@ -59,6 +59,11 @@ struct MainMenuActivity {
     bool transient_overlay = false; // toast shown/queued, error banner, volume
                                     // slider, seek bar, BTN4 held, game loading
     bool crt_time_effects = false;  // flicker / interlacing: time-animated shaders
+    // A Rich30 tube whose picture moves (app::TubeRedraw::continuous_motion):
+    // not static, and NOT a field-rate reason — the loop draws every
+    // iteration and holds each flip to every second vblank instead
+    // (utils::present_hold). Lean60 tube motion rides crt_time_effects.
+    bool tube_rich_motion = false;
 };
 
 // The one state the gate may skip in. Anything not listed above is, by

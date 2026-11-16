@@ -10,8 +10,13 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
+#include <string_view>
+#include <array>
+#include <cstddef>
 
 #include "guide_nav.h"
+#include "tube/tube_inputs.h"   // tube::Picture (TubeRenderStatus)
+#include "tube/tube_setting.h"
 
 namespace app {
 
@@ -30,6 +35,90 @@ enum class MenuStyle {
 };
 
 enum class GuideMode { Live, PickAhead };
+
+// Which CRT engine draws the effects. Classic is the v1.4.3 procedural
+// overlay, Enhanced the FBO shader pipeline, Tube the look-based engine
+// ported from Sound Factory (Pi 5 only — see
+// platform::PlatformProfile::tube_crt_engine). Persisted in
+// config/settings.json as display.crt_engine ("classic"/"enhanced"/"tube").
+enum class CrtEngine { Classic, Enhanced, Tube };
+
+// The engine that actually draws: a saved Tube on a board whose gate is
+// closed (a Pi 5 backup restored onto a Pi 4B) draws as Enhanced. Applied at
+// draw time only; the saved choice is never rewritten because of the gate.
+constexpr CrtEngine effective_crt_engine(CrtEngine saved, bool tube_gate) noexcept {
+    return (saved == CrtEngine::Tube && !tube_gate) ? CrtEngine::Enhanced : saved;
+}
+
+namespace detail {
+// Index-aligned with CrtEngine's order: the config's word, then the menu's.
+inline constexpr std::array<CrtEngine, 3> kCrtEngines{CrtEngine::Classic, CrtEngine::Enhanced,
+                                                      CrtEngine::Tube};
+inline constexpr std::array<std::string_view, 3> kCrtEngineNames{"classic", "enhanced", "tube"};
+inline constexpr std::array<std::string_view, 3> kCrtEngineWords{"Classic", "Enhanced", "Tube"};
+}  // namespace detail
+
+// The ONLY spellings of the engine words. crt_engine_name is display.crt_engine's
+// word (and the web's); crt_engine_word is what the TV menu shows. A value
+// outside the enum reads as Classic.
+constexpr std::string_view crt_engine_name(CrtEngine engine) noexcept {
+    const auto i = static_cast<std::size_t>(engine);
+    return i < detail::kCrtEngineNames.size() ? detail::kCrtEngineNames[i] : detail::kCrtEngineNames[0];
+}
+constexpr std::string_view crt_engine_word(CrtEngine engine) noexcept {
+    const auto i = static_cast<std::size_t>(engine);
+    return i < detail::kCrtEngineWords.size() ? detail::kCrtEngineWords[i] : detail::kCrtEngineWords[0];
+}
+// The engine `word` is the config name of, exactly (case matters), or nullopt.
+constexpr std::optional<CrtEngine> parse_crt_engine(std::string_view word) noexcept {
+    for (const CrtEngine candidate : detail::kCrtEngines)
+        if (crt_engine_name(candidate) == word) return candidate;
+    return std::nullopt;
+}
+
+// Whether the Tube engine's renderer is built into this binary. While false, Tube
+// is offered nowhere (no menu option, no Tube rows, no Degauss, no web tab) on any
+// board. Plan 3 (the renderer) sets it to true. Read through tube_offered(), never
+// directly; AppState::tube_renderer_ready copies it so tests can open the gate.
+// TEST-ONLY: a preview build (CMake -DMDB_TUBE_PREVIEW=ON, which defines
+// MDB_TUBE_PREVIEW for every target) turns it on to try the renderer on a box;
+// it logs "TUBE PREVIEW BUILD" at start and CI refuses to ship one. The plan's
+// last task sets it true for good and removes the preview build.
+#ifdef MDB_TUBE_PREVIEW
+inline constexpr bool kTubeRendererReady = true;
+#else
+inline constexpr bool kTubeRendererReady = false;
+#endif
+
+// What the Tube renderer is doing, refilled by the main loop every iteration
+// (only when kTubeRendererReady; the defaults otherwise). `drawing`: the tube
+// draws the picture; `frame_rate`: 60 (lean) or 30 (rich); `too_heavy`: video
+// presents ran late - more than half over 30 s, or more than 5% in each of 10
+// consecutive minutes (app::TubePacingMonitor, latched until the setting or the
+// frame class changes); `unavailable`: "" | "build_hung" | "build_failed";
+// `picture`: the picture the tube draws into (meaningful while `drawing`), which
+// app::tube_not_drawn() plans against - the renderer's own plan for it;
+// `yielding`: the tube is not drawing because the look yields this picture (a
+// full-screen film) to the Enhanced engine (tube::tube_yields_to_enhanced);
+// `film_picture`: the picture a full-screen film would have at the current output
+// (the whole framebuffer, the same size video::content_rects gives a film; 0x0 until
+// the main loop has run), for app::tube_film_engine().
+struct TubeRenderStatus {
+    bool drawing = false;
+    int frame_rate = 60;
+    bool too_heavy = false;
+    std::string unavailable;
+    tube::Picture picture{0.0, 0.0, false};
+    bool yielding = false;
+    tube::Picture film_picture{0.0, 0.0, false};
+};
+
+// The op log's progress and the Degauss presses. In memory only.
+struct TubeLiveState {
+    std::uint64_t handled_seq = 0;      // highest op seq read (applied or skipped); published
+    std::uint64_t degauss_requests = 0; // presses on the TV or the web; Plan 3 consumes the increase
+    bool adopted = false;               // the op log has been looked at since boot
+};
 
 // Audio output enumeration. Routing happens via PulseAudio, NOT the old
 // ALSA `amixer numid=3` method — see app/audio_router.h. Sink names are
@@ -557,7 +646,28 @@ public:
         // doesn't suit their CRT.
         //
         // Persisted in config/settings.json as display.enhanced_crt_enabled.
+        //
+        // Since the Tube engine this flag is DERIVED from crt_engine below
+        // (true for Enhanced and Tube) and kept in step by set_crt_engine();
+        // never assign it directly. It stays because the renderer and
+        // main.cpp read it, and because a kiosk rolled back to an older
+        // release knows only this key — Tube must read there as Enhanced.
         bool enhanced_crt_enabled = false;
+
+        // The engine the user chose (see CrtEngine). Change it through
+        // set_crt_engine() only. The board gate is NOT applied here: what
+        // draws is effective_crt_engine(crt_engine, gate).
+        CrtEngine crt_engine = CrtEngine::Classic;
+
+        // The Tube engine's look and the rows moved on top of it. Kept (and
+        // persisted as display.tube) whichever engine is chosen, so switching
+        // away from Tube and back loses nothing.
+        tube::TubeSetting tube;
+
+        void set_crt_engine(CrtEngine engine) {
+            crt_engine = engine;
+            enhanced_crt_enabled = (engine != CrtEngine::Classic);
+        }
 
         // Media Browser playback wood-frame toggle (v1.6.x).
         //   true  — wood-frame overlay stays visible during movie playback,
@@ -849,6 +959,13 @@ public:
     // launch contract).
     platform::PlatformProfile platform_profile;
 
+    // Tube live tuning (op log progress, Degauss presses) and the renderer-ready
+    // gate. Ask app::tube_offered(state), which ANDs this flag with the board
+    // gate above; production never changes the flag from kTubeRendererReady.
+    TubeLiveState tube_live;
+    bool tube_renderer_ready = kTubeRendererReady;
+    TubeRenderStatus tube_render;
+
     // Available bezels (loaded from bezels.json)
     std::vector<BezelInfo> available_bezels;
 
@@ -907,5 +1024,28 @@ public:
     // For now, pointer to avoid header dependency hell in this header 
     // (forward declared above).
 };
+
+// Whether Tube may be offered anywhere: the Pi 5 board gate AND the renderer
+// built in. Every Tube decision (menu rows, the engine cycle, Degauss, the web
+// tab, applying live ops) takes this, never the profile field directly.
+inline bool tube_offered(const AppState& s) noexcept {
+    return s.platform_profile.tube_crt_engine && s.tube_renderer_ready;
+}
+
+// Whether a film can be drawn FULL-SCREEN in this configuration at all: only the
+// Channel Guide menu style shows films full-screen (app::movie_full_screen requires it
+// first; in the List style every film plays in the 4:3 picture). The one predicate for
+// "films can be full-screen here".
+inline bool full_screen_films_possible(const AppState& s) noexcept {
+    return s.display_settings.menu_style == MenuStyle::ChannelGuide;
+}
+
+// Why Tube is not offered, for the status file and the web: "" when it is,
+// "needs_pi5" when the board gate is closed, otherwise "not_ready".
+inline std::string_view tube_not_offered_reason(const AppState& s) noexcept {
+    if (tube_offered(s)) return "";
+    if (!s.platform_profile.tube_crt_engine) return "needs_pi5";
+    return "not_ready";
+}
 
 } // namespace app

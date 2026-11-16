@@ -64,7 +64,8 @@ APPDATA_EXCLUDE = [
     D + "media/*", D + "roms/*",
     # live / runtime files the kiosk and web admin rewrite on their own
     D + "screenshots/*", D + "upload_temp/*", "*.log", "*.log.*",
-    D + "kiosk_status.json", D + "seek_request.json", D + "box_health_last.json",
+    D + "kiosk_status.json", D + "seek_request.json", D + "tube_request.json",
+    D + "box_health_last.json",
     D + "media_browser.db", D + "media_browser.db-*", D + "text_input_queue.jsonl",
     "*/__pycache__/*",
     # release-shipped data (OTA_UPDATE_GUARANTEES.md "UPDATED" table): an

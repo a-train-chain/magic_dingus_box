@@ -8,6 +8,7 @@
 #include <json/json.h>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string_view>
 #include <filesystem>
 
@@ -47,6 +48,101 @@ app::AppState::DisplaySettings::MbLibraryFilter mb_library_filter_from_string(co
     if (s == "missing_files")  return R::MissingFiles;
     if (s == "recently_added") return R::RecentlyAdded;
     return R::All;
+}
+
+// display.crt_engine's words (spelled once, in app_state.h).
+std::string crt_engine_to_string(app::CrtEngine e) {
+    return std::string(app::crt_engine_name(e));
+}
+std::optional<app::CrtEngine> crt_engine_from_string(const std::string& s) {
+    return app::parse_crt_engine(s);
+}
+
+// A JSON value as one line of text, for a warning.
+std::string json_text(const Json::Value& v) {
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    return Json::writeString(builder, v);
+}
+
+// display.tube: the look, plus the mask and each row ONLY when moved off it.
+Json::Value tube_to_json(const tube::TubeSetting& t) {
+    const tube::LookValues& base = tube::look_values(t.look);
+    Json::Value out(Json::objectValue);
+    out["look"] = std::string(tube::look_name(t.look));
+    if (t.mask && *t.mask != base.mask) {
+        out["mask"] = std::string(tube::mask_name(*t.mask));
+    }
+    Json::Value rows(Json::objectValue);
+    for (std::size_t i = 0; i < tube::kEffectCount; ++i) {
+        if (t.rows[i] && *t.rows[i] != base.effects[i]) {
+            rows[std::string(tube::effect_key(tube::kEffects[i]))] = *t.rows[i];
+        }
+    }
+    if (!rows.empty()) out["rows"] = rows;
+    return out;
+}
+
+// The loader is the door into TubeSetting (resolve() trusts what it holds),
+// so every value is type- and range-checked BEFORE it is converted. A bad
+// value is dropped with one warning naming it and loading carries on: an
+// as*() on a wrong type would throw, and that exception quarantines the
+// WHOLE settings.json — far too high a price for one tube row.
+tube::TubeSetting tube_from_json(const Json::Value& display) {
+    tube::TubeSetting t;
+    if (!display.isMember("tube")) return t;
+    const Json::Value& in = display["tube"];
+    if (!in.isObject()) {
+        LOG_WARN("settings: dropped display.tube {} (not an object)", json_text(in));
+        return t;
+    }
+    for (const std::string& name : in.getMemberNames()) {
+        if (name != "look" && name != "mask" && name != "rows") {
+            LOG_WARN("settings: dropped display.tube.{} (unknown key)", name);
+        }
+    }
+    // Look first: the mask and rows are judged against it.
+    if (in.isMember("look")) {
+        const Json::Value& v = in["look"];
+        const auto look = v.isString() ? tube::parse_look(v.asString()) : std::nullopt;
+        if (look) {
+            tube::select_look(t, *look);
+        } else {
+            LOG_WARN("settings: dropped display.tube.look {} (not a look)", json_text(v));
+        }
+    }
+    if (in.isMember("mask")) {
+        const Json::Value& v = in["mask"];
+        const auto mask = v.isString() ? tube::parse_mask(v.asString()) : std::nullopt;
+        if (mask) {
+            tube::set_mask(t, *mask);
+        } else {
+            LOG_WARN("settings: dropped display.tube.mask {} (not a mask)", json_text(v));
+        }
+    }
+    if (in.isMember("rows")) {
+        const Json::Value& rows = in["rows"];
+        if (!rows.isObject()) {
+            LOG_WARN("settings: dropped display.tube.rows {} (not an object)", json_text(rows));
+            return t;
+        }
+        for (const std::string& key : rows.getMemberNames()) {
+            const Json::Value& v = rows[key];
+            const auto effect = tube::parse_effect(key);
+            if (!effect) {
+                LOG_WARN("settings: dropped display.tube.rows.{} (unknown row)", key);
+            } else if (!v.isInt()) {
+                LOG_WARN("settings: dropped display.tube.rows.{} {} (not an integer)",
+                         key, json_text(v));
+            } else if (!tube::is_row_value(v.asInt())) {
+                LOG_WARN("settings: dropped display.tube.rows.{} {} (outside {}..{})",
+                         key, v.asInt(), tube::kRowMin, tube::kRowMax);
+            } else {
+                tube::set_row(t, *effect, v.asInt());
+            }
+        }
+    }
+    return t;
 }
 
 #ifdef MEDIA_BROWSER_ENABLED
@@ -90,7 +186,13 @@ std::string SettingsPersistence::serialize(const AppState& state) {
     // Enhanced CRT pipeline opt-in (Phase 1+ shader rework).
     // Persisted so operators can flip between classic and enhanced
     // visuals once and have the choice survive reboots.
+    // Since the Tube engine: true for Enhanced AND Tube, so a kiosk rolled
+    // back to a release that knows only this key draws the nearest engine.
     display["enhanced_crt_enabled"] = state.display_settings.enhanced_crt_enabled;
+    // The engine choice and the tube setting, saved as chosen — the board
+    // gate is never consulted here (a Pi 4B hands a Pi 5's Tube back intact).
+    display["crt_engine"] = crt_engine_to_string(state.display_settings.crt_engine);
+    display["tube"] = tube_to_json(state.display_settings.tube);
     // Media Browser wood-frame overlay during movie playback (v1.6.x).
     // Default true — see app_state.h docstring for behavior details.
     display["mb_playback_show_frame"] = state.display_settings.mb_playback_show_frame;
@@ -397,7 +499,24 @@ utils::Result<> SettingsPersistence::load_settings_unguarded(AppState& state) {
         // upgrading from a settings.json that pre-dates this key keeps
         // the classic procedural-overlay behavior with zero visible
         // change until they explicitly turn it on.
-        state.display_settings.enhanced_crt_enabled = display.get("enhanced_crt_enabled", false).asBool();
+        const bool enhanced = display.get("enhanced_crt_enabled", false).asBool();
+        // The engine choice. Absent (a file older than the Tube engine) or
+        // not one of the three words: derived from enhanced_crt_enabled, as
+        // the only engine choice such a file could have made.
+        std::optional<CrtEngine> engine;
+        if (display.isMember("crt_engine")) {
+            const Json::Value& v = display["crt_engine"];
+            if (v.isString()) engine = crt_engine_from_string(v.asString());
+            if (!engine) {
+                LOG_WARN("settings: dropped display.crt_engine {} (not classic/enhanced/tube)",
+                         json_text(v));
+            }
+        }
+        // Through the setter, so enhanced_crt_enabled ends up in step with
+        // the engine that was loaded.
+        state.display_settings.set_crt_engine(
+            engine.value_or(enhanced ? CrtEngine::Enhanced : CrtEngine::Classic));
+        state.display_settings.tube = tube_from_json(display);
         // Media Browser wood-frame overlay during movie playback (v1.6.x).
         // Default true so operators upgrading from a settings.json that
         // pre-dates this key see the wood frame during playback by

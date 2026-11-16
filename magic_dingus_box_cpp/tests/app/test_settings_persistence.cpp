@@ -15,6 +15,9 @@
 //     the newest snapshot wins, shutdown's flush is bounded and retries a
 //     failed write once, and a reload that overtakes an unfinished save
 //     writes the reloaded state back.
+//   - the CRT engine choice and the tube setting round-trip, an older file
+//     loads its engine from enhanced_crt_enabled, and a bad tube value is
+//     dropped with a warning — never a quarantine.
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -24,16 +27,23 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 
+#include <json/json.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+
 #include "app/app_state.h"
 #include "app/audio_router.h"
 #include "app/settings_persistence.h"
+#include "tube/tube_setting.h"
 
 namespace fs = std::filesystem;
 using app::AppState;
@@ -92,7 +102,53 @@ struct SettingsSandbox {
         return ss.str();
     }
     fs::path corrupt() const { return fs::path(file.string() + ".corrupt"); }
+    Json::Value json() const {
+        std::ifstream in(file);
+        Json::Value root;
+        Json::CharReaderBuilder builder;
+        std::string errors;
+        REQUIRE(Json::parseFromStream(builder, in, &root, &errors));
+        return root;
+    }
 };
+
+// Captures what the LOG_* macros write (spdlog's default logger) for the
+// test's lifetime, so a warning can be asserted and nothing reaches stdout.
+struct LogCapture {
+    std::ostringstream out;
+    std::shared_ptr<spdlog::logger> previous = spdlog::default_logger();
+
+    LogCapture() {
+        auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(out);
+        auto logger = std::make_shared<spdlog::logger>("capture", sink);
+        logger->set_level(spdlog::level::trace);
+        spdlog::set_default_logger(logger);
+    }
+    ~LogCapture() { spdlog::set_default_logger(previous); }
+
+    std::size_t warnings() const {
+        const std::string text = out.str();
+        std::size_t n = 0;
+        for (std::size_t at = text.find("[warning]"); at != std::string::npos;
+             at = text.find("[warning]", at + 1)) {
+            ++n;
+        }
+        return n;
+    }
+    bool mentions(const std::string& word) const {
+        return out.str().find(word) != std::string::npos;
+    }
+};
+
+std::optional<int> row(const tube::TubeSetting& t, tube::Effect e) {
+    return t.rows[tube::index_of(e)];
+}
+
+std::size_t moved_row_count(const tube::TubeSetting& t) {
+    std::size_t n = 0;
+    for (const auto& r : t.rows) n += r.has_value() ? 1 : 0;
+    return n;
+}
 
 }  // namespace
 
@@ -108,7 +164,7 @@ TEST_CASE("settings: every persisted field round-trips", "[settings]") {
     a.display_settings.bloom_intensity = 0.5f;
     a.display_settings.interlacing_intensity = 0.75f;
     a.display_settings.flicker_intensity = 0.25f;
-    a.display_settings.enhanced_crt_enabled = true;
+    a.display_settings.set_crt_engine(app::CrtEngine::Enhanced);
     a.display_settings.mb_playback_show_frame = false;
     a.display_settings.mb_scanline_intensity = 0.75f;
     a.display_settings.mb_flicker_intensity = 0.5f;
@@ -136,6 +192,7 @@ TEST_CASE("settings: every persisted field round-trips", "[settings]") {
     CHECK(b.display_settings.interlacing_intensity == Catch::Approx(0.75f));
     CHECK(b.display_settings.flicker_intensity == Catch::Approx(0.25f));
     CHECK(b.display_settings.enhanced_crt_enabled);
+    CHECK(b.display_settings.crt_engine == app::CrtEngine::Enhanced);
     CHECK_FALSE(b.display_settings.mb_playback_show_frame);
     CHECK(b.display_settings.mb_scanline_intensity == Catch::Approx(0.75f));
     CHECK(b.display_settings.mb_flicker_intensity == Catch::Approx(0.5f));
@@ -571,4 +628,170 @@ TEST_CASE("settings: non-string Guide Modes use Live without rejecting other set
         CHECK(s.display_settings.guide_mode == app::GuideMode::Live);
         CHECK(s.display_settings.menu_style == app::MenuStyle::ChannelGuide);
     }
+}
+
+// ---------------------------------------------------------------
+// The CRT engine choice and the tube setting (display.crt_engine,
+// display.tube). Persistence saves and loads the user's choice as it is:
+// the board gate is applied at draw time, never here.
+// ---------------------------------------------------------------
+
+TEST_CASE("settings: the engine and a moved tube round-trip", "[settings][tube]") {
+    SettingsSandbox sb;
+    AppState a;
+    a.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    tube::select_look(a.display_settings.tube, tube::Look::tv);
+    REQUIRE(tube::set_row(a.display_settings.tube, tube::Effect::hum, 20));
+    REQUIRE(tube::set_row(a.display_settings.tube, tube::Effect::afterglow, 35));
+    tube::set_mask(a.display_settings.tube, tube::Mask::dots);
+    REQUIRE(SettingsPersistence::save_settings(a));
+    REQUIRE(saved_to_disk());
+
+    AppState b;
+    REQUIRE(SettingsPersistence::load_settings(b));
+    CHECK(b.display_settings.crt_engine == app::CrtEngine::Tube);
+    CHECK(b.display_settings.enhanced_crt_enabled);
+    CHECK(b.display_settings.tube == a.display_settings.tube);
+
+    const Json::Value display = sb.json()["display"];
+    CHECK(display["enhanced_crt_enabled"].asBool());
+    CHECK(display["crt_engine"].asString() == "tube");
+    CHECK(display["tube"]["look"].asString() == "tv");
+    CHECK(display["tube"]["mask"].asString() == "dots");
+    const Json::Value& rows = display["tube"]["rows"];
+    REQUIRE(rows.isObject());
+    CHECK(rows.getMemberNames() == std::vector<std::string>{"afterglow", "hum"});
+    CHECK(rows["hum"].asInt() == 20);
+    CHECK(rows["afterglow"].asInt() == 35);
+}
+
+TEST_CASE("settings: an untouched look writes no rows and no mask", "[settings][tube]") {
+    SettingsSandbox sb;
+    AppState a;
+    tube::select_look(a.display_settings.tube, tube::Look::arcade);
+    REQUIRE(SettingsPersistence::save_settings(a));
+    REQUIRE(saved_to_disk());
+
+    const Json::Value display = sb.json()["display"];
+    CHECK(display["crt_engine"].asString() == "classic");
+    CHECK_FALSE(display["enhanced_crt_enabled"].asBool());
+    const Json::Value& t = display["tube"];
+    REQUIRE(t.isObject());
+    CHECK(t["look"].asString() == "arcade");
+    CHECK_FALSE(t.isMember("mask"));
+    CHECK((!t.isMember("rows") || t["rows"].empty()));
+
+    AppState b;
+    REQUIRE(SettingsPersistence::load_settings(b));
+    CHECK(b.display_settings.tube == a.display_settings.tube);
+}
+
+TEST_CASE("settings: a file older than crt_engine takes the engine from the old flag",
+          "[settings][tube]") {
+    SettingsSandbox sb;
+    sb.write(R"({"display": {"enhanced_crt_enabled": true}})");
+    AppState on;
+    REQUIRE(SettingsPersistence::load_settings(on));
+    CHECK(on.display_settings.crt_engine == app::CrtEngine::Enhanced);
+    CHECK(on.display_settings.enhanced_crt_enabled);
+    CHECK(on.display_settings.tube == tube::TubeSetting{});
+
+    sb.write(R"({"display": {"enhanced_crt_enabled": false}})");
+    AppState off;
+    off.display_settings.set_crt_engine(app::CrtEngine::Tube);  // overwritten by the file
+    REQUIRE(SettingsPersistence::load_settings(off));
+    CHECK(off.display_settings.crt_engine == app::CrtEngine::Classic);
+    CHECK_FALSE(off.display_settings.enhanced_crt_enabled);
+    CHECK(off.display_settings.tube == tube::TubeSetting{});
+}
+
+TEST_CASE("settings: a valid crt_engine wins over an old flag that disagrees with it",
+          "[settings][tube]") {
+    SettingsSandbox sb;
+    sb.write(R"({"display": {"crt_engine": "classic", "enhanced_crt_enabled": true}})");
+    AppState s;
+    REQUIRE(SettingsPersistence::load_settings(s));
+    CHECK(s.display_settings.crt_engine == app::CrtEngine::Classic);
+    CHECK_FALSE(s.display_settings.enhanced_crt_enabled);   // the flag follows the engine
+}
+
+TEST_CASE("settings: an older kiosk after a rollback still sees Tube as enhanced",
+          "[settings][tube]") {
+    // A rolled-back kiosk knows only enhanced_crt_enabled. Tube must read
+    // there as the nearest thing it has: the Enhanced engine.
+    SettingsSandbox sb;
+    AppState a;
+    a.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    REQUIRE(SettingsPersistence::save_settings(a));
+    REQUIRE(saved_to_disk());
+    const Json::Value display = sb.json()["display"];
+    REQUIRE(display["enhanced_crt_enabled"].isBool());
+    CHECK(display["enhanced_crt_enabled"].asBool());
+}
+
+TEST_CASE("settings: bad tube values are dropped and nothing else is lost",
+          "[settings][tube]") {
+    SettingsSandbox sb;
+    sb.write(R"({"display": {"bezel_index": 2, "crt_engine": "plasma",
+        "enhanced_crt_enabled": true,
+        "tube": {"look": "vhs", "mask": "Slot",
+                 "rows": {"hum": "20", "noise": 101, "wobble": 5, "afterglow": 35}}}})");
+    LogCapture log;
+    AppState s;
+    REQUIRE(SettingsPersistence::load_settings(s));
+    CHECK(s.display_settings.bezel_index == 2);
+    CHECK(s.display_settings.crt_engine == app::CrtEngine::Enhanced);
+    CHECK(s.display_settings.enhanced_crt_enabled);
+    CHECK(s.display_settings.tube.look == tube::Look::pvm);
+    CHECK_FALSE(s.display_settings.tube.mask.has_value());
+    CHECK(moved_row_count(s.display_settings.tube) == 1);
+    CHECK(row(s.display_settings.tube, tube::Effect::afterglow) == 35);
+    CHECK_FALSE(fs::exists(sb.corrupt()));
+
+    // One warning per dropped value, each naming what it dropped.
+    CHECK(log.warnings() == 6);
+    for (const char* word : {"crt_engine", "vhs", "Slot", "hum", "noise", "wobble"}) {
+        INFO(word);
+        CHECK(log.mentions(word));
+    }
+}
+
+TEST_CASE("settings: a tube of the wrong shape loads as the default", "[settings][tube]") {
+    for (const char* text : {
+             R"({"display": {"bezel_index": 2, "tube": 5}})",
+             R"({"display": {"bezel_index": 2, "tube": {"rows": []}}})",
+             R"({"display": {"bezel_index": 2, "tube": {"look": 3, "mask": [], "rows": {"hum": 2.5}}}})",
+         }) {
+        INFO(text);
+        SettingsSandbox sb;
+        sb.write(text);
+        LogCapture log;
+        AppState s;
+        tube::select_look(s.display_settings.tube, tube::Look::tv);  // overwritten by the file
+        REQUIRE(SettingsPersistence::load_settings(s));
+        CHECK(s.display_settings.bezel_index == 2);
+        CHECK(s.display_settings.tube == tube::TubeSetting{});
+        CHECK_FALSE(fs::exists(sb.corrupt()));
+        CHECK(log.warnings() >= 1);
+    }
+}
+
+TEST_CASE("settings: a save on a closed-gate board keeps the Tube choice",
+          "[settings][tube]") {
+    // A card moved from a Pi 5 to a Pi 4B: the Pi 4B draws Enhanced, but its
+    // saves must hand the choice back intact if the card goes back.
+    SettingsSandbox sb;
+    sb.write(R"({"display": {"crt_engine": "tube", "enhanced_crt_enabled": true,
+        "tube": {"look": "trinitron", "rows": {"noise": 70}}}})");
+    AppState s;
+    REQUIRE(SettingsPersistence::load_settings(s));
+    REQUIRE(SettingsPersistence::save_settings(s));
+    REQUIRE(saved_to_disk());
+
+    AppState again;
+    REQUIRE(SettingsPersistence::load_settings(again));
+    CHECK(again.display_settings.crt_engine == app::CrtEngine::Tube);
+    CHECK(again.display_settings.tube.look == tube::Look::trinitron);
+    CHECK(moved_row_count(again.display_settings.tube) == 1);
+    CHECK(row(again.display_settings.tube, tube::Effect::noise) == 70);
 }

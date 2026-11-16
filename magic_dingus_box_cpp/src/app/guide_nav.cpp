@@ -114,7 +114,7 @@ bool guide_painted(const AppState& s) {
 }
 
 bool movie_full_screen(const AppState& s) {
-    if (s.display_settings.menu_style != MenuStyle::ChannelGuide) return false;
+    if (!full_screen_films_possible(s)) return false;
 #ifdef MEDIA_BROWSER_ENABLED
     if (s.current_screen == AppScreen::MediaBrowser) return false;
 #endif

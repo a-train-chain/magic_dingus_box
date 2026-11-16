@@ -6,10 +6,13 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 #include <thread>
 #include <json/json.h>
 #include "utils/logger.h"
 #include "ui/virtual_keyboard.h"
+#include "app/tube_not_drawn.h"
+#include "tube/tube_frame_class.h"
 
 namespace app {
 
@@ -34,6 +37,72 @@ bool write_file_atomically(const std::string& tmp_path,
         return false;
     }
     return true;
+}
+
+// A string_view as a JSON string without the intermediate std::string.
+Json::Value json_word(std::string_view word) {
+    return Json::Value(word.data(), word.data() + word.size());
+}
+
+// The Tube engine's published state (the web page reads it). Offered: the
+// engine, the resolved look/mask/44 values, what was moved and the web op log's
+// progress. Not offered: the engine and the reason only. Runs on every status
+// refresh, so it only reads the state and builds one small object.
+Json::Value tube_status_json(const AppState& state) {
+    const bool offered = tube_offered(state);
+    const CrtEngine saved = state.display_settings.crt_engine;
+    // The engine drawing the picture on screen now (Enhanced while the tube yields a film
+    // or cannot draw); the saved one is "engine". Not offered (every production build):
+    // exactly the old computation, nothing of the tube's is read.
+    const CrtEngine effective = offered ? tube_engine_on_screen(state) : effective_crt_engine(saved, offered);
+
+    Json::Value t(Json::objectValue);
+    t["gate"] = offered;
+    t["engine"] = json_word(crt_engine_name(saved));
+    t["effective_engine"] = json_word(crt_engine_name(effective));
+    if (!offered) {
+        t["reason"] = json_word(tube_not_offered_reason(state));
+        return t;
+    }
+
+    const tube::TubeSetting& setting = state.display_settings.tube;
+    const tube::Resolved resolved = tube::resolve(setting);
+    t["crt_native"] = state.display_settings.mode == DisplayMode::CRT_NATIVE;
+    t["look"] = json_word(tube::look_name(resolved.look));
+    t["mask"] = json_word(tube::mask_name(resolved.mask));
+    t["custom"] = resolved.custom;
+    Json::Value moved(Json::arrayValue);
+    for (std::string_view key : tube::moved_keys(setting)) moved.append(json_word(key));
+    t["moved"] = std::move(moved);
+    Json::Value values(Json::objectValue);
+    for (std::size_t i = 0; i < tube::kEffectCount; ++i)
+        values[std::string(tube::effect_key(tube::kEffects[i]))] = resolved.effects[i];
+    t["values"] = std::move(values);
+    // The live rate while the renderer is drawing; before that (or with it idle) the
+    // rate this setting will draw at, so the page never shows a stale default.
+    const bool crt_native = state.display_settings.mode == DisplayMode::CRT_NATIVE;
+    t["frame_rate"] = state.tube_render.drawing
+        ? state.tube_render.frame_rate
+        : tube::frames_per_second(tube::setting_frame_class(resolved, crt_native));
+    t["too_heavy"] = state.tube_render.too_heavy;
+    // A full-screen film the look is too heavy for is drawn by Enhanced: whether that is
+    // happening now, and what a film would get with this setting (null until known).
+    t["yielding"] = state.tube_render.yielding;
+    const std::optional<CrtEngine> film = tube_film_engine(state);
+    t["film_engine"] = film ? json_word(crt_engine_name(*film)) : Json::Value::null;
+    // Every row a dropped effect silences (tube::not_drawn_rows: AFTERGLOW; GLOW and GLOW
+    // SIZE), in drop order, as row keys; [] while the tube is not drawing. The page marks
+    // exactly these. One plan_passes() per refresh.
+    const tube::NotDrawnRows not_drawn = tube::not_drawn_rows(tube_not_drawn(state));
+    Json::Value not_drawn_keys(Json::arrayValue);
+    for (std::size_t i = 0; i < not_drawn.count; ++i)
+        not_drawn_keys.append(json_word(tube::effect_key(not_drawn.rows[i])));
+    t["not_drawn"] = std::move(not_drawn_keys);
+    if (state.tube_render.unavailable.empty()) t["unavailable"] = Json::Value::null;
+    else t["unavailable"] = state.tube_render.unavailable;
+    t["handled_seq"] = static_cast<Json::UInt64>(state.tube_live.handled_seq);
+    t["degauss_requests"] = static_cast<Json::UInt64>(state.tube_live.degauss_requests);
+    return t;
 }
 
 } // namespace
@@ -145,6 +214,8 @@ void StatusWriter::write_now(const AppState& state) {
         text_input["active"] = false;
     }
     root["text_input"] = text_input;
+
+    root["tube"] = tube_status_json(state);
 
     // TEST-ONLY MDB_PLATFORM_POLICY_OVERRIDE ("pi4" while a Pi 5 runs the
     // Pi 4B's software policies, null otherwise). Published so the state

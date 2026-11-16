@@ -27,6 +27,9 @@
 #include "../app/playlist_loader.h"
 #include "../app/settings_persistence.h" // For getting config if needed
 #include "../utils/config.h"
+#include "../utils/logger.h"
+#include "../tube/tube_driver.h"
+#include "tube_renderer.h"
 
 #ifdef MEDIA_BROWSER_ENABLED
 #include "../media_browser/artwork/artwork_cache.h"
@@ -79,6 +82,10 @@ void Renderer::reset_gl() {
     std::cout << "UI Renderer: Resetting GL resources after external context takeover" << std::endl;
     // Batch objects belong to the dead context; pending geometry is dropped.
     destroy_batch_gl();
+    // The tube's GL objects belong to the dead context too (the driver is told,
+    // so the next Tube frame makes everything again). After the batch is gone,
+    // so its flush has nothing to submit. No-op without the tube.
+    release_tube_gl();
     
     // Delete old resources (they may be invalid but try anyway for cleanliness)
     // Program ids are being deleted (and will be recycled by GL) —
@@ -332,6 +339,20 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
                      "halation will be disabled" << std::endl;
     }
 
+    // The Tube engine: TEST-ONLY preview builds only (app::kTubeRendererReady).
+    // A production build makes nothing here, so no tube code runs anywhere: every
+    // tube path starts with `if (!tube_)`. Constructing the TubeRenderer touches no
+    // GL; it reads the build guard's marker once (one stat, before the main loop).
+    if (app::kTubeRendererReady) {
+        tube_ = std::make_unique<TubeRenderer>();
+        tube_driver_ = std::make_unique<tube::FrameDriver>();
+        tube::FrameDriver* driver = tube_driver_.get();
+        tube_->set_mean_sink([driver](double light) { driver->on_mean(light); });
+        if (tube_->unavailable_reason() == "build_hung")
+            LOG_ERROR("tube: the last kiosk died building {} — Tube draws as Enhanced until reboot",
+                      tube_->hung_program());
+    }
+
     // Load title font (Zen Dots) for title and heading
     if (!title_font_manager_->load_font(title_font_path, theme_->font_title_size)) {
         std::cerr << "Warning: Failed to load title font, falling back to body font" << std::endl;
@@ -533,6 +554,7 @@ void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
 
 void Renderer::cleanup() {
     destroy_batch_gl();
+    release_tube_gl();   // no-op without the tube
     // Program ids are being deleted (and will be recycled by GL) —
     // cached uniform locations keyed by those ids must go with them.
     uniform_loc_cache_.clear();

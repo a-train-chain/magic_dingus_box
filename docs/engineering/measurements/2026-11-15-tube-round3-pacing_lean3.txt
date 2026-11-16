@@ -1,0 +1,3 @@
+PVM-lean cheap, no probe	gpu off | pacing frames 5335 intervals 5335 mean 20.63 ms max 283.33 late 1130 (21.18%) over 25.0 ms held 0 (11 lines)
+bend+cheap+tone+displace, no probe	gpu off | pacing frames 6572 intervals 6572 mean 16.75 ms max 34.39 late 31 (0.47%) over 25.0 ms held 0 (11 lines)
+bend+cheap+tone+motion, no probe	gpu off | pacing frames 6402 intervals 6402 mean 17.20 ms max 33.55 late 206 (3.22%) over 25.0 ms held 0 (11 lines)

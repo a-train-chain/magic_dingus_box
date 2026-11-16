@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is labeled OFF AIR with its return time where space allows, and the last
   film's NEXT points to the next morning's film. Live films still stop at
   1 AM; manually chosen programmes finish whole.
+- **Groundwork for a more realistic CRT look.** The settings for a new
+  CRT engine (preset looks, 44 adjustable effects and a Pi 5-only
+  switch) are now stored by the box. Nothing looks different yet: the
+  picture and the Settings menu are unchanged until the engine itself
+  ships.
 
 ### Fixed
 - **The TV no longer restarts when the SD card is very busy.** While
