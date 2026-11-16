@@ -305,8 +305,18 @@ void TubeRenderer::Impl::write_marker(const std::string& names) {
     marker_text = names;
 }
 
+// Never leaves a marker once a failure is recorded: record_failure() removed it (a
+// failure is not a hang), and prepare() refuses the failed plan, so no later frame would
+// draw the programs and remove it again - a marker left behind would read as a hang at
+// the next unrelated restart and lock Tube off until reboot. The same when the frame stood
+// down without a failure (prepared_ok cleared: the caller handed composite() something it
+// cannot draw): the next prepare() takes its full path and writes the marker again.
 void TubeRenderer::Impl::settle_marker() {
-    if (current_plan) write_marker(undrawn_of(*current_plan));
+    if (failed || !current_plan || !prepared_ok) {
+        write_marker("");
+        return;
+    }
+    write_marker(undrawn_of(*current_plan));
 }
 
 void TubeRenderer::Impl::record_failure(const char* what) {
@@ -501,10 +511,18 @@ bool TubeRenderer::Impl::bake_glass(const GlEnv& env, const tube::TubeUniforms& 
     }
     mark_drawn(tube::Program::glass);
     glass_valid = true;
-    LOG_INFO("tube: glass bake submitted in {:.2f} ms CPU{} ({}x{}, rim {:.2f} vignette {:.2f} glassBlack {:.2f} "
-             "reflection {:.2f}){}",
-             submit_ms, first_draw ? ", including the glass program's first-draw compile" : "", glass.w, glass.h,
-             u.rim, u.vignette, u.glassBlack, u.reflection, timed ? "; GPU time follows" : "");
+    // The first bake after a build at INFO (it carries the compile); later ones - one a
+    // frame while a glass row is being dragged - at DEBUG, so live tuning does not fill
+    // the journal.
+    if (first_draw)
+        LOG_INFO("tube: glass bake submitted in {:.2f} ms CPU, including the glass program's first-draw compile "
+                 "({}x{}, rim {:.2f} vignette {:.2f} glassBlack {:.2f} reflection {:.2f}){}",
+                 submit_ms, glass.w, glass.h, u.rim, u.vignette, u.glassBlack, u.reflection,
+                 timed ? "; GPU time follows" : "");
+    else
+        LOG_DEBUG("tube: glass bake submitted in {:.2f} ms CPU ({}x{}, rim {:.2f} vignette {:.2f} glassBlack {:.2f} "
+                  "reflection {:.2f})",
+                  submit_ms, glass.w, glass.h, u.rim, u.vignette, u.glassBlack, u.reflection);
     return true;
 }
 
@@ -519,8 +537,12 @@ void TubeRenderer::Impl::poll_glass_timing() {
     if (disjoint) return;   // the GPU's clock jumped: the result means nothing
     GLuint64 ns = 0;
     get_query_ui64(glass_query, GL_QUERY_RESULT, &ns);
-    LOG_INFO("tube: glass baked in {:.2f} ms GPU{}", static_cast<double>(ns) / 1.0e6,
-             glass_query_first_draw ? " (including the glass program's first-draw compile)" : "");
+    // GPU time only: Mesa compiles a program's variant on the CPU before the draw is
+    // recorded, so no compile is in this figure (the first bake's CPU submit line has it).
+    if (glass_query_first_draw)
+        LOG_INFO("tube: glass baked in {:.2f} ms GPU (first bake after a build)", static_cast<double>(ns) / 1.0e6);
+    else
+        LOG_DEBUG("tube: glass baked in {:.2f} ms GPU", static_cast<double>(ns) / 1.0e6);
 }
 
 void TubeRenderer::Impl::release() {
@@ -541,7 +563,16 @@ void TubeRenderer::Impl::release() {
     glass_query = 0;
     glass_query_pending = false;
     prepared_ok = false;
-    scene_srgb_failed = false;   // a new context gets one more try
+    // A new context gets one more try at the scene texture: the stuck flag AND the failure
+    // it recorded (while scene_srgb_failed is set prepare() refuses everything, so the
+    // recorded failure can only be the scene's). Other failures - a program that failed
+    // to compile or link, an incomplete target, a malformed mask tile, a GL error during
+    // a frame - stay until a different plan or retry_builds(); a hang is never cleared.
+    if (scene_srgb_failed) {
+        failed = false;
+        failed_plan.reset();
+    }
+    scene_srgb_failed = false;
     scene_tex = 0;
     scene_w = scene_h = 0;
     scene_format = 0;
@@ -635,6 +666,13 @@ void TubeRenderer::begin_scene(GLuint scene_tex, int w, int h) {
             m.scene_format = GL_RGBA8;
             m.scene_srgb_failed = true;
             LOG_ERROR("tube: scene FBO incomplete with an SRGB8_ALPHA8 texture (0x{:x}); scene kept RGBA8", status);
+            // Nothing more can be done if RGBA8 is broken too, but it must not be silent:
+            // the old engine would then draw into an incomplete framebuffer.
+            const GLenum back = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (back != GL_FRAMEBUFFER_COMPLETE)
+                LOG_ERROR("tube: the scene FBO is STILL incomplete (0x{:x}) after going back to RGBA8 {}x{}; the "
+                          "Enhanced engine will draw into a broken framebuffer",
+                          back, w, h);
             m.record_failure("the scene texture could not be made SRGB8_ALPHA8");
         }
     }

@@ -320,6 +320,9 @@ void TubeRenderer::Impl::collect_timers() {
 bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tube::DriverFrame& f) {
     const tube::PassPlan& plan = f.plan;
     drawn_now_count = 0;
+    // Only the plan prepare() succeeded with: never draw undrawn programs with no marker
+    // in place (end_tube_scene() or release_gl() since, or a failure recorded).
+    if (!prepared_ok || failed || !current_plan || *current_plan != plan) return false;
 
     // A GL error left by someone else must not be blamed on (and fail) this plan.
     for (GLenum e = glGetError(); e != GL_NO_ERROR; e = glGetError())
@@ -350,6 +353,7 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
         if (failed) return false;
     } else if (!mask_tex) {
         // release_gl() without FrameDriver::gpu_lost(): no pixels to upload this frame.
+        prepared_ok = false;   // stand down: the marker goes (settle_marker), prepare() rewrites it
         if (!missing_mask_logged)
             LOG_WARN("tube: no mask texture and the frame carries no mask (FrameDriver::gpu_lost() not called?); "
                      "drawing Enhanced (logged once)");
@@ -504,13 +508,22 @@ void TubeRenderer::set_mean_sink(std::function<void(double)> sink) { impl_->mean
 bool TubeRenderer::composite(const GlEnv& env, video::IRect picture, const tube::DriverFrame& frame) {
     Impl& m = *impl_;
     if (!prepare(frame.plan, scene_decode_for(caps()))) return false;
-    if (env.scene_tex == 0 || env.fb_w <= 0 || env.fb_h <= 0 || env.scene_w <= 0 || env.scene_h <= 0) return false;
+    // A caller error refuses the frame and stands down: prepare() may just have written
+    // the marker for programs this frame will not draw, so it goes (settle_marker with
+    // prepared_ok cleared), and the next prepare() takes its full path and writes it again.
+    const auto stand_down = [&m] {
+        m.prepared_ok = false;
+        m.settle_marker();
+        return false;
+    };
+    if (env.scene_tex == 0 || env.fb_w <= 0 || env.fb_h <= 0 || env.scene_w <= 0 || env.scene_h <= 0)
+        return stand_down();
     if (picture.w != frame.sizes.pic_w || picture.h != frame.sizes.pic_h || picture.w <= 0 || picture.h <= 0) {
         if (!m.size_mismatch_logged)
             LOG_WARN("tube: picture {}x{} is not the driver's {}x{}; drawing Enhanced (logged once)", picture.w,
                      picture.h, frame.sizes.pic_w, frame.sizes.pic_h);
         m.size_mismatch_logged = true;
-        return false;
+        return stand_down();
     }
     // Destroyed in reverse: the marker settles, then TubeGlState restores what it found,
     // then the exit state the 2D renderer expects is applied over it.

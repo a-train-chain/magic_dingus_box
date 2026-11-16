@@ -283,8 +283,9 @@ struct TubeRenderer::Impl {
     // Never waits on the GPU: with caps.timer_query the bake is timed by a GL_TIME_ELAPSED_EXT
     // query that poll_glass_timing() reads on a LATER frame, once its result is available;
     // without it (or while an earlier bake's query is still pending) only the CPU submit time
-    // is logged. A first bake's time includes Mesa's first-draw compile of the program, and
-    // the log line says so.
+    // is logged. A first bake's CPU submit time includes Mesa's first-draw compile of the
+    // program (its line says so; the GPU time does not include it). The first bake after a
+    // build logs at INFO, later ones at DEBUG.
     bool bake_glass(const GlEnv& env, const tube::TubeUniforms& u);
     // Task 11's composite calls this once a frame (cheap when nothing is pending): logs a
     // finished bake query's time, never waiting for one that is not.

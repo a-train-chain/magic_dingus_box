@@ -83,7 +83,8 @@ public:
     // UI's already-encoded bytes are stored unchanged. A texture recreated under the same
     // name and size is noticed by its decode parameter (hardware path only). If the scene
     // FBO is incomplete as SRGB8_ALPHA8 the texture goes back to RGBA8 and the failure is
-    // recorded ("build_failed") until retry_builds() or release_gl().
+    // recorded ("build_failed") until retry_builds() or release_gl() (a new context tries
+    // again; see release_gl()).
     void begin_scene(GLuint scene_tex, int w, int h);
     // Back to RGBA8 (and FRAMEBUFFER_SRGB to its default, on): the engine left Tube. Also
     // removes the guard's marker and forgets the plan (the next prepare() starts afresh).
@@ -103,6 +104,11 @@ public:
     // mean probe when request_mean() asked for one, quarter -> blur H -> blur V, signal,
     // lines - and the output into `picture` (top-left-origin framebuffer px; the bars
     // around it cleared black), through the afterglow history when the plan has one.
+    // CALL ORDER: composite() calls prepare() itself, then draws only the plan prepare()
+    // succeeded with; it refuses (returns false, draws nothing, marks nothing drawn) when
+    // there is no current plan or it is not frame.plan - e.g. after end_tube_scene(). A
+    // caller that also calls prepare() must do it in the same frame, before composite(),
+    // with nothing (end_tube_scene(), release_gl()) in between.
     // `picture` must be the rectangle the driver's Picture was made from (its size equal
     // to frame.sizes.pic_w x pic_h). Leaves GL as the Enhanced composite does: VAO 0,
     // FBO 0, the whole-framebuffer viewport, units 7..0 unbound with unit 0 active, blend
@@ -129,6 +135,12 @@ public:
     // "tube validate: N of 19 programs OK"; a failure names the program being drawn.
     // Draws visible frames: not for production. True when every program drew cleanly.
     bool validate_all_programs(const GlEnv&, video::IRect picture, tube::SceneDecode);
+    // Every GL object deleted (a game took the display, or the Renderer is going). The next
+    // composite() makes everything again. Clears a failure whose cause was the scene
+    // texture (a new context gets one more try). Does NOT clear the other recorded failures
+    // - a program that failed to compile or link, an incomplete render target, a malformed
+    // mask tile, a GL error during a frame: those stay until a prepare() with a different
+    // plan or retry_builds() - and never clears a hang (the guard's marker).
     void release_gl();
 
 private:
