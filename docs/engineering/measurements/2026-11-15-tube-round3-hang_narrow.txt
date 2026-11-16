@@ -1,0 +1,23 @@
+-chroma (chromaBleed 0)	gpu glow 4.15 signal 4.83 lines 2.06 output 11.48 hist 4.36 present 0.00 probe 0.00 enhanced 0.00 total 26.88 ms (2 lines) | pacing frames 402 intervals 402 mean 50.00 ms max 50.14 late 402 (100.00%) over 25.0 ms held 0 (2 lines)
+-conv (convergence 0)	gpu glow 4.16 signal 6.80 lines 2.04 output 11.53 hist 4.23 present 0.00 probe 0.00 enhanced 0.00 total 28.75 ms (2 lines) | pacing frames 401 intervals 401 mean 50.04 ms max 66.66 late 401 (100.00%) over 25.0 ms held 0 (2 lines)
+HUNG at -jitter (jitter 0) (kiosk_status.json ts 19s old)
+  last program line: [2026-11-15 14:52:55.798] [info] tube spike: program signal [SIG_TONE SIG_CHROMA SIG_JITTER SCENE_HW_DECODE] (fullscreen.vert + v2_signal.frag) compiled in 1.9 ms + linked in 5.5 ms (gamma mode 0)
+  building.txt: build signal|fullscreen.vert v2_signal.frag [SIG_TONE SIG_CHROMA SIG_CONV SCENE_HW_DECODE]
+  nothing was killed. After a restart (the spike then refuses the define set in building.txt):
+    this configuration again: sh run_matrix.sh matrix_hang.tsv 20 10 4
+    the next one:             sh run_matrix.sh matrix_hang.tsv 20 10 5
+build signal|fullscreen.vert v2_signal.frag [SIG_TONE SIG_CHROMA SIG_CONV SCENE_HW_DECODE]
+HUNG at -tone (contrast 50 saturation 50) (kiosk_status.json ts 20s old)
+  last program line: [2026-11-15 14:54:19.565] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 2.1 ms + linked in 2.0 ms (gamma mode 0)
+  building.txt: build signal|fullscreen.vert v2_signal.frag [SIG_CHROMA SIG_CONV SIG_JITTER SCENE_HW_DECODE]
+  nothing was killed. After a restart (the spike then refuses the define set in building.txt):
+    this configuration again: sh run_matrix.sh matrix_hang.tsv 20 10 5
+    the next one:             sh run_matrix.sh matrix_hang.tsv 20 10 6
+build signal|fullscreen.vert v2_signal.frag [SIG_CHROMA SIG_CONV SIG_JITTER SCENE_HW_DECODE]
+HUNG at suspect with hw_srgb false (kiosk_status.json ts 20s old)
+  last program line: [2026-11-15 14:55:17.091] [info] tube spike: program output [OUT_BEND OUT_SCANLINES OUT_ROLLOFF OUT_MASK OUT_GLOW OUT_ABL AFTERGLOW] (fullscreen.vert + v2_output.frag) compiled in 0.1 ms + linked in 1.7 ms (gamma mode 0)
+  building.txt: build signal|fullscreen.vert v2_signal.frag [SIG_TONE SIG_CHROMA SIG_CONV SIG_JITTER]
+  nothing was killed. After a restart (the spike then refuses the define set in building.txt):
+    this configuration again: sh run_matrix.sh matrix_hang.tsv 20 10 6
+    the next one:             sh run_matrix.sh matrix_hang.tsv 20 10 7
+build signal|fullscreen.vert v2_signal.frag [SIG_TONE SIG_CHROMA SIG_CONV SIG_JITTER]

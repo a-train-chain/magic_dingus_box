@@ -8,7 +8,7 @@ namespace app {
 bool is_static_main_menu(const MainMenuActivity& a) {
     return !(a.intro || a.video || a.media_browser || a.settings_menu ||
              a.keyboard || a.ui_fade || a.transient_overlay ||
-             a.crt_time_effects);
+             a.crt_time_effects || a.tube_rich_motion);
 }
 
 bool is_crt_field_rate_main_menu(const MainMenuActivity& a) {

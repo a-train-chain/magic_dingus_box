@@ -8,6 +8,7 @@
   {
     "bezel_index" : 1,
     "bloom_intensity" : 0.0,
+    "crt_engine" : "classic",
     "enhanced_crt_enabled" : false,
     "flicker_intensity" : 0.0,
     "glow_intensity" : 0.0,
@@ -52,6 +53,10 @@
     "mode" : "modern_tv",
     "rgb_mask_intensity" : 0.0,
     "scanline_intensity" : 0.25,
+    "tube" : 
+    {
+      "look" : "pvm"
+    },
     "warmth_intensity" : 0.0
   },
   "playback" : 

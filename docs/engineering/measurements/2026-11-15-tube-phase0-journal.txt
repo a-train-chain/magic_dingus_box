@@ -1,0 +1,223 @@
+[2026-11-15 11:54:47.278] [info] tube spike: GL_RENDERER=V3D 7.1.10.2 GL_VERSION=OpenGL ES 3.1 Mesa 25.0.7-2+rpt4 GLSL=OpenGL ES GLSL ES 3.10
+[2026-11-15 11:54:47.279] [info] tube spike: relevant extensions: GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_disjoint_timer_query GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_NV_generate_mipmap_sRGB
+[2026-11-15 11:54:47.408] [info] tube spike: program tube compiled in 18.0 ms + linked in 110.5 ms (gamma mode 0)
+[2026-11-15 11:54:47.479] [info] tube spike: program tube_afterglow compiled in 10.0 ms + linked in 61.1 ms (gamma mode 0)
+[2026-11-15 11:54:47.487] [info] tube spike: program lines compiled in 2.4 ms + linked in 5.5 ms (gamma mode 0)
+[2026-11-15 11:54:47.491] [info] tube spike: program downsample compiled in 0.9 ms + linked in 3.5 ms (gamma mode 0)
+[2026-11-15 11:54:47.495] [info] tube spike: program blur compiled in 1.1 ms + linked in 2.6 ms (gamma mode 0)
+[2026-11-15 11:54:47.502] [info] tube spike: program copy_lin compiled in 4.1 ms + linked in 2.4 ms (gamma mode 0)
+[2026-11-15 11:54:47.505] [info] tube spike: program copy_raw compiled in 1.2 ms + linked in 1.8 ms (gamma mode 0)
+[2026-11-15 11:54:47.505] [info] tube spike: all programs (re)built in 225.8 ms (render thread stalled that long)
+[2026-11-15 11:54:47.537] [info] tube spike: first draw with downsample took 11.5 ms (includes any compile deferred to first use)
+[2026-11-15 11:54:47.541] [info] tube spike: first draw with blur H took 2.9 ms (includes any compile deferred to first use)
+[2026-11-15 11:54:48.020] [info] tube spike: first draw with tube_afterglow took 468.4 ms (includes any compile deferred to first use)
+[2026-11-15 11:54:48.027] [info] tube spike: first draw with copy_lin took 6.3 ms (includes any compile deferred to first use)
+[2026-11-15 11:54:55.914] [info] tube spike pacing: look=pvm 10.0s: 159 frames presented (159 through the tube), flip-to-flip mean 49.58 ms max 50.07 ms, late(>25.0 ms) 158 of 158 @60Hz
+[2026-11-15 11:55:05.931] [info] tube spike pacing: look=pvm 10.0s: 203 frames presented (203 through the tube), flip-to-flip mean 49.34 ms max 250.02 ms, late(>25.0 ms) 203 of 203 @60Hz
+[2026-11-15 11:55:15.981] [info] tube spike pacing: look=pvm 10.0s: 230 frames presented (230 through the tube), flip-to-flip mean 43.70 ms max 50.15 ms, late(>25.0 ms) 230 of 230 @60Hz
+[2026-11-15 11:55:22.244] [info] tube spike: first draw with copy_raw took 4.3 ms (includes any compile deferred to first use)
+[2026-11-15 11:55:24.116] [info] tube spike: first draw with tube took 644.9 ms (includes any compile deferred to first use)
+[2026-11-15 11:55:25.115] [info] tube spike: first draw with lines took 8.8 ms (includes any compile deferred to first use)
+[2026-11-15 11:55:27.148] [info] tube spike pacing: look=pvm 11.2s: 144 frames presented (144 through the tube), flip-to-flip mean 44.64 ms max 100.36 ms, late(>25.0 ms) 140 of 140 @60Hz
+[2026-11-15 11:55:38.147] [info] tube spike pacing: look=pvm 11.0s: 5 frames presented (5 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 11:55:48.631] [info] tube spike pacing: look=pvm 10.5s: 5 frames presented (5 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 11:56:00.247] [info] tube spike pacing: look=pvm 11.6s: 5 frames presented (5 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 11:56:10.664] [info] tube spike pacing: look=pvm 10.4s: 5 frames presented (5 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 11:56:29.314] [info] tube spike pacing: look=pvm 10.0s: 232 frames presented (232 through the tube), flip-to-flip mean 43.15 ms max 50.09 ms, late(>25.0 ms) 231 of 231 @60Hz
+[2026-11-15 11:56:39.330] [info] tube spike pacing: look=pvm 10.0s: 245 frames presented (245 through the tube), flip-to-flip mean 40.88 ms max 53.38 ms, late(>25.0 ms) 245 of 245 @60Hz
+[2026-11-15 11:56:49.137] [info] tube spike: program tube compiled in 15.2 ms + linked in 88.0 ms (gamma mode 2)
+[2026-11-15 11:56:49.196] [info] tube spike: program tube_afterglow compiled in 7.4 ms + linked in 51.5 ms (gamma mode 2)
+[2026-11-15 11:56:49.205] [info] tube spike: program lines compiled in 2.3 ms + linked in 6.5 ms (gamma mode 2)
+[2026-11-15 11:56:49.209] [info] tube spike: program downsample compiled in 0.9 ms + linked in 2.8 ms (gamma mode 2)
+[2026-11-15 11:56:49.214] [info] tube spike: program blur compiled in 1.0 ms + linked in 3.1 ms (gamma mode 2)
+[2026-11-15 11:56:49.221] [info] tube spike: program copy_lin compiled in 4.9 ms + linked in 2.1 ms (gamma mode 2)
+[2026-11-15 11:56:49.227] [info] tube spike: program copy_raw compiled in 4.5 ms + linked in 1.8 ms (gamma mode 2)
+[2026-11-15 11:56:49.227] [info] tube spike: all programs (re)built in 194.5 ms (render thread stalled that long)
+[2026-11-15 11:56:49.246] [info] tube spike: first draw with downsample took 7.5 ms (includes any compile deferred to first use)
+[2026-11-15 11:56:49.249] [info] tube spike: first draw with blur H took 3.0 ms (includes any compile deferred to first use)
+[2026-11-15 11:56:49.690] [info] tube spike: first draw with tube_afterglow took 437.5 ms (includes any compile deferred to first use)
+[2026-11-15 11:56:49.696] [info] tube spike: first draw with copy_lin took 5.7 ms (includes any compile deferred to first use)
+[2026-11-15 11:56:49.714] [info] tube spike pacing: look=pvm 10.4s: 250 frames presented (250 through the tube), flip-to-flip mean 41.53 ms max 683.33 ms, late(>25.0 ms) 250 of 250 @60Hz
+[2026-11-15 11:56:52.088] [info] tube spike: first draw with copy_raw took 6.3 ms (includes any compile deferred to first use)
+[2026-11-15 11:56:53.703] [info] tube spike: first draw with tube took 465.7 ms (includes any compile deferred to first use)
+[2026-11-15 11:56:54.614] [info] tube spike: first draw with lines took 8.8 ms (includes any compile deferred to first use)
+[2026-11-15 11:57:00.364] [info] tube spike pacing: look=pvm 10.6s: 75 frames presented (75 through the tube), flip-to-flip mean 34.06 ms max 50.02 ms, late(>25.0 ms) 69 of 69 @60Hz
+[2026-11-15 11:57:11.364] [info] tube spike pacing: look=pvm 11.0s: 6 frames presented (6 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 11:57:22.997] [info] tube spike pacing: look=pvm 11.6s: 6 frames presented (6 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 11:57:33.097] [info] tube spike pacing: look=pvm 10.1s: 5 frames presented (5 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 11:57:51.713] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.39 ms max 49.99 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 11:58:01.730] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.50 ms max 50.01 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 11:58:11.747] [info] tube spike pacing: look=pvm 10.0s: 298 frames presented (298 through the tube), flip-to-flip mean 33.61 ms max 50.02 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 11:58:21.763] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.50 ms max 50.05 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 11:58:31.780] [info] tube spike pacing: look=pvm 10.0s: 298 frames presented (298 through the tube), flip-to-flip mean 33.61 ms max 50.01 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 11:58:41.796] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.50 ms max 51.71 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 11:58:51.830] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.56 ms max 50.02 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 11:59:01.863] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.04 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 11:59:11.896] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.02 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 11:59:21.930] [info] tube spike pacing: look=pvm 10.0s: 298 frames presented (298 through the tube), flip-to-flip mean 33.67 ms max 50.01 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 11:59:31.946] [info] tube spike pacing: look=pvm 10.0s: 298 frames presented (298 through the tube), flip-to-flip mean 33.61 ms max 50.06 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 11:59:41.979] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.61 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 11:59:52.013] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.56 ms max 50.10 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:00:02.046] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.56 ms max 50.05 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:00:12.079] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.56 ms max 50.03 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:00:22.113] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.00 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:00:32.146] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.03 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:00:42.179] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.03 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:00:52.212] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.56 ms max 50.06 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:01:02.246] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.01 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:01:12.279] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.56 ms max 50.07 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:01:22.296] [info] tube spike pacing: look=pvm 10.0s: 298 frames presented (298 through the tube), flip-to-flip mean 33.61 ms max 50.02 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 12:01:32.312] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.39 ms max 50.01 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:01:42.345] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.06 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:01:52.362] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.39 ms max 50.15 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:02:02.395] [info] tube spike pacing: look=pvm 10.0s: 299 frames presented (299 through the tube), flip-to-flip mean 33.56 ms max 50.01 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:02:12.429] [info] tube spike pacing: look=pvm 10.0s: 298 frames presented (298 through the tube), flip-to-flip mean 33.67 ms max 50.06 ms, late(>25.0 ms) 298 of 298 @60Hz
+[2026-11-15 12:02:19.910] [info] tube spike: program tube compiled in 17.6 ms + linked in 60.6 ms (gamma mode 2)
+[2026-11-15 12:02:19.917] [info] tube spike: program tube_afterglow compiled in 2.2 ms + linked in 3.6 ms (gamma mode 2)
+[2026-11-15 12:02:19.931] [info] tube spike: program lines compiled in 5.8 ms + linked in 8.1 ms (gamma mode 2)
+[2026-11-15 12:02:19.936] [info] tube spike: program downsample compiled in 0.1 ms + linked in 4.5 ms (gamma mode 2)
+[2026-11-15 12:02:19.938] [info] tube spike: program blur compiled in 0.1 ms + linked in 2.0 ms (gamma mode 2)
+[2026-11-15 12:02:19.939] [info] tube spike: program copy_lin compiled in 0.1 ms + linked in 0.7 ms (gamma mode 2)
+[2026-11-15 12:02:19.940] [info] tube spike: program copy_raw compiled in 0.0 ms + linked in 0.3 ms (gamma mode 2)
+[2026-11-15 12:02:19.940] [info] tube spike: all programs (re)built in 108.8 ms (render thread stalled that long)
+[2026-11-15 12:02:19.948] [info] tube spike: first draw with downsample took 1.0 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:19.950] [info] tube spike: first draw with blur H took 1.3 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:19.960] [info] tube spike: first draw with tube_afterglow took 6.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:19.964] [info] tube spike: first draw with copy_lin took 4.4 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:22.445] [info] tube spike pacing: look=pvm 10.0s: 367 frames presented (367 through the tube), flip-to-flip mean 27.29 ms max 150.01 ms, late(>25.0 ms) 219 of 367 @60Hz
+[2026-11-15 12:02:23.873] [info] tube spike: first draw with copy_raw took 2.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:24.392] [info] tube spike: first draw with tube took 5.7 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:24.675] [info] tube spike: first draw with lines took 4.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:32.962] [info] tube spike pacing: look=pvm 10.5s: 103 frames presented (103 through the tube), flip-to-flip mean 16.67 ms max 16.69 ms, late(>25.0 ms) 0 of 85 @60Hz
+[2026-11-15 12:02:39.047] [info] tube spike: program tube compiled in 4.1 ms + linked in 13.2 ms (gamma mode 2)
+[2026-11-15 12:02:39.066] [info] tube spike: program tube_afterglow compiled in 8.2 ms + linked in 10.8 ms (gamma mode 2)
+[2026-11-15 12:02:39.076] [info] tube spike: program lines compiled in 2.8 ms + linked in 6.7 ms (gamma mode 2)
+[2026-11-15 12:02:39.076] [info] tube spike: program downsample compiled in 0.1 ms + linked in 0.6 ms (gamma mode 2)
+[2026-11-15 12:02:39.077] [info] tube spike: program blur compiled in 0.1 ms + linked in 0.4 ms (gamma mode 2)
+[2026-11-15 12:02:39.077] [info] tube spike: program copy_lin compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:02:39.078] [info] tube spike: program copy_raw compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:02:39.078] [info] tube spike: all programs (re)built in 48.6 ms (render thread stalled that long)
+[2026-11-15 12:02:39.082] [info] tube spike: first draw with downsample took 0.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:39.084] [info] tube spike: first draw with blur H took 1.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:39.106] [info] tube spike: first draw with tube_afterglow took 18.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:39.111] [info] tube spike: first draw with copy_lin took 4.3 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:43.105] [info] tube spike: first draw with copy_raw took 1.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:43.870] [info] tube spike: first draw with tube took 17.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:44.398] [info] tube spike: first draw with lines took 10.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:02:48.128] [info] tube spike pacing: look=pvm 10.2s: 191 frames presented (191 through the tube), flip-to-flip mean 27.96 ms max 100.00 ms, late(>25.0 ms) 120 of 183 @60Hz
+[2026-11-15 12:02:58.712] [info] tube spike pacing: look=pvm 10.6s: 12 frames presented (12 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:03:10.072] [info] tube spike: program tube compiled in 9.4 ms + linked in 49.8 ms (gamma mode 2)
+[2026-11-15 12:03:10.121] [info] tube spike: program tube_afterglow compiled in 5.6 ms + linked in 43.5 ms (gamma mode 2)
+[2026-11-15 12:03:10.135] [info] tube spike: program lines compiled in 6.2 ms + linked in 6.9 ms (gamma mode 2)
+[2026-11-15 12:03:10.136] [info] tube spike: program downsample compiled in 0.1 ms + linked in 0.5 ms (gamma mode 2)
+[2026-11-15 12:03:10.136] [info] tube spike: program blur compiled in 0.0 ms + linked in 0.4 ms (gamma mode 2)
+[2026-11-15 12:03:10.137] [info] tube spike: program copy_lin compiled in 0.0 ms + linked in 0.3 ms (gamma mode 2)
+[2026-11-15 12:03:10.137] [info] tube spike: program copy_raw compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:03:10.137] [info] tube spike: all programs (re)built in 124.7 ms (render thread stalled that long)
+[2026-11-15 12:03:10.145] [info] tube spike: first draw with downsample took 0.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:03:10.147] [info] tube spike: first draw with blur H took 1.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:03:10.436] [info] tube spike: first draw with tube_afterglow took 286.7 ms (includes any compile deferred to first use)
+[2026-11-15 12:03:10.441] [info] tube spike: first draw with copy_lin took 4.4 ms (includes any compile deferred to first use)
+[2026-11-15 12:03:14.105] [info] tube spike: first draw with copy_raw took 1.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:03:15.388] [info] tube spike: first draw with tube took 285.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:03:16.113] [info] tube spike: first draw with lines took 9.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:03:17.628] [info] tube spike pacing: look=pvm 10.7s: 208 frames presented (208 through the tube), flip-to-flip mean 35.39 ms max 450.01 ms, late(>25.0 ms) 203 of 203 @60Hz
+[2026-11-15 12:03:28.628] [info] tube spike pacing: look=pvm 11.0s: 7 frames presented (7 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:03:40.295] [info] tube spike pacing: look=pvm 11.7s: 7 frames presented (7 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:03:50.812] [info] tube spike pacing: look=pvm 10.5s: 8 frames presented (8 through the tube), flip-to-flip mean 0.00 ms max 0.00 ms, late(>25.0 ms) 0 of 0 @60Hz
+[2026-11-15 12:04:06.178] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.39 ms max 50.00 ms, late(>25.0 ms) 299 of 299 @60Hz
+[2026-11-15 12:04:16.211] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.44 ms max 50.05 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:04:21.717] [info] tube spike: program tube compiled in 0.1 ms + linked in 2.5 ms (gamma mode 2)
+[2026-11-15 12:04:21.721] [info] tube spike: program tube_afterglow compiled in 0.3 ms + linked in 3.1 ms (gamma mode 2)
+[2026-11-15 12:04:21.723] [info] tube spike: program lines compiled in 0.2 ms + linked in 1.9 ms (gamma mode 2)
+[2026-11-15 12:04:21.724] [info] tube spike: program downsample compiled in 0.1 ms + linked in 0.4 ms (gamma mode 2)
+[2026-11-15 12:04:21.724] [info] tube spike: program blur compiled in 0.0 ms + linked in 0.4 ms (gamma mode 2)
+[2026-11-15 12:04:21.725] [info] tube spike: program copy_lin compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:04:21.725] [info] tube spike: program copy_raw compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:04:21.725] [info] tube spike: all programs (re)built in 11.4 ms (render thread stalled that long)
+[2026-11-15 12:04:21.730] [info] tube spike: first draw with downsample took 0.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:04:21.731] [info] tube spike: first draw with blur H took 1.3 ms (includes any compile deferred to first use)
+[2026-11-15 12:04:21.745] [info] tube spike: first draw with tube_afterglow took 10.7 ms (includes any compile deferred to first use)
+[2026-11-15 12:04:21.749] [info] tube spike: first draw with copy_lin took 4.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:04:26.228] [info] tube spike pacing: look=pvm 10.0s: 300 frames presented (300 through the tube), flip-to-flip mean 33.39 ms max 49.99 ms, late(>25.0 ms) 300 of 300 @60Hz
+[2026-11-15 12:04:36.261] [info] tube spike pacing: look=pvm 10.0s: 301 frames presented (301 through the tube), flip-to-flip mean 33.33 ms max 33.42 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:04:46.295] [info] tube spike pacing: look=pvm 10.0s: 301 frames presented (301 through the tube), flip-to-flip mean 33.33 ms max 33.40 ms, late(>25.0 ms) 301 of 301 @60Hz
+[2026-11-15 12:04:48.447] [info] tube spike: first draw with tube took 12.1 ms (includes any compile deferred to first use)
+[2026-11-15 12:04:56.311] [info] tube spike pacing: look=monitor 10.0s: 517 frames presented (517 through the tube), flip-to-flip mean 19.37 ms max 33.37 ms, late(>25.0 ms) 84 of 517 @60Hz
+[2026-11-15 12:05:06.328] [info] tube spike pacing: look=monitor 10.0s: 583 frames presented (583 through the tube), flip-to-flip mean 17.18 ms max 33.94 ms, late(>25.0 ms) 18 of 583 @60Hz
+[2026-11-15 12:05:12.712] [info] tube spike: program tube compiled in 0.1 ms + linked in 0.5 ms (gamma mode 2)
+[2026-11-15 12:05:12.719] [info] tube spike: program tube_afterglow compiled in 5.2 ms + linked in 1.0 ms (gamma mode 2)
+[2026-11-15 12:05:12.720] [info] tube spike: program lines compiled in 0.2 ms + linked in 0.7 ms (gamma mode 2)
+[2026-11-15 12:05:12.720] [info] tube spike: program downsample compiled in 0.1 ms + linked in 0.5 ms (gamma mode 2)
+[2026-11-15 12:05:12.721] [info] tube spike: program blur compiled in 0.1 ms + linked in 0.5 ms (gamma mode 2)
+[2026-11-15 12:05:12.721] [info] tube spike: program copy_lin compiled in 0.0 ms + linked in 0.3 ms (gamma mode 2)
+[2026-11-15 12:05:12.722] [info] tube spike: program copy_raw compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:05:12.722] [info] tube spike: all programs (re)built in 10.1 ms (render thread stalled that long)
+[2026-11-15 12:05:12.726] [info] tube spike: first draw with downsample took 0.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:05:12.727] [info] tube spike: first draw with blur H took 0.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:05:12.735] [info] tube spike: first draw with tube took 4.7 ms (includes any compile deferred to first use)
+[2026-11-15 12:05:16.345] [info] tube spike pacing: look=monitor 10.0s: 597 frames presented (597 through the tube), flip-to-flip mean 16.78 ms max 33.35 ms, late(>25.0 ms) 4 of 597 @60Hz
+[2026-11-15 12:05:26.361] [info] tube spike pacing: look=monitor 10.0s: 599 frames presented (599 through the tube), flip-to-flip mean 16.72 ms max 33.33 ms, late(>25.0 ms) 2 of 599 @60Hz
+[2026-11-15 12:05:36.378] [info] tube spike pacing: look=monitor 10.0s: 600 frames presented (600 through the tube), flip-to-flip mean 16.69 ms max 33.64 ms, late(>25.0 ms) 1 of 600 @60Hz
+[2026-11-15 12:05:46.394] [info] tube spike pacing: look=monitor 10.0s: 599 frames presented (599 through the tube), flip-to-flip mean 16.72 ms max 34.60 ms, late(>25.0 ms) 2 of 599 @60Hz
+[2026-11-15 12:05:56.692] [info] tube spike: GL_RENDERER=V3D 7.1.10.2 GL_VERSION=OpenGL ES 3.1 Mesa 25.0.7-2+rpt4 GLSL=OpenGL ES GLSL ES 3.10
+[2026-11-15 12:05:56.694] [info] tube spike: relevant extensions: GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_disjoint_timer_query GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_NV_generate_mipmap_sRGB
+[2026-11-15 12:05:56.800] [info] tube spike: program tube compiled in 14.8 ms + linked in 85.5 ms (gamma mode 2)
+[2026-11-15 12:05:56.877] [info] tube spike: program tube_afterglow compiled in 8.1 ms + linked in 68.9 ms (gamma mode 2)
+[2026-11-15 12:05:56.891] [info] tube spike: program lines compiled in 6.7 ms + linked in 6.7 ms (gamma mode 2)
+[2026-11-15 12:05:56.894] [info] tube spike: program downsample compiled in 0.9 ms + linked in 2.6 ms (gamma mode 2)
+[2026-11-15 12:05:56.903] [info] tube spike: program blur compiled in 5.8 ms + linked in 2.5 ms (gamma mode 2)
+[2026-11-15 12:05:56.905] [info] tube spike: program copy_lin compiled in 0.6 ms + linked in 2.1 ms (gamma mode 2)
+[2026-11-15 12:05:56.908] [info] tube spike: program copy_raw compiled in 0.9 ms + linked in 1.7 ms (gamma mode 2)
+[2026-11-15 12:05:56.908] [info] tube spike: all programs (re)built in 210.3 ms (render thread stalled that long)
+SHADER-DB-GLSL39 - MESA_SHADER_FRAGMENT shader: 21 inst, 4 threads, 0 loops, 11 uniforms, 3 max-temps, 0:0 spills:fills, 0 sfu-stalls, 21 inst-and-stalls, 1 nops
+SHADER-DB-GLSL27 - MESA_SHADER_FRAGMENT shader: 43 inst, 4 threads, 0 loops, 22 uniforms, 8 max-temps, 0:0 spills:fills, 0 sfu-stalls, 43 inst-and-stalls, 2 nops
+[2026-11-15 12:05:56.979] [info] tube spike: first draw with downsample took 4.8 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL30 - MESA_SHADER_FRAGMENT shader: 60 inst, 4 threads, 1 loops, 16 uniforms, 18 max-temps, 0:0 spills:fills, 0 sfu-stalls, 60 inst-and-stalls, 6 nops
+[2026-11-15 12:05:56.982] [info] tube spike: first draw with blur H took 2.6 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL18 - MESA_SHADER_FRAGMENT shader: 1302 inst, 2 threads, 0 loops, 339 uniforms, 64 max-temps, 0:0 spills:fills, 0 sfu-stalls, 1302 inst-and-stalls, 95 nops
+[2026-11-15 12:05:57.420] [info] tube spike: first draw with tube took 434.4 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL3 - MESA_SHADER_FRAGMENT shader: 28 inst, 4 threads, 0 loops, 9 uniforms, 8 max-temps, 0:0 spills:fills, 0 sfu-stalls, 28 inst-and-stalls, 6 nops
+[2026-11-15 12:06:05.196] [info] tube spike pacing: look=monitor 10.0s: 230 frames presented (230 through the tube), flip-to-flip mean 33.62 ms max 66.64 ms, late(>25.0 ms) 229 of 229 @60Hz
+SHADER-DB-GLSL15 - MESA_SHADER_FRAGMENT shader: 16 inst, 4 threads, 0 loops, 2 uniforms, 6 max-temps, 0:0 spills:fills, 0 sfu-stalls, 16 inst-and-stalls, 2 nops
+[2026-11-15 12:06:15.212] [info] tube spike pacing: look=monitor 10.0s: 291 frames presented (291 through the tube), flip-to-flip mean 34.42 ms max 250.01 ms, late(>25.0 ms) 291 of 291 @60Hz
+[2026-11-15 12:06:16.160] [info] tube spike: program tube compiled in 6.8 ms + linked in 39.5 ms (gamma mode 2)
+[2026-11-15 12:06:16.205] [info] tube spike: program tube_afterglow compiled in 5.7 ms + linked in 39.2 ms (gamma mode 2)
+[2026-11-15 12:06:16.218] [info] tube spike: program lines compiled in 5.8 ms + linked in 6.8 ms (gamma mode 2)
+[2026-11-15 12:06:16.223] [info] tube spike: program downsample compiled in 0.1 ms + linked in 4.4 ms (gamma mode 2)
+[2026-11-15 12:06:16.224] [info] tube spike: program blur compiled in 0.1 ms + linked in 0.5 ms (gamma mode 2)
+[2026-11-15 12:06:16.224] [info] tube spike: program copy_lin compiled in 0.0 ms + linked in 0.3 ms (gamma mode 2)
+[2026-11-15 12:06:16.224] [info] tube spike: program copy_raw compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:06:16.224] [info] tube spike: all programs (re)built in 111.7 ms (render thread stalled that long)
+[2026-11-15 12:06:16.233] [info] tube spike: first draw with downsample took 0.9 ms (includes any compile deferred to first use)
+[2026-11-15 12:06:16.234] [info] tube spike: first draw with blur H took 1.0 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL42 - MESA_SHADER_FRAGMENT shader: 983 inst, 2 threads, 0 loops, 245 uniforms, 61 max-temps, 0:0 spills:fills, 0 sfu-stalls, 983 inst-and-stalls, 59 nops
+[2026-11-15 12:06:16.521] [info] tube spike: first draw with tube took 284.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:06:22.212] [info] tube spike: program tube compiled in 4.0 ms + linked in 10.7 ms (gamma mode 2)
+[2026-11-15 12:06:22.229] [info] tube spike: program tube_afterglow compiled in 6.5 ms + linked in 10.7 ms (gamma mode 2)
+[2026-11-15 12:06:22.239] [info] tube spike: program lines compiled in 2.3 ms + linked in 6.6 ms (gamma mode 2)
+[2026-11-15 12:06:22.240] [info] tube spike: program downsample compiled in 0.1 ms + linked in 0.5 ms (gamma mode 2)
+[2026-11-15 12:06:22.240] [info] tube spike: program blur compiled in 0.0 ms + linked in 0.4 ms (gamma mode 2)
+[2026-11-15 12:06:22.240] [info] tube spike: program copy_lin compiled in 0.0 ms + linked in 0.3 ms (gamma mode 2)
+[2026-11-15 12:06:22.241] [info] tube spike: program copy_raw compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:06:22.241] [info] tube spike: all programs (re)built in 44.8 ms (render thread stalled that long)
+[2026-11-15 12:06:22.246] [info] tube spike: first draw with downsample took 1.0 ms (includes any compile deferred to first use)
+[2026-11-15 12:06:22.247] [info] tube spike: first draw with blur H took 1.0 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL36 - MESA_SHADER_FRAGMENT shader: 290 inst, 4 threads, 0 loops, 78 uniforms, 25 max-temps, 0:0 spills:fills, 0 sfu-stalls, 290 inst-and-stalls, 13 nops
+[2026-11-15 12:06:22.268] [info] tube spike: first draw with tube took 19.2 ms (includes any compile deferred to first use)
+[2026-11-15 12:06:25.229] [info] tube spike pacing: look=monitor 10.0s: 360 frames presented (360 through the tube), flip-to-flip mean 27.82 ms max 416.65 ms, late(>25.0 ms) 215 of 360 @60Hz
+[2026-11-15 12:06:28.289] [info] tube spike: program tube compiled in 6.0 ms + linked in 3.2 ms (gamma mode 2)
+[2026-11-15 12:06:28.294] [info] tube spike: program tube_afterglow compiled in 2.0 ms + linked in 3.1 ms (gamma mode 2)
+[2026-11-15 12:06:28.300] [info] tube spike: program lines compiled in 1.8 ms + linked in 3.8 ms (gamma mode 2)
+[2026-11-15 12:06:28.301] [info] tube spike: program downsample compiled in 0.1 ms + linked in 0.5 ms (gamma mode 2)
+[2026-11-15 12:06:28.301] [info] tube spike: program blur compiled in 0.1 ms + linked in 0.4 ms (gamma mode 2)
+[2026-11-15 12:06:28.302] [info] tube spike: program copy_lin compiled in 0.0 ms + linked in 0.3 ms (gamma mode 2)
+[2026-11-15 12:06:28.302] [info] tube spike: program copy_raw compiled in 0.0 ms + linked in 0.2 ms (gamma mode 2)
+[2026-11-15 12:06:28.302] [info] tube spike: all programs (re)built in 22.8 ms (render thread stalled that long)
+[2026-11-15 12:06:28.307] [info] tube spike: first draw with downsample took 0.8 ms (includes any compile deferred to first use)
+[2026-11-15 12:06:28.308] [info] tube spike: first draw with blur H took 1.0 ms (includes any compile deferred to first use)
+SHADER-DB-GLSL33 - MESA_SHADER_FRAGMENT shader: 42 inst, 4 threads, 0 loops, 18 uniforms, 8 max-temps, 0:0 spills:fills, 0 sfu-stalls, 42 inst-and-stalls, 1 nops
+[2026-11-15 12:06:28.317] [info] tube spike: first draw with tube took 6.7 ms (includes any compile deferred to first use)
+[2026-11-15 12:06:35.245] [info] tube spike pacing: look=monitor 10.0s: 589 frames presented (589 through the tube), flip-to-flip mean 17.01 ms max 49.99 ms, late(>25.0 ms) 11 of 589 @60Hz
+[2026-11-15 12:06:45.262] [info] tube spike pacing: look=monitor 10.0s: 601 frames presented (601 through the tube), flip-to-flip mean 16.67 ms max 17.29 ms, late(>25.0 ms) 0 of 601 @60Hz
+[2026-11-15 12:06:55.279] [info] tube spike pacing: look=monitor 10.0s: 600 frames presented (600 through the tube), flip-to-flip mean 16.69 ms max 33.30 ms, late(>25.0 ms) 1 of 600 @60Hz

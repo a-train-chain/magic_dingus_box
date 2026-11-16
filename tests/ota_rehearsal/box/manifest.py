@@ -49,7 +49,7 @@ RUNTIME = [
     # (compile_build) so it outlives build.new's cleanup; the next install's
     # --delete or a rollback removes it.
     "magic_dingus_box_cpp/build.log",
-    D + "kiosk_status.json", D + "text_input_queue.jsonl", D + "seek_request.json",
+    D + "kiosk_status.json", D + "text_input_queue.jsonl", D + "seek_request.json", D + "tube_request.json",
     D + "upload_temp/*", D + "pending_revocations.txt", D + "screenshots/*",
     "config/magic_dingus_box.log*",
 ]

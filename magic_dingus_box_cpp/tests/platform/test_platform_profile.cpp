@@ -145,6 +145,7 @@ void require_same_policy(const PlatformProfile& a, const PlatformProfile& b) {
     REQUIRE(a.unsupported_emulator_cores == b.unsupported_emulator_cores);
     REQUIRE(a.artwork_cache_budget_bytes == b.artwork_cache_budget_bytes);
     REQUIRE(a.movie_channel_codecs == b.movie_channel_codecs);
+    REQUIRE(a.tube_crt_engine == b.tube_crt_engine);
 }
 PlatformProfile real_pi5() {
     PlatformProfile p = profile_for(PiModel::Pi5);
@@ -188,6 +189,18 @@ TEST_CASE("policy override pi4 on a Pi 5 switches exactly the policy fields") {
 
     REQUIRE(p.policy_override == "pi4");
     REQUIRE(p.policy_override_ignored_reason.empty());
+}
+
+TEST_CASE("tube engine gate per board", "[tube]") {
+    REQUIRE(profile_for(PiModel::Pi5).tube_crt_engine);
+    REQUIRE_FALSE(profile_for(PiModel::Pi4).tube_crt_engine);
+    REQUIRE(profile_for(PiModel::Unknown).tube_crt_engine);
+}
+
+TEST_CASE("policy override pi4 closes the tube gate on a Pi 5", "[tube]") {
+    PlatformProfile p = apply_policy_override(real_pi5(), "pi4");
+    REQUIRE_FALSE(p.tube_crt_engine);
+    REQUIRE(p.model == PiModel::Pi5);
 }
 
 TEST_CASE("policy override pi4 forces FullPause even with plenty of memory") {

@@ -201,3 +201,197 @@ TEST_CASE("field_rate_skip_sleep: never shorter than the normal cap",
     CHECK(utils::field_rate_skip_sleep(p, 60, microseconds{0}, microseconds{0})
               .count() == 16666 + 16666 / 8);
 }
+
+TEST_CASE("present hold: round(refresh / 30) vblanks after the last flip", "[pacing]") {
+    using us = std::chrono::microseconds;
+    REQUIRE(utils::held_vblanks(60) == 2); REQUIRE(utils::held_vblanks(120) == 4);
+    REQUIRE(utils::held_vblanks(50) == 2); REQUIRE(utils::held_vblanks(30) == 1); REQUIRE(utils::held_vblanks(0) == 2);
+    REQUIRE(utils::present_hold(60, us{5000}) == us{16666 + 2083 - 5000});    // fast frame: wait
+    REQUIRE(utils::present_hold(60, us{18749}) == us{0});
+    REQUIRE(utils::present_hold(60, us{30000}) == us{0});                     // slow frame: flip now
+    REQUIRE(utils::present_hold(120, us{0}) == us{3 * 8333 + 1041});
+    REQUIRE(utils::present_hold(50, us{0}) == us{20000 + 2500});
+    REQUIRE(utils::present_hold(30, us{0}) == us{0});
+    REQUIRE(utils::held_frame_sleep(60, us{40000}) == us{0});                 // a held frame never adds a gap
+    REQUIRE(utils::held_frame_sleep(60, us{1000}) == us{2 * 16666 - 2083 - 1000});  // the floor (flip did not block)
+}
+
+TEST_CASE("present hold: the brief's cadence cases", "[pacing]") {
+    using us = std::chrono::microseconds;
+    // 10 and 20 ms frames at 60 Hz: the swap waits to 18.75 ms after the
+    // last flip, so the flip catches the vblank at 33.3 ms.
+    CHECK(utils::present_hold(60, us{10000}) == us{18749 - 10000});
+    CHECK(utils::present_hold(60, us{20000}) == us{0});
+    // 50 Hz holds to 22.5 ms (25 fps); 120 Hz to 26.0 ms over four vblanks.
+    CHECK(utils::present_hold(50, us{10000}) == us{22500 - 10000});
+    CHECK(utils::present_hold(120, us{10000}) == us{26040 - 10000});
+    // 59.94 Hz reads as 60: same two vblanks, same ~2 ms margin.
+    CHECK(utils::held_vblanks(59) == 2);
+    // After a rest the gap since the last flip is long: no hold.
+    CHECK(utils::present_hold(60, us{5000000}) == us{0});
+    // Never negative.
+    CHECK(utils::held_frame_sleep(120, us{1000000}) == us{0});
+}
+
+namespace {
+
+// One held (Rich30) frame after another, as main.cpp runs them: render, the
+// capped hold measured fresh after the swap, the flip, then the floor at the
+// bottom of the loop. Records the intervals between consecutive flips and the
+// length of each whole iteration.
+struct HeldRun {
+    std::vector<std::int64_t> flip_intervals, iterations;
+};
+
+HeldRun simulate_held(int refresh_hz, bool flip_blocks, int frames) {
+    const std::int64_t period = 1000000 / refresh_hz;
+    HeldRun run;
+    std::int64_t last_flip = 0;   // a vblank
+    std::int64_t t = last_flip;   // the first iteration starts on it
+    for (int i = 0; i < frames; ++i) {
+        const std::int64_t start = t;
+        t += 2000 + (i * 3700) % 21000;   // 2 to 23 ms: the rich budget is 23.1 ms
+        t += utils::capped_present_hold(refresh_hz, microseconds{t - last_flip}).count();
+        if (flip_blocks) t = next_vblank(t, period);
+        run.flip_intervals.push_back(t - last_flip);
+        last_flip = t;
+        t += utils::held_frame_sleep(refresh_hz, microseconds{t - start}).count();
+        run.iterations.push_back(t - start);
+    }
+    return run;
+}
+
+}  // namespace
+
+TEST_CASE("held frames: the hold's cap is held_vblanks refreshes, not two", "[pacing]") {
+    using us = std::chrono::microseconds;
+    // At 50 and 60 Hz the cap is the old one (two refreshes), and it never binds on a
+    // real clock: the hold is at most one refresh plus an eighth.
+    for (const int hz : {50, 60}) {
+        const us period{1000000 / hz};
+        CHECK(utils::present_hold_cap(hz) == period * 2);
+        for (const us since : {us{0}, us{5000}, us{18749}, us{30000}})
+            CHECK(utils::capped_present_hold(hz, since) == utils::present_hold(hz, since));
+    }
+    // At 120 Hz the hold asks for up to 26.0 ms (three refreshes plus an eighth); two
+    // refreshes (16.7 ms) would cut it short and the flip would land early.
+    CHECK(utils::present_hold_cap(120) == us{4 * 8333});
+    CHECK(utils::capped_present_hold(120, us{0}) == us{3 * 8333 + 1041});
+    CHECK(utils::capped_present_hold(120, us{0}) > us{2 * 1000000 / 120});
+    // The cap binds only on a clock that says the last flip is in the future.
+    CHECK(utils::capped_present_hold(120, us{-1000000}) == us{4 * 8333});
+    CHECK(utils::capped_present_hold(60, us{-1000000}) == us{2 * 16666});
+    CHECK(utils::present_hold_cap(0) == us{2 * 16666});   // unknown reads as 60
+}
+
+TEST_CASE("held frames: the composed flip wait lands every held_vblanks vblanks", "[pacing]") {
+    for (const int hz : {50, 60, 120}) {
+        const std::int64_t period = 1000000 / hz;
+        const std::int64_t cadence = period * utils::held_vblanks(hz);
+        // Blocking flips: every interval is exactly the cadence (2, 2, 4 vblanks).
+        for (const std::int64_t iv : simulate_held(hz, true, 200).flip_intervals) CHECK(iv == cadence);
+        // A flip that does not block (SetCrtc fallback), so no vblank anchors anything:
+        // the hold still keeps flips at least (held_vblanks - 1) refreshes plus an eighth
+        // apart, and the floor at the bottom of the loop keeps every iteration at the
+        // cadence minus the margin instead of running free.
+        const HeldRun loose = simulate_held(hz, false, 200);
+        for (const std::int64_t iv : loose.flip_intervals)
+            CHECK(iv >= period * (utils::held_vblanks(hz) - 1) + period / 8);
+        for (const std::int64_t it : loose.iterations) CHECK(it >= cadence - period / 8);
+    }
+}
+
+TEST_CASE("held frames at a target rate: 30 is exactly the rich hold", "[pacing]") {
+    using us = std::chrono::microseconds;
+    for (const int hz : {0, 24, 30, 47, 48, 50, 59, 60, 75, 90, 100, 120, 144, 240}) {
+        CHECK(utils::held_vblanks_at(30, hz) == utils::held_vblanks(hz));
+        CHECK(utils::present_hold_cap_at(30, hz) == utils::present_hold_cap(hz));
+        for (const us t : {us{-1000000}, us{0}, us{5000}, us{10000}, us{18749}, us{26040}, us{40000}}) {
+            CHECK(utils::present_hold_at(30, hz, t) == utils::present_hold(hz, t));
+            CHECK(utils::capped_present_hold_at(30, hz, t) == utils::capped_present_hold(hz, t));
+            CHECK(utils::held_frame_sleep_at(30, hz, t) == utils::held_frame_sleep(hz, t));
+        }
+    }
+}
+
+TEST_CASE("held frames at 60 fps: two vblanks from 90 Hz up, nothing at 50/60", "[pacing]") {
+    using us = std::chrono::microseconds;
+    CHECK(utils::held_vblanks_at(60, 50) == 1);
+    CHECK(utils::held_vblanks_at(60, 60) == 1);
+    CHECK(utils::held_vblanks_at(60, 0) == 1);     // unknown reads as 60
+    CHECK(utils::held_vblanks_at(60, 75) == 1);
+    CHECK(utils::held_vblanks_at(60, 89) == 1);    // lround(1.48)
+    CHECK(utils::held_vblanks_at(60, 90) == 2);    // lround(1.5) rounds away from zero
+    CHECK(utils::held_vblanks_at(60, 100) == 2);
+    CHECK(utils::held_vblanks_at(60, 120) == 2);
+    CHECK(utils::held_vblanks_at(60, 144) == 2);
+    // One vblank per frame: nothing to hold, whatever the clock says.
+    for (const int hz : {50, 60})
+        for (const us t : {us{-1000000}, us{0}, us{5000}, us{30000}}) {
+            CHECK(utils::present_hold_at(60, hz, t) == us{0});
+            CHECK(utils::capped_present_hold_at(60, hz, t) == us{0});
+        }
+    // 120 Hz: hold to one refresh plus an eighth (9.374 ms) after the last flip.
+    CHECK(utils::present_hold_at(60, 120, us{0}) == us{8333 + 1041});
+    CHECK(utils::present_hold_at(60, 120, us{5000}) == us{9374 - 5000});
+    CHECK(utils::present_hold_at(60, 120, us{10000}) == us{0});
+    CHECK(utils::present_hold_cap_at(60, 120) == us{2 * 8333});
+    CHECK(utils::capped_present_hold_at(60, 120, us{-1000000}) == us{2 * 8333});
+    // The floor: two refreshes minus an eighth; never negative.
+    CHECK(utils::held_frame_sleep_at(60, 120, us{1000}) == us{2 * 8333 - 1041 - 1000});
+    CHECK(utils::held_frame_sleep_at(60, 120, us{16666}) == us{0});
+    // 90 Hz: period 11111 us, an eighth 1388 us: hold to 12499 us, cap two refreshes,
+    // floor 22222 - 1388 = 20834 us.
+    CHECK(utils::present_hold_at(60, 90, us{0}) == us{11111 + 1388});
+    CHECK(utils::present_hold_at(60, 90, us{5000}) == us{12499 - 5000});
+    CHECK(utils::present_hold_at(60, 90, us{13000}) == us{0});
+    CHECK(utils::present_hold_cap_at(60, 90) == us{2 * 11111});
+    CHECK(utils::capped_present_hold_at(60, 90, us{-1000000}) == us{2 * 11111});
+    CHECK(utils::held_frame_sleep_at(60, 90, us{1000}) == us{2 * 11111 - 1388 - 1000});
+    CHECK(utils::held_frame_sleep_at(60, 90, us{22222}) == us{0});
+    // 100 Hz holds to 11.25 ms, 144 Hz to 7.812 ms.
+    CHECK(utils::present_hold_at(60, 100, us{0}) == us{10000 + 1250});
+    CHECK(utils::present_hold_at(60, 144, us{0}) == us{6944 + 868});
+}
+
+namespace {
+
+// main.cpp's sequence for a held frame at target_fps with a constant render
+// cost: render, the capped hold measured after the swap, a blocking flip, the
+// floor. Returns each flip's time after the previous one.
+std::vector<std::int64_t> simulate_held_at(int target_fps, int refresh_hz, std::int64_t render,
+                                           int frames) {
+    const std::int64_t period = 1000000 / refresh_hz;
+    std::vector<std::int64_t> intervals;
+    std::int64_t last_flip = 0;
+    std::int64_t t = 0;
+    for (int i = 0; i < frames; ++i) {
+        const std::int64_t start = t;
+        t += render;
+        t += utils::capped_present_hold_at(target_fps, refresh_hz, microseconds{t - last_flip}).count();
+        t = next_vblank(t, period);
+        intervals.push_back(t - last_flip);
+        last_flip = t;
+        t += utils::held_frame_sleep_at(target_fps, refresh_hz, microseconds{t - start}).count();
+    }
+    return intervals;
+}
+
+}  // namespace
+
+TEST_CASE("held frames at 60 fps, 120 Hz: a 5, 10 or 12 ms frame lands on the 2nd vblank",
+          "[pacing]") {
+    for (const std::int64_t render : {5000, 10000, 12000})
+        for (const std::int64_t iv : simulate_held_at(60, 120, render, 50)) CHECK(iv == 2 * 8333);
+    // Slower than two refreshes: the 3rd vblank (late), never earlier.
+    for (const std::int64_t iv : simulate_held_at(60, 120, 20000, 50)) CHECK(iv == 3 * 8333);
+    // 90 Hz (the cap spans lround(1.5) = 2 vblanks): the same, on 11111 us refreshes.
+    for (const std::int64_t render : {5000, 10000, 12000})
+        for (const std::int64_t iv : simulate_held_at(60, 90, render, 50)) CHECK(iv == 2 * 11111);
+    // A 20 ms frame still fits two refreshes (22.2 ms); a 25 ms one lands on the third.
+    for (const std::int64_t iv : simulate_held_at(60, 90, 20000, 50)) CHECK(iv == 2 * 11111);
+    for (const std::int64_t iv : simulate_held_at(60, 90, 25000, 50)) CHECK(iv == 3 * 11111);
+    // Rich at 120 Hz, unchanged: 5 to 30 ms all land on the 4th vblank.
+    for (const std::int64_t render : {5000, 10000, 12000, 20000, 30000})
+        for (const std::int64_t iv : simulate_held_at(30, 120, render, 50)) CHECK(iv == 4 * 8333);
+}

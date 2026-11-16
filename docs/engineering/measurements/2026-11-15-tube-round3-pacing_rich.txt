@@ -1,0 +1,5 @@
+rich monitor	gpu off | pacing frames 3603 intervals 3603 mean 33.41 ms max 300.02 late 1 (0.03%) over 41.7 ms held 3602 (12 lines)
+rich tv half+cheap -afterglow -glow	gpu off | pacing frames 3600 intervals 3600 mean 33.42 ms max 250.01 late 6 (0.17%) over 41.7 ms held 3599 (12 lines)
+rich pvm	gpu off | pacing frames 3601 intervals 3601 mean 33.38 ms max 50.03 late 11 (0.31%) over 41.7 ms held 3601 (12 lines)
+rich trinitron half	gpu off | pacing frames 3594 intervals 3594 mean 33.43 ms max 50.04 late 20 (0.56%) over 41.7 ms held 3594 (12 lines)
+rich tv half+cheap	gpu off | pacing frames 3588 intervals 3588 mean 33.48 ms max 266.69 late 18 (0.50%) over 41.7 ms held 3587 (12 lines)

@@ -1963,7 +1963,7 @@ install_update() {
     #                          DELETE them → every paired phone silently
     #                          unpaired on every OTA.
     #   - data/kiosk_status.json, data/text_input_queue.jsonl,
-    #     data/seek_request.json
+    #     data/seek_request.json, data/tube_request.json
     #                       - Transient kiosk<->web runtime files;
     #                          excluded so an OTA can't yank them out
     #                          from under the running web admin.
@@ -2076,6 +2076,7 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
+        --exclude 'magic_dingus_box_cpp/data/tube_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
@@ -2550,6 +2551,7 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
+        --exclude 'magic_dingus_box_cpp/data/tube_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \
@@ -2721,6 +2723,7 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
+        --exclude 'magic_dingus_box_cpp/data/tube_request.json' \
         --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json' \
         --exclude 'magic_dingus_box_cpp/data/media_info.json.lock' \

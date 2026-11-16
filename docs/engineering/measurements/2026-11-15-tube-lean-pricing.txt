@@ -1,0 +1,101 @@
+Tube CRT engine — Task 1b: the lean pass priced, and both budgets measured (2026-11-15)
+
+Box: magicpi5, Raspberry Pi 5 2 GB, V3D 7.1.10.2, Mesa 25.0.7, Modern TV 1920x1080@60, picture 1440x1080,
+a playlist video playing throughout (software H.264 decode), Media Browser stack running, 59-60 C, never
+throttled. Spike branch spike/tube-phase0 @ 279b32e, run as a transient unit in place of the stopped kiosk.
+Raw output: 2026-11-15-tube-round3-prices.done.txt, -pacing_lean.txt, -pacing_lean3.txt, -pacing_rich.txt,
+-journal.txt.
+
+GPU PRICES (GL_TIME_ELAPSED per pass, timers on, 40 s each; ms per frame)
+
+  lean output pass: scene read (hardware sRGB decode) + mask texture + baked glass, encoded to the screen
+    B   (base, nothing else)                        8.85
+    B + bend                                        9.32   (+0.47)
+    B + beam, exact                                17.92   (+9.07)  anomalous: see notes
+    B + beam, cheap                                10.16   (+1.31)
+    B + tone                                        9.46   (+0.61)
+    B + displace (jitter, tracking, flagging)       9.88   (+1.03)
+    B + motion (noise, hum, flicker, band, purity) 11.40   (+2.55)
+    B + probe (ABL/breathing mean)                  9.05   (+0.20; the probe pass itself 0.02-0.11)
+    FULL, exact beam                               15.69
+    FULL, cheap beam                               14.99
+    PVM-lean, exact beam (bend, beam, tone, probe) 11.66
+    PVM-lean, cheap beam                           10.96
+    Monitor-lean, exact / cheap                    11.73 / 11.00
+
+  rich references (pipeline 2)                     glow  signal  lines  output  history  total
+    monitor                                        2.29   4.51    -      8.98     -      15.77
+    tv, half width + cheap beam, no afterglow/glow 0.69   5.16   1.04   11.26     -      18.15
+    pvm                                            2.94   4.46    -      7.06    4.38    18.84
+    trinitron, half width                          3.55   3.82   1.03   11.14    4.22    23.76
+    tv, half width + cheap beam                    4.22   5.14   1.03    9.51    4.22    24.12
+
+  today's Enhanced engine (the box's own sliders: scanlines 0.5 ...)   11.69
+
+FRAME PACING (timers OFF, every GPU read-back disabled; "late" = an interval over 1.5 refreshes at 60 fps,
+or over 41.7 ms at the 30 fps cadence with the present hold)
+
+  60 fps, 150 s each                               frames   late     on time
+    Enhanced (today)                                8890     113     98.73 %
+    B                                               8989      25     99.72 %
+    B + bend + cheap beam            (~10.6 ms)     8960      42     99.53 %
+    PVM-lean, cheap beam, WITH probe  (10.96 ms)    8310     705     91.52 %
+    PVM-lean, exact beam, WITH probe  (11.66 ms)    8237     755     90.83 %
+    FULL, cheap beam                  (14.99 ms)    3821    3820      0.03 %
+  60 fps, 110 s each
+    PVM-lean, cheap beam, no probe   (~10.9 ms)     5335    1130     78.82 %   outlier: see notes
+    bend + cheap + tone + displace   (~12.3 ms)     6572      31     99.53 %
+    bend + cheap + tone + motion     (~13.8 ms)     6402     206     96.78 %
+
+  30 fps with the present hold, 120 s each
+    monitor                           (15.77 ms)    3603       1     99.97 %
+    tv half + cheap, no afterglow/glow(18.15 ms)    3600       6     99.83 %
+    pvm                               (18.84 ms)    3601      11     99.69 %
+    trinitron, half width             (23.76 ms)    3594      20     99.44 %
+    tv, half width + cheap beam       (24.12 ms)    3588      18     99.50 %
+
+NOTES
+- Timers matter. With the GPU timers on, EVERY configuration, even B at 8.85 ms, locked to 30 fps. With
+  them off, 12.3 ms of lean output held 60 fps. Round 2's "30 fps at 10 ms" readings were the timers, and
+  the 8 ms budget inferred from round 1 was too low.
+- The present hold works: with it, every rich reference landed on an even 33.3 ms, 99.4 % or better, up to
+  24.1 ms of GPU.
+- The probe stalls a frame each time it runs. Its GPU cost is negligible, but PVM-lean with it was late on
+  8.5 % of frames, one in twelve, which is exactly the probe's cadence (mipmap + read-back every 12th frame).
+  As implemented it cannot be in the lean class.
+- "Motion" is one block here (noise, hum, flicker, the rolling band and purity compiled together): +2.55 ms,
+  and with it the pass fell to 96.8 %. Round 1 priced hum, flicker and the band at about 0 and noise at
+  1.4 ms, so the block is probably mostly noise; it was not split in this run.
+- Two readings are unexplained and are not relied on: "B + beam, exact" alone at 17.92 ms (the same beam
+  inside PVM-lean costs 0.7 ms more than the cheap one), and "PVM-lean, cheap beam, no probe" at 78.8 % on
+  time, although a strict superset of it (the next configuration, with the displacements added) held
+  99.53 %. Something outside the tube disturbed that run (it was the first after a matrix start; max
+  interval 283 ms). Task 15's ten-minute runs decide PVM-lean properly.
+- Today's Enhanced engine costs 11.69 ms and holds 98.7 % at 60 fps on this box: the engine customers
+  already have is itself just under the 99 % line at 1080p.
+- Not measured: a 720p output; a Pi 4B; the lean pass at 1920x1080 (full-screen films); a ten-minute soak.
+
+DECISION (Task 1b)
+lean.usable: yes
+lean.bend: yes   lean.beam: yes   lean.cheap_beam: yes
+lean.tone: yes   lean.displace: yes   lean.motion: no   lean.probe: no
+lean_budget_ms: 11.8   rich_budget_ms: 23.1
+pvm_lean: no
+pass_costs_ms: quarter+glow_blur 2.3-4.2 (grows with the look's glow size) sig_sharp 4.5 sig_sharp_chroma (not measured alone) sig_guns 3.8 (half width) sig_guns_chroma 5.1 (half width) lines_half 1.0 lines_full 2.1 out_lean 8.85 (+bend 0.47 +cheap beam 1.31 +tone 0.61 +displace 1.03 +motion 2.55) out_rich 7.1 (into the history) / 9.0 (to the screen) out_rich_raster 11.2 (9.5 with the cheap beam) out_rich_raster_only (not measured) history 4.3 probe 0.02 (but one stalled frame per run)
+enhanced_composite_ms: 11.7
+
+HOW THE DECISION WAS REACHED (controller's reading of the rules in the plan)
+- lean_budget_ms: the largest lean total whose timers-off run held 99 % is "bend + cheap + tone + displace"
+  (8.85 + 0.47 + 1.31 + 0.61 + 1.03 = 12.27 ms, a sum of measured increments), minus 0.5 = 11.8.
+- The lean set is that configuration itself: it is the richest one that held. Motion (+2.55, 96.8 %) and
+  the probe (a stalled frame each run) are out. So, beyond the seven rows that are always rich (glow,
+  afterglow, sharpness, convergence, chroma bleed, raster, colour drift), these also force 30 fps for now:
+  noise, hum, flicker, the rolling band, purity (the motion block), and ABL and breathing (the probe).
+  Splitting the motion block (hum and flicker are probably free) and a probe that does not stall are
+  follow-up measurements for Task 15; either would move rows back to 60 fps.
+- rich_budget_ms: all five rich references held; the largest is 24.12, minus 1.0 = 23.1. Trinitron (23.76)
+  and tv half + cheap (24.12) sit just over it and take the first step of the rich ladder in Task 15.
+- pvm_lean: no. PVM-lean needs the probe (PVM has ABL 20 and breathing 15), and its own run without the
+  probe did not hold. PVM and Monitor therefore keep Sound Factory's values and draw at 30 fps, where they
+  measured 99.7 % and 99.97 %. No shipped look is retuned to be lean; the 60 fps class is for a custom mix
+  that leaves every 30 fps row neutral.

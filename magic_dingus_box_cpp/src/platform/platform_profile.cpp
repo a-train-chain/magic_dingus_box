@@ -79,6 +79,8 @@ PlatformProfile profile_for(PiModel model) {
             // (see header — ~230 w185 grid posters).
             p.artwork_cache_budget_bytes = 64u * 1024u * 1024u;
             p.movie_channel_codecs = {"x264", "h264", "avc"};
+            // No Tube CRT engine: fill rate (a saved Tube draws Enhanced).
+            p.tube_crt_engine = false;
             break;
         case PiModel::Pi5:
             p.has_analog_audio = false;
@@ -96,6 +98,7 @@ PlatformProfile profile_for(PiModel model) {
             p.trickle_torrents_during_video = true;
             p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
             p.movie_channel_codecs = {};
+            p.tube_crt_engine = true;
             break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on
@@ -106,6 +109,7 @@ PlatformProfile profile_for(PiModel model) {
                                  "pinctrl-bcm2835"};
             p.artwork_cache_budget_bytes = 128u * 1024u * 1024u;
             p.movie_channel_codecs = {};
+            p.tube_crt_engine = true;  // dev machines: hide nothing
             break;
     }
     return p;
@@ -171,6 +175,7 @@ PlatformProfile apply_policy_override(PlatformProfile detected,
     detected.unsupported_emulator_cores = pi4.unsupported_emulator_cores;
     detected.artwork_cache_budget_bytes = pi4.artwork_cache_budget_bytes;
     detected.movie_channel_codecs = pi4.movie_channel_codecs;
+    detected.tube_crt_engine = pi4.tube_crt_engine;
     detected.policy_override = "pi4";
     return detected;
 }

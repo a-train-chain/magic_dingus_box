@@ -367,3 +367,13 @@ TEST_CASE("crt_render_field alternates parity on every drawn frame",
         last = f;
     }
 }
+
+TEST_CASE("redraw gate: rich tube motion is continuous, lean tube motion is field rate", "[redraw]") {
+    app::MainMenuActivity a; REQUIRE(app::is_static_main_menu(a));
+    a.tube_rich_motion = true;
+    REQUIRE_FALSE(app::is_static_main_menu(a)); REQUIRE_FALSE(app::is_crt_field_rate_main_menu(a));
+    app::MainMenuActivity b; b.crt_time_effects = true;                       // lean tube motion rides this
+    REQUIRE(app::is_crt_field_rate_main_menu(b));
+    b.tube_rich_motion = true;                                                // rich motion wins over field rate
+    REQUIRE_FALSE(app::is_crt_field_rate_main_menu(b));
+}

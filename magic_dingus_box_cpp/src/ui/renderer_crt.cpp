@@ -26,6 +26,9 @@
 #include "../app/playlist_loader.h"
 #include "../app/settings_persistence.h" // For getting config if needed
 #include "../utils/config.h"
+#include "../utils/logger.h"
+#include "../tube/tube_driver.h"
+#include "tube_renderer.h"
 
 #ifdef MEDIA_BROWSER_ENABLED
 #include "../media_browser/artwork/artwork_cache.h"
@@ -44,6 +47,7 @@
 #include <iomanip>
 #include <vector>
 #include <algorithm> // Added for std::min/max
+#include <string_view>
 
 namespace ui {
 
@@ -172,6 +176,11 @@ float Renderer::crt_time_uniform(std::chrono::steady_clock::time_point now) cons
 }
 
 void Renderer::destroy_scene_fbo() {
+    // The tube's objects are made around this scene texture: they go with it, and
+    // the driver is told (TubeRenderer::release_gl + FrameDriver::gpu_lost). Covers
+    // reset_gl(), cleanup(), a resize and an incomplete FBO. No-op without the tube
+    // or when the tube has touched no GL since its last release.
+    release_tube_gl();
     if (scene_fbo_ != 0) {
         glDeleteFramebuffers(1, &scene_fbo_);
         scene_fbo_ = 0;
@@ -253,8 +262,51 @@ void Renderer::ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height) {
 }
 
 bool Renderer::begin_scene_fbo(const app::AppState& state) {
-    // Gate 1: feature flag must be on.
-    if (!state.display_settings.enhanced_crt_enabled) return false;
+    // The Tube engine (renderer.h, set_tube_picture). Without it (production: tube_
+    // is null) this block is skipped and tube_frame stays false, so every gate
+    // below is exactly as before.
+    bool tube_frame = false;
+    if (tube_) {
+        tube_frame = tube_frame_wanted(state);
+        const bool engine_tube =
+            app::effective_crt_engine(state.display_settings.crt_engine, app::tube_offered(state)) ==
+            app::CrtEngine::Tube;
+        if (tube_scene_ && !tube_frame) {
+            // The tube stopped drawing: the scene texture back to RGBA8,
+            // FRAMEBUFFER_SRGB back on, the guard's marker dropped and the plan
+            // forgotten.
+            flush_ui_batch();
+            tube_->end_tube_scene(scene_color_tex_, static_cast<int>(scene_fbo_width_),
+                                  static_cast<int>(scene_fbo_height_));
+            if (engine_tube) {
+                // The engine is still Tube (the Media Browser took the screen; a
+                // full-screen film the look yields to Enhanced; or no picture
+                // rectangle this frame): free the render targets only
+                // (~25-40 MB at 1440x1080, which a 2 GB board needs back for a
+                // movie) and keep the programs, so the return has no build hitch
+                // and no marker. The targets come back cleared: no stale
+                // afterglow fades in. No warm-up replay (the engine did not
+                // change), and a degauss asked for meanwhile is skipped.
+                tube_->release_targets();
+                tube_degauss_resync_ = true;
+            }
+        }
+        tube_scene_ = false;
+        if (!engine_tube) {
+            // Another engine: the next Tube scene starts the tube afresh (warm-up),
+            // and every tube GL object goes now (release_gl + gpu_lost) - programs,
+            // targets, the mask - so nothing is held while another engine draws,
+            // and a later Tube starts from a clear afterglow history. Also reached
+            // when the engine changes while the Media Browser has the screen. Once:
+            // a no-op while nothing is live.
+            tube_engine_was_tube_ = false;
+            release_tube_gl();
+        }
+    }
+
+    // Gate 1: feature flag must be on. (A Tube frame skips it: the engine is
+    // Tube, whatever the Enhanced flag says.)
+    if (!tube_frame && !state.display_settings.enhanced_crt_enabled) return false;
 
     // Gate 2: composite shader must have compiled at startup.
     if (crt_composite_shader_program_ == 0) return false;
@@ -280,7 +332,8 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
                               s.bloom_intensity > 0.0f ||
                               s.interlacing_intensity > 0.0f ||
                               s.flicker_intensity > 0.0f);
-    if (!any_effect_active) return false;
+    // A Tube frame skips it: the tube draws whatever the Enhanced sliders say.
+    if (!tube_frame && !any_effect_active) return false;
 
     // Gate 5: lazily create the FBO (or recreate at new size).
     //
@@ -314,12 +367,161 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
     glViewport(0, 0,
                static_cast<GLsizei>(scene_fbo_width_),
                static_cast<GLsizei>(scene_fbo_height_));
+
+    // A Tube frame: the first one after another engine starts the tube (the
+    // warm-up) and clears any recorded build failure; then the scene texture is
+    // made what the tube reads (TubeRenderer::begin_scene: with the scene FBO
+    // bound, before its clear).
+    if (tube_frame) {
+        if (!tube_engine_was_tube_) {
+            tube_driver_->start(tube_now_, state.tube_live.degauss_requests);
+            tube_->retry_builds();
+            tube_engine_was_tube_ = true;
+            tube_degauss_resync_ = false;   // start() took the counter as its baseline
+        }
+        flush_ui_batch();
+        tube_->begin_scene(scene_color_tex_, static_cast<int>(scene_fbo_width_),
+                           static_cast<int>(scene_fbo_height_));
+        tube_scene_ = true;
+        tube_gl_live_ = true;
+    }
+
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     flush_ui_batch();
     glClear(GL_COLOR_BUFFER_BIT);
 
     scene_fbo_active_ = true;
     return true;
+}
+
+// ---- The Tube engine (renderer.h, set_tube_picture) ----------------------------
+
+// A Tube frame: the tube exists, the Enhanced composite exists to fall back on,
+// the Media Browser does not own the screen, the effective engine is Tube, the
+// guard did not trip and there is a picture. A recorded build FAILURE is still a
+// Tube frame: composite() -> prepare() is what clears it once the plan changes.
+bool Renderer::tube_frame_wanted(const app::AppState& state) const {
+    return tube_engine_frame(state) && !tube_yields_now(state);
+}
+
+bool Renderer::tube_yields_now(const app::AppState& state) const {
+    const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
+                                tube_crt_native_};
+    return tube_yield_(state.display_settings.tube, picture, tube_full_screen_film_);
+}
+
+bool Renderer::tube_engine_frame(const app::AppState& state) const {
+    if (!tube_ || crt_composite_shader_program_ == 0) return false;
+#ifdef MEDIA_BROWSER_ENABLED
+    if (state.current_screen == app::AppScreen::MediaBrowser) return false;
+#endif
+    if (app::effective_crt_engine(state.display_settings.crt_engine, app::tube_offered(state)) !=
+        app::CrtEngine::Tube)
+        return false;
+    if (tube_->unavailable_reason() == "build_hung") return false;
+    return tube_picture_.w > 0 && tube_picture_.h > 0;
+}
+
+void Renderer::skip_missed_tube_degauss(const app::AppState& state) {
+    if (!tube_ || !tube_degauss_resync_ || !tube_frame_wanted(state)) return;
+    tube_driver_->skip_degauss_to(state.tube_live.degauss_requests);
+    tube_degauss_resync_ = false;
+}
+
+Renderer::TubeStatus Renderer::tube_status(const app::AppState& state, double now_seconds) const {
+    TubeStatus status;
+    if (!tube_engine_frame(state)) return status;
+    if (tube_yields_now(state)) {   // Enhanced draws this picture: not a Tube frame
+        status.yielding = true;
+        return status;
+    }
+    if (!tube_->available()) return status;
+    const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
+                                tube_crt_native_};
+    const tube::DriverPeek peek =
+        tube_driver_->peek(state.display_settings.tube, picture, now_seconds, state.tube_live.degauss_requests);
+    status.drawing = true;
+    status.cls = peek.cls;
+    status.moving = peek.moving;
+    status.picture = picture;
+    return status;
+}
+
+std::string_view Renderer::tube_unavailable_reason() const {
+    return tube_ ? tube_->unavailable_reason() : std::string_view();
+}
+
+void Renderer::allow_tube_builds() {
+    if (!tube_) return;
+    tube_->allow_builds();
+#ifdef MDB_TUBE_PREVIEW
+    // Task 14: the first Tube frames build and draw every program of the table,
+    // one decode path per frame (Shader, then Hardware where the context has it).
+    const char* validate = std::getenv("MDB_TUBE_VALIDATE");
+    if (validate != nullptr && std::string_view(validate) == "1") {
+        tube_validate_next_ = TubeValidate::Shader;
+        LOG_WARN("tube: MDB_TUBE_VALIDATE=1 (preview build): the first Tube frames validate every program, one "
+                 "decode path per frame");
+    }
+#endif
+}
+
+void Renderer::release_tube_gl() {
+    if (!tube_ || !tube_gl_live_) return;
+    flush_ui_batch();
+    tube_->release_gl();
+    tube_driver_->gpu_lost();   // ALWAYS with release_gl(): never start() (no warm-up after a game)
+    tube_gl_live_ = false;
+}
+
+// One Tube frame, from end_scene_fbo_and_composite with the scene drawn. True:
+// the tube drew the picture and left GL as the Enhanced composite does. False:
+// nothing usable was drawn (not built yet, a build failure, a refusal); the
+// caller draws this frame's Enhanced composite. composite() is called on EVERY
+// Tube frame - it calls prepare(), which is what clears a failure.
+bool Renderer::tube_composite(const app::AppState& state) {
+    flush_ui_batch();
+    TubeRenderer::GlEnv env;
+    env.scene_tex = scene_color_tex_;
+    env.scene_w = static_cast<int>(scene_fbo_width_);
+    env.scene_h = static_cast<int>(scene_fbo_height_);
+    env.fb_w = static_cast<int>(framebuffer_width_ ? framebuffer_width_ : original_width_);
+    env.fb_h = static_cast<int>(framebuffer_height_ ? framebuffer_height_ : original_height_);
+    env.vao = vao_;
+    env.vbo = vbo_;
+    env.ui_program = shader_program_;
+#ifdef MDB_TUBE_PREVIEW
+    // ONE pass per Tube frame (each rebuilds all 19 programs: seconds on a cold
+    // shader cache), so the main loop returns and pings the watchdog between them.
+    // Shader decode first, so the programs left built are this context's own
+    // decode's. A validation frame draws nothing else: false -> this frame's
+    // Enhanced composite.
+    if (tube_validate_next_ != TubeValidate::None) {
+        const bool shader = tube_validate_next_ == TubeValidate::Shader;
+        const tube::SceneDecode decode = shader ? tube::SceneDecode::Shader : tube::SceneDecode::Hardware;
+        tube_validate_next_ = shader && scene_decode_for(tube_->caps()) == tube::SceneDecode::Hardware
+                                  ? TubeValidate::Hardware
+                                  : TubeValidate::None;
+        const auto started = std::chrono::steady_clock::now();
+        tube_->validate_all_programs(env, tube_picture_, decode);
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        LOG_INFO("tube validate: {} pass took {:.0f} ms", shader ? "shader" : "hardware", ms);
+        tube_driver_->gpu_lost();   // validation deleted the mask: the next frame carries it
+        return false;
+    }
+#endif
+    const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
+                                tube_crt_native_};
+    const tube::DriverFrame frame =
+        tube_driver_->frame(state.display_settings.tube, picture, tube_now_, state.tube_live.degauss_requests);
+    // From the first Tube frame: an ABL-only plan's quarter program is drawn only
+    // by the probe, so the guard's marker would otherwise stay until one ran.
+    if (tube_driver_->mean_due(tube_now_)) {
+        tube_->request_mean();
+        tube_driver_->note_mean_requested(tube_now_);
+    }
+    return tube_->composite(env, tube_picture_, frame);
 }
 
 void Renderer::destroy_bloom_fbos() {
@@ -469,6 +671,11 @@ void bloom_pass_draw(uint32_t shader_program,
 void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     if (!scene_fbo_active_) return;
     scene_fbo_active_ = false;
+
+    // A Tube scene (never without the tube): the tube draws the frame, or - when
+    // it cannot - the Enhanced composite below draws it from the same scene
+    // texture (SKIP_DECODE on the hardware path: the stored bytes, as RGBA8).
+    if (tube_scene_ && tube_composite(state)) return;
 
     const auto& s = state.display_settings;
 

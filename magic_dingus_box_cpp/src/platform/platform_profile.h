@@ -50,6 +50,7 @@ enum class PiModel {
 //   unsupported_emulator_cores     POLICY    same gate keyed on the core
 //   artwork_cache_budget_bytes     POLICY    RAM reservation for posters
 //   movie_channel_codecs           POLICY    movie-channel decode budget
+//   tube_crt_engine                POLICY    GPU budget for the Tube engine
 //   policy_override*               META      override bookkeeping
 //
 // A new POLICY field MUST also be copied in apply_policy_override() and
@@ -168,6 +169,15 @@ struct PlatformProfile {
     // admits only hardware-decodable H.264; Pi 5 and Unknown accept all.
     std::vector<std::string> movie_channel_codecs;
 
+    // May the Tube CRT engine draw on this board? A user who chose Tube on
+    // a board where this is false sees the Enhanced engine instead
+    // (app::effective_crt_engine); the saved choice is never rewritten, so a
+    // card (or a Pi 5 backup) moved back to a Pi 5 draws Tube again.
+    //   Pi 5: true  — the engine's target.
+    //   Pi 4: false — fill rate; fielded behavior preserved.
+    //   Unknown: true — dev machines; hide nothing.
+    bool tube_crt_engine = false;
+
     // --- TEST-ONLY policy override bookkeeping (see apply_policy_override)
     // "pi4" while this profile carries the Pi 4B's POLICY fields on top of
     // a Pi 5's hardware facts; "" otherwise. Published in kiosk_status.json
@@ -198,9 +208,9 @@ PlatformProfile detect_platform(
 
 // TEST-ONLY pre-release rehearsal: run a Pi 5 with the Pi 4B's SOFTWARE
 // POLICIES so Pi 4B logic (N64/Dreamcast hidden, 64 MB poster budget,
-// FullPause during movies) can be exercised before Pi 4B hardware is on
-// the bench. Pure function of the detected profile and the env value
-// (nullptr == unset):
+// FullPause during movies, the Tube CRT engine gated off) can be exercised
+// before Pi 4B hardware is on the bench. Pure function of the detected
+// profile and the env value (nullptr == unset):
 //   - unset / ""         -> profile unchanged
 //   - "pi4" on a Pi 5    -> POLICY fields replaced by profile_for(Pi4)'s,
 //                           HARDWARE fields untouched, policy_override="pi4"

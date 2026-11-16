@@ -1,0 +1,192 @@
+Tube renderer on the Pi 5: smoke, every program through its real pass, the forced hang, and GPU prices per look
+================================================================================================================
+Plan: docs/superpowers/plans/2026-11-15-tube-crt-renderer.md, Task 14 (and the first measurements of Task 15).
+Box: magicpi5 (Raspberry Pi 5, 2 GB), V3D 7.1.10.2, OpenGL ES 3.1 Mesa 25.0.7-2+rpt4, Modern TV 1920x1080 @ 60 Hz,
+picture 1440x1080 inside the cabinet bezel. Window 2026-11-15 17:35-17:55 box time. A playlist video (960x720 H.264)
+playing unless a line says otherwise. Test-only preview builds (-DMDB_TUBE_PREVIEW=ON) run from /home/magic/tube-preview
+in transient systemd units; the production kiosk was stopped for the window and restored afterwards (binary hash and
+settings.json unchanged).
+Binaries: 4ad8223 (sha256 0164f299...) for sections 1-5; 695a48b (sha256 bdeabcfe...) for section 6.
+
+RESULT
+- The engine draws: all six looks, no GL error, no build failure, no refused frame. A paused (still) screen rests at 0 % CPU.
+- All 19 programs draw through their real passes on BOTH scene-decode paths; worst first real draw 44.0 ms; the build
+  marker is gone after each build.
+- A forced shader hang under the production watchdog is caught: one SIGABRT, one restart, then Enhanced until reboot.
+- PVM and Monitor hold 30 fps (22.4 and 19.9 ms of GPU per frame). Trinitron, TV, Arcade and Everything do NOT:
+  27-31 ms per frame, drawn at 20 fps. The rich budget (23.1 ms) is exceeded by the OUTPUT pass: 15.5-16.3 ms on the
+  raster looks against 11.2 ms priced in the spike.
+- Observed: three raster output programs compile in V3D's 2-thread mode (441-479 instructions, 43-47 max
+  temporaries); every other output compiles in 4-thread mode (412-495 instructions, at most 32 max temporaries).
+  See sections 3-4.
+- CORRECTION (2026-11-15, later the same day): the 2-thread mode is NOT why the raster looks miss the budget. A
+  pixel-identical rewrite that put all ten output programs in 4-thread mode measured SLOWER with the on-Pi tool
+  (magic_dingus_box_cpp/scripts/dev/tube_shaderstat, --time 150 minimum ms): out_rich_raster_ag 474 inst / 2
+  threads 15.77 ms -> 523 / 4 threads 16.75 ms (about 6 % slower); out_rich_raster 15.98 -> 17.30 ms. The output
+  pass's time follows its per-pixel instruction count (exp/sqrt/divide most of all). Moving the uniform-only work to
+  the CPU (src/tube/tube_derived.h) cut out_rich_raster_ag 474 -> 431 instructions, still 2 threads, 15.7 -> 14.2 ms
+  (-9.6 %). Figures and method: docs/engineering/tube-perf-2026-11-15.md. These are
+  off-screen tool timings beside the running kiosk, relative, not the kiosk's GPU timers; on those estimates the
+  four raster looks still miss 30 fps.
+
+1. SMOKE - engine switched to Tube while a video plays (journal, mdb-tube-preview)
+[2026-11-15 17:36:29.060] [info] tube: GL_RENDERER=V3D 7.1.10.2 GL_VERSION=OpenGL ES 3.1 Mesa 25.0.7-2+rpt4; sRGB write control true / sRGB decode true / half-float targets true / GPU timers true -> s
+[2026-11-15 17:36:29.064] [info] tube: scene texture re-specified as SRGB8_ALPHA8 (written unencoded) 1920x1080
+[2026-11-15 17:36:29.112] [info] tube: program glass compiled+linked in 47.6 ms (scene decode hardware)
+[2026-11-15 17:36:29.121] [info] tube: program quarter compiled+linked in 9.0 ms (scene decode hardware)
+[2026-11-15 17:36:29.131] [info] tube: program blur compiled+linked in 9.6 ms (scene decode hardware)
+[2026-11-15 17:36:29.141] [info] tube: program sig_sharp compiled+linked in 9.8 ms (scene decode hardware)
+[2026-11-15 17:36:29.157] [info] tube: program out_rich_signal_ag compiled+linked in 16.4 ms (scene decode hardware)
+[2026-11-15 17:36:29.162] [info] tube: program copy_encode compiled+linked in 5.0 ms (scene decode hardware)
+[2026-11-15 17:36:29.166] [info] tube: target glass 1440x1080 RGBA8 made in 3.00 ms
+[2026-11-15 17:36:29.170] [info] tube: target history0 1440x1080 SRGB8_ALPHA8 made in 4.13 ms
+[2026-11-15 17:36:29.174] [info] tube: target history1 1440x1080 SRGB8_ALPHA8 made in 4.70 ms
+[2026-11-15 17:36:29.184] [info] tube: target signal 1440x1080 RGBA16F made in 9.68 ms
+[2026-11-15 17:36:29.185] [info] tube: target quarter 360x270 SRGB8_ALPHA8 made in 0.61 ms
+[2026-11-15 17:36:29.185] [info] tube: target glow_tmp 360x270 SRGB8_ALPHA8 made in 0.45 ms
+[2026-11-15 17:36:29.186] [info] tube: target glow_out 360x270 SRGB8_ALPHA8 made in 0.47 ms
+[2026-11-15 17:36:29.186] [info] tube: target mean 64x64 SRGB8_ALPHA8 made in 0.18 ms
+[2026-11-15 17:36:29.186] [info] tube: mask uploaded 3x1 RGBA8
+[2026-11-15 17:36:29.212] [info] tube: glass bake submitted in 11.99 ms CPU, including the glass program's first-draw compile (1440x1080, rim 0.45 vignette 0.20 glassBlack 0.30 reflection 0.15); GPU t
+[2026-11-15 17:36:29.213] [info] tube: program quarter first real draw 1.6 ms CPU
+[2026-11-15 17:36:29.217] [info] tube: program blur first real draw 3.1 ms CPU
+[2026-11-15 17:36:29.221] [info] tube: program sig_sharp first real draw 3.2 ms CPU
+[2026-11-15 17:36:29.231] [info] tube: program out_rich_signal_ag first real draw 10.5 ms CPU
+[2026-11-15 17:36:29.233] [info] tube: program copy_encode first real draw 1.9 ms CPU
+[2026-11-15 17:36:29.260] [info] tube: glass baked in 11.38 ms GPU (first bake after a build)
+[2026-11-15 17:37:08.951] [info] tube: program out_rich_signal compiled+linked in 23.6 ms (scene decode hardware)
+[2026-11-15 17:37:08.951] [info] tube: mask uploaded 3x1 RGBA8
+
+Pacing lines of the smoke run (GPU timers off). 17:36:29 pvm; 17:37:08 monitor; 17:37:32 trinitron; 17:37:55 tv;
+about 17:38:20 arcade; about 17:38:42 everything; about 17:42 pvm with the video paused:
+[2026-11-15 17:37:29.292] [info] Tube pacing: class 30, 1795 presents (1795 with video), 7 late, 7 late with video
+[2026-11-15 17:38:29.325] [info] Tube pacing: class 30, 1603 presents (1603 with video), 384 late, 384 late with video
+[2026-11-15 17:39:29.342] [info] Tube pacing: class 30, 1505 presents (1505 with video), 579 late, 579 late with video
+[2026-11-15 17:40:29.375] [info] Tube pacing: class 30, 1604 presents (1604 with video), 390 late, 390 late with video
+[2026-11-15 17:41:29.391] [info] Tube pacing: class 30, 1795 presents (1795 with video), 11 late, 11 late with video
+
+2. VALIDATE - MDB_TUBE_VALIDATE=1, V3D_DEBUG=shaderdb (journal, mdb-tube-preview)
+[2026-11-15 17:42:03.367] [info] tube validate: 10 plans, scene decode shader
+[2026-11-15 17:42:03.406] [info] tube validate: glass first real draw in the glass bake (its log line has the time)
+[2026-11-15 17:42:03.406] [info] tube validate: out_lean_still first real draw 6.8 ms
+[2026-11-15 17:42:03.438] [info] tube validate: out_lean_moving first real draw 8.3 ms
+[2026-11-15 17:42:03.498] [info] tube validate: quarter first real draw 3.2 ms
+[2026-11-15 17:42:03.498] [info] tube validate: blur first real draw 2.1 ms
+[2026-11-15 17:42:03.498] [info] tube validate: out_rich_scene first real draw 16.2 ms
+[2026-11-15 17:42:03.567] [info] tube validate: out_rich_scene_ag first real draw 19.0 ms
+[2026-11-15 17:42:03.567] [info] tube validate: copy_encode first real draw 2.5 ms
+[2026-11-15 17:42:03.622] [info] tube validate: sig_sharp first real draw 5.5 ms
+[2026-11-15 17:42:03.622] [info] tube validate: out_rich_signal first real draw 10.5 ms
+[2026-11-15 17:42:03.694] [info] tube validate: sig_sharp_chroma first real draw 8.0 ms
+[2026-11-15 17:42:03.694] [info] tube validate: out_rich_signal_ag first real draw 12.5 ms
+[2026-11-15 17:42:03.788] [info] tube validate: sig_guns first real draw 8.5 ms
+[2026-11-15 17:42:03.788] [info] tube validate: lines first real draw 3.1 ms
+[2026-11-15 17:42:03.788] [info] tube validate: out_rich_raster first real draw 39.2 ms
+[2026-11-15 17:42:03.907] [info] tube validate: sig_guns_chroma first real draw 15.4 ms
+[2026-11-15 17:42:03.907] [info] tube validate: out_rich_raster_ag first real draw 44.0 ms
+[2026-11-15 17:42:03.944] [info] tube validate: out_rich_raster_only first real draw 14.0 ms
+[2026-11-15 17:42:04.015] [info] tube validate: out_rich_raster_only_ag first real draw 34.7 ms
+[2026-11-15 17:42:04.015] [info] tube validate: 19 of 19 programs OK
+[2026-11-15 17:42:04.015] [info] tube validate: shader pass took 648 ms
+[2026-11-15 17:42:04.138] [info] tube validate: 10 plans, scene decode hardware
+[2026-11-15 17:42:04.203] [info] tube validate: glass first real draw in the glass bake (its log line has the time)
+[2026-11-15 17:42:04.203] [info] tube validate: out_lean_still first real draw 43.0 ms
+[2026-11-15 17:42:04.244] [info] tube validate: out_lean_moving first real draw 8.2 ms
+[2026-11-15 17:42:04.299] [info] tube validate: quarter first real draw 2.0 ms
+[2026-11-15 17:42:04.299] [info] tube validate: blur first real draw 0.2 ms
+[2026-11-15 17:42:04.299] [info] tube validate: out_rich_scene first real draw 16.1 ms
+[2026-11-15 17:42:04.357] [info] tube validate: out_rich_scene_ag first real draw 16.3 ms
+[2026-11-15 17:42:04.357] [info] tube validate: copy_encode first real draw 0.4 ms
+[2026-11-15 17:42:04.376] [info] tube validate: sig_sharp first real draw 3.7 ms
+[2026-11-15 17:42:04.376] [info] tube validate: out_rich_signal first real draw 0.2 ms
+[2026-11-15 17:42:04.412] [info] tube validate: sig_sharp_chroma first real draw 6.9 ms
+[2026-11-15 17:42:04.412] [info] tube validate: out_rich_signal_ag first real draw 0.4 ms
+[2026-11-15 17:42:04.438] [info] tube validate: sig_guns first real draw 4.4 ms
+[2026-11-15 17:42:04.438] [info] tube validate: lines first real draw 0.3 ms
+[2026-11-15 17:42:04.438] [info] tube validate: out_rich_raster first real draw 0.2 ms
+[2026-11-15 17:42:04.488] [info] tube validate: sig_guns_chroma first real draw 10.7 ms
+[2026-11-15 17:42:04.488] [info] tube validate: out_rich_raster_ag first real draw 0.3 ms
+[2026-11-15 17:42:04.507] [info] tube validate: out_rich_raster_only first real draw 0.5 ms
+[2026-11-15 17:42:04.539] [info] tube validate: out_rich_raster_only_ag first real draw 0.9 ms
+[2026-11-15 17:42:04.543] [info] tube validate: 19 of 19 programs OK
+[2026-11-15 17:42:04.543] [info] tube validate: hardware pass took 409 ms
+
+3. The output programs by V3D shaderdb (instructions / QPU threads / max temporaries)
+   shaderdb prints a line when a shader variant is first compiled, i.e. at its first draw. Each validation plan compiles
+   its programs and then draws them, so the largest fragment shader printed for a plan is that plan's output program.
+   Scene decode in the shader (first pass):
+     out_lean_still           275 / 4 threads / 25      out_lean_moving          306 / 4 threads / 24
+     out_rich_scene           493 / 4 threads / 32      out_rich_scene_ag        495 / 4 threads / 32
+     out_rich_signal          422 / 4 threads / 31      out_rich_signal_ag       412 / 4 threads / 32
+     out_rich_raster          479 / 2 THREADS / 43      out_rich_raster_ag       474 / 2 THREADS / 47
+     out_rich_raster_only     476 / 4 threads / 32      out_rich_raster_only_ag  441 / 2 THREADS / 44
+   Hardware scene decode (second pass; programs that do not read the scene were already compiled and print nothing):
+     out_lean_still 260 / 4 / 25;  out_lean_moving 291 / 4 / 24;  out_rich_scene 482 / 4 / 32;  out_rich_scene_ag 487 / 4 / 32
+   Other fragment shaders are 17-306 instructions, all 4 threads. No shader reported spills or fills.
+
+4. Reading of section 3
+   out_rich_raster, out_rich_raster_ag and out_rich_raster_only_ag are the only programs reported "2 threads" (43-47
+   max temporaries; every 4-thread output has 32 or fewer). out_rich_raster_ag is the output of Trinitron, TV and
+   Everything, and out_rich_raster_only_ag of Arcade: the four looks that miss 30 fps.
+   CORRECTION (2026-11-15, later the same day): this section first read the 2-thread mode as the cause ("at 2 threads
+   the same pixels take about twice the shader time"). Measured since, it is not: with the tool above, a
+   pixel-identical 4-thread rewrite of out_rich_raster_ag (474 -> 523 instructions) took 15.77 -> 16.75 ms, about 6 %
+   SLOWER, and 474/2t against 523/4t and 417/2t against 445/4t were each slower at 4 threads by roughly the extra
+   instructions. The output pass's time follows its per-pixel instruction count (exp/sqrt/divide), not the thread
+   count; the raster outputs cost more than out_rich_signal_ag (11.3 ms in section 6) for their two extra
+   beam-weighted line taps and their extra instructions. See docs/engineering/tube-perf-2026-11-15.md "The finding" and "CPU-derived values".
+
+5. FORCED HANG - MDB_TUBE_FORCE_HANG=sig_sharp, Type=notify, WatchdogSec=10, Restart=on-failure (journal, mdb-tube-hang)
+[2026-11-15 17:43:06.065] [warning] tube: MDB_TUBE_FORCE_HANG=sig_sharp (preview build): that build will hang
+[2026-11-15 17:43:06.874] [warning] tube: MDB_TUBE_FORCE_HANG - hanging before building sig_sharp (preview test)
+mdb-tube-hang.service: Watchdog timeout (limit 10s)!
+mdb-tube-hang.service: Killing process 1900383 (magic_dingus_bo) with signal SIGABRT.
+mdb-tube-hang.service: Main process exited, code=killed, status=6/ABRT
+mdb-tube-hang.service: Failed with result 'watchdog'.
+mdb-tube-hang.service: Scheduled restart job, restart counter is at 1.
+[2026-11-15 17:43:20.209] [error] tube: the last shader build never finished (marker names: glass quarter blur sig_sharp out_rich_signal_ag copy_encode); Tube stays off until the box reboots
+[2026-11-15 17:43:20.209] [warning] tube: MDB_TUBE_FORCE_HANG=sig_sharp (preview build): that build will hang
+[2026-11-15 17:43:20.209] [error] tube: the last kiosk died building glass quarter blur sig_sharp out_rich_signal_ag copy_encode — Tube draws as Enhanced until reboot
+   Unit state every 5 s: NRestarts 0 -> 1 at t=15 s, then unchanged to t=60 s; /dev/shm/mdb-tube-build kept its six
+   program names throughout; kiosk_status.json tube block: "unavailable":"build_hung" (and "effective_engine":"tube",
+   which is misleading while the box draws Enhanced).
+
+6. GPU PRICES PER LOOK - MDB_TUBE_GPU_TIMING=1, 10 s averages, ms per frame (binary 4ad8223)
+   look        quarter glow  signal lines output history probe  total   frames/10 s
+   pvm          0.66   2.30  5.40    -    11.3    2.52   0.25   22.4    291-294
+   monitor      0.66   1.65  5.38    -    12.0     -     0.25   19.9    298
+   trinitron    0.69   2.96  4.05   1.04  15.6    2.6    0.25   27.2    199-200
+   tv           0.66   3.61  5.30   1.02  15.6    2.55   0.24   29.0    201
+   arcade       0.67   4.05  5.35   1.03  14.1    2.55   0.25   28.0    200-201
+   everything   0.65   3.61  5.29   1.01  15.5    2.55   0.25   28.9    201   (one 10 s window read 31.5)
+
+   The TV look, one row at a time (each line adds to the one above):
+   tv                      28.90   201 frames   output 15.56 (into the history) + history 2.53
+   afterglow 0             27.12   200 frames   output 16.29 (to the screen)
+   + glow 0                23.34   268 frames
+   + chroma bleed 0        21.22   294 frames   signal 4.03 (sharp only, half width)
+   + true raster 0         20.61   297 frames   signal 7.60 (full width), output 12.77
+
+   Pacing lines of this run (timers ON, so slightly pessimistic):
+[2026-11-15 17:41:29.391] [info] Tube pacing: class 30, 1795 presents (1795 with video), 11 late, 11 late with video
+[2026-11-15 17:45:37.058] [info] Tube pacing: class 30, 1729 presents (1722 with video), 111 late, 110 late with video
+[2026-11-15 17:46:37.074] [info] Tube pacing: class 30, 1502 presents (1502 with video), 588 late, 588 late with video
+[2026-11-15 17:47:37.107] [info] Tube pacing: class 30, 1200 presents (1200 with video), 1198 late, 1198 late with video
+[2026-11-15 17:48:37.156] [info] Tube pacing: class 30, 1192 presents (1192 with video), 1191 late, 1191 late with video
+[2026-11-15 17:49:37.173] [info] Tube pacing: class 30, 1199 presents (1199 with video), 1198 late, 1198 late with video
+[2026-11-15 17:50:37.189] [info] Tube pacing: class 30, 1438 presents (1438 with video), 709 late, 709 late with video
+[2026-11-15 17:51:37.206] [info] Tube pacing: class 30, 1771 presents (1771 with video), 54 late, 54 late with video
+[2026-11-15 17:52:37.222] [info] Tube pacing: class 30, 1751 presents (1751 with video), 78 late, 78 late with video
+
+7. The fixed binary (695a48b): engine Tube -> Enhanced -> Tube
+[2026-11-15 17:52:43.885] [info] tube: scene texture re-specified as SRGB8_ALPHA8 (written unencoded) 1920x1080
+[2026-11-15 17:52:43.943] [info] tube: mask uploaded 3x1 RGBA8
+[2026-11-15 17:52:44.006] [info] tube: glass baked in 2.82 ms GPU (first bake after a build)
+[2026-11-15 17:53:08.260] [info] tube: scene texture back to RGBA8 1920x1080
+[2026-11-15 17:53:08.261] [info] tube: GL objects released; everything is made again on the next frame
+[2026-11-15 17:53:14.210] [info] tube: scene texture re-specified as SRGB8_ALPHA8 (written unencoded) 1920x1080
+[2026-11-15 17:53:14.242] [info] tube: mask uploaded 3x1 RGBA8
+[2026-11-15 17:53:14.289] [info] tube: glass baked in 3.24 ms GPU (first bake after a build)
+
+NOT COVERED by this window: the Media Browser, a game and return, a display-mode change, 50 and 120 Hz, CRT Native,
+a full-screen film, ten-minute pacing runs per look, the mean probe against a known grey, a Pi 4B.

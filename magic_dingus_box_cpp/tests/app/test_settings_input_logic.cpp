@@ -104,3 +104,14 @@ TEST_CASE("classify_game_browser_select: playlists, then Back, else nothing",
     CHECK(app::classify_game_browser_select(-1, 2) == GameBrowserSelect::Nothing);
     CHECK(app::classify_game_browser_select(0, 0) == GameBrowserSelect::ExitBrowser);
 }
+
+TEST_CASE("Tube edit mode: SELECT ends it on the press, Esc/Q on the release", "[settings_input][tube]") {
+    using app::TubeEditKey;
+    // SELECT ends on the press; its release reaches a menu that ignores releases.
+    CHECK(app::tube_edit_ends_on(TubeEditKey::Select, true));
+    CHECK_FALSE(app::tube_edit_ends_on(TubeEditKey::Select, false));
+    // QUIT (keyboard Esc/Q): the press is swallowed and the RELEASE ends the
+    // edit, so no QUIT is left over to reach the menu's QUIT -> close().
+    CHECK_FALSE(app::tube_edit_ends_on(TubeEditKey::Quit, true));
+    CHECK(app::tube_edit_ends_on(TubeEditKey::Quit, false));
+}

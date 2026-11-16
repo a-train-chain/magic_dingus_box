@@ -102,6 +102,7 @@ try:  # noqa: E402
         _require_nopasswd_sudo, PLAYBACK_PAUSED_CONTAINERS,
     )
     import admin_media_browser_ops
+    import admin_display
     import admin_remote
     from admin_remote import CONNECT_PAGE_HTML, NICKNAME_PROMPT_HTML
 except ImportError:  # pragma: no cover - exercised by whichever form runs
@@ -149,6 +150,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
         _require_nopasswd_sudo, PLAYBACK_PAUSED_CONTAINERS,
     )
     from . import admin_media_browser_ops
+    from . import admin_display
     from . import admin_remote
     from .admin_remote import CONNECT_PAGE_HTML, NICKNAME_PROMPT_HTML
 
@@ -589,6 +591,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
     admin_media_browser.register(app, ctx)
 
     admin_media_browser_ops.register(app, ctx)
+
+    admin_display.register(app, ctx)
 
     ctx.sock = sock
     admin_remote.register(app, ctx)
