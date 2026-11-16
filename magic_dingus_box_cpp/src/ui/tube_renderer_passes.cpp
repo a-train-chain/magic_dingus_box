@@ -41,6 +41,10 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using Pass = tube::PassTimingAverager::Pass;
 
+// Every glGetError drain stops here: a lost context returns errors forever, and the main
+// loop must not spin on it.
+constexpr int kMaxErrorDrain = 16;
+
 double ms_since(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
 double seconds_now() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
@@ -151,7 +155,8 @@ void TubeRenderer::Impl::draw_pass(tube::Program p) {
     }
     if (validating && !validate_failed_in) {
         bool error = false;
-        for (GLenum e = glGetError(); e != GL_NO_ERROR; e = glGetError()) {
+        int n = 0;
+        for (GLenum e = glGetError(); e != GL_NO_ERROR && n < kMaxErrorDrain; e = glGetError(), ++n) {
             LOG_ERROR("tube validate: GL error 0x{:x} drawing {}", e, program_name(p));
             error = true;
         }
@@ -325,7 +330,8 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
     if (!prepared_ok || failed || !current_plan || *current_plan != plan) return false;
 
     // A GL error left by someone else must not be blamed on (and fail) this plan.
-    for (GLenum e = glGetError(); e != GL_NO_ERROR; e = glGetError())
+    int drained = 0;
+    for (GLenum e = glGetError(); e != GL_NO_ERROR && drained < kMaxErrorDrain; e = glGetError(), ++drained)
         if (!foreign_error_logged) {
             foreign_error_logged = true;
             LOG_WARN("tube: GL error 0x{:x} was pending before the tube composite (not the tube's; logged once)", e);
@@ -333,9 +339,13 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
 
     poll_glass_timing();
     collect_timers();
-    // A probe in flight belongs to the old targets when the still changed.
-    if (f.still_changed || !plan.mean_probe) abandon_mean();
-    if (!plan.mean_probe) mean_requested = false;
+    // A probe in flight is dropped only when the plan no longer has one (the mean target
+    // goes) - not on still_changed: the 64x64 target never resizes, the request is spent,
+    // and dropping it would stall ABL readings for as long as a row is dragged.
+    if (!plan.mean_probe) {
+        abandon_mean();
+        mean_requested = false;
+    }
     poll_mean();
 
     // GL in: the clip-space quad in the renderer's VAO/VBO, no blending, no scissor,
@@ -352,12 +362,9 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
         upload_mask(f.mask);
         if (failed) return false;
     } else if (!mask_tex) {
-        // release_gl() without FrameDriver::gpu_lost(): no pixels to upload this frame.
-        prepared_ok = false;   // stand down: the marker goes (settle_marker), prepare() rewrites it
-        if (!missing_mask_logged)
-            LOG_WARN("tube: no mask texture and the frame carries no mask (FrameDriver::gpu_lost() not called?); "
-                     "drawing Enhanced (logged once)");
-        missing_mask_logged = true;
+        // composite() refuses this before prepare(); unreachable from there, kept so a
+        // future caller of draw_frame cannot sample a missing mask.
+        prepared_ok = false;
         return false;
     }
     if ((f.glass_changed || !glass_valid) && !bake_glass(env, f.u)) {
@@ -481,7 +488,8 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
 
     // 5. One drain of GL errors for the whole frame.
     bool error = false;
-    for (GLenum e = glGetError(); e != GL_NO_ERROR; e = glGetError()) {
+    int errors = 0;
+    for (GLenum e = glGetError(); e != GL_NO_ERROR && errors < kMaxErrorDrain; e = glGetError(), ++errors) {
         if (!error && gl_error_logged_plan != plan) {
             LOG_ERROR("tube: GL error 0x{:x} during the frame (output {}); drawing Enhanced",
                       e, program_name(plan.output));
@@ -499,6 +507,30 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
     return true;
 }
 
+// After validation: nothing synthetic may reach a real frame. The programs stay built and
+// drawn (that was the point); everything the synthetic frames filled is invalidated.
+void TubeRenderer::Impl::forget_synthetic_state(bool have_srgb_switch) {
+    TubeGlState state(have_srgb_switch);
+    glass_valid = false;   // the next frame re-bakes from ITS uniforms, glass_changed or not
+    if (mask_tex) glDeleteTextures(1, &mask_tex);   // the grille: composite() refuses until mask_changed
+    mask_tex = 0;
+    mask_w = mask_h = 0;
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    for (Target& h : history)   // validation content must not glow on as afterglow
+        if (h.made()) {
+            target(h.fbo, 0, 0, h.w, h.h);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+    history_index = 0;
+    abandon_mean();
+    mean_requested = false;
+    current_plan.reset();
+    prepared_ok = false;
+    marker_clean = false;
+    write_marker("");   // every program validated is drawn; nothing is left to hang in
+}
+
 // ---- TubeRenderer ---------------------------------------------------------------------------
 
 void TubeRenderer::request_mean() { impl_->mean_requested = true; }
@@ -507,24 +539,41 @@ void TubeRenderer::set_mean_sink(std::function<void(double)> sink) { impl_->mean
 
 bool TubeRenderer::composite(const GlEnv& env, video::IRect picture, const tube::DriverFrame& frame) {
     Impl& m = *impl_;
-    if (!prepare(frame.plan, scene_decode_for(caps()))) return false;
-    // A caller error refuses the frame and stands down: prepare() may just have written
-    // the marker for programs this frame will not draw, so it goes (settle_marker with
-    // prepared_ok cleared), and the next prepare() takes its full path and writes it again.
-    const auto stand_down = [&m] {
-        m.prepared_ok = false;
-        m.settle_marker();
+    const tube::SceneDecode decode = scene_decode_for(caps());
+    // THE CALLER'S ERRORS, checked BEFORE prepare(): a refusal never runs prepare()'s full
+    // path and never arms the marker. Each refusal is logged once and stands down
+    // (refuse_frame: the marker a previous frame wrote is removed once; after that a
+    // refusal that persists does no file operation, no allocation and no GL state work).
+    const auto refuse = [&m](bool& logged, auto&& log) {
+        if (!logged) log();
+        logged = true;
+        m.refuse_frame();
         return false;
     };
     if (env.scene_tex == 0 || env.fb_w <= 0 || env.fb_h <= 0 || env.scene_w <= 0 || env.scene_h <= 0)
-        return stand_down();
-    if (picture.w != frame.sizes.pic_w || picture.h != frame.sizes.pic_h || picture.w <= 0 || picture.h <= 0) {
-        if (!m.size_mismatch_logged)
+        return refuse(m.bad_env_logged, [&] {
+            LOG_WARN("tube: no scene texture or framebuffer size (scene {} {}x{}, framebuffer {}x{}); drawing "
+                     "Enhanced (logged once)",
+                     env.scene_tex, env.scene_w, env.scene_h, env.fb_w, env.fb_h);
+        });
+    if (picture.w != frame.sizes.pic_w || picture.h != frame.sizes.pic_h || picture.w <= 0 || picture.h <= 0)
+        return refuse(m.size_mismatch_logged, [&] {
             LOG_WARN("tube: picture {}x{} is not the driver's {}x{}; drawing Enhanced (logged once)", picture.w,
                      picture.h, frame.sizes.pic_w, frame.sizes.pic_h);
-        m.size_mismatch_logged = true;
-        return stand_down();
-    }
+        });
+    if (!m.mask_tex && !frame.mask_changed)
+        return refuse(m.missing_mask_logged, [] {
+            LOG_WARN("tube: no mask texture and the frame carries no mask - FrameDriver::gpu_lost() not called "
+                     "after release_gl() or validate_all_programs(); drawing Enhanced (logged once)");
+        });
+    if (decode == tube::SceneDecode::Hardware &&
+        !(m.scene_tex == env.scene_tex && m.scene_format == GL_SRGB8_ALPHA8))
+        return refuse(m.scene_not_srgb_logged, [&] {
+            LOG_WARN("tube: the scene texture {} is not the SRGB8_ALPHA8 one begin_scene() made (begin_scene not "
+                     "called this frame?); drawing Enhanced rather than a washed-out picture (logged once)",
+                     env.scene_tex);
+        });
+    if (!prepare(frame.plan, decode)) return false;
     // Destroyed in reverse: the marker settles, then TubeGlState restores what it found,
     // then the exit state the 2D renderer expects is applied over it.
     CompositeExitState exit_state(env, m.caps.srgb_write_control);
@@ -608,6 +657,7 @@ bool TubeRenderer::validate_all_programs(const GlEnv& env, video::IRect picture,
                          program_name(p));
         }
     }
+    m.forget_synthetic_state(c.srgb_write_control);
     const auto good = static_cast<std::size_t>(std::count(ok.begin(), ok.end(), true));
     LOG_INFO("tube validate: {} of {} programs OK", good, tube::kProgramCount);
     for (std::size_t i = 0; i < tube::kProgramCount; ++i)

@@ -134,6 +134,11 @@ public:
     // "tube validate: <program> first real draw <ms> ms" per program and
     // "tube validate: N of 19 programs OK"; a failure names the program being drawn.
     // Draws visible frames: not for production. True when every program drew cleanly.
+    // Leaves no synthetic state behind (the programs stay built and drawn): the glass is
+    // re-baked on the next frame, the mask texture is deleted, the afterglow history
+    // cleared, any probe in flight dropped and the plan forgotten. THE CALLER THEN CALLS
+    // FrameDriver::gpu_lost(), so the next frame carries the mask's pixels (mask_changed);
+    // until a frame does, composite() refuses with a once-logged warning.
     bool validate_all_programs(const GlEnv&, video::IRect picture, tube::SceneDecode);
     // Every GL object deleted (a game took the display, or the Renderer is going). The next
     // composite() makes everything again. Clears a failure whose cause was the scene

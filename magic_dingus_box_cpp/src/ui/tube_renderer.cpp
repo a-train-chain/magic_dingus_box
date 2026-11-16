@@ -316,7 +316,15 @@ void TubeRenderer::Impl::settle_marker() {
         write_marker("");
         return;
     }
-    write_marker(undrawn_of(*current_plan));
+    if (marker_clean) return;   // the steady state: nothing undrawn, nothing allocated
+    std::string names = undrawn_of(*current_plan);
+    marker_clean = names.empty();
+    write_marker(names);
+}
+
+void TubeRenderer::Impl::refuse_frame() {
+    prepared_ok = false;
+    write_marker("");
 }
 
 void TubeRenderer::Impl::record_failure(const char* what) {
@@ -710,6 +718,7 @@ bool TubeRenderer::prepare(const tube::PassPlan& plan, tube::SceneDecode decode)
     // The fast path: nothing changed since a prepare() that succeeded (see Impl::prepared_ok).
     if (m.prepared_ok && m.current_decode == decode && m.current_plan && *m.current_plan == plan) return true;
     m.prepared_ok = false;
+    m.marker_clean = false;
     if (m.failed) {
         if (m.failed_plan == plan && m.failed_decode == decode) return false;
         m.failed = false;   // a different plan: try again

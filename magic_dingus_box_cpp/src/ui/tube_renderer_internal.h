@@ -237,6 +237,10 @@ struct TubeRenderer::Impl {
     // returns true before any allocation or GL query. The drawn state need not be compared:
     // drawing only shrinks the undrawn set, and settle_marker() keeps the marker in step.
     bool prepared_ok = false;
+    // settle_marker() found nothing undrawn for the prepared plan: drawing only shrinks
+    // that set, so until prepare() takes its full path again (which clears this) the marker
+    // is known empty and settle_marker() returns before undrawn_of() allocates.
+    bool marker_clean = false;
     std::string marker_text;   // what the marker on disk says; "" = no marker written by us
     void mark_drawn(tube::Program p) { slot(p).drawn = true; }
     void settle_marker();
@@ -317,12 +321,21 @@ struct TubeRenderer::Impl {
     std::array<double, tube::kProgramCount> first_draw_ms{};   // < 0: not first-drawn since build
     // validate_all_programs(): glGetError after every draw, so a failure names its program.
     bool validating = false;
+    // The end of validate_all_programs(): glass invalid, mask texture deleted, history
+    // cleared, probe abandoned, the plan forgotten. Keeps every program and its drawn flag.
+    void forget_synthetic_state(bool have_srgb_switch);
     std::optional<tube::Program> validate_failed_in;
     // The plan whose GL error was last logged (log once per distinct plan).
     std::optional<tube::PassPlan> gl_error_logged_plan;
     bool foreign_error_logged = false;   // a GL error pending BEFORE composite (not ours)
-    bool size_mismatch_logged = false;
-    bool missing_mask_logged = false;
+    // composite()'s caller-error refusals, each logged once (refuse_frame()).
+    bool size_mismatch_logged = false, missing_mask_logged = false, bad_env_logged = false,
+         scene_not_srgb_logged = false;
+    // Refuses a frame BEFORE prepare(): stands down (prepared_ok cleared, so prepare()'s full
+    // path rewrites the marker when the caller's error is gone) and removes a marker this
+    // process wrote - a file operation on the first refused frame only (write_marker("")
+    // is a no-op once the marker is gone). No GL, no allocation.
+    void refuse_frame();
 
     // A 1x1 black SRGB8_ALPHA8 texture for every sampler a program declares but this plan
     // does not feed (the glow when the plan dropped it): no sampler reads an incomplete
