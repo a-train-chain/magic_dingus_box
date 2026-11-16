@@ -356,16 +356,24 @@ TEST_CASE("status_writer: Tube not offered publishes the engine and the reason o
 }
 
 TEST_CASE("status_writer: a tube change is written at once", "[remote][status][tube]") {
+    // The writer is latest-wins by design: a snapshot the writer thread has not picked up
+    // yet is replaced by a newer one. So the test must not depend on whether the thread
+    // got to the first body before the second arrived. It holds the writer inside the first
+    // write (waiting on a condition, no sleeps), submits the tube change behind it, then
+    // lets go: the first body is in hand and the change is the pending one, so exactly
+    // those two are written, in order. A change swallowed by the change-detection (the
+    // heartbeat's 2 s window) would leave the first body as the last one.
     StalledSink rec;
-    rec.release();
     app::AppState state;
     tube_state(state);
     app::StatusWriter w("/nonexistent/kiosk_status.json", rec.sink());
     w.write_now(state);
+    rec.wait_entered();
     tube::set_row(state.display_settings.tube, tube::Effect::hum, 25);
     w.write_now(state);  // well inside the 2 s heartbeat: only the change can cause a write
+    rec.release();
     w.flush();
     REQUIRE(rec.bodies.size() == 2);
     REQUIRE(tube_of(rec.bodies[0])["values"]["hum"].asInt() == 20);
-    REQUIRE(tube_of(rec.bodies[1])["values"]["hum"].asInt() == 25);
+    REQUIRE(tube_of(rec.bodies.back())["values"]["hum"].asInt() == 25);
 }
