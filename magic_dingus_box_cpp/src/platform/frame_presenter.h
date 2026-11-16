@@ -9,11 +9,19 @@
 //   present()  -> once per rendered frame, AFTER egl.swap_buffers()
 //   reset()    -> after a game returns the display (DRM master re-acquired,
 //                 mode restored), BEFORE the next present(). Drops every
-//                 cached fb and the held buffer, and forces SetCrtc for the
-//                 next 10 frames — RetroArch owned the CRTC in between, so a
-//                 bare page flip onto it is not trustworthy.
+//                 cached fb and every held buffer, and forces SetCrtc for
+//                 the next 10 frames — RetroArch owned the CRTC in between,
+//                 so a bare page flip onto it is not trustworthy.
 //   shutdown() -> at exit, before EglContext/GbmContext are torn down (the
-//                 held buffer belongs to their surface).
+//                 held buffers belong to their surface).
+//
+// This file is only the DRM/GBM calls. WHEN to flip, wait, SetCrtc or drop
+// a frame is platform::FlipSequencer, and which buffers are still the
+// kernel's is platform::ScanoutBuffers (flip_sequencer.h) — both pure and
+// tested on the Mac against a fake kernel. Read the rules at the top of
+// that header before changing anything here: a flip requested on top of a
+// pending one, or an event taken for the wrong flip, is how one late
+// vblank used to cost every later frame.
 //
 // The display fd and GBM surface are looked up through DrmDisplay /
 // EglContext on every call, never cached: both can be recreated across a
@@ -23,6 +31,7 @@
 #include <xf86drmMode.h>
 
 #include "platform/fb_cache.h"
+#include "platform/flip_sequencer.h"
 
 struct gbm_bo;
 
@@ -43,33 +52,45 @@ public:
     FramePresenter& operator=(const FramePresenter&) = delete;
 
     // width/height: the CURRENT mode, used to size new framebuffers.
-    void present(uint32_t width, uint32_t height);
+    //
+    // Returns false when the frame was DROPPED: it is not on screen and
+    // never will be (an earlier page flip was still pending when this
+    // frame's wait budget ended, the kernel refused it, or no buffer /
+    // framebuffer could be had). The picture on screen is unchanged. A
+    // caller that draws only when something changed (the redraw gate) must
+    // draw again, or the dropped frame's content is never shown.
+    //
+    // Waits at most FlipSequencer::kFrameWaitBudgetMs for flip events.
+    bool present(uint32_t width, uint32_t height);
     void reset();
     void shutdown();
 
 private:
     // At most this many framebuffers stay cached (a GBM surface cycles
-    // 2-3 buffers; 4 leaves headroom without hoarding).
+    // 2-4 buffers; 4 leaves headroom without hoarding).
     static constexpr std::size_t kMaxFbCache = 4;
 
+    // A rendered buffer the kernel still has: on screen, or the target of
+    // a page flip that has not completed.
+    struct HeldBuffer {
+        gbm_bo* bo = nullptr;
+        uint32_t fb_id = 0;
+    };
+
     void remove_fb(uint32_t fb_id);
-    void release_previous_bo();
+    void release_buffer(const HeldBuffer& held);
+    uint32_t scanout_fb() const;
+    uint32_t pending_fb() const;
 
     DrmDisplay& display_;
     EglContext& egl_;
     drmModeModeInfo mode_info_;
 
     FbCache fb_cache_;
-    gbm_bo* previous_bo_ = nullptr;       // presented last frame; released next frame
-    uint32_t previous_bo_handle_ = 0;
-    uint32_t current_fb_id_ = 0;          // on screen right now
-    bool first_frame_ = true;
-    int force_setcrtc_frames_ = 0;        // SetCrtc instead of flip after a reset
+    FlipSequencer sequencer_;
+    ScanoutBuffers<HeldBuffer> held_;
+    bool first_frame_announced_ = false;
     int consecutive_buffer_failures_ = 0;
-    int page_flip_failures_ = 0;
-    int successful_page_flips_ = 0;
-    // Must outlive the flip it is passed to — the event handler writes it.
-    bool waiting_for_flip_ = false;
 };
 
 }  // namespace platform
