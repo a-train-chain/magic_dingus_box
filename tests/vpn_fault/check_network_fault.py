@@ -795,6 +795,20 @@ def capability(scripts):
     return result
 
 
+DEFAULT_BOX = 'magicpi5'
+# One plain lowercase hostname label: no wildcard, no domain, no inference.
+_BOX_NAME = re.compile(r'[a-z0-9][a-z0-9-]{0,62}')
+
+
+def host_allowed(actual, requested):
+    """Live faults run only on the box the operator names: magicpi5 unless
+    --box names another (a bench Pi 4B). Naming another box never also
+    allows the default one."""
+    expected = DEFAULT_BOX if requested is None else requested
+    return (isinstance(expected, str) and _BOX_NAME.fullmatch(expected) is not None
+            and actual == expected)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--scripts', default='/opt/magic_dingus_box/magic_dingus_box_cpp/scripts')
@@ -802,6 +816,7 @@ def main():
     parser.add_argument('--gateway', help='Actual reviewed NAT-PMP gateway; never inferred or widened')
     parser.add_argument('--cleanup')
     parser.add_argument('--opt-in-network-fault', action='store_true')
+    parser.add_argument('--box', help='Hostname of the box to fault (default magicpi5); must equal this machine\'s hostname')
     args = parser.parse_args()
     if os.geteuid() != 0 or sys.platform != 'linux':
         raise SystemExit('Linux root required')
@@ -819,7 +834,7 @@ def main():
     if args.mode == 'capability':
         result = capability(args.scripts)
     else:
-        if socket.gethostname() != 'magicpi5':
+        if not host_allowed(socket.gethostname(), args.box):
             raise SystemExit('production host identity mismatch')
         result = LiveFault(args.mode, args.scripts, args.gateway).execute()
     emit(result)
