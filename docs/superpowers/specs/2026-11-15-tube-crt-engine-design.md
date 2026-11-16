@@ -380,7 +380,9 @@ table current; the parity script lists each cell as deliberate):
   under 32 MiB in every class (worst case: a full-width signal, the
   afterglow pair and the glass, ~32.3 MB).
 - **The beam.** The lean programs use the beam form Task 1b chose
-  (the cheap beam, as measured: one sigma from luma, 0.7–1.7 ms cheaper);
+  (the cheap beam: one sigma from luma; round 3 measured it 0.7 ms cheaper
+  than the exact beam inside PVM-lean, Monitor-lean and the full set —
+  the 0.7–1.7 ms range is round 2's earlier estimate);
   the rich programs use Sound Factory's per-channel beam unless the
   acceptance ladder switches them to the cheap one.
 - **The owner must accept two softenings (calls).** (1) With CHROMA BLEED
@@ -706,7 +708,7 @@ playing, for **each of the six looks**:
   pass and copy, 2.1–4.7 ms), then GLOW 0 (the glow chain, ~3–4.7 ms), then
   the signal rows to neutral (SHARPNESS 50, CONVERGENCE, COLOUR DRIFT,
   CHROMA BLEED 0: the signal pass, 2.2–10 ms; TRUE RASTER keeps a half-width
-  one), then the cheap beam (0.7–1.7 ms). Lean60: the cheap beam if not
+  one), then the cheap beam (0.7 ms in round 3's pricing). Lean60: the cheap beam if not
   already, then the moving rows to neutral (the smaller `out_lean_still`)
   if Task 1b priced that saving, then **the look becomes Rich30** (its
   Sound Factory values back). The owner retunes by eye afterwards.

@@ -9,10 +9,12 @@
 //   continuous_motion  Rich30 motion: the screen is not static
 //                      (MainMenuActivity::tube_rich_motion) — every
 //                      iteration draws, and the flip is held instead.
-//   hold_present       Rich30 at a refresh fast enough to halve: each flip
-//                      is held to every second vblank (utils::present_hold,
-//                      utils::held_frame_sleep). Below 48 Hz a rich frame
-//                      already spans a vblank, so nothing is held.
+//   hold_present       Rich30 at a refresh fast enough to divide: each flip
+//                      is held so it lands utils::held_vblanks vblanks after
+//                      the last (2 at 50/60 Hz, 4 at 120 Hz;
+//                      utils::capped_present_hold, utils::held_frame_sleep).
+//                      Below 48 Hz a rich frame already spans a vblank, so
+//                      nothing is held.
 //
 // A tube that is not drawing (another engine, the Media Browser, a game)
 // asks for nothing.
