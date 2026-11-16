@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cstdint>
 
 #include "app/tube_pacing.h"
 #include "app/tube_redraw.h"
@@ -22,14 +23,69 @@ TEST_CASE("tube pacing: late is half a refresh past the class's cadence", "[tube
     REQUIRE(hz120.take_report(u + 61s)->late == 0);
 }
 
-TEST_CASE("tube pacing: too heavy after 30 s of video with more than 5% late, toast once", "[tube]") {
-    app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
-    for (int i = 0; i < 1900; ++i) { t += (i % 10 == 0) ? 33333us : 16667us; m.on_present(t, FrameClass::Lean60, 60, true); }
-    REQUIRE(m.too_heavy()); REQUIRE(m.take_toast()); REQUIRE_FALSE(m.take_toast());
-    m.reset(); REQUIRE_FALSE(m.too_heavy());
-    app::TubePacingMonitor menu; t += 1s;
-    for (int i = 0; i < 1900; ++i) { t += 33333us; menu.on_present(t, FrameClass::Lean60, 60, false); }
-    REQUIRE_FALSE(menu.too_heavy());
+namespace {
+// Rich30 at 60 Hz: on time is 40 ms, late is 45 ms (the line is 33.3 + 8.3 = 41.7 ms).
+// With those two intervals every 30 s window of an alternating run holds exactly as
+// many late presents as on-time ones (30 s mod 85 ms = 80 ms >= 45 ms).
+struct Feed {
+    app::TubePacingMonitor m;
+    app::TubePacingMonitor::Clock::time_point t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+    std::uint64_t n = 0;
+    void present(bool late, bool video = true) { t += late ? 45ms : 40ms; m.on_present(t, FrameClass::Rich30, 60, video); }
+    // `span` of video with `pct` percent of the presents late, spread evenly.
+    void run(std::chrono::milliseconds span, int pct) {
+        for (const auto end = t + span; t < end; ++n) present((n + 1) * pct / 100 != n * pct / 100);
+    }
+    void minutes(int count, int pct) { run(std::chrono::minutes(count), pct); }
+};
+}  // namespace
+
+TEST_CASE("tube pacing: too heavy after 30 s of video more than half late, toast once", "[tube]") {
+    Feed f; f.run(31s, 67);                                                   // two late in three
+    REQUIRE(f.m.too_heavy()); REQUIRE(f.m.take_toast()); REQUIRE_FALSE(f.m.take_toast());
+    f.m.reset(); REQUIRE_FALSE(f.m.too_heavy());
+    Feed half; for (int i = 0; i < 1000; ++i) half.present(i % 2 == 1);       // exactly half, 42 s
+    REQUIRE_FALSE(half.m.too_heavy());
+    Feed short_run; short_run.run(29s, 100);                                  // all late, but 29 s
+    REQUIRE_FALSE(short_run.m.too_heavy());
+    short_run.run(2s, 100); REQUIRE(short_run.m.too_heavy());
+    Feed menu; for (int i = 0; i < 1900; ++i) menu.present(true, false);
+    REQUIRE_FALSE(menu.m.too_heavy());
+}
+
+TEST_CASE("tube pacing: a busy burst of a few minutes is not too heavy", "[tube]") {
+    // Hardware, Pi 5, 2026-11-16: the Media Browser's containers starting again after a
+    // game ran a shipped look 12-13% late for two minutes, 20% for half a minute.
+    Feed f; f.minutes(3, 13); f.minutes(10, 0); REQUIRE_FALSE(f.m.too_heavy());
+    Feed g; g.minutes(3, 20); REQUIRE_FALSE(g.m.too_heavy());
+    g.minutes(2, 0); g.minutes(3, 20); REQUIRE_FALSE(g.m.too_heavy());
+}
+
+TEST_CASE("tube pacing: ten minutes each more than 5% late are too heavy", "[tube]") {
+    Feed f; f.minutes(9, 6); REQUIRE_FALSE(f.m.too_heavy());
+    f.run(59s, 6); REQUIRE_FALSE(f.m.too_heavy());                            // the tenth minute is not over
+    f.run(2s, 6); REQUIRE(f.m.too_heavy());
+    REQUIRE(f.m.take_toast()); REQUIRE_FALSE(f.m.take_toast());               // once, by this rule too
+    f.minutes(5, 6); REQUIRE_FALSE(f.m.take_toast());
+    Feed g; g.minutes(9, 6); g.minutes(1, 4); g.minutes(9, 6);                // a quiet minute resets the count
+    REQUIRE_FALSE(g.m.too_heavy());
+    g.minutes(1, 6); g.run(2s, 6); REQUIRE(g.m.too_heavy());
+}
+
+TEST_CASE("tube pacing: a broken streak restarts the ten minutes", "[tube]") {
+    Feed gap; gap.minutes(5, 6); gap.run(20s, 6);
+    gap.t += 300ms; gap.m.on_present(gap.t, FrameClass::Rich30, 60, true);   // a gap
+    gap.minutes(9, 6); gap.run(30s, 6); REQUIRE_FALSE(gap.m.too_heavy());
+    gap.run(32s, 6); REQUIRE(gap.m.too_heavy());
+    Feed menu; menu.minutes(5, 6); menu.run(20s, 6);
+    menu.present(false, false);                                               // video stopped
+    menu.minutes(9, 6); menu.run(30s, 6); REQUIRE_FALSE(menu.m.too_heavy());
+    menu.run(32s, 6); REQUIRE(menu.m.too_heavy());
+}
+
+TEST_CASE("tube pacing: reset clears a partial ten minutes", "[tube]") {
+    Feed f; f.minutes(9, 6); f.run(30s, 6); f.m.reset();
+    f.minutes(1, 6); f.run(2s, 6); REQUIRE_FALSE(f.m.too_heavy());
 }
 
 TEST_CASE("tube pacing: a refresh of zero or less is read as 60", "[tube]") {
@@ -54,7 +110,7 @@ TEST_CASE("tube pacing: the first present after a gap counts nothing", "[tube]")
 
 TEST_CASE("tube pacing: reset re-arms the toast for the new look", "[tube]") {
     app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
-    auto heavy = [&] { for (int i = 0; i < 1900; ++i) { t += (i % 10 == 0) ? 33333us : 16667us; m.on_present(t, FrameClass::Lean60, 60, true); } };
+    auto heavy = [&] { for (int i = 0; i < 1900; ++i) { t += (i % 10 < 6) ? 33333us : 16667us; m.on_present(t, FrameClass::Lean60, 60, true); } };
     heavy(); REQUIRE(m.take_toast());
     heavy(); REQUIRE_FALSE(m.take_toast());                                   // same look: not again
     m.reset(); t += 1s; heavy(); REQUIRE(m.take_toast());                     // new look: once more
@@ -62,7 +118,7 @@ TEST_CASE("tube pacing: reset re-arms the toast for the new look", "[tube]") {
 
 TEST_CASE("tube pacing: too heavy is latched until reset", "[tube]") {
     app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
-    for (int i = 0; i < 1900; ++i) { t += (i % 10 == 0) ? 33333us : 16667us; m.on_present(t, FrameClass::Lean60, 60, true); }
+    for (int i = 0; i < 1900; ++i) { t += (i % 10 < 6) ? 33333us : 16667us; m.on_present(t, FrameClass::Lean60, 60, true); }
     REQUIRE(m.too_heavy());
     for (int i = 0; i < 100; ++i) { t += 16667us; m.on_present(t, FrameClass::Lean60, 60, false); }   // a menu
     REQUIRE(m.too_heavy());
