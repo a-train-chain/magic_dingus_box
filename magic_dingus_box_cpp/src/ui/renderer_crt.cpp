@@ -495,6 +495,7 @@ void Renderer::release_tube_gl() {
 // caller draws this frame's Enhanced composite. composite() is called on EVERY
 // Tube frame - it calls prepare(), which is what clears a failure.
 bool Renderer::tube_composite(const app::AppState& state) {
+    if (!tube_ || !tube_driver_) return false;   // no tube on this box: the Enhanced composite draws
     flush_ui_batch();
     TubeRenderer::GlEnv env;
     env.scene_tex = scene_color_tex_;

@@ -72,12 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   six looks (PVM, Monitor, Trinitron, TV, Arcade or Everything) and
   adjust any of its effects on the TV or in the Content Manager's new CRT
   Look tab; the TV changes as you go. There is a Degauss button too.
-  The six looks draw at 30 frames a second; a look with its heavier
-  effects turned down can draw at 60. Where the box needs the time to
-  keep that pace, some looks leave out afterglow (on a 1080p screen the
-  TV and Everything looks usually do) and the menu shows "not drawn" on
-  that row. On a 1080p screen Trinitron, TV, Arcade and Everything show
-  full-screen films with the Enhanced look, and the controls say so.
+  The six looks draw at about 30 frames a second on most TVs; a look
+  with its heavier effects turned down can draw faster. Where the box
+  needs the time to keep that pace, some looks leave out afterglow (on a
+  1080p screen the TV and Everything looks usually do) and the menu
+  shows "not drawn" on that row. On a 1080p screen Trinitron, TV, Arcade
+  and Everything show full-screen films with the Enhanced look, and the
+  controls say so.
   Your box keeps the engine it uses now until you pick Tube, and Pi 4B
   boxes are unchanged.
 
