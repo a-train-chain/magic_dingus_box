@@ -284,9 +284,15 @@ to black. Consequences:
 - *A full-screen channel film* (no cabinet art) is a 1920×1080 picture, a
   third more pixels than the budgets were measured at. **It always draws as
   Rich30.** Like every picture (below, "When a look cannot afford an
-  effect") it drops the afterglow pass, then the glow passes, whenever the
-  look's predicted cost at that size exceeds the rich budget. A film is
-  30 fps or less, so it loses nothing to the rate. Per-film picture fill
+  effect") it drops the afterglow pass, then the glow passes, when that
+  gets the look's predicted cost under the rich budget, and drops nothing
+  when it does not. By extrapolation from the 1440×1080 prices (NOT
+  measured): PVM drops afterglow (25.5 → 22.9 ms) and Monitor fits as is
+  (22.8 ms); Trinitron (30.5), Arcade (30.6), TV and Everything (32.5 ms)
+  are over the budget whatever is dropped, so they are drawn as asked and
+  would show a film at 20 fps (the pacing monitor's "too heavy" notice
+  says so). **OPEN owner question:** what a film should do with a heavy
+  look, once a film has been measured on hardware. Per-film picture fill
   (`video/picture_placement`) only changes where the video sits inside the
   picture; the tube does not see it.
 - *Bezels with a recorded opening*: the tube's opening is the content
@@ -337,17 +343,20 @@ and 22.7 ms, but up to 9-33/255 different pixels) and chroma bleed off
 `tube::plan_passes_and_drops()`: the plan for the setting and the picture
 and, while its predicted cost (window 4's kiosk-measured per-pass prices,
 scaled by pixel count) exceeds the rich budget (23.1 ms), the same plan
-without afterglow, then without glow, and no further. It reads the setting
-and the picture only, so it cannot flap; the class never changes (a look
-that drops afterglow is still Rich30). Its result is published as the
-status block's `not_drawn` list and shown on the TV menu's AFTERGLOW, GLOW
-and GLOW SIZE rows (" · not drawn") and on the web page ("Not drawn at
-this picture size", the slider still editable). As predicted: at a
-1440×1080 picture TV and Everything drop afterglow and keep glow, the other
-four looks drop nothing; at 960×720 (720p Modern TV) and the 1280×720 CRT
-Native picture nothing is dropped; a 1920×1080 picture drops afterglow on
-PVM, afterglow and glow on Trinitron, TV, Arcade and Everything, nothing on
-Monitor.
+without afterglow if that fits, else without afterglow and glow if that
+fits, else the plan as asked with nothing dropped (dropping what does not
+get the look under the budget buys nothing visible). It reads the setting
+and the picture only, so it cannot flap; the class is decided first and
+kept (a look that drops afterglow is still Rich30). Its result is published
+as the status block's `not_drawn` list (every row it silences: AFTERGLOW;
+GLOW and GLOW SIZE) and shown on those TV-menu rows (" · not drawn") and on
+the web page ("Not drawn at this picture size", the slider still editable).
+As predicted: at a 1440×1080 picture TV and Everything drop afterglow and
+keep glow, the other four looks drop nothing; at 960×720 (720p Modern TV)
+and the 1280×720 CRT Native picture nothing is dropped; a 1920×1080 film is
+in the film bullet above (an open question). TV and Everything with the
+rule built in have not yet been run in the kiosk: what was measured is the
+same passes with the AFTERGLOW row at 0.
 
 **The shipped looks in two classes (call).** As copied from Sound Factory
 every look is rich (each has GLOW > 0 and SHARPNESS ≠ 50). Task 1b
@@ -371,7 +380,7 @@ table current; the parity script lists each cell as deliberate):
 |---|---|---|---|---|
 | all six | lineSize, maskSize | see plan 1 Task 2 | see plan 1 Task 2 | whole TV pixels (§5) |
 | pvm, monitor | (none) | Sound Factory's | the same | Task 1b: PVM-lean needs the probe (ABL 20, breathing 15), which is not lean; PVM-lean without it was not established (one disturbed run) and Task 15 decides, so no row differs for now |
-| rich looks | (none) | Sound Factory's | the same | no value changed (owner, 2026-11-15); TV and Everything do not DRAW their afterglow at a 1440×1080 or larger picture — the setting keeps it, and the controls say it is not drawn |
+| rich looks | (none) | Sound Factory's | the same | no value changed (owner, 2026-11-15). What is not DRAWN depends on the picture: at 1440×1080 TV and Everything leave out afterglow; on a 1920×1080 film (predicted) PVM leaves out afterglow and Trinitron, Arcade, TV and Everything leave out nothing but run over the budget (open owner question). The setting keeps every value, and the controls say what is not drawn |
 
 **The pipeline (call).** The spike's pipeline 2, with these fixed choices:
 
@@ -853,8 +862,10 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
 - **The tv-class looks cannot hold the rich budget as shipped** (25–28 ms
   predicted from the per-pass costs). Expected: half-width signal, then the
   ladder in Acceptance (afterglow, glow) — ~21.5 ms predicted after it.
-- **A full-screen film costs a third more** (~28.6 ms predicted for a
-  lowered TV look): the automatic afterglow/glow drop of §3.
+- **A full-screen film costs a third more**: predicted 30.5-32.5 ms as asked
+  for Trinitron, Arcade, TV and Everything, over the budget even with
+  afterglow and glow dropped, so they keep both and would run at 20 fps
+  (§3, film bullet: an open owner question; not yet measured).
 - **The compiler hang.** Isolated first (plan 3's first task); every
   program is then compiled and drawn through its real pass on the Pi 5
   before the switch-on; nothing is built before READY=1; and a hang that
