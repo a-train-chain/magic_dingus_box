@@ -52,6 +52,13 @@ bool PlaylistPlayback::channel_load_live() const {
     return live;
 }
 
+void PlaylistPlayback::hold_load_deadlines_while_busy() {
+    if (!transport_.pipeline_busy()) return;
+    const auto now = transport_.now();
+    if (channel_load_at_) channel_load_at_ = now;
+    if (state_.is_switching_playlist) state_.playlist_switch_start_time = now;
+}
+
 void PlaylistPlayback::drop_settled_channel_load() {
     if (channel_load_at_ && (state_.playback_started_ || !channel_load_live())) {
         channel_load_at_.reset();
@@ -854,7 +861,9 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
         act_on_failed_item(error_policy_.on_load_failure(failure_budget()), "load failed");
         return false;
     }
-    // The start bound counts from HERE, the load's return (kChannelStartTimeout).
+    // The start bound counts from HERE, the load's return (kChannelStartTimeout)
+    // — or, while the pipeline has not carried the load out yet, from when
+    // it does (hold_load_deadlines_while_busy).
     channel_load_at_ = transport_.now();
     // Loaded is not playing: guide_gave_up waits for prove_channel().
     channel_progress_.loaded = true;
@@ -1016,6 +1025,7 @@ void PlaylistPlayback::tick_switch_timeout() {
     // must not cut a switch short that the old code would have completed.
     advance_pending_switch();
     if (switch_pending()) return;
+    hold_load_deadlines_while_busy();
     drop_settled_channel_load();
 
     // Completion. Controller::update_state clears the flag only when
@@ -1085,6 +1095,7 @@ void PlaylistPlayback::tick_pipeline_error() {
     // a hand-off that something else overtook (Media Browser entry, a
     // playlist switch) is dropped rather than acted on later.
     const bool load_failed = std::exchange(state_.playlist_item_load_failed, false);
+    hold_load_deadlines_while_busy();
     // A channel load's start bound ends when its stream comes up, or when
     // anything else takes the pipeline (a tune, Media Browser entry, a game,
     // a stop) — whoever took it owns what happens to it.
@@ -1245,10 +1256,14 @@ void PlaylistPlayback::tick_stall_watchdog(double now_sec) {
         watchdog_generation_ = transport_.stream_generation();
         stall_watchdog_.reset();
     }
+    // Not while the pipeline's control thread has a command in hand: the
+    // player does not query a pipeline it is changing, so the position reads
+    // frozen by construction (a seek waiting on the card is not a stall).
     const bool expect_playing =
         state_.video_active && transport_.is_playing() &&
         !transport_.is_paused() && !state_.is_loading_game &&
-        !state_.showing_intro_video && !state_.is_switching_playlist;
+        !state_.showing_intro_video && !state_.is_switching_playlist &&
+        !transport_.pipeline_busy();
     const auto wd_action = stall_watchdog_.update(
         expect_playing, state_.get_position(), now_sec);
     if (wd_action == app::PlaybackStallWatchdog::Action::None) return;
