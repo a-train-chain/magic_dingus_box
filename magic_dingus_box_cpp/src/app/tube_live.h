@@ -6,8 +6,9 @@
 //
 // It runs on the render loop, which pings a 10 s systemd watchdog, and an SD
 // card saturated by an upload can make one file operation take seconds. So:
-//   - where Tube is not offered (app::tube_offered: every Pi 4B, and every box
-//     until the renderer ships) poll() returns at once and touches nothing;
+//   - where Tube is not offered (app::tube_offered: every Pi 4B, and a Pi 5
+//     under MDB_PLATFORM_POLICY_OVERRIDE=pi4) poll() returns at once and
+//     touches nothing;
 //   - otherwise the steady state is ONE ::stat every kPollPeriod and nothing else;
 //   - the file is read only when its version (inode, mtime, size) changed.
 //     The web replaces it with os.replace, whose new inode differs from the
