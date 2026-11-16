@@ -307,10 +307,13 @@ to black. Consequences:
   stops drawing, its targets go, its programs stay; no warm-up and no
   rebuild on the way back), NOT as an engine change, because an owner
   flipping between a film channel and a normal one would otherwise replay
-  the warm-up and rebuild the programs on every flip (one exception: a box
-  that boots straight into a film channel with a heavy look draws its first
-  Tube frame, warm-up and first program builds included, at the first flip
-  to a normal channel). NOT yet run on hardware. The status says it
+  the warm-up and rebuild the programs on every flip (one exception: when
+  Tube becomes the engine in effect while a heavy look's film is full-screen,
+  as on a box that boots straight into such a film channel or when the engine
+  is switched from the TV menu or the web during the film, its first Tube
+  frame, warm-up and first program builds included, is deferred to the first
+  frame that is not a full-screen film: a flip to a normal channel, or
+  opening the channel guide over the film). NOT yet run on hardware. The status says it
   (`effective_engine` "enhanced" while it happens, `yielding`, and
   `film_engine`: what a film would get with the current setting), the TV
   menu's Look row adds " · films: Enhanced" (shortened by a fixed ladder
