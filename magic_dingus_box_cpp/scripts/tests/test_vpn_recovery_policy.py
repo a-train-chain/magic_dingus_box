@@ -28,6 +28,56 @@ class PolicyTests(unittest.TestCase):
         self.assertLessEqual(result['next_due'], t+10)
         self.state = result['next_state']
         return result
+    def _rotate_on_traffic_loss(self):
+        """Ready, then dead traffic from t=10: the rotation is issued at t=70."""
+        self.step(0)
+        self.assertEqual(self.step(10, traffic=False)['action'], 'none')
+        self.assertEqual(self.step(70, traffic=False)['action'], 'rotate_server')
+        self.assertEqual(self.state['candidate_until'], 190)
+
+    def test_dead_candidate_is_judged_after_one_loss_window(self):
+        # The candidate's own new tunnel carries no traffic at all: judge it
+        # 60 s after the rotation, not after the full 120 s grace that exists
+        # for a slow first port lease.
+        self._rotate_on_traffic_loss()
+        self.assertEqual(self.step(129, traffic=False, port=0)['reason'], 'Waiting for candidate')
+        self.assertEqual(self.step(130, traffic=False, port=0)['action'], 'rotate_server')
+        self.assertEqual(self.state['candidate_until'], 250)
+
+    def test_candidate_not_yet_on_its_own_tunnel_keeps_the_full_grace(self):
+        self._rotate_on_traffic_loss()
+        result = self.step(130, traffic=False, port=0, selection_verified=False)
+        self.assertEqual((result['action'], result['reason']), ('none', 'Waiting for candidate'))
+
+    def test_candidate_with_traffic_but_no_port_keeps_the_full_grace(self):
+        self._rotate_on_traffic_loss()
+        for t in (130, 160, 189):
+            result = self.step(t, traffic=True, port=0)
+            self.assertEqual((result['action'], result['reason']), ('none', 'Waiting for candidate'), t)
+
+    def test_failed_rotation_request_escalates_after_one_loss_window(self):
+        # magicpi5 2026-11-15: Gluetun v3.41.3 hung the settings PUT for 2 min
+        # while the box still had traffic (port 0). With no candidate to wait
+        # for, escalate one loss window after the rotation, not after 120 s.
+        self.step(0)
+        self.step(10, port=0)
+        self.assertEqual(self.step(100, port=0)['action'], 'rotate_server')
+        self.assertEqual(self.step(159, port=0, api_failed=True)['reason'], 'Waiting for candidate')
+        self.assertEqual(self.step(160, port=0, api_failed=True)['action'], 'restart_container')
+
+    def test_failed_rotation_request_never_restarts_a_recovered_server(self):
+        self.step(0)
+        self.step(10, port=0)
+        self.assertEqual(self.step(100, port=0)['action'], 'rotate_server')
+        self.assertEqual(self.step(150, api_failed=True)['reason'], 'Ready')
+        self.assertEqual(self.step(200, api_failed=True)['action'], 'none')
+
+    def test_unknown_candidate_traffic_never_counts_as_dead(self):
+        self._rotate_on_traffic_loss()
+        for t in (100, 130, 150):
+            result = self.step(t, traffic=None, port=0)
+            self.assertEqual((result['action'], result['reason']), ('none', 'Waiting for candidate'), t)
+
     def test_first_port_deadline_and_one_transient(self):
         self.assertEqual(self.step(0, port=0)['action'], 'none')
         self.assertEqual(self.step(119, port=0)['action'], 'none')
@@ -150,12 +200,16 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(actions[-1], (70, 'rotate_server'))
 
     def test_flapping_candidate_gets_one_grace_window_not_a_rolling_one(self):
+        # Gluetun restart-loops a dead candidate (a new tun0 every tick). The
+        # tunnel churn must not restart the clock: the candidate is judged once,
+        # one loss window after the rotation (dead-candidate rule), not after a
+        # grace that rolls forward with every tunnel.
         self.step(0)
         for n, t in enumerate(range(10, 70, 10)):
             self.flapping(t, 3+n)
         self.assertEqual(self.flapping(70, 20)['action'], 'rotate_server')
         actions = [(t, self.flapping(t, 21+n)['action']) for n, t in enumerate(range(80, 200, 10))]
-        self.assertEqual([a for a in actions if a[1] != 'none'][0], (190, 'rotate_server'))
+        self.assertEqual([a for a in actions if a[1] != 'none'][0], (130, 'rotate_server'))
 
     def test_flapping_first_lease_grace_is_not_restarted_by_each_tunnel(self):
         for n, t in enumerate(range(0, 200, 10)):
@@ -200,9 +254,11 @@ class PolicyTests(unittest.TestCase):
             self.step(t, **dead)
         self.assertEqual(self.step(70, **dead)['action'], 'rotate_server')
         # The rotation PUT could not reach the control server: api_failed.
-        for t in range(80, 190, 10):
+        # No candidate exists to wait for, so it escalates one loss window
+        # after the rotation (130), not at the end of the 120 s grace (190).
+        for t in range(80, 130, 10):
             self.assertEqual(self.step(t, api_failed=True, **dead)['action'], 'none', t)
-        self.assertEqual(self.step(190, api_failed=True, **dead)['action'], 'restart_container')
+        self.assertEqual(self.step(130, api_failed=True, **dead)['action'], 'restart_container')
 
     def test_operator_selection_change_gets_first_lease_grace_and_clean_losses(self):
         # Live first-lease row 2026-11-15: two earlier servers' lease losses

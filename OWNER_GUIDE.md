@@ -19,6 +19,9 @@ guide walks through all of it.
 3. You'll see the intro video, then the main menu. Plug in a controller
    and play — every game playlist on the main menu works right now.
 
+Rather flip channels than pick from a list? Turn on the **Channel Guide**
+(section 12).
+
 **The two physical controls on the box:**
 
 - **Power switch** — flip it off to put the box in standby (the lights
@@ -85,6 +88,9 @@ where the movie setup happens.
    browser on the same Wi-Fi. A **Connect a Device** page opens — pick
    **Manage movies & playlists** to reach the **Content Manager**.
 
+Opening the Content Manager also sets the box's clock to your phone's or
+computer's time zone, so the Channel Guide's times are your local times.
+
 **No Wi-Fi, or want faster uploads?** Plug a USB-C cable from the box
 into your computer, then open **`http://10.55.0.1`** in a browser. No
 network settings to configure, and it works even while your computer is
@@ -145,6 +151,14 @@ Other WireGuard-based VPN providers also work (the box accepts any
 standard WireGuard `.conf`), but ProtonVPN is the one the box's
 port-forwarding automation is built for.
 
+**When a VPN server stops working (ProtonVPN only),** the box notices
+within a minute or two and switches to another server in the same
+country by itself, without you doing anything. You can also allow a
+**backup country** for when several servers in your country fail in a
+row: Content Manager → **Media Browser** tab → **Advanced** → **Allowed
+fallback countries** → pick one or more → **Apply**. None are allowed
+unless you choose them.
+
 **Changing the VPN country (ProtonVPN only).** The box uses servers in
 the Netherlands unless you choose otherwise. If downloads keep stalling
 because the VPN keeps dropping (the Box Health check tells you — see
@@ -189,6 +203,13 @@ Movies are stored on a USB drive so they never crowd the games.
   appears in your Library, usually within the hour for popular titles.
 - TV shows work the same way, season by season and episode by episode,
   with resume, next-episode countdowns, and a watched/unwatched filter.
+- With the Channel Guide turned on (section 12), your downloaded films
+  also become channels: MOVIE MIX plus genre channels such as KIDS,
+  COMEDY and SCI-FI. A channel appears once it has at least three
+  films, and KIDS only shows G and PG family and animated films. Movie
+  channels play from 6 AM to 1 AM; overnight the box parks on channel 00
+  and comes back at 6 AM. A film you pick yourself always plays to the
+  end.
 - After a few episodes without input, the box asks whether to keep
   going — a fresh press keeps it rolling; otherwise it stops and saves
   your place.
@@ -215,11 +236,13 @@ Movies are stored on a USB drive so they never crowd the games.
   **Box Health** → **Run Health Check**. In about half a minute it checks
   sound, picture, games, storage and (if you use Movies) the download
   services, and says "Everything looks good" or lists what needs
-  attention in plain English. If you use Movies it also tells you how
-  often the VPN dropped in the last 24 hours — for example "VPN tunnel
-  dropped 23 times in the last 24 h (down 1 h 40 min total, longest
-  9 min)". An occasional drop is normal and fixes itself; if it says the
-  tunnel is unreliable, try another VPN country (section 7).
+  attention in plain English. If you use Movies it also says whether the
+  VPN is working right now. With ProtonVPN the box checks the connection
+  itself and switches servers when one fails, so "recovering" for a
+  minute or two is normal. If it keeps struggling, try another VPN
+  country or allow a backup country (section 7). With other VPN
+  providers it shows how often the VPN dropped in the last 24 hours
+  instead.
 - **Asked for logs by support?** → same card → **Download Diagnostics**.
   It saves one small .zip you can email. Passwords, keys and your Wi-Fi
   details are removed before it's created.
@@ -238,5 +261,45 @@ Movies are stored on a USB drive so they never crowd the games.
   switch off/on fixes nearly everything else.
 - **Phone remote stopped working** → re-scan the QR under Settings →
   Connect a Device.
+
+## 12. The Channel Guide (watch like TV)
+
+Turn it on in **Settings → Display → Menu Style → Channel Guide** (the
+default, **List**, keeps the familiar playlist menu).
+
+- Every video playlist becomes a **TV channel** that plays on a schedule,
+  and **channel 00** is a mix of everything. Tuning in joins whatever is
+  already on, like real TV.
+- **Change channels** with the yellow and green buttons, or open the
+  guide: turn the knob to move through the channels and press to watch
+  the one you've highlighted.
+- **Settings while you watch:** a channel is always playing in this
+  style, so open the guide first (press the knob), then press **B**.
+- The box remembers the last channel you watched and goes back to it
+  after you turn it on, finish a game or leave Movies.
+- Each day at 4 AM the channels start from a new point and the mixes
+  reshuffle, so the guide isn't the same every day.
+
+**Pick Ahead.** In **Settings → Display → Guide Mode**, choose **Pick
+Ahead** to look up to 24 hours ahead on a channel and start a later
+programme from the beginning. While a channel plays, hold the knob for
+half a second to browse what's coming up on it, then press to start the
+programme you want. When it ends, the channel goes back to live TV.
+
+## 13. Picture shape: Crop or the whole picture
+
+Videos keep their own shape when you upload them, even phone videos
+shot upright. Any video that isn't the old 4:3 TV shape has a **Crop**
+setting:
+
+- **On** (the default) fills the screen by trimming the sides.
+- **Off** shows the whole picture, with borders where it doesn't fill
+  the screen.
+
+Change it on the TV while the video plays (turn the knob past the last
+playlist to reach **CROP** and press; in the Channel Guide it sits above
+channel 00), or tick and untick **Crop** on the
+video's row in the Content Manager. The two stay in sync. A 4:3 video
+always fills the screen, so it has no Crop setting.
 
 Enjoy the box!
