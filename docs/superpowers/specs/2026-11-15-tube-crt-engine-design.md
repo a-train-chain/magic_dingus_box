@@ -296,17 +296,29 @@ to black. Consequences:
   20 fps — so those four yield the film to Enhanced. He declined the
   alternative (the film at 20 fps with the "too heavy" notice): a smooth
   film matters more than the exact tube look, and Enhanced is what films
-  look like today. The decision is `plan_passes_and_drops()`'s
-  `yields_to_enhanced` (only for a picture larger than the reference); the
-  renderer hands such a picture over like a Media Browser frame (the tube
+  look like today. The decision is `tube_yields_to_enhanced()`: an ACTUAL
+  full-screen film (`movie_full_screen`, only in the Channel Guide style)
+  whose picture is larger than the reference and whose plan is over the
+  budget even after the ladder (`plan_passes_and_drops()`'s `over_budget`).
+  A large picture that is not a film (CRT Native into a 1080p framebuffer
+  until the restart that applies the mode) never yields: it keeps the
+  ladder and, if nothing fits, draws as asked, late, with the notice. The
+  renderer hands a yielded film over like a Media Browser frame (the tube
   stops drawing, its targets go, its programs stay; no warm-up and no
   rebuild on the way back), NOT as an engine change, because an owner
   flipping between a film channel and a normal one would otherwise replay
-  the warm-up and rebuild the programs on every flip. The status says it
+  the warm-up and rebuild the programs on every flip (one exception: a box
+  that boots straight into a film channel with a heavy look draws its first
+  Tube frame, warm-up and first program builds included, at the first flip
+  to a normal channel). NOT yet run on hardware. The status says it
   (`effective_engine` "enhanced" while it happens, `yielding`, and
   `film_engine`: what a film would get with the current setting), the TV
-  menu's Look row adds " · films: Enhanced", and the web page warns before
-  a film plays. A setting that does not fit a film after the ladder now
+  menu's Look row adds " · films: Enhanced" (shortened by a fixed ladder
+  so the label always fits its row), and the web page warns before a film
+  plays; none of the notes appears where no film can be full-screen (the
+  List style) or when Tube is not the engine in effect. Degauss counts only
+  while the tube draws the screen: the TV greys its row and the web page
+  its button while Enhanced draws a film. A setting that does not fit a film after the ladder now
   yields: PVM with TRUE RASTER raised draws a film with Tube without
   afterglow at 0, and with Enhanced once it no longer fits. Per-film picture fill
   (`video/picture_placement`) only changes where the video sits inside the
@@ -769,9 +781,13 @@ playing, for **each of the six looks**:
   already, then the moving rows to neutral (the smaller `out_lean_still`)
   if Task 1b priced that saving, then **the look becomes Rich30** (its
   Sound Factory values back). The owner retunes by eye afterwards.
-- Each look on a full-screen channel film (1920×1080 picture, Rich30,
-  afterglow and glow dropped by the predicted-cost rule of §3 where
-  needed): ≥ 99% at the 33.3 ms cadence.
+- On a full-screen channel film (1920×1080 picture): PVM (without
+  afterglow) and Monitor drawn by Tube at ≥ 99% of the 33.3 ms cadence
+  (window 5 measured 23.22 and 22.76 ms, 6-25 late of ~1795 a minute);
+  Trinitron, Arcade, TV and Everything drawn by the Enhanced engine
+  (status `yielding` true, `effective_engine` "enhanced") at the rate
+  Enhanced draws films today, and a flip to a normal channel and back
+  shows no warm-up and logs no program build.
 - 30 minutes in the enclosure with no throttling (`vcgencmd
   get_throttled` stays `0x0`).
 - `MemAvailable` falls by less than 32 MB with the engine on.

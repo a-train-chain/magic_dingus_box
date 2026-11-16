@@ -147,6 +147,9 @@ everything -afterglow glowSize10 295 quarter 0.63 glow 1.64 signal 5.23 lines 1.
    tv          1300 / 999  -> the status shows too_heavy true (the "too heavy" notice): 20 fps on a film.
    So on a full-screen film PVM (without afterglow) and Monitor hold 30 fps; Trinitron, TV, Arcade and Everything
    draw the film at 20 fps as asked. What a film should do with those looks is an open owner question.
+   [Added 2026-11-15, after this window: the owner decided that an actual full-screen film a Tube look cannot
+   afford even after the ladder is drawn by the Enhanced engine, and the controls say so - see CLAUDE.md
+   "Films yield to Enhanced" and the design document, section 3. The record above is unchanged.]
    No GL error, build failure or refused frame in any run of this window.
    NOT DONE in this window: a game and return (the virtual gamepad's menu button did not open Settings on the
    test kiosk; not investigated).
