@@ -71,7 +71,7 @@ uniform float trackingOffset, trackingPosition, flagOffset;
 // tube_derived.h
 uniform float dInvW, dInvH, dInvHalfW, dInvHalfH, dAspect;
 uniform float dOpenInvH, dOpenInvV, dDegaussAmp, dPowerGain;
-uniform float dBendInvX, dBendInvY, dBendB, dFlatFitInv;                             // OUT_BEND (else dFlatFitInv)
+uniform float curvature, marginPx, flatFit;                                          // the bend (kept per pixel: see bend())
 uniform float dLinesPerPx, dInvRows, dBeamRange;                                     // OUT_SCANLINES / OUT_RASTER
 uniform float dRollGain, dRollStart, dRollRoom, dRollRoomInv;
 uniform float dInvMaskW, dInvMaskH;
@@ -118,11 +118,15 @@ vec2 bend(vec2 nd)
 {
     vec2 outSize = vec2(outW, outH);
 #ifdef OUT_BEND
-    vec2 s = nd * vec2(dBendInvX, dBendInvY);            // nd / mix(flatFit, inset, curvature): straight edges
-    float b = dBendB;                                    // 0.045 * curvature: a touch of tube, edges fixed
+    // Worked out here, not on the CPU (tube_derived.h): a divisor computed there moved a
+    // few edge pixels across the `lit` test.
+    vec2 inset = 1.0 - marginPx / (outSize * 0.5);
+    vec2 d = mix(vec2(flatFit), inset, curvature);   // openingEdge == 1: straight edges
+    vec2 s = nd / d;
+    float b = 0.045 * curvature;                      // a touch of tube, edges fixed
     s = s * (1.0 - b * (1.0 - s * s));
 #else
-    vec2 s = nd * dFlatFitInv;
+    vec2 s = nd / flatFit;
 #endif
     return (s * 0.5 + 0.5) * outSize;
 }

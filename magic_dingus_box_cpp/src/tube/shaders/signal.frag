@@ -47,7 +47,6 @@ uniform float dInvHalfW, dInvHalfH;
 #endif
 #ifdef SIG_CHROMA
 uniform float chromaBleed;
-uniform float dChromaStep;      // chromaBleed / 2.5
 uniform sampler2D quarter;      // the quarter picture (sRGB, linear on read)
 #endif
 
@@ -133,7 +132,7 @@ void main()
     if (bleeds) {
         vec3 w = vec3(0.0);
         for (int k = 0; k < 6; ++k)
-            w += rgbToYiq(texture(quarter, flipV((sp + vec2((float(k) - 2.5) * dChromaStep, 0.0)) * vec2(dInvW, dInvH))).rgb);
+            w += rgbToYiq(texture(quarter, flipV((sp + vec2((float(k) - 2.5) / 2.5 * chromaBleed, 0.0)) * vec2(dInvW, dInvH))).rgb);
         iq = w.yz / 6.0;
     }
 #endif

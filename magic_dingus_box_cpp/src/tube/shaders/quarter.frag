@@ -8,16 +8,16 @@
 // four gamma-encoded texels before uiTex decodes it: exact on flat areas, a
 // little dark on edges.
 
-uniform vec2 uPicTexel;     // one picture pixel in uv: 1 / the picture's size (tube_derived.h texel_size)
-uniform vec2 uDstTexel;     // one target texel in uv: 1 / the quarter texture's size
+uniform vec2 uPicSize;      // the picture, px
+uniform vec2 uDstSize;      // the quarter texture, px
 
 out vec4 fragColor;
 
 void main()
 {
     // top-down uv of this quarter texel's centre
-    vec2 uvTop = vec2(gl_FragCoord.x * uDstTexel.x, 1.0 - gl_FragCoord.y * uDstTexel.y);
-    vec2 px = uPicTexel;        // one picture pixel in uv
+    vec2 uvTop = vec2(gl_FragCoord.x / uDstSize.x, 1.0 - gl_FragCoord.y / uDstSize.y);
+    vec2 px = 1.0 / uPicSize;   // one picture pixel in uv
     vec3 c = uiTex(uvTop + vec2(-px.x, -px.y))
            + uiTex(uvTop + vec2( px.x, -px.y))
            + uiTex(uvTop + vec2(-px.x,  px.y))

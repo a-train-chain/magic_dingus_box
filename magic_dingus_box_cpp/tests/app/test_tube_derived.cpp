@@ -25,7 +25,6 @@ float smoothstep_(float e0, float e1, float x) {
     const float t = std::min(std::max((x - e0) / (e1 - e0), 0.0f), 1.0f);
     return t * t * (3.0f - 2.0f * t);
 }
-float mix_(float x, float y, float a) { return x * (1.0f - a) + y * a; }
 
 struct Pin {
     const char* glsl;                                   // the replaced expression, as the shader had it
@@ -49,19 +48,8 @@ std::vector<Pin> pins() {
         {"nd /= 1.0 + breathe * 0.008 * ablLevel", [](U u) { return 1.0f / (1.0f + u.breathe * 0.008f * u.ablLevel); },
          &TubeDerived::dBreatheInv},
         {"degauss * 0.02", [](U u) { return u.degauss * 0.02f; }, &TubeDerived::dDegaussAmp},
-        {"nd / mix(vec2(flatFit), 1.0 - marginPx / (outSize * 0.5), curvature): x",
-         [](U u) { return 1.0f / mix_(u.flatFit, 1.0f - u.marginPx / (u.outW * 0.5f), u.curvature); },
-         &TubeDerived::dBendInvX},
-        {"nd / mix(vec2(flatFit), 1.0 - marginPx / (outSize * 0.5), curvature): y",
-         [](U u) { return 1.0f / mix_(u.flatFit, 1.0f - u.marginPx / (u.outH * 0.5f), u.curvature); },
-         &TubeDerived::dBendInvY},
-        {"0.045 * curvature", [](U u) { return 0.045f * u.curvature; }, &TubeDerived::dBendB},
-        {"nd / flatFit", [](U u) { return 1.0f / u.flatFit; }, &TubeDerived::dFlatFitInv},
-        {"Ls = outH / lines", [](U u) { return u.outH / u.lines; }, &TubeDerived::dLineHeight},
         {"sp.y / Ls, sp.y / (outH / lines)", [](U u) { return 1.0f / (u.outH / u.lines); }, &TubeDerived::dLinesPerPx},
-        {"lines.frag: h * 0.5, h = Ls * 0.5", [](U u) { return (u.outH / u.lines) * 0.5f * 0.5f; }, &TubeDerived::dLineTap},
-        {"rows = ceil(lines)", [](U u) { return std::ceil(u.lines); }, &TubeDerived::dRows},
-        {"(i0 + 0.5) / rows, gl_FragCoord.y / rows", [](U u) { return 1.0f / std::ceil(u.lines); }, &TubeDerived::dInvRows},
+        {"(i0 + 0.5) / rows, rows = ceil(lines)", [](U u) { return 1.0f / std::ceil(u.lines); }, &TubeDerived::dInvRows},
         {"mix(vec3(beamMin), vec3(beamMax), t) = beamMin + t * (beamMax - beamMin)",
          [](U u) { return u.beamMax - u.beamMin; }, &TubeDerived::dBeamRange},
         {"gain = maskGain * brightness - 1.0", [](U u) { return u.maskGain * u.brightness - 1.0f; }, &TubeDerived::dRollGain},
@@ -94,7 +82,6 @@ std::vector<Pin> pins() {
          [](U u) { return 1.0f / std::max(u.trackingHalfWidth, 0.0001f); }, &TubeDerived::dTrackWidthInv},
         {"smoothstep(0.0, max(flagExtent, 0.001), yN)", [](U u) { return 1.0f / std::max(u.flagExtent, 0.001f); },
          &TubeDerived::dFlagExtentInv},
-        {"(float(k) - 2.5) / 2.5 * chromaBleed", [](U u) { return u.chromaBleed / 2.5f; }, &TubeDerived::dChromaStep},
     };
 }
 
@@ -201,41 +188,6 @@ TEST_CASE("tube derived: the guards the shader had are kept", "[tube]") {
     REQUIRE(rest.dBreatheInv == 1.0f);
     REQUIRE(rest.dAblGain == 1.0f);
     REQUIRE(rest.dDegaussAmp == 0.0f);
-}
-
-TEST_CASE("tube derived: the glow blur's weights are blur.frag's", "[tube]") {
-    for (int row = 0; row <= 100; ++row) {
-        TubeSetting s;
-        set_row(s, Effect::glowSize, row);
-        for (const Picture pic : {Picture{1440.0, 1080.0, false}, Picture{1920.0, 1080.0, false}, Picture{640.0, 480.0, false}}) {
-            const float glow_sigma = glow_sigma_px(resolve(s), pic);
-            const BlurWeights b = blur_weights(glow_sigma);
-            INFO(row << " sigma " << glow_sigma);
-            // tube_renderer_passes.cpp: sigma = max(glow_sigma, 0.1), radius = min(ceil(3 sigma), 24).
-            REQUIRE(b.sigma == std::max(glow_sigma, 0.1f));
-            REQUIRE(b.radius == std::min(static_cast<int>(std::ceil(3.0f * b.sigma)), 24));
-            // blur.frag: sigma = max(uSigma, 0.001); k2 = -0.5 / (sigma * sigma); w = exp(float(k * k) * k2).
-            const float sigma = std::max(b.sigma, 0.001f), k2 = -0.5f / (sigma * sigma);
-            float wsum = 0.0f;
-            for (int k = -b.radius; k <= b.radius; ++k) {
-                const float w = std::exp(static_cast<float>(k * k) * k2);
-                REQUIRE(b.weight[static_cast<std::size_t>(std::abs(k))] == w);
-                wsum += w;
-            }
-            REQUIRE(b.inv_sum == 1.0f / wsum);
-            REQUIRE(std::isfinite(b.inv_sum));
-            for (int k = b.radius + 1; k <= kBlurMaxRadius; ++k) REQUIRE(b.weight[static_cast<std::size_t>(k)] == 0.0f);
-        }
-    }
-    const BlurWeights tiny = blur_weights(0.0f);   // the floor: never a 0 sigma
-    REQUIRE(tiny.sigma == 0.1f);
-    REQUIRE(tiny.radius == 1);
-    REQUIRE(std::isfinite(tiny.inv_sum));
-}
-
-TEST_CASE("tube derived: a texel's size in uv", "[tube]") {
-    REQUIRE(texel_size(360, 270) == std::array<float, 2>{1.0f / 360.0f, 1.0f / 270.0f});
-    REQUIRE(texel_size(0, -3) == std::array<float, 2>{1.0f, 1.0f});
 }
 
 TEST_CASE("tube derived: the upload table names every field once", "[tube]") {

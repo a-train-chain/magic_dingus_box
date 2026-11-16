@@ -55,8 +55,8 @@ namespace ui {
 //     - one of kSamplerUnits         -> glUniform1i(location, unit) at build, never again.
 //   Each frame: upload_tube_uniforms(slot, frame.u, derived) sends every TubeUniforms and
 //   TubeDerived field the program lists (the derived values are worked out once a frame,
-//   on the stack, by tube::tube_derived); the pass then sets its own with slot.own[...] and binds its textures to
-//   kSamplerUnits' units.
+//   on the stack, by tube::tube_derived); the pass then sets its own with slot.own[...]
+//   and binds its textures to kSamplerUnits' units.
 
 struct TubeField {
     const char* name;
@@ -100,11 +100,11 @@ static_assert(sizeof(tube::TubeUniforms) == (kTubeFieldCount + 3) * sizeof(float
 
 // The programs' own uniforms (tube_programs.h's uniforms_for, the `u` names).
 enum class OwnUniform : std::uint8_t {
-    uSceneMap, uSceneClamp, uPicTexel, uDstTexel, uDir, uRadius, uWeights, uInvWeightSum, uOrigin, uSrcOffset, count
+    uSceneMap, uSceneClamp, uPicSize, uDstSize, uDir, uSigma, uRadius, uOrigin, uSrcOffset, count
 };
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(OwnUniform::count)> kOwnUniformNames{
-    "uSceneMap", "uSceneClamp", "uPicTexel", "uDstTexel",  "uDir",
-    "uRadius",   "uWeights",    "uInvWeightSum", "uOrigin", "uSrcOffset"};
+    "uSceneMap", "uSceneClamp", "uPicSize", "uDstSize", "uDir", "uSigma",
+    "uRadius",   "uOrigin",     "uSrcOffset"};
 
 // Every sampler and the texture unit it reads, fixed for the life of a program (the
 // spike's assignment). `ui` (the scene) and `src` share unit 0: no program has both.

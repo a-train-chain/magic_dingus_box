@@ -4,7 +4,9 @@
 // assembled sources out (MDB_WRITE_TUBE_GLSL) and runs glslangValidator on them.
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <deque>
 #include <filesystem>
@@ -405,12 +407,11 @@ TEST_CASE("tube shaders: written out for the validator when asked", "[tube][tube
 // warmupGain 0.7 and those character blocks on, so a comparison reaches every branch.
 // Each file: every TubeUniforms field (`tint` as three values), every TubeDerived
 // field (tube_derived.h, as the renderer works them out this frame), the renderer's
-// own uniforms at this picture, under their current names and under the names the
-// programs had before the derived values (so a file drives the old source and the new
-// one alike): uSceneMap, uSceneClamp, uMaskSize, uSigSize, uPicSize/uDstSize and
-// uPicTexel/uDstTexel (the quarter pass), uDir, uSigma, uRadius, uWeights and
-// uInvWeightSum (the horizontal glow blur); uOrigin depends on the program's target
-// and the tool derives it. Directives: @fb, @pic, @mask (the look's mask tile), and
+// own uniforms at this picture, including those the programs read before the derived
+// values (so a file drives the old source and the new one alike): uSceneMap,
+// uSceneClamp, uMaskSize, uSigSize, uPicSize/uDstSize (the quarter pass), uDir, uSigma
+// and uRadius (the horizontal glow blur); uOrigin depends on the program's target and
+// the tool derives it. Directives: @fb, @pic, @mask (the look's mask tile), and
 // @sig, @lines, @quarter (the plan's signal, lines and quarter target sizes).
 TEST_CASE("tube shaders: real uniform sets written out when asked", "[tube][tube_shaders]") {
     const char* dir = std::getenv("MDB_WRITE_TUBE_UNIFORMS");
@@ -459,14 +460,10 @@ TEST_CASE("tube shaders: real uniform sets written out when asked", "[tube][tube
         for (const auto& [name, member] : kFields) out << name << "=" << u.*member << "\n";
         const TubeDerived d = tube_derived(u, DerivedSizes{first.mask.w, first.mask.h, t.signal_w, t.signal_h});
         for (const DerivedField& f : kDerivedFields) out << f.name << "=" << d.*(f.member) << "\n";
-        const BlurWeights b = blur_weights(first.glow_sigma);
+        const float sigma = std::max(first.glow_sigma, 0.1f);   // tube_renderer_passes.cpp's blur uniforms
         out << "uSigSize=" << t.signal_w << "," << t.signal_h << "\nuPicSize=" << kPicW << "," << kPicH
-            << "\nuDstSize=" << t.quarter_w << "," << t.quarter_h << "\nuPicTexel=" << texel_size(kPicW, kPicH)[0] << ","
-            << texel_size(kPicW, kPicH)[1] << "\nuDstTexel=" << texel_size(t.quarter_w, t.quarter_h)[0] << ","
-            << texel_size(t.quarter_w, t.quarter_h)[1] << "\nuDir=1,0\nuSigma=" << b.sigma << "\nuRadius=" << b.radius
-            << "\nuInvWeightSum=" << b.inv_sum << "\nuWeights=";
-        for (std::size_t k = 0; k < b.weight.size(); ++k) out << (k ? "," : "") << b.weight[k];
-        out << "\n";
+            << "\nuDstSize=" << t.quarter_w << "," << t.quarter_h << "\nuDir=1,0\nuSigma=" << sigma
+            << "\nuRadius=" << std::min(static_cast<int>(std::ceil(3.0f * sigma)), 24) << "\n";
         out << "tint=" << u.tint[0] << "," << u.tint[1] << "," << u.tint[2] << "\n";
         const float W = kFbW, H = kFbH, x = kPicX, y = kPicY, w = kPicW, h = kPicH;   // scene_uniforms()
         out << "uMaskSize=" << first.mask.w << "," << first.mask.h << "\nuSceneMap=" << x / W << "," << (H - y) / H
