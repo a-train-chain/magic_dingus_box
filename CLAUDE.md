@@ -1096,7 +1096,10 @@ series, which would have destroyed already-watched seasons too.
     after a traffic-loss rotation no server ever leased (node-us-119 and
     node-us-390 were wrongly blamed) and the fallback country never
     engaged. A rotation whose old server still carries traffic (port-loss)
-    was always clean: port 7 s after the PUT. A new policy timer must be added to
+    was always clean: port 7 s after the PUT. With the restart off, the
+    fallback test PASSED on the first run (18:58: `ca-44` → `ca-37` →
+    `us-391`, port 7 s after the switch, 0 cancelled checks, no container
+    restart). A new policy timer must be added to
     BOTH `policy.py`'s `timers` and `runtime.restore_policy`; kept raw it
     becomes a future timestamp after a reboot and the policy discards
     all of its state.

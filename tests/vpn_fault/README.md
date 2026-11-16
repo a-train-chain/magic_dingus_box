@@ -37,17 +37,17 @@ fault-helper tests") and in `tests/run_offline.sh --suite vpn-fault`.
   `--cleanup <manifest>` removes it by hand.
 - **Prerequisites:** a Ready box, an attested Gluetun catalog, verified
   traffic both in the tunnel and on the host WAN, and (for `fallback`) the
-  policy Canada → United States and a **controller-pinned** server. After
-  any Gluetun container start, the selection is the `.env` country, and
-  Gluetun's own healthcheck hops to another server within ~45 s of a
-  fault, before the controller acts: good recovery, but it bypasses the
-  path under test. Run `port-loss` first: its rotation pins a server.
-  That rotation records two Canada attempts in the controller's round
-  (the server it left and the one it chose), so wait for the round to
-  close (30 min of continuous Ready, restarted by any watcher restart)
-  before `fallback`, or its preflight refuses with
-  `history_does_not_allow_distinct_second_Canada`. Don't restart Gluetun
-  in between, or the pin is lost.
+  policy Canada → United States. Gluetun must be running with its own
+  health restart off (it logs "Restart VPN on healthcheck failure: no";
+  the compose entrypoint wrapper does this for Proton + WireGuard +
+  forwarding, applied when the container is created). With it on, Gluetun
+  self-hops within ~45 s and the controller's switch races its restart
+  loop. Any rotation records attempts in the controller's round (a
+  port-loss records two Canada attempts: the server it left and the one
+  it chose), so wait for the round to close (30 min of continuous Ready;
+  any non-Ready tick or watcher restart starts it over) before
+  `fallback`, or its preflight refuses with
+  `history_does_not_allow_distinct_second_Canada`.
 
 ## Modes
 
@@ -56,7 +56,7 @@ fault-helper tests") and in `tests/run_offline.sh --suite vpn-fault`.
 | `capability` | none: checks that the kernel and iproute2 can express the owned rules | the box can run the other modes |
 | `port-loss` | blocks NAT-PMP to the gateway while traffic keeps working | the controller rotates after ≥ 90 s of lost port, and the new server is Ready with qBittorrent's port in sync |
 | `first-lease` | a new same-country server that never gets a first port lease | the controller waits out the 120 s first-lease grace, then moves on |
-| `fallback` | blocks the current Canada server, then the second Canada server it picks | the controller tries two Canada servers, then lands on an allowed US server that becomes Ready with traffic and port in sync. Any US server counts. **Not yet passable with Gluetun v3.41.3:** the rotation away from the dead second Canada server races Gluetun's own restart loop and wedges it, so no US server leases (CLAUDE.md, Native VPN recovery). |
+| `fallback` | blocks the current Canada server, then the second Canada server it picks | the controller tries two Canada servers, then lands on an allowed US server that becomes Ready with traffic and port in sync. Any US server counts. Passed 2026-11-15 18:58 once Gluetun's own health restart was off; before that, every run wedged Gluetun (CLAUDE.md, Native VPN recovery). |
 
 ## Running one
 
