@@ -285,14 +285,30 @@ to black. Consequences:
   third more pixels than the budgets were measured at. **It always draws as
   Rich30.** Like every picture (below, "When a look cannot afford an
   effect") it drops the afterglow pass, then the glow passes, when that
-  gets the look's predicted cost under the rich budget, and drops nothing
-  when it does not. By extrapolation from the 1440×1080 prices (NOT
-  measured): PVM drops afterglow (25.5 → 22.9 ms) and Monitor fits as is
-  (22.8 ms); Trinitron (30.5), Arcade (30.6), TV and Everything (32.5 ms)
-  are over the budget whatever is dropped, so they are drawn as asked and
-  would show a film at 20 fps (the pacing monitor's "too heavy" notice
-  says so). **OPEN owner question:** what a film should do with a heavy
-  look, once a film has been measured on hardware. Per-film picture fill
+  gets the look's predicted cost under the rich budget. **When even that
+  does not fit, the film is drawn by the Enhanced engine (owner's decision,
+  2026-11-15)**: "On a full-screen film, when the chosen Tube look is too
+  heavy for it, the box draws the film with the old Enhanced engine, and
+  says so in the controls." Measured on a real 1920×1080 film (window 5,
+  `docs/engineering/measurements/2026-11-15-tube-budgets-pi5.txt` section
+  8): PVM without afterglow 23.22 ms and Monitor 22.76 ms held 30 fps;
+  Trinitron 30.72, Arcade 30.70, TV 32.73 and Everything 32.85 ms drew at
+  20 fps — so those four yield the film to Enhanced. He declined the
+  alternative (the film at 20 fps with the "too heavy" notice): a smooth
+  film matters more than the exact tube look, and Enhanced is what films
+  look like today. The decision is `plan_passes_and_drops()`'s
+  `yields_to_enhanced` (only for a picture larger than the reference); the
+  renderer hands such a picture over like a Media Browser frame (the tube
+  stops drawing, its targets go, its programs stay; no warm-up and no
+  rebuild on the way back), NOT as an engine change, because an owner
+  flipping between a film channel and a normal one would otherwise replay
+  the warm-up and rebuild the programs on every flip. The status says it
+  (`effective_engine` "enhanced" while it happens, `yielding`, and
+  `film_engine`: what a film would get with the current setting), the TV
+  menu's Look row adds " · films: Enhanced", and the web page warns before
+  a film plays. A setting that does not fit a film after the ladder now
+  yields: PVM with TRUE RASTER raised draws a film with Tube without
+  afterglow at 0, and with Enhanced once it no longer fits. Per-film picture fill
   (`video/picture_placement`) only changes where the video sits inside the
   picture; the tube does not see it.
 - *Bezels with a recorded opening*: the tube's opening is the content
@@ -354,9 +370,10 @@ the web page ("Not drawn at this picture size", the slider still editable).
 As predicted: at a 1440×1080 picture TV and Everything drop afterglow and
 keep glow, the other four looks drop nothing; at 960×720 (720p Modern TV)
 and the 1280×720 CRT Native picture nothing is dropped; a 1920×1080 film is
-in the film bullet above (an open question). TV and Everything with the
-rule built in have not yet been run in the kiosk: what was measured is the
-same passes with the AFTERGLOW row at 0.
+in the film bullet above (films a look cannot afford yield to Enhanced).
+Window 5 ran the rule built in: TV and Everything measured 22.59 ms with
+`not_drawn` ["afterglow"] and held 30 fps; Trinitron 22.87 and Arcade
+22.93 ms kept everything.
 
 **The shipped looks in two classes (call).** As copied from Sound Factory
 every look is rich (each has GLOW > 0 and SHARPNESS ≠ 50). Task 1b
@@ -380,7 +397,7 @@ table current; the parity script lists each cell as deliberate):
 |---|---|---|---|---|
 | all six | lineSize, maskSize | see plan 1 Task 2 | see plan 1 Task 2 | whole TV pixels (§5) |
 | pvm, monitor | (none) | Sound Factory's | the same | Task 1b: PVM-lean needs the probe (ABL 20, breathing 15), which is not lean; PVM-lean without it was not established (one disturbed run) and Task 15 decides, so no row differs for now |
-| rich looks | (none) | Sound Factory's | the same | no value changed (owner, 2026-11-15). What is not DRAWN depends on the picture: at 1440×1080 TV and Everything leave out afterglow; on a 1920×1080 film (predicted) PVM leaves out afterglow and Trinitron, Arcade, TV and Everything leave out nothing but run over the budget (open owner question). The setting keeps every value, and the controls say what is not drawn |
+| rich looks | (none) | Sound Factory's | the same | no value changed (owner, 2026-11-15). What is not DRAWN depends on the picture: at 1440×1080 TV and Everything leave out afterglow; on a 1920×1080 film PVM leaves out afterglow, and Trinitron, Arcade, TV and Everything yield the film to the Enhanced engine (owner, 2026-11-15). The setting keeps every value, and the controls say what is not drawn |
 
 **The pipeline (call).** The spike's pipeline 2, with these fixed choices:
 
@@ -862,10 +879,10 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
 - **The tv-class looks cannot hold the rich budget as shipped** (25–28 ms
   predicted from the per-pass costs). Expected: half-width signal, then the
   ladder in Acceptance (afterglow, glow) — ~21.5 ms predicted after it.
-- **A full-screen film costs a third more**: predicted 30.5-32.5 ms as asked
-  for Trinitron, Arcade, TV and Everything, over the budget even with
-  afterglow and glow dropped, so they keep both and would run at 20 fps
-  (§3, film bullet: an open owner question; not yet measured).
+- **A full-screen film costs a third more**: measured 30.7-32.9 ms for
+  Trinitron, Arcade, TV and Everything, over the budget even with afterglow
+  and glow dropped; those looks yield the film to the Enhanced engine
+  (§3, film bullet; owner's decision 2026-11-15).
 - **The compiler hang.** Isolated first (plan 3's first task); every
   program is then compiled and drawn through its real pass on the Pi 5
   before the switch-on; nothing is built before READY=1; and a hang that
