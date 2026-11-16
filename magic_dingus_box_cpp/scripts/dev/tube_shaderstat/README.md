@@ -30,10 +30,9 @@ outside the tool's folder).
   (the look's mask tile) and `@sig`, `@lines`, `@quarter` `=W,H` (the plan's signal,
   lines and quarter target sizes). Each file carries every `TubeUniforms` field, every
   `TubeDerived` field (`tube_derived.h`) and the renderer's own uniforms under both
-  their current names and the names the programs had before the derived values
-  (`uSigSize`, `uPicSize`, `uDstSize`, `uSigma`, `uMaskSize`), so one file drives an
-  old and a new source alike. A float array uniform (`uWeights`) takes its values
-  comma-separated.
+  the ones the programs read before the derived values (`uSigSize`, `uMaskSize`), so
+  one file drives an old and a new source alike. A float array uniform takes its
+  values comma-separated.
 
 ## What it reproduces
 
@@ -82,7 +81,8 @@ Prints, per program, the fragment shader's statistics from Mesa's shaderdb line:
 - `--compare` renders both fragment programs with identical inputs, once per uniform
   file (one compile each), reads both back and prints the largest per-channel
   difference (in 1/255 steps; an RGBA16F target is read as floats and the difference
-  scaled by 255) and how many pixels differ by more than 1/255. Exit 3
+  scaled by 255) and, for the first three pixels over 1/255 in each file, where
+  they are and both values and how many pixels differ by more than 1/255. Exit 3
   when any pixel does. `--float` renders into RGBA32F instead (a finer comparison; a
   different render-target format, so not the kiosk's variant and its statistics are
   not the kiosk's).

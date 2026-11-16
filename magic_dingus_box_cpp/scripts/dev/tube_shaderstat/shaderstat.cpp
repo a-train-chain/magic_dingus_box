@@ -732,6 +732,11 @@ int main(int argc, char** argv) {
                     bad = bad || d > tol;
                 }
                 over += bad;
+                if (bad && over <= 3) {   // where: the first few, as target pixels (GL, bottom-left)
+                    const long px = static_cast<long>(i / 4);
+                    std::printf("  differs at %ld,%ld: A %.4g %.4g %.4g  B %.4g %.4g %.4g\n", a.vx + px % a.vw,
+                                a.vy + px / a.vw, ra[i], ra[i + 1], ra[i + 2], rb[i], rb[i + 1], rb[i + 2]);
+                }
             }
             worst = std::max(worst, over);
             const float unit = fl ? 255.0f : 1.0f;   // reported in 1/255 steps
