@@ -454,16 +454,16 @@ std::string_view Renderer::tube_unavailable_reason() const {
 void Renderer::allow_tube_builds() {
     if (!tube_) return;
     tube_->allow_builds();
-#ifdef MDB_TUBE_PREVIEW
-    // Task 14: the first Tube frames build and draw every program of the table,
-    // one decode path per frame (Shader, then Hardware where the context has it).
+    // DEVELOPER switch, never set on a customer's box: MDB_TUBE_VALIDATE=1 (read
+    // once, here) makes the first Tube frames build and draw every program of the
+    // table, one decode path per frame (Shader, then Hardware where the context has
+    // it) - the hardware validation run a new program needs. ~0.5 s per pass.
     const char* validate = std::getenv("MDB_TUBE_VALIDATE");
     if (validate != nullptr && std::string_view(validate) == "1") {
         tube_validate_next_ = TubeValidate::Shader;
-        LOG_WARN("tube: MDB_TUBE_VALIDATE=1 (preview build): the first Tube frames validate every program, one "
+        LOG_WARN("tube: MDB_TUBE_VALIDATE=1 (developer switch): the first Tube frames validate every program, one "
                  "decode path per frame");
     }
-#endif
 }
 
 void Renderer::release_tube_gl() {
@@ -490,8 +490,7 @@ bool Renderer::tube_composite(const app::AppState& state) {
     env.vao = vao_;
     env.vbo = vbo_;
     env.ui_program = shader_program_;
-#ifdef MDB_TUBE_PREVIEW
-    // ONE pass per Tube frame (each rebuilds all 19 programs: seconds on a cold
+    // MDB_TUBE_VALIDATE=1 only (developer switch). ONE pass per Tube frame (each rebuilds all 19 programs: seconds on a cold
     // shader cache), so the main loop returns and pings the watchdog between them.
     // Shader decode first, so the programs left built are this context's own
     // decode's. A validation frame draws nothing else: false -> this frame's
@@ -510,7 +509,6 @@ bool Renderer::tube_composite(const app::AppState& state) {
         tube_driver_->gpu_lost();   // validation deleted the mask: the next frame carries it
         return false;
     }
-#endif
     const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
                                 tube_crt_native_};
     const tube::DriverFrame frame =

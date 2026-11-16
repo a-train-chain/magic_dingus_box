@@ -2,8 +2,10 @@
 // the engine cycle, every row's words) and the two gates on offering Tube at all.
 #include <catch2/catch_test_macros.hpp>
 #include <optional>
+#include <string>
 #include "app/app_state.h"
 #include "app/tube_menu_logic.h"
+#include "platform/platform_profile.h"
 #include "tube/tube_budget.h"
 #include "tube/tube_frame_class.h"
 #include "tube/tube_groups.h"
@@ -11,8 +13,11 @@
 using app::CrtEngine;
 
 TEST_CASE("tube menu logic: Tube is offered only on a Pi 5 with the renderer ready", "[tube]") {
+    // The two gates, each closed in turn. The renderer flag is a test seam since the
+    // switch-on (every build sets it from kTubeRendererReady, now true); closing it here
+    // pins what "not ready" still means to the status file and the web.
     app::AppState s;
-    s.tube_renderer_ready = false;   // the production default (pinned by "a production build is not renderer-ready")
+    s.tube_renderer_ready = false;
     REQUIRE(app::tube_not_offered_reason(s) == "needs_pi5");
     s.platform_profile.tube_crt_engine = true;
     REQUIRE_FALSE(app::tube_offered(s)); REQUIRE(app::tube_not_offered_reason(s) == "not_ready");
@@ -59,13 +64,71 @@ TEST_CASE("tube menu logic: labels", "[tube]") {
     REQUIRE(app::tube_row_kind(std::nullopt, false) == app::TubeRowKind::Mask);
     REQUIRE(app::tube_na_label("SCANLINES") == "SCANLINES: n/a");
 }
-TEST_CASE("tube menu logic: a production build is not renderer-ready", "[tube]") {
-#ifndef MDB_TUBE_PREVIEW
-    REQUIRE_FALSE(app::kTubeRendererReady);
-    app::AppState s; s.platform_profile.tube_crt_engine = true;
-    s.display_settings.set_crt_engine(app::CrtEngine::Tube);
-    REQUIRE(app::effective_crt_engine(s.display_settings.crt_engine, app::tube_offered(s)) == app::CrtEngine::Enhanced);
-#endif
+namespace {
+// Whether a default AppState (the renderer flag as every build sets it) on
+// `profile` is offered Tube, and the reason it is not.
+bool offered_on(const platform::PlatformProfile& profile) {
+    app::AppState s;
+    s.platform_profile = profile;
+    return app::tube_offered(s);
+}
+std::string reason_on(const platform::PlatformProfile& profile) {
+    app::AppState s;
+    s.platform_profile = profile;
+    return std::string(app::tube_not_offered_reason(s));
+}
+}  // namespace
+
+TEST_CASE("tube menu logic: the renderer is switched on in every build", "[tube]") {
+    REQUIRE(app::kTubeRendererReady);
+    REQUIRE(app::AppState{}.tube_renderer_ready);
+}
+
+TEST_CASE("tube menu logic: a default AppState is offered Tube on a Pi 5 only", "[tube]") {
+    using platform::PiModel;
+    REQUIRE(offered_on(platform::profile_for(PiModel::Pi5)));
+    REQUIRE(reason_on(platform::profile_for(PiModel::Pi5)).empty());
+
+    REQUIRE_FALSE(offered_on(platform::profile_for(PiModel::Pi4)));
+    REQUIRE(reason_on(platform::profile_for(PiModel::Pi4)) == "needs_pi5");
+
+    // A dev machine: whatever its profile says (today: hide nothing).
+    REQUIRE(offered_on(platform::profile_for(PiModel::Unknown)) ==
+            platform::profile_for(PiModel::Unknown).tube_crt_engine);
+}
+
+TEST_CASE("tube menu logic: a Pi 5 rehearsing Pi 4B policies is not offered Tube", "[tube]") {
+    platform::PlatformProfile real = platform::profile_for(platform::PiModel::Pi5);
+    real.model_string = "Raspberry Pi 5 Model B Rev 1.1";
+    app::AppState s;
+    s.platform_profile = platform::apply_policy_override(real, "pi4");
+    REQUIRE(s.platform_profile.model == platform::PiModel::Pi5);   // the hardware stays real
+    REQUIRE_FALSE(app::tube_offered(s));
+    REQUIRE(app::tube_not_offered_reason(s) == "needs_pi5");
+    s.display_settings.set_crt_engine(CrtEngine::Tube);              // a saved Tube draws Enhanced
+    REQUIRE(app::effective_crt_engine(s.display_settings.crt_engine, app::tube_offered(s)) ==
+            CrtEngine::Enhanced);
+    // Any other value is ignored: the real Pi 5 is offered Tube.
+    REQUIRE(offered_on(platform::apply_policy_override(real, "pi5")));
+}
+
+TEST_CASE("tube menu logic: switching on changes no box's engine; a saved Tube draws only on a Pi 5",
+          "[tube]") {
+    using platform::PiModel;
+    for (const PiModel model : {PiModel::Pi5, PiModel::Pi4}) {
+        app::AppState s;
+        s.platform_profile = platform::profile_for(model);
+        const bool offered = app::tube_offered(s);
+        // No saved engine: a default box draws Classic, never Tube.
+        REQUIRE(app::effective_crt_engine(s.display_settings.crt_engine, offered) == CrtEngine::Classic);
+        s.display_settings.set_crt_engine(CrtEngine::Classic);
+        REQUIRE(app::effective_crt_engine(s.display_settings.crt_engine, offered) == CrtEngine::Classic);
+        s.display_settings.set_crt_engine(CrtEngine::Enhanced);
+        REQUIRE(app::effective_crt_engine(s.display_settings.crt_engine, offered) == CrtEngine::Enhanced);
+        s.display_settings.set_crt_engine(CrtEngine::Tube);
+        REQUIRE(app::effective_crt_engine(s.display_settings.crt_engine, offered) ==
+                (model == PiModel::Pi5 ? CrtEngine::Tube : CrtEngine::Enhanced));
+    }
 }
 TEST_CASE("tube menu logic: the Look row says its rate; forcing rows are tagged", "[tube]") {
     tube::TubeSetting s; for (auto e : tube::kAlwaysRich) tube::set_row(s, e, tube::rate_neutral(e));

@@ -339,10 +339,10 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
                      "halation will be disabled" << std::endl;
     }
 
-    // The Tube engine: TEST-ONLY preview builds only (app::kTubeRendererReady).
-    // A production build makes nothing here, so no tube code runs anywhere: every
-    // tube path starts with `if (!tube_)`. Constructing the TubeRenderer touches no
-    // GL; it reads the build guard's marker once (one stat, before the main loop).
+    // The Tube engine (app::kTubeRendererReady: every build since the switch-on).
+    // Constructing the TubeRenderer touches no GL; it reads the build guard's
+    // marker once (one stat, before the main loop). Nothing is built until the
+    // effective engine is Tube (a Pi 5 that chose it), and only after READY=1.
     if (app::kTubeRendererReady) {
         tube_ = std::make_unique<TubeRenderer>();
         tube_driver_ = std::make_unique<tube::FrameDriver>();

@@ -76,22 +76,14 @@ constexpr std::optional<CrtEngine> parse_crt_engine(std::string_view word) noexc
     return std::nullopt;
 }
 
-// Whether the Tube engine's renderer is built into this binary. While false, Tube
-// is offered nowhere (no menu option, no Tube rows, no Degauss, no web tab) on any
-// board. Plan 3 (the renderer) sets it to true. Read through tube_offered(), never
-// directly; AppState::tube_renderer_ready copies it so tests can open the gate.
-// TEST-ONLY: a preview build (CMake -DMDB_TUBE_PREVIEW=ON, which defines
-// MDB_TUBE_PREVIEW for every target) turns it on to try the renderer on a box;
-// it logs "TUBE PREVIEW BUILD" at start and CI refuses to ship one. The plan's
-// last task sets it true for good and removes the preview build.
-#ifdef MDB_TUBE_PREVIEW
+// Whether the Tube engine's renderer is built into this binary: true in every
+// build since the engine was switched on (2026-11). Whether a box OFFERS Tube is
+// then the board gate alone (PlatformProfile::tube_crt_engine: a Pi 5, not under
+// MDB_PLATFORM_POLICY_OVERRIDE=pi4). Read through tube_offered(), never directly;
+// AppState::tube_renderer_ready copies it so tests can still close this gate.
 inline constexpr bool kTubeRendererReady = true;
-#else
-inline constexpr bool kTubeRendererReady = false;
-#endif
 
-// What the Tube renderer is doing, refilled by the main loop every iteration
-// (only when kTubeRendererReady; the defaults otherwise). `drawing`: the tube
+// What the Tube renderer is doing, refilled by the main loop every iteration. `drawing`: the tube
 // draws the picture; `frame_rate`: 60 (lean) or 30 (rich); `too_heavy`: video
 // presents ran late (app::TubePacingMonitor, latched until the setting or the
 // frame class changes); `unavailable`: "" | "build_hung" | "build_failed";
@@ -960,7 +952,8 @@ public:
 
     // Tube live tuning (op log progress, Degauss presses) and the renderer-ready
     // gate. Ask app::tube_offered(state), which ANDs this flag with the board
-    // gate above; production never changes the flag from kTubeRendererReady.
+    // gate above; production never changes the flag from kTubeRendererReady
+    // (true): only tests close it.
     TubeLiveState tube_live;
     bool tube_renderer_ready = kTubeRendererReady;
     TubeRenderStatus tube_render;

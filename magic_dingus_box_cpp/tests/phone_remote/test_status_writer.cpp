@@ -410,7 +410,7 @@ TEST_CASE("status_writer: Tube not offered publishes the engine and the reason o
           "[remote][status][tube]") {
     app::AppState state;
     tube_state(state);
-    state.tube_renderer_ready = false;
+    state.tube_renderer_ready = false;   // the seam: every build sets it true since the switch-on
     Json::Value t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube2.json");
     REQUIRE(t.getMemberNames() ==
             std::vector<std::string>{"effective_engine", "engine", "gate", "reason"});
@@ -419,6 +419,24 @@ TEST_CASE("status_writer: Tube not offered publishes the engine and the reason o
     REQUIRE(t["engine"].asString() == "tube");
     state.platform_profile.tube_crt_engine = false;
     t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube2.json");
+    REQUIRE(t["reason"].asString() == "needs_pi5");
+}
+
+TEST_CASE("status_writer: switched on, the board gate alone decides the web tab",
+          "[remote][status][tube]") {
+    // A default AppState (the renderer flag as every build sets it): a Pi 5 board
+    // gate publishes gate true (the Content Manager shows the CRT Look tab); a
+    // closed board gate (a Pi 4B, or a Pi 5 under MDB_PLATFORM_POLICY_OVERRIDE=pi4)
+    // publishes needs_pi5, and the web hides the tab.
+    app::AppState state;
+    state.platform_profile.tube_crt_engine = true;
+    Json::Value t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube3.json");
+    REQUIRE(t["gate"].asBool());
+    REQUIRE(t["engine"].asString() == "classic");
+    REQUIRE(t["effective_engine"].asString() == "classic");
+    state.platform_profile.tube_crt_engine = false;
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube3.json");
+    REQUIRE_FALSE(t["gate"].asBool());
     REQUIRE(t["reason"].asString() == "needs_pi5");
 }
 
