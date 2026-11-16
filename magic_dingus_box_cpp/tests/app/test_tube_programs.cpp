@@ -1,6 +1,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <set>
 #include <string>
 
@@ -206,7 +208,8 @@ TEST_CASE("tube programs: the prediction adds the plan's passes from the measure
     const TargetSizes t = target_sizes(tv, Picture{1440.0, 1080.0, false}, tube_uniforms_for(r, {1440.0, 1080.0, false}));
     const PassCosts& c = kPassCosts;
     // TV: mean probe, quarter + glow, guns+chroma at half width, lines, the raster output, afterglow.
-    const double expect = c.probe + c.quarter + c.glow_blur + c.sig_guns_chroma * c.half_width_factor + c.lines_half +
+    REQUIRE(tv.glow_half);   // TV's glow is wide: blurred on the half-size targets
+    const double expect = c.probe + c.quarter + c.glow_blur_half + c.sig_guns_chroma * c.half_width_factor + c.lines_half +
                           c.out_rich_raster + c.history;
     REQUIRE(tv.mean_probe);
     REQUIRE(predicted_ms(tv, t) == Catch::Approx(expect));
@@ -269,9 +272,61 @@ TEST_CASE("tube programs: target sizes and memory", "[tube]") {
     REQUIRE(t.signal_h == 1080);
     REQUIRE(t.lines_w == 720);
     REQUIRE(t.lines_h == 270);
+    REQUIRE(p.glow_half);
+    REQUIRE(t.glow_w == 180);   // half the quarter: blur.frag uDown's (size + 1) / 2
+    REQUIRE(t.glow_h == 135);
     for (unsigned b = 0; b < (1u << kNeedBits); ++b) {
         const PassPlan q = plan_for(needs_from_bits(b), false);
-        const TargetSizes ts{1440, 1080, 360, 270, q.signal_half ? 720 : 1440, 1080, q.signal_half ? 720 : 1440, 270};
+        const TargetSizes ts{1440, 1080, 360, 270, q.signal_half ? 720 : 1440, 1080, q.signal_half ? 720 : 1440, 270,
+                             360, 270};
         REQUIRE(target_bytes(q, ts, true) < 32u * 1024u * 1024u);
     }
+}
+
+TEST_CASE("tube programs: a wide glow is blurred at half the quarter's size", "[tube]") {
+    const Picture pic{1440.0, 1080.0, false};
+    // The threshold (measured: see kGlowHalfSigma) against GLOW SIZE.
+    for (int row = 0; row <= 100; ++row) {
+        TubeSetting s;
+        select_look(s, Look::tv);
+        set_row(s, Effect::glowSize, row);
+        const Resolved r = resolve(s);
+        const float sigma = glow_sigma_px(r, pic);
+        const PassPlan p = plan_passes(r, pic);
+        INFO(row << " sigma " << sigma);
+        REQUIRE(p.glow);
+        REQUIRE(p.glow_half == (sigma >= kGlowHalfSigma));
+        const TargetSizes t = target_sizes(p, pic, tube_uniforms_for(r, pic));
+        REQUIRE(t.glow_w == (p.glow_half ? 180 : 360));
+        REQUIRE(t.glow_h == (p.glow_half ? 135 : 270));
+        REQUIRE(t.quarter_w == 360);   // the quarter itself is unchanged: chroma and the probe read it
+        const BlurParams b = blur_params(p, sigma);
+        REQUIRE(b.down == p.glow_half);
+        REQUIRE(b.sigma == std::max(sigma, 0.1f) * (p.glow_half ? 0.5f : 1.0f));
+        REQUIRE(b.radius == std::min(static_cast<int>(std::ceil(3.0f * b.sigma)), 24));
+    }
+    // Every shipped look's glow is wide (all at GLOW SIZE 10 or more).
+    for (Look look : kLooks) {
+        TubeSetting s;
+        select_look(s, look);
+        INFO(look_name(look));
+        REQUIRE(plan_passes(resolve(s), pic).glow_half);
+    }
+    // Without a glow pass there is nothing to halve; an odd quarter rounds up.
+    TubeSetting off;
+    set_row(off, Effect::glow, 0);
+    REQUIRE_FALSE(plan_passes(resolve(off), pic).glow_half);
+    PassPlan odd;
+    odd.glow = odd.glow_half = true;
+    const TargetSizes t = target_sizes(odd, Picture{1441.0, 1081.0, false}, tube_uniforms_for(resolve(TubeSetting{}), pic));
+    REQUIRE(t.quarter_w == 361);
+    REQUIRE(t.glow_w == 181);
+    REQUIRE(t.quarter_h == 271);
+    REQUIRE(t.glow_h == 136);
+    // The half-size targets hold a quarter of the bytes.
+    PassPlan full = odd;
+    full.glow_half = false;
+    const TargetSizes tf = target_sizes(full, Picture{1440.0, 1080.0, false}, tube_uniforms_for(resolve(TubeSetting{}), pic));
+    const TargetSizes th = target_sizes(odd, Picture{1440.0, 1080.0, false}, tube_uniforms_for(resolve(TubeSetting{}), pic));
+    REQUIRE(target_bytes(full, tf, true) - target_bytes(odd, th, true) == 2u * (360u * 270u - 180u * 135u) * 4u);
 }

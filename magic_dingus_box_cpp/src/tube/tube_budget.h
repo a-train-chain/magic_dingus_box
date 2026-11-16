@@ -42,7 +42,7 @@ inline constexpr bool kRichBeamCheap = false;   // the acceptance ladder may fli
 
 // Pass prices, ms at 1440x1080 on the Pi 5 (from Task 1b's table unless noted).
 struct PassCosts {
-    double quarter, glow_blur, sig_sharp, sig_sharp_chroma, sig_guns, sig_guns_chroma,
+    double quarter, glow_blur, glow_blur_half, sig_sharp, sig_sharp_chroma, sig_guns, sig_guns_chroma,
         half_width_factor, lines_half, lines_full, out_lean, out_rich, out_rich_raster,
         out_rich_raster_only, history, probe;
 };
@@ -50,6 +50,9 @@ struct PassCosts {
 inline constexpr PassCosts kPassCosts{
     0.7,   // quarter: an earlier round, not re-measured in round 3
     3.5,   // glow_blur: quarter + glow together measured 2.3-4.2; this is the upper end
+    0.75,  // glow_blur_half: TOOL-measured, not kiosk-measured (shaderstat --glowchain, 2026-11-15:
+           // the two blur passes on the eighth-size targets, 0.35-0.75 ms over the six looks'
+           // glow sizes, against 1.68-4.08 for the same chain at quarter size); the upper end
     4.5,   // sig_sharp
     7.1,   // sig_sharp_chroma (provisional): NOT measured
     6.8,   // sig_guns: measured 3.8 at half width, stored divided by half_width_factor

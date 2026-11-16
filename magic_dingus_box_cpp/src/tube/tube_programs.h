@@ -222,14 +222,15 @@ struct PassPlan {
     bool mean_probe = false, quarter = false, glow = false;
     std::optional<Program> signal;
     bool signal_half = false;
+    bool glow_half = false;   // the glow blurred on targets half the quarter's size (a wide glow)
     bool lines = false;
     Program output = Program::out_lean_still;
     bool afterglow = false;
 
     bool operator==(const PassPlan& o) const {
         return cls == o.cls && mean_probe == o.mean_probe && quarter == o.quarter && glow == o.glow &&
-               signal == o.signal && signal_half == o.signal_half && lines == o.lines && output == o.output &&
-               afterglow == o.afterglow;
+               signal == o.signal && signal_half == o.signal_half && glow_half == o.glow_half && lines == o.lines &&
+               output == o.output && afterglow == o.afterglow;
     }
     bool operator!=(const PassPlan& o) const { return !(*this == o); }
 };
@@ -271,10 +272,38 @@ inline PassPlan plan_for(const Needs& n, bool larger_than_reference, const LeanS
     return p;
 }
 
+// A WIDE GLOW IS BLURRED AT HALF THE QUARTER'S RESOLUTION. Two blur passes of up to 49
+// taps at quarter resolution cost 1.7-4.1 ms (the kiosk's prices at the looks' glow
+// sizes); a wide Gaussian does not need that resolution. With glow_half the horizontal
+// pass box-filters the quarter 2x2 into a target half its size in each direction (one
+// bilinear tap a block, blur.frag uDown) and both passes blur there with half the sigma;
+// the output samples the result with linear filtering as before. The threshold is
+// measured (shaderstat --glowchain, the final output with the old chain's glow against
+// the new one's, every look): from a sigma of 1.92 quarter px (GLOW SIZE 10) up, every
+// shipped look differs by at most 1/255 (0 pixels over 1/255) and GLOW at 100 by at most
+// 3/255 on a few dozen edge pixels; at 1.42 (GLOW SIZE 5) GLOW 100 reached 4/255 and at
+// 0.5 everything was visibly different. Every shipped look's glow is at or above 1.92.
+inline constexpr float kGlowHalfSigma = 1.9f;   // quarter-resolution px
+constexpr bool glow_is_wide(float glow_sigma) noexcept { return glow_sigma >= kGlowHalfSigma; }
+
+// What the two blur passes are given: sigma in the blur targets' own px (the CPU's 0.1
+// floor first, as the renderer had it), the radius ceil(3 sigma) <= blur.frag's
+// MAX_RADIUS, and whether the horizontal pass reads the quarter 2x2 box-filtered (uDown).
+struct BlurParams {
+    float sigma;
+    int radius;
+    bool down;
+};
+inline BlurParams blur_params(const PassPlan& plan, float glow_sigma) noexcept {
+    const float sigma = std::max(glow_sigma, 0.1f) * (plan.glow_half ? 0.5f : 1.0f);
+    return {sigma, std::min(static_cast<int>(std::ceil(3.0f * sigma)), 24), plan.glow_half};
+}
+
 // The render targets' sizes, px. Each is what its pass would use; target_bytes()
 // counts only the passes the plan runs.
 struct TargetSizes {
     int pic_w, pic_h, quarter_w, quarter_h, signal_w, signal_h, lines_w, lines_h;
+    int glow_w, glow_h;   // the two glow targets: the quarter's size, or half of it (glow_half)
     static constexpr int kMeanSize = 64;   // the mean probe, mipped to 1x1
 };
 
@@ -288,6 +317,8 @@ inline TargetSizes target_sizes(const PassPlan& plan, const Picture& picture, co
     t.signal_h = t.pic_h;
     t.lines_w = t.signal_w;
     t.lines_h = std::max(1, static_cast<int>(std::ceil(still.lines)));
+    t.glow_w = plan.glow_half ? (t.quarter_w + 1) / 2 : t.quarter_w;   // blur.frag uDown's (size + 1) / 2
+    t.glow_h = plan.glow_half ? (t.quarter_h + 1) / 2 : t.quarter_h;
     return t;
 }
 
@@ -302,7 +333,7 @@ inline std::size_t target_bytes(const PassPlan& plan, const TargetSizes& t, bool
     if (plan.signal) bytes += area(t.signal_w, t.signal_h) * signal_px;
     if (plan.lines) bytes += area(t.lines_w, t.lines_h) * signal_px;
     if (plan.quarter) bytes += area(t.quarter_w, t.quarter_h) * 4;
-    if (plan.glow) bytes += 2 * area(t.quarter_w, t.quarter_h) * 4;
+    if (plan.glow) bytes += 2 * area(t.glow_w, t.glow_h) * 4;
     if (plan.mean_probe) bytes += area(TargetSizes::kMeanSize, TargetSizes::kMeanSize) * 4 * 4 / 3;
     return bytes;
 }
@@ -316,7 +347,7 @@ inline double predicted_ms(const PassPlan& plan, const TargetSizes& t, const Pas
     double ms = 0.0;
     if (plan.mean_probe) ms += c.probe;
     if (plan.quarter) ms += c.quarter;
-    if (plan.glow) ms += c.glow_blur;
+    if (plan.glow) ms += plan.glow_half ? c.glow_blur_half : c.glow_blur;
     if (plan.signal) {
         double sig = c.sig_sharp;
         switch (*plan.signal) {
@@ -349,17 +380,23 @@ inline double predicted_ms(const PassPlan& plan, const TargetSizes& t, const Pas
 inline PassPlan plan_passes(const Resolved& resolved, const Picture& picture) noexcept {
     const TubeUniforms still = tube_uniforms_for(resolved, picture);
     const bool larger = picture.w * picture.h > kReferencePicturePixels;
+    const bool wide = glow_is_wide(glow_sigma_px(resolved, picture));
     Needs n = needs_of(still, resolved);
-    PassPlan p = plan_for(n, larger);
+    const auto plan = [&] {
+        PassPlan q = plan_for(n, larger);
+        q.glow_half = q.glow && wide;
+        return q;
+    };
+    PassPlan p = plan();
     if (!larger) return p;
     const auto over = [&] { return predicted_ms(p, target_sizes(p, picture, still)) > kRichBudgetMs; };
     if (n.afterglow && over()) {
         n.afterglow = false;
-        p = plan_for(n, larger);
+        p = plan();
     }
     if (n.glow && over()) {
         n.glow = false;
-        p = plan_for(n, larger);
+        p = plan();
     }
     return p;
 }
@@ -447,7 +484,7 @@ inline std::vector<std::string_view> uniforms_for(ShaderFile file, bool reads_sc
     switch (file) {
         case ShaderFile::glass: add({"outW", "outH", "cornerPx", "rim", "vignette", "glassBlack", "reflection"}); break;
         case ShaderFile::quarter: add({"uPicSize", "uDstSize"}); break;
-        case ShaderFile::blur: add({"src", "uDir", "uSigma", "uRadius"}); break;
+        case ShaderFile::blur: add({"src", "uDir", "uSigma", "uRadius", "uDown"}); break;
         case ShaderFile::copy_encode: add({"src", "uOrigin", "uSrcOffset"}); break;
         case ShaderFile::signal:
             add({"outW", "outH", "pxPerMm", "sharpness", "contrast", "saturation", "jitter", "jitterSeed", "jitterBias",

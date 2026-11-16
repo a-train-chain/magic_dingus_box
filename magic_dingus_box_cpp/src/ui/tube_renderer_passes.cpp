@@ -406,16 +406,20 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
     if (plan.glow) {
         timer_begin(Pass::glow);
         const ProgramSlot& b = use(tube::Program::blur);
-        const float sigma = std::max(f.glow_sigma, 0.1f);
-        const int radius = std::min(static_cast<int>(std::ceil(3.0f * sigma)), 24);   // blur.frag MAX_RADIUS
-        if (b.loc(OwnUniform::uSigma) >= 0) glUniform1f(b.loc(OwnUniform::uSigma), sigma);
-        if (b.loc(OwnUniform::uRadius) >= 0) glUniform1i(b.loc(OwnUniform::uRadius), radius);
+        // A wide glow (plan.glow_half): the H pass box-filters the quarter (LINEAR, as every
+        // target is made) into glow_tmp at half its size, both passes at half the sigma
+        // (tube_programs.h blur_params; the targets' sizes are TargetSizes::glow_w/h).
+        const tube::BlurParams bp = tube::blur_params(plan, f.glow_sigma);
+        if (b.loc(OwnUniform::uSigma) >= 0) glUniform1f(b.loc(OwnUniform::uSigma), bp.sigma);
+        if (b.loc(OwnUniform::uRadius) >= 0) glUniform1i(b.loc(OwnUniform::uRadius), bp.radius);
         target(glow_tmp.fbo, 0, 0, glow_tmp.w, glow_tmp.h);
         uniform2f(b, OwnUniform::uDir, 1.0f, 0.0f);
+        if (b.loc(OwnUniform::uDown) >= 0) glUniform1i(b.loc(OwnUniform::uDown), bp.down ? 1 : 0);
         bind_unit(0, quarter.tex);
         draw_pass(tube::Program::blur);
         target(glow_out.fbo, 0, 0, glow_out.w, glow_out.h);
         uniform2f(b, OwnUniform::uDir, 0.0f, 1.0f);
+        if (b.loc(OwnUniform::uDown) >= 0) glUniform1i(b.loc(OwnUniform::uDown), 0);
         bind_unit(0, glow_tmp.tex);
         draw_pass(tube::Program::blur);
         timer_end();

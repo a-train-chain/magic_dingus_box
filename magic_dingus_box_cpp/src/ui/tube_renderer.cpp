@@ -428,8 +428,8 @@ bool TubeRenderer::Impl::ensure_targets(const tube::PassPlan& plan, const tube::
         {signal, "signal", plan.signal.has_value(), t.signal_w, t.signal_h, sig, 1},
         {lines, "lines", plan.lines, t.lines_w, t.lines_h, sig, 1},
         {quarter, "quarter", plan.quarter, t.quarter_w, t.quarter_h, GL_SRGB8_ALPHA8, 1},
-        {glow_tmp, "glow_tmp", plan.glow, t.quarter_w, t.quarter_h, GL_SRGB8_ALPHA8, 1},
-        {glow_out, "glow_out", plan.glow, t.quarter_w, t.quarter_h, GL_SRGB8_ALPHA8, 1},
+        {glow_tmp, "glow_tmp", plan.glow, t.glow_w, t.glow_h, GL_SRGB8_ALPHA8, 1},
+        {glow_out, "glow_out", plan.glow, t.glow_w, t.glow_h, GL_SRGB8_ALPHA8, 1},
         {mean, "mean", plan.mean_probe, tube::TargetSizes::kMeanSize, tube::TargetSizes::kMeanSize, GL_SRGB8_ALPHA8,
          kMeanLevels},
     };

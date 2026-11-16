@@ -100,11 +100,11 @@ static_assert(sizeof(tube::TubeUniforms) == (kTubeFieldCount + 3) * sizeof(float
 
 // The programs' own uniforms (tube_programs.h's uniforms_for, the `u` names).
 enum class OwnUniform : std::uint8_t {
-    uSceneMap, uSceneClamp, uPicSize, uDstSize, uDir, uSigma, uRadius, uOrigin, uSrcOffset, count
+    uSceneMap, uSceneClamp, uPicSize, uDstSize, uDir, uSigma, uRadius, uDown, uOrigin, uSrcOffset, count
 };
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(OwnUniform::count)> kOwnUniformNames{
     "uSceneMap", "uSceneClamp", "uPicSize", "uDstSize", "uDir", "uSigma",
-    "uRadius",   "uOrigin",     "uSrcOffset"};
+    "uRadius",   "uDown",       "uOrigin",  "uSrcOffset"};
 
 // Every sampler and the texture unit it reads, fixed for the life of a program (the
 // spike's assignment). `ui` (the scene) and `src` share unit 0: no program has both.
