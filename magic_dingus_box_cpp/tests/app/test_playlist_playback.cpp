@@ -128,6 +128,10 @@ struct FakeTransport : app::PlaylistTransport {
     // What GstPlayer::describe_state() would answer (the stall log line).
     std::string pipeline = "PLAYING (fake)";
     std::string pipeline_state() const override { return pipeline; }
+    // GstPlayer's control thread has not carried out the last stop/load
+    // (a card stall holds it; the load call itself returned at once).
+    bool busy = false;
+    bool pipeline_busy() const override { return busy; }
     std::chrono::steady_clock::time_point now() const override { return clock; }
     double wall_now_utc() const override { return wall; }
 };
@@ -1080,6 +1084,28 @@ TEST_CASE("a frozen non-playlist video is only ever restarted",
     }
     REQUIRE_FALSE(t.calls.empty());
     for (const auto& c : t.calls) CHECK(c == "play");
+}
+
+TEST_CASE("a frozen position is not a stall while the pipeline has a command in hand",
+          "[playlist_playback]") {
+    // GstPlayer does not query a pipeline its control thread is changing,
+    // so the position reads frozen by construction (a seek waiting on the
+    // card). The watchdog counts from when the command was carried out.
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.update_playback_state(5.0, 100.0);
+    FakeTransport t;
+    t.playing_default = true;
+    t.busy = true;
+    app::PlaylistPlayback pb(s, t, kDir);
+    StreamCapture err(std::cerr);
+    double now = 1000.0;
+    for (int i = 0; i < 60; ++i) pb.tick_stall_watchdog(now += 1.0);
+    CHECK(t.calls.empty());
+    t.busy = false;  // carried out, and the position still does not move
+    for (int i = 0; i < 60 && t.calls.empty(); ++i) pb.tick_stall_watchdog(now += 1.0);
+    CHECK(t.calls == std::vector<std::string>{"play"});
 }
 
 TEST_CASE("a paused video is never treated as stalled", "[playlist_playback]") {
@@ -2377,6 +2403,43 @@ TEST_CASE("the channel start bound counts from the load's return, not the press"
     CHECK(err.count("never started") == 1);
 }
 
+TEST_CASE("the channel start bound waits while the pipeline has not carried the load out",
+          "[playlist_playback][guide][give_up]") {
+    // GstPlayer queues every state change for its control thread, so the
+    // load call returns at once even when the old stream's stop is stuck on
+    // the SD card (2026-11-15, magicpi5: a stall reload held the render loop
+    // past the systemd watchdog). The seconds the queue waits are not the
+    // stream's: the bound — and the tune's switch flag — count from when
+    // the load was carried out, as they counted from the blocking call's
+    // return before.
+    using std::chrono::milliseconds;
+    Guide g;
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    g.t.wall = kW0 + 130;
+    g.pb.tune(1, false);
+    run_frames(g.pb, g.t, kSettled);
+    REQUIRE(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1"});
+
+    g.t.busy = true;  // the stop before it is still waiting for a read
+    guide_frames(g, milliseconds(12000));
+    CHECK(g.t.calls.size() == 2);
+    CHECK(err.count("never started") == 0);
+    CHECK(err.count("stream not up") == 0);
+    CHECK(g.s.is_switching_playlist);  // the tune is still in progress
+
+    g.t.busy = false;  // carried out: from here, the old rules
+    guide_frames(g, milliseconds(2100));
+    CHECK_FALSE(g.s.is_switching_playlist);
+    CHECK(err.count("stream not up") == 1);
+    guide_frames(g, milliseconds(5800));  // 7.9 s after it was carried out
+    CHECK(g.t.calls.size() == 2);
+    CHECK(err.count("never started") == 0);
+    guide_frames(g, milliseconds(200));
+    CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Cartoons 1", "stop"});
+    CHECK(err.count("never started") == 1);
+}
+
 TEST_CASE("a slow channel start that comes up inside its bound plays on",
           "[playlist_playback][guide][give_up]") {
     using std::chrono::milliseconds;
@@ -2425,6 +2488,38 @@ TEST_CASE("List style: a playlist switch still times out at 2 s, as before",
     CHECK(err.count("CRITICAL: Playlist switch timeout") == 1);
     CHECK(err.count("MPV appears stuck") == 1);
     CHECK_FALSE(s.is_switching_playlist);
+}
+
+TEST_CASE("List style: a switch waiting on the pipeline's control thread does not time out",
+          "[playlist_playback]") {
+    // The 2 s stuck-switch timeout counts from when the switch's load was
+    // carried out; before GstPlayer's control thread that wait was inside
+    // the load call. Its recovery stop() would otherwise cancel a load that
+    // is only waiting for the card.
+    using std::chrono::milliseconds;
+    app::AppState s;
+    put_menu(s);
+    put_playing(s, 1, 0);
+    s.ui_visible_when_playing = true;
+    s.selected_index = 2;
+    FakeTransport t;
+    app::PlaylistPlayback pb(s, t, kDir);
+    StreamCapture out(std::cout);
+    StreamCapture err(std::cerr);
+    pb.on_select();
+    s.video_active = false;
+    run_frames(pb, t, milliseconds(300));
+    REQUIRE(t.calls == std::vector<std::string>{"stop", "load Movies 0 /data/playlists"});
+    t.busy = true;
+    run_frames(pb, t, milliseconds(5000));
+    CHECK(err.count("CRITICAL: Playlist switch timeout") == 0);
+    CHECK(s.is_switching_playlist);
+    t.busy = false;
+    run_frames(pb, t, milliseconds(1900));
+    CHECK(err.count("CRITICAL: Playlist switch timeout") == 0);
+    run_frames(pb, t, milliseconds(200));
+    CHECK(t.calls == std::vector<std::string>{"stop", "load Movies 0 /data/playlists", "stop"});
+    CHECK(err.count("CRITICAL: Playlist switch timeout") == 1);
 }
 
 TEST_CASE("List style: a playlist boundary is never bounded",

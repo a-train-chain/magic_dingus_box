@@ -131,6 +131,13 @@ public:
     // (GstPlayer::describe_state). Only the stall watchdog's log line reads
     // it; "" = not known.
     virtual std::string pipeline_state() const { return {}; }
+    // A stop or load handed to the pipeline has not been carried out yet:
+    // GstPlayer runs every state change on its own control thread, and with
+    // the SD card saturated one can wait seconds for a read
+    // (video/pipeline_control.h). The deadlines that count from a load's
+    // return — the channel start bound and the stuck-switch timeout — hold
+    // while this is true (hold_load_deadlines_while_busy).
+    virtual bool pipeline_busy() const { return false; }
 
     // steady_clock::now() in the kiosk; a hand-advanced clock in the tests.
     // Every switch deadline and the stuck-switch timeout read this.
@@ -284,7 +291,9 @@ public:
     // Channel Guide: how long a channel load — a tune's or an item
     // boundary's — has to bring its stream up, counted from when the load
     // call RETURNS (not from the press: the settle, the re-polls and
-    // load_item_media's own blocking settle are not the stream's time).
+    // load_item_media's own blocking settle are not the stream's time; nor
+    // is a wait for the pipeline's control thread to carry the load out —
+    // see hold_load_deadlines_while_busy).
     // Only past it does the load count as a failed item
     // (tick_pipeline_error), and a failed item darkens the channel for the
     // rest of its slot — so the bound is generous: media lives on the SD
@@ -426,6 +435,15 @@ private:
     // Drops channel_load_at_ once the stream is up or the load was taken
     // away. Called at the top of both ticks that read it.
     void drop_settled_channel_load();
+    // While the pipeline has not carried out the last stop/load yet
+    // (PlaylistTransport::pipeline_busy), the channel start bound and the
+    // stuck-switch timeout restart from now: they count from the load's
+    // RETURN, and the load returned at once into the control thread's
+    // queue. Before that queue existed the same wait sat inside the load
+    // call (holding the render loop), so the deadlines started after it —
+    // and a reload stuck on the card ended in a watchdog kill. Called at
+    // the top of both ticks that read them.
+    void hold_load_deadlines_while_busy();
     // Seconds played since the anchor (taking it on the first playing
     // frame); the player's own position when the stream is not a channel
     // load (List style).
