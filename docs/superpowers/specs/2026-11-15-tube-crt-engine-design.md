@@ -748,10 +748,16 @@ or a Rich30 mix of every costly row. While the Tube engine draws, the kiosk
 counts presents that miss their class's cadence (an interval over half a
 refresh past one refresh for Lean60, past `round(refresh/30)` refreshes for
 Rich30) and logs the count per minute in the journal next to the UI
-draw-call line. If a video is playing and more than 5% of frames over 30 s
-miss, it shows one toast ("This CRT look is too heavy for smooth video")
+draw-call line. If a video plays throughout and either more than half of
+the frames over 30 s miss, or more than 5% miss in each of 10 consecutive
+minutes, it shows one toast ("This CRT look is too heavy for smooth video")
 and sets `too_heavy` in the status the web page reads, until the setting or
-the frame class changes. It does not change the owner's settings.
+the frame class changes. It does not change the owner's settings. (The
+first rule, more than 5% over 30 s, fired against shipped looks on a busy
+box: Pi 5, 1080p, 2026-11-16, 12-13% late for two minutes while the Media
+Browser's containers restarted after a game and 20% for half a minute
+after a game, against 0.3-0.8% in quiet minutes; a look really too heavy
+is late on nearly every frame — TV on a full-screen film, 77%.)
 
 ## Acceptance
 
