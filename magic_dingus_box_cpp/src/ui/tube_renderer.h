@@ -101,13 +101,23 @@ public:
     // failure by itself. Never clears a hang.
     void retry_builds();
 
-    // ONE FRAME (Task 11), from end_scene_fbo_and_composite with the UI batch flushed:
-    // prepare(frame.plan, scene_decode_for(caps())) first (cheap when nothing changed),
-    // then the plan's passes - the glass bake and mask upload when the frame says so, the
+    // ONE FRAME (Task 11), from end_scene_fbo_and_composite with the UI batch flushed, in
+    // this order:
+    //   1. the frame's one-shot inputs are kept (the mask tile on mask_changed, the glass's
+    //      invalidation on glass_changed), so a refused or failed frame never loses them -
+    //      the next frame that draws uploads / re-bakes them;
+    //   2. the caller's inputs are checked, WITHOUT prepare(): env (scene texture and sizes),
+    //      `picture` size == frame.sizes, a mask (texture, or a tile handed over and kept),
+    //      a scene-texture failure recorded by begin_scene(), and on the hardware path the
+    //      scene texture being the SRGB8_ALPHA8 one begin_scene() made. A failed check
+    //      refuses the frame (logged once per reason; the marker removed once; nothing more
+    //      while it persists);
+    //   3. prepare(frame.plan, scene_decode_for(caps())) (cheap when nothing changed);
+    //   4. the plan's passes - the glass bake and mask upload when the frame says so, the
     // mean probe when request_mean() asked for one, quarter -> blur H -> blur V, signal,
     // lines - and the output into `picture` (top-left-origin framebuffer px; the bars
     // around it cleared black), through the afterglow history when the plan has one.
-    // CALL ORDER: composite() calls prepare() itself, then draws only the plan prepare()
+    // CALL ORDER: composite() calls prepare() itself (step 3), then draws only the plan prepare()
     // succeeded with; it refuses (returns false, draws nothing, marks nothing drawn) when
     // there is no current plan or it is not frame.plan - e.g. after end_tube_scene(). A
     // caller that also calls prepare() must do it in the same frame, before composite(),
@@ -116,10 +126,11 @@ public:
     // to frame.sizes.pic_w x pic_h). Leaves GL as the Enhanced composite does: VAO 0,
     // FBO 0, the whole-framebuffer viewport, units 7..0 unbound with unit 0 active, blend
     // on (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), env.ui_program, FRAMEBUFFER_SRGB off, the scene
-    // SKIP_DECODE; scissor, clear colour and pixel-store state as they were. False: Tube
-    // drew nothing usable this frame (not allowed or not built yet, a build or target
-    // failure, a GL error during the frame - recorded as a failure for this plan); the
-    // caller draws the Enhanced composite instead. Never waits on the GPU.
+    // SKIP_DECODE; scissor, clear colour and pixel-store state as they were (a frame refused
+    // at step 2 touches no GL at all). False: Tube drew nothing usable this frame - a
+    // caller-input refusal (step 2), not allowed or not built yet, a build, target, mask or
+    // glass failure, or a GL error during the frame (those recorded as a failure for this
+    // plan); the caller draws the Enhanced composite instead. Never waits on the GPU.
     bool composite(const GlEnv&, video::IRect picture, const tube::DriverFrame&);
     // Ask the next composite() to run the mean probe (call it when FrameDriver::mean_due()
     // says so, with note_mean_requested()). Ignored by a plan without the probe; while a
@@ -139,9 +150,11 @@ public:
     // Draws visible frames: not for production. True when every program drew cleanly.
     // Leaves no synthetic state behind (the programs stay built and drawn): the glass is
     // re-baked on the next frame, the mask texture is deleted, the afterglow history
-    // cleared, any probe in flight dropped and the plan forgotten. THE CALLER THEN CALLS
-    // FrameDriver::gpu_lost(), so the next frame carries the mask's pixels (mask_changed);
-    // until a frame does, composite() refuses with a once-logged warning.
+    // cleared, any probe in flight dropped and the plan forgotten; the real mask tile held
+    // before validation (if any) is kept and uploaded again on the next frame that draws.
+    // THE CALLER THEN CALLS FrameDriver::gpu_lost() (fresh mask pixels and targets on the
+    // next frame); if no real tile was ever handed over, composite() refuses (once-logged)
+    // until a frame carries mask_changed.
     bool validate_all_programs(const GlEnv&, video::IRect picture, tube::SceneDecode);
     // Every GL object deleted (a game took the display, or the Renderer is going). The next
     // composite() makes everything again. Clears a failure whose cause was the scene

@@ -273,6 +273,21 @@ struct TubeRenderer::Impl {
     // The mask (one period, NEAREST + REPEAT, RGBA8), from DriverFrame::mask on mask_changed.
     GLuint mask_tex = 0;
     int mask_w = 0, mask_h = 0;
+    // THE ONE-SHOT INPUTS. FrameDriver hands the mask's pixels (mask_changed) and the
+    // glass's change (glass_changed) on ONE frame only. composite() takes them BEFORE any
+    // check that can refuse the frame (take_one_shots), so a refused or failed frame
+    // cannot lose them:
+    //   - the tile is copied into `mask_tile` (one allocation, on a mask_changed frame only;
+    //     a newer tile replaces it) and `mask_pending` set; the next frame that reaches the
+    //     upload uploads it and clears the flag. The copy is kept after the upload: it IS
+    //     the current mask, so release() re-arms mask_pending from it (CPU data outlives a
+    //     context), and validation restores it after its synthetic grille.
+    //   - glass_changed clears glass_valid, so the next frame that draws re-bakes the glass
+    //     from its own uniforms (the glass inputs are still uniforms: the same on every
+    //     frame until the next glass_changed).
+    tube::MaskTile mask_tile;
+    bool mask_pending = false;
+    void take_one_shots(const tube::DriverFrame& f);
     void upload_mask(const tube::MaskTile& tile);
 
     // COLOUR SPACE FOR TASK 11's PASSES: draw every pass into a target with FRAMEBUFFER_SRGB

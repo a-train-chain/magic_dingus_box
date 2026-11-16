@@ -559,6 +559,9 @@ void TubeRenderer::Impl::release() {
     if (mask_tex) glDeleteTextures(1, &mask_tex);
     mask_tex = 0;
     mask_w = mask_h = 0;
+    // The kept tile is the current mask (CPU data, still valid): upload it again on the next
+    // frame that draws, even before the caller's gpu_lost() frame brings a fresh copy.
+    mask_pending = mask_tile.w > 0 && mask_tile.h > 0 && !mask_tile.rgb.empty();
     if (black_tex) glDeleteTextures(1, &black_tex);
     black_tex = 0;
     abandon_mean();   // the fence; a reading in flight is dropped

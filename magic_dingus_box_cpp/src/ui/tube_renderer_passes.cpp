@@ -358,8 +358,9 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
 
     // Targets: no GL in the steady state (sizes and formats compared only).
     if (!ensure_targets(plan, f.sizes)) return false;
-    if (f.mask_changed) {
-        upload_mask(f.mask);
+    if (mask_pending) {
+        mask_pending = false;
+        upload_mask(mask_tile);   // the newest tile handed over (take_one_shots)
         if (failed) return false;
     } else if (!mask_tex) {
         // composite() refuses this before prepare(); unreachable from there, kept so a
@@ -507,14 +508,27 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
     return true;
 }
 
+void TubeRenderer::Impl::take_one_shots(const tube::DriverFrame& f) {
+    if (f.mask_changed && !f.mask.rgb.empty()) {
+        mask_tile.w = f.mask.w;
+        mask_tile.h = f.mask.h;
+        mask_tile.rgb.assign(f.mask.rgb.begin(), f.mask.rgb.end());   // reuses the capacity when it can
+        mask_pending = true;
+    }
+    if (f.glass_changed) glass_valid = false;
+}
+
 // After validation: nothing synthetic may reach a real frame. The programs stay built and
 // drawn (that was the point); everything the synthetic frames filled is invalidated.
 void TubeRenderer::Impl::forget_synthetic_state(bool have_srgb_switch) {
     TubeGlState state(have_srgb_switch);
     glass_valid = false;   // the next frame re-bakes from ITS uniforms, glass_changed or not
-    if (mask_tex) glDeleteTextures(1, &mask_tex);   // the grille: composite() refuses until mask_changed
+    if (mask_tex) glDeleteTextures(1, &mask_tex);   // the grille
     mask_tex = 0;
     mask_w = mask_h = 0;
+    // validate_all_programs() put the real tile (if any) back into mask_tile; it is uploaded
+    // on the next frame that draws. Without one, composite() refuses until mask_changed.
+    mask_pending = mask_tile.w > 0 && mask_tile.h > 0 && !mask_tile.rgb.empty();
     glDisable(GL_SCISSOR_TEST);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     for (Target& h : history)   // validation content must not glow on as afterglow
@@ -540,6 +554,8 @@ void TubeRenderer::set_mean_sink(std::function<void(double)> sink) { impl_->mean
 bool TubeRenderer::composite(const GlEnv& env, video::IRect picture, const tube::DriverFrame& frame) {
     Impl& m = *impl_;
     const tube::SceneDecode decode = scene_decode_for(caps());
+    // The driver's one-shot inputs first: a refusal below must not lose them.
+    m.take_one_shots(frame);
     // THE CALLER'S ERRORS, checked BEFORE prepare(): a refusal never runs prepare()'s full
     // path and never arms the marker. Each refusal is logged once and stands down
     // (refuse_frame: the marker a previous frame wrote is removed once; after that a
@@ -561,11 +577,16 @@ bool TubeRenderer::composite(const GlEnv& env, video::IRect picture, const tube:
             LOG_WARN("tube: picture {}x{} is not the driver's {}x{}; drawing Enhanced (logged once)", picture.w,
                      picture.h, frame.sizes.pic_w, frame.sizes.pic_h);
         });
-    if (!m.mask_tex && !frame.mask_changed)
+    if (!m.mask_tex && !m.mask_pending)   // no texture, no tile this frame, none kept
         return refuse(m.missing_mask_logged, [] {
-            LOG_WARN("tube: no mask texture and the frame carries no mask - FrameDriver::gpu_lost() not called "
-                     "after release_gl() or validate_all_programs(); drawing Enhanced (logged once)");
+            LOG_WARN("tube: no mask texture and no mask tile has ever been handed over (FrameDriver::gpu_lost() "
+                     "not called after validate_all_programs() on a first frame?); drawing Enhanced (logged once)");
         });
+    // begin_scene() already logged the real ERROR, and prepare() refuses meanwhile.
+    if (m.scene_srgb_failed) {
+        m.refuse_frame();
+        return false;
+    }
     if (decode == tube::SceneDecode::Hardware &&
         !(m.scene_tex == env.scene_tex && m.scene_format == GL_SRGB8_ALPHA8))
         return refuse(m.scene_not_srgb_logged, [&] {
@@ -604,6 +625,10 @@ bool TubeRenderer::validate_all_programs(const GlEnv& env, video::IRect picture,
     }
     m.prepared_ok = false;
     m.current_plan.reset();
+    // The real tile (the current mask) survives the synthetic grille: restored at the end.
+    tube::MaskTile real_mask = std::move(m.mask_tile);
+    m.mask_tile = tube::MaskTile{};
+    m.mask_pending = false;
 
     const tube::Picture pic{static_cast<double>(picture.w), static_cast<double>(picture.h), false};
     const tube::Resolved resolved = tube::resolve(tube::TubeSetting{});
@@ -622,6 +647,7 @@ bool TubeRenderer::validate_all_programs(const GlEnv& env, video::IRect picture,
         f.glow_sigma = plan.glow ? tube::glow_sigma_px(resolved, pic) : 0.0f;
         f.mask = tube::mask_tile(tube::Mask::grille, 3, 0.5f);
         f.still_changed = f.glass_changed = f.mask_changed = true;
+        m.take_one_shots(f);
         m.validate_failed_in.reset();
         m.validating = true;
         m.mean_requested = plan.mean_probe;
@@ -657,6 +683,7 @@ bool TubeRenderer::validate_all_programs(const GlEnv& env, video::IRect picture,
                          program_name(p));
         }
     }
+    m.mask_tile = std::move(real_mask);
     m.forget_synthetic_state(c.srgb_write_control);
     const auto good = static_cast<std::size_t>(std::count(ok.begin(), ok.end(), true));
     LOG_INFO("tube validate: {} of {} programs OK", good, tube::kProgramCount);
