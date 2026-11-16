@@ -670,6 +670,16 @@ class RuntimeTests(unittest.TestCase):
                                            'failed_at':self.a.wall(),'count':2}])
         self.assertEqual(self.c.round_attempts,['node-us-119.protonvpn.net'])
 
+    def test_a_failed_rotation_and_its_escalation_count_as_one_failure(self):
+        # The rotation away records the server; a hung settings PUT leaves it
+        # as attempted, and the escalation restart records it again.
+        server={'hostname':'node-us-119.protonvpn.net','endpoint_ip':'185.156.46.33','country':'United States'}
+        self.c._record_failure(server)
+        self.a.now+=60
+        self.c._record_failure(server)
+        self.assertEqual(self.c.failures,[{'hostname':server['hostname'],'endpoint_ip':server['endpoint_ip'],
+                                           'failed_at':self.a.wall()}])
+
     def test_traffic_cadence_survives_nonzero_observation_duration(self):
         requested=[]
         cached={}
