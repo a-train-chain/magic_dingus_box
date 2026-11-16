@@ -3,6 +3,7 @@
 #include "video_player.h"
 #include "deferred_start.h"
 #include "log_rate_limit.h"
+#include "pipeline_control.h"
 #include "query_cache.h"
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
@@ -50,10 +51,33 @@ public:
     // new pipeline decodes its first one. 0 = nothing ever loaded.
     uint64_t stream_generation() const { return stream_generation_; }
 
+    // The appsink can only hold the CURRENT stream's frames: the control
+    // thread has taken the pipeline through NULL (which empties the appsink)
+    // for the latest load_file(). Until then a sample in it is the previous
+    // stream's, so GstRenderer must not pull one (it would be drawn as the
+    // new stream's first frame).
+    bool frames_current() const {
+        return flushed_generation_.load() == stream_generation_;
+    }
+
+    // A stop/load/play/pause/seek handed to the control thread has not been
+    // carried out yet (pipeline_control.h). update_state() leaves the
+    // pipeline alone meanwhile; callers whose deadlines count from a load
+    // (PlaylistPlayback's start bound) hold them while this is true, so
+    // time spent waiting on the SD card is not the stream's time.
+    bool pipeline_busy() const { return control_.busy(); }
+
+    // One command has been in hand for kWedgedAfter (30 s): wedged, not slow.
+    // main.cpp then stops pinging the systemd watchdog, so a deadlocked
+    // decoder or a dead card still ends in a restart, as it did when these
+    // calls blocked the render loop itself.
+    bool pipeline_wedged() const { return control_.wedged(); }
+
     // The pipeline's current state, its pending one and the last state
     // change's return, e.g. "PAUSED -> PLAYING (ASYNC)" — read with a ZERO
-    // timeout, so it never blocks the render thread. For the stall
-    // watchdog's log line (PlaylistTransport::pipeline_state).
+    // timeout, so it never blocks the render thread — plus the control
+    // thread's command in hand, if any. For the stall watchdog's log line
+    // (PlaylistTransport::pipeline_state).
     std::string describe_state() const;
 
     // Set PulseAudio device on the audio sink (e.g. sink name)
@@ -96,6 +120,21 @@ private:
     std::atomic<bool> has_error_{false};
     std::atomic<double> duration_;
     std::atomic<double> position_;
+    // The volume last asked for (percent). get_volume() answers from it:
+    // reading playbin's "volume" asks pulsesink, which waits for a
+    // PulseAudio round trip — on the render thread, at every video start.
+    std::atomic<double> volume_pct_{100.0};
+    // Written by the control thread once a load's NULL has run (see
+    // frames_current()); stream_generation_ is the render thread's own.
+    std::atomic<uint64_t> flushed_generation_{0};
+    // The control thread's seek_simple() returned FALSE for the seek with
+    // this serial: no ASYNC_DONE will come, so update_state() clears
+    // seek_in_progress_ (see fire_seek()) — if it is still the seek in
+    // flight. seek_serial_ (render thread) numbers every fire_seek() and is
+    // bumped by forget_stream(), so a late rejection from the previous
+    // stream never matches.
+    std::atomic<uint64_t> rejected_seek_serial_{0};
+    uint64_t seek_serial_ = 0;
     // Per-frame memo of the two pipeline queries (query_cache.h):
     // update_position() refreshes them once per frame, the getters reuse
     // that answer for the rest of the frame. Invalidated by seeks/stop.
@@ -161,6 +200,12 @@ private:
 
     void update_position();
 
+    // The pipeline as an owned reference for a queued command.
+    std::shared_ptr<void> pipeline_ref() const;
+    // Runs on the control thread: the GStreamer half of each command.
+    void execute(const PipelineCommand& cmd);
+    static void apply_volume(double volume, const std::shared_ptr<void>& target);
+
     // Forget everything this player reports about a stream: playing /
     // paused / EOS / error, position, duration, their query memos, the seek
     // coalescer and the deferred start. stop() and cleanup() both end with
@@ -172,6 +217,14 @@ private:
     // then saw "duration 40.1, position 1.68" and raised video_active for a
     // stream that did not exist (Pi 5, 2026-11-13).
     void forget_stream();
+
+    // Every pipeline state change, seek and volume change runs here, off
+    // the render thread (pipeline_control.h). Declared LAST: destroyed
+    // first, so its thread is joined while everything execute() touches
+    // still exists.
+    PipelineControl control_{
+        [this](const PipelineCommand& cmd) { execute(cmd); },
+        &GstPlayer::apply_volume};
 };
 
 } // namespace video

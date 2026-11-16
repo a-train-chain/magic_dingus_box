@@ -119,7 +119,10 @@ package import's ZIP extraction still writes unpaced; its spool is paced.
   reload's playlist transition held the kiosk's main loop for more than 10 s.
   With uploads paced this no longer happened in our runs, but any other
   heavy writer (an OTA rsync, a package import's extraction) can still
-  trigger it.
+  trigger it. **Fixed** (2026-11-16): the reload's `stop()` waited for the
+  demuxer's read in flight; every GStreamer state change now runs on
+  `GstPlayer`'s control thread. See `2026-11-16-watchdog-sd-saturation.md`.
 - **`IOWeight=1000` in `magic-dingus-box-cpp.service`** is described as
   keeping movie reads ahead of background writes. On this kernel it does
-  nothing.
+  nothing. **Done** (2026-11-16): kept as harmless, and the unit's comment
+  now says what it does not do (same write-up).

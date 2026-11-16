@@ -115,7 +115,10 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
     if (item.source_type == "local") {
         std::cout << "Starting playlist transition..." << std::endl;
 
-        // Stop current playback
+        // Stop current playback. Queued, not waited for: GstPlayer's control
+        // thread takes the pipeline to NULL, which can wait seconds for a
+        // read the SD card holds (video/pipeline_control.h — a stall
+        // reload stuck right here was a watchdog kill on 2026-11-15).
         stop();
         std::cout << "Stopped playback, loading new file..." << std::endl;
 
@@ -125,8 +128,11 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         // They should become a per-frame state machine like the playlist
         // switch in playlist_playback.cpp, but the settle exists because the
         // DRM driver needs time to release the previous video's buffers, so
-        // that change needs hardware validation on both boards. (A MISSING
-        // file no longer reaches here — load_playlist_item refuses it first.)
+        // that change needs hardware validation on both boards. The control
+        // thread measures this gap from when the stop actually FINISHED, so
+        // the hardware still sees NULL, >= 200 ms, PLAYING (load_not_before).
+        // (A MISSING file no longer reaches here — load_playlist_item refuses
+        // it first.)
         wait_with_callback(200, progress_callback);
 
         // Load the new file
@@ -156,7 +162,8 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
                 std::cerr << "Warning: Playback did not start after load - this may cause playlist switching issues" << std::endl;
             }
 
-            // Debug: Check audio-related properties after video starts
+            // Debug: Check audio-related properties after video starts. The
+            // volume last set, not a PulseAudio read-back (GstPlayer).
             try {
                 double vol = player_->get_volume();
                 std::cout << "DEBUG: After playlist transition - volume=" << vol << std::endl;

@@ -19,6 +19,7 @@
 #include "../video/video_player.h"
 #include "../utils/config.h"
 #include "../utils/path_resolver.h"
+#include "../utils/stall_report.h"
 #include "../utils/subprocess.h"
 #include "app_state.h"
 
@@ -121,14 +122,19 @@ utils::Result<> Controller::load_file_with_resolution(const std::string& path, c
         return utils::Result<>::fail("Player not initialized");
     }
 
-    std::string resolved_path = utils::resolve_video_path(path, playlist_dir);
+    std::string resolved_path;
+    {
+        // stat()s of the SD card on the render loop (utils/stall_report.h).
+        utils::SlowSection slow("load_file_with_resolution's path resolution");
+        resolved_path = utils::resolve_video_path(path, playlist_dir);
 
-    // Check if file exists before trying to load
-    fs::path file_path(resolved_path);
-    if (!fs::exists(file_path)) {
-        std::string error = "Video file does not exist: " + resolved_path;
-        std::cerr << "ERROR: " << error << std::endl;
-        return utils::Result<>::fail(error);
+        // Check if file exists before trying to load
+        fs::path file_path(resolved_path);
+        if (!fs::exists(file_path)) {
+            std::string error = "Video file does not exist: " + resolved_path;
+            std::cerr << "ERROR: " << error << std::endl;
+            return utils::Result<>::fail(error);
+        }
     }
 
     bool success = player_->load_file(resolved_path, start, end, loop);
@@ -453,7 +459,15 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
     const bool movie = item.movie_tmdb_id > 0;
     if (movie && (item.source_type != "local" || item.path.empty() || item.path.front() != '/'))
         return utils::Result<>::fail("Movie requires a worker-published absolute local path");
-    if (const auto missing = movie ? std::nullopt : missing_video_file(item, playlist_directory)) {
+    std::optional<std::string> missing;
+    if (!movie) {
+        // stat()s of the SD card on the render loop. Logged when slow, with
+        // the page faults that made it slow (utils/stall_report.h): 254 ms
+        // and one fault at worst on magicpi5 under a 2 GiB unpaced write.
+        utils::SlowSection slow("load_playlist_item's missing-file check");
+        missing = missing_video_file(item, playlist_directory);
+    }
+    if (missing) {
         std::string error = "Failed to load playlist item: " + item.path +
                             " (Video file does not exist: " + *missing + ")";
         std::cerr << "Error: " << error << std::endl;
