@@ -8,12 +8,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "tube_renderer.h"
+#include "../tube/tube_gpu_timing.h"
 
 // Extension tokens (GL_EXT_sRGB_write_control, GL_EXT_texture_sRGB_decode,
 // GL_EXT_disjoint_timer_query), in case the GLES3 headers lack gl2ext's copies.
@@ -301,11 +303,80 @@ struct TubeRenderer::Impl {
     int scene_w = 0, scene_h = 0;
     GLenum scene_format = 0;
 
-    // Reserved for Task 11 (the mean probe's read-back and the GPU timers); release_gl()
-    // deletes whatever is here.
+    // ---- The frame (tube_renderer_passes.cpp) -------------------------------------------
+    // One frame's passes into the real targets and the default framebuffer, for the plan
+    // and decode prepare() last succeeded with (current_plan, current_decode). False: nothing usable was drawn (the caller draws Enhanced).
+    bool draw_frame(const GlEnv& env, video::IRect pic, const tube::DriverFrame& f);
+    // One pass's draw call: records the program for this frame's drawn list (committed
+    // by draw_frame() only once the frame ends without a GL error) and, on its first real
+    // draw, the CPU time across the call (Mesa's synchronous variant compile is in it).
+    void draw_pass(tube::Program p);
+    std::array<tube::Program, tube::kProgramCount> drawn_now{};
+    std::size_t drawn_now_count = 0;
+    std::array<double, tube::kProgramCount> first_draw_ms{};   // < 0: not first-drawn since build
+    // validate_all_programs(): glGetError after every draw, so a failure names its program.
+    bool validating = false;
+    std::optional<tube::Program> validate_failed_in;
+    // The plan whose GL error was last logged (log once per distinct plan).
+    std::optional<tube::PassPlan> gl_error_logged_plan;
+    bool foreign_error_logged = false;   // a GL error pending BEFORE composite (not ours)
+    bool size_mismatch_logged = false;
+    bool missing_mask_logged = false;
+
+    // A 1x1 black SRGB8_ALPHA8 texture for every sampler a program declares but this plan
+    // does not feed (the glow when the plan dropped it): no sampler reads an incomplete
+    // texture, and the format matches what the sampler reads when the pass exists.
+    GLuint black_tex = 0;
+    GLuint black();
+
+    // THE MEAN PROBE. Never waits, one read-back in flight:
+    //   idle    -> (requested, plan has the probe) the picture into `mean` (quarter.frag),
+    //              glGenerateMipmap, fence A                                   -> mipped
+    //   mipped  -> (fence A signalled: the GPU has finished the mips) glReadPixels of
+    //              level 6 into the PBO, fence B                                -> reading
+    //   reading -> (fence B signalled) map 4 bytes, decode, the sink           -> idle
+    // Every check is glClientWaitSync(fence, 0, 0). The read-back is issued only once the
+    // mips are finished, so even a driver that serves a PBO read on the CPU (mapping the
+    // texture) finds it idle and does not wait - the likely cause of the spike's stall,
+    // which read back in the same frame it drew the probe.
+    enum class MeanStage : std::uint8_t { idle, mipped, reading };
+    MeanStage mean_stage = MeanStage::idle;
+    bool mean_requested = false;
+    std::function<void(double)> mean_sink;
     GLuint mean_read_fbo = 0, mean_pbo = 0;
     GLsync mean_fence = nullptr;
-    std::vector<GLuint> queries;
+    void poll_mean();
+    void abandon_mean();
+    void run_mean_probe(const GlEnv& env, video::IRect pic);
+
+    // THE DEBUG GPU TIMERS (MDB_TUBE_GPU_TIMING=1, read once at construction). A ring of
+    // four sets of GL_TIME_ELAPSED_EXT queries, one per PassTimingAverager pass, made the
+    // first time a set is used (none exist with the variable unset). A set's results are
+    // read only once all are available; a set still pending when its turn comes round is
+    // dropped. Queries never nest: one pass query open at a time (timer_open), and the
+    // glass bake's own query is begun and ended inside bake_glass(), which draw_frame()
+    // calls before any pass query is opened.
+    static constexpr std::size_t kTimedPasses = 7;
+    static constexpr std::size_t kTimerSets = 4;
+    struct TimerSet {
+        std::array<GLuint, kTimedPasses> q{};
+        std::array<bool, kTimedPasses> pending{};
+        bool any_pending() const {
+            for (bool p : pending)
+                if (p) return true;
+            return false;
+        }
+    };
+    bool gpu_timing = false;
+    std::array<TimerSet, kTimerSets> timer_ring{};
+    std::size_t timer_slot = 0;
+    bool timer_open = false;
+    unsigned long timer_dropped = 0;
+    tube::PassTimingAverager timing;
+    void collect_timers();
+    void timer_begin(tube::PassTimingAverager::Pass pass);
+    void timer_end();
+    void free_timers();
 
     void release();   // every GL object, ids zeroed, scene storage forgotten
 };

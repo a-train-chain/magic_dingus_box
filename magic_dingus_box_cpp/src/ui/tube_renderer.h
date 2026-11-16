@@ -32,17 +32,20 @@
 //   drawn cannot hang, and a stale marker would read as a hang at the next restart.
 //
 // THE CALLING PATTERN (Task 12), every frame the engine is Tube:
-//     if (tube.prepare(frame.plan, scene_decode_for(tube.caps())) && tube.composite(...)) ...
+//     if (tube.composite(env, picture, frame)) ...   (composite() calls prepare() itself)
 //     else  draw the Enhanced composite;  status reason = tube.unavailable_reason()
-//   ALWAYS call prepare(), even while unavailable_reason() is "build_failed": prepare() is
-//   what clears a failure once the plan has changed, so gating prepare() on available()
-//   would keep Tube off forever. prepare() is cheap when nothing changed (no allocation, no
-//   GL query). available() / unavailable_reason() are for status only. On an engine change
-//   call retry_builds() (beside FrameDriver::start); on leaving Tube, end_tube_scene().
+//   ALWAYS call composite() (it calls prepare() first), even while unavailable_reason() is
+//   "build_failed": prepare() is what clears a failure once the plan has changed, so
+//   gating it on available() would keep Tube off forever. prepare() is cheap when nothing
+//   changed (no allocation, no GL query). available() / unavailable_reason() are for
+//   status only. Calling prepare() on its own beforehand is harmless (the fast path).
+//   On an engine change call retry_builds() (beside FrameDriver::start); on leaving Tube,
+//   end_tube_scene().
 #pragma once
 
 #include <GLES3/gl3.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -94,8 +97,38 @@ public:
     // failure by itself. Never clears a hang.
     void retry_builds();
 
-    bool composite(const GlEnv&, video::IRect picture, const tube::DriverFrame&);  // Task 11
-    bool validate_all_programs(const GlEnv&, video::IRect picture, tube::SceneDecode);  // Task 14
+    // ONE FRAME (Task 11), from end_scene_fbo_and_composite with the UI batch flushed:
+    // prepare(frame.plan, scene_decode_for(caps())) first (cheap when nothing changed),
+    // then the plan's passes - the glass bake and mask upload when the frame says so, the
+    // mean probe when request_mean() asked for one, quarter -> blur H -> blur V, signal,
+    // lines - and the output into `picture` (top-left-origin framebuffer px; the bars
+    // around it cleared black), through the afterglow history when the plan has one.
+    // `picture` must be the rectangle the driver's Picture was made from (its size equal
+    // to frame.sizes.pic_w x pic_h). Leaves GL as the Enhanced composite does: VAO 0,
+    // FBO 0, the whole-framebuffer viewport, units 7..0 unbound with unit 0 active, blend
+    // on (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), env.ui_program, FRAMEBUFFER_SRGB off, the scene
+    // SKIP_DECODE; scissor, clear colour and pixel-store state as they were. False: Tube
+    // drew nothing usable this frame (not allowed or not built yet, a build or target
+    // failure, a GL error during the frame - recorded as a failure for this plan); the
+    // caller draws the Enhanced composite instead. Never waits on the GPU.
+    bool composite(const GlEnv&, video::IRect picture, const tube::DriverFrame&);
+    // Ask the next composite() to run the mean probe (call it when FrameDriver::mean_due()
+    // says so, with note_mean_requested()). Ignored by a plan without the probe; while a
+    // reading is still in flight the request waits for it. The value reaches the sink a few
+    // frames later, never by waiting.
+    void request_mean();
+    // Where a finished mean reading goes: linear luma (0.2126 R + 0.7152 G + 0.0722 B) of
+    // the picture, 0..1. The caller passes it to FrameDriver::on_mean(). Called from inside
+    // composite(), on the render thread.
+    void set_mean_sink(std::function<void(double)> sink);
+    // PREVIEW / HARDWARE VALIDATION (Task 14): every program of the table built afresh
+    // with `decode` and drawn once through its real pass, plan by plan
+    // (tube::validation_plans()), into the REAL default framebuffer and targets with
+    // synthetic frames, each plan under the guard like any build. Logs
+    // "tube validate: <program> first real draw <ms> ms" per program and
+    // "tube validate: N of 19 programs OK"; a failure names the program being drawn.
+    // Draws visible frames: not for production. True when every program drew cleanly.
+    bool validate_all_programs(const GlEnv&, video::IRect picture, tube::SceneDecode);
     void release_gl();
 
 private:

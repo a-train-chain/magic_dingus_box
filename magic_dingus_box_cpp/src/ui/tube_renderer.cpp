@@ -164,6 +164,10 @@ TubeRenderer::Impl::Impl(std::string guard_path) : guard(std::move(guard_path)) 
         LOG_ERROR("tube: the last shader build never finished (marker names: {}); Tube stays off until the box "
                   "reboots",
                   guard.tripped_program());
+    first_draw_ms.fill(-1.0);
+    if (const char* v = std::getenv("MDB_TUBE_GPU_TIMING")) gpu_timing = std::string_view(v) == "1";
+    if (gpu_timing)
+        LOG_INFO("tube: MDB_TUBE_GPU_TIMING=1 - per-pass GPU timers on (debug; they cost frames: never in production)");
 #ifdef MDB_TUBE_PREVIEW
     if (const char* v = std::getenv("MDB_TUBE_FORCE_HANG")) force_hang = v;
     if (!force_hang.empty()) LOG_WARN("tube: MDB_TUBE_FORCE_HANG={} (preview build): that build will hang", force_hang);
@@ -275,6 +279,7 @@ bool TubeRenderer::Impl::build(tube::Program p, tube::SceneDecode decode) {
         if (!known) LOG_WARN("tube: program {} lists uniform {} that no table here knows (not uploaded)", info.name, name);
     }
     programs[static_cast<std::size_t>(p)] = std::move(s);
+    first_draw_ms[static_cast<std::size_t>(p)] = -1.0;
     LOG_INFO("tube: program {} compiled+linked in {:.1f} ms (scene decode {})", info.name, ms, decode_name(decode));
     return true;
 }
@@ -524,13 +529,14 @@ void TubeRenderer::Impl::release() {
     if (mask_tex) glDeleteTextures(1, &mask_tex);
     mask_tex = 0;
     mask_w = mask_h = 0;
+    if (black_tex) glDeleteTextures(1, &black_tex);
+    black_tex = 0;
+    abandon_mean();   // the fence; a reading in flight is dropped
+    mean_requested = false;
     if (mean_read_fbo) glDeleteFramebuffers(1, &mean_read_fbo);
     if (mean_pbo) glDeleteBuffers(1, &mean_pbo);
-    if (mean_fence) glDeleteSync(mean_fence);
     mean_read_fbo = mean_pbo = 0;
-    mean_fence = nullptr;
-    if (!queries.empty()) glDeleteQueries(static_cast<GLsizei>(queries.size()), queries.data());
-    queries.clear();
+    free_timers();
     if (glass_query) glDeleteQueries(1, &glass_query);
     glass_query = 0;
     glass_query_pending = false;
