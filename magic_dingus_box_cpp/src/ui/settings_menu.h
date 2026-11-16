@@ -279,6 +279,7 @@ private:
     // The films answer is held as -1 (none) or the CrtEngine's value: this header does
     // not include app_state.h.
     int display_film_engine_ = -1;
+    bool display_shows_tube_rows_ = false;   // the Display page was built with the Tube rows
     bool display_degauss_live_ = false;
     int tube_group_return_index_ = 0;
     tube::Edit tube_edit_;

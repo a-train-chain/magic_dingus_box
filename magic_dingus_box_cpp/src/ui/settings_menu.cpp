@@ -132,7 +132,8 @@ void SettingsMenuManager::update() {
     // The Display page's Look row (" · films: Enhanced") and Degauss row follow the same
     // way: rebuilt only when an answer differs from the one the page was built with (the
     // display mode or menu style changed, a film is handed over); both are allocation-free.
-    if (current_submenu_ == MenuSection::DISPLAY && app_state_ &&
+    // Only while the page shows Tube rows (never in a build without the Tube renderer).
+    if (current_submenu_ == MenuSection::DISPLAY && display_shows_tube_rows_ && app_state_ &&
         (film_engine_code(app::tube_film_engine(*app_state_)) != display_film_engine_ ||
          app::tube_degauss_live(*app_state_) != display_degauss_live_)) {
         rebuild_current_submenu();
@@ -207,10 +208,6 @@ void SettingsMenuManager::update() {
 }
 
 std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
-    if (app_state_) {   // what the Tube rows are built saying (update() compares)
-        display_film_engine_ = film_engine_code(app::tube_film_engine(*app_state_));
-        display_degauss_live_ = app::tube_degauss_live(*app_state_);
-    }
     if (!app_state_) {
         return {
             MenuItem("Error: No AppState", MenuSection::BACK),
@@ -298,7 +295,11 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                            app::SettingsPersistence::save_settings(*app_state_);
                        });
 
-    if (app::display_crt_rows(settings.crt_engine, tube_offered).tube) {
+    display_shows_tube_rows_ = app::display_crt_rows(settings.crt_engine, tube_offered).tube;
+    if (display_shows_tube_rows_) {
+        // What the Tube rows are built saying (update() compares).
+        display_film_engine_ = film_engine_code(app::tube_film_engine(*app_state_));
+        display_degauss_live_ = app::tube_degauss_live(*app_state_);
         auto& tube_setting = settings.tube;
         const bool crt_native = settings.mode == app::DisplayMode::CRT_NATIVE;
         items.emplace_back(app::tube_look_label(tube_setting, crt_native, app::tube_film_engine(*app_state_)),
