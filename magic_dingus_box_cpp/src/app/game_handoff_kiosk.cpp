@@ -50,7 +50,8 @@ void launch_game_from_browser(Controller& controller, AppState& state,
         // Swap buffers (renders to GBM surface)
         gfx.egl.swap_buffers();
 
-        // Present frame (flips DRM page)
+        // Present frame (flips DRM page). A dropped frame (false) needs
+        // nothing here: the next progress callback draws the plate again.
         gfx.frame_presenter.present(mode.width, mode.height);
     };
 

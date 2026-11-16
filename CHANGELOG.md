@@ -97,6 +97,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1 AM; manually chosen programmes finish whole.
 
 ### Fixed
+- **One slow moment no longer costs the picture for the rest of the day.**
+  When the box was briefly overloaded — most often right after a game or
+  movie ended on a Media Browser box — one late frame left the TV app
+  showing every other frame the slow way, and filling its log with
+  "Page flip failed" lines, until it was restarted (about 110,000 an hour
+  for ten hours on one box). It now waits for the late frame and is back
+  to normal within a few frames, with one line in the log.
 - **Videos keep playing smoothly while you upload a big file.** Uploads
   used to be written to the SD card twice, as fast as the card would take
   them, so the TV froze, jumped ahead or restarted its channel. Each upload
