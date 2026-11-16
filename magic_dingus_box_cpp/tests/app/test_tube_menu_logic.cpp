@@ -10,7 +10,7 @@ using app::CrtEngine;
 
 TEST_CASE("tube menu logic: Tube is offered only on a Pi 5 with the renderer ready", "[tube]") {
     app::AppState s;
-    REQUIRE_FALSE(s.tube_renderer_ready);                         // kTubeRendererReady is false
+    s.tube_renderer_ready = false;   // the production default (pinned by "a production build is not renderer-ready")
     REQUIRE(app::tube_not_offered_reason(s) == "needs_pi5");
     s.platform_profile.tube_crt_engine = true;
     REQUIRE_FALSE(app::tube_offered(s)); REQUIRE(app::tube_not_offered_reason(s) == "not_ready");
@@ -56,4 +56,12 @@ TEST_CASE("tube menu logic: labels", "[tube]") {
     REQUIRE(app::tube_row_kind(std::nullopt, true) == app::TubeRowKind::NotApplicable);
     REQUIRE(app::tube_row_kind(std::nullopt, false) == app::TubeRowKind::Mask);
     REQUIRE(app::tube_na_label("SCANLINES") == "SCANLINES: n/a");
+}
+TEST_CASE("tube menu logic: a production build is not renderer-ready", "[tube]") {
+#ifndef MDB_TUBE_PREVIEW
+    REQUIRE_FALSE(app::kTubeRendererReady);
+    app::AppState s; s.platform_profile.tube_crt_engine = true;
+    s.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    REQUIRE(app::effective_crt_engine(s.display_settings.crt_engine, app::tube_offered(s)) == app::CrtEngine::Enhanced);
+#endif
 }

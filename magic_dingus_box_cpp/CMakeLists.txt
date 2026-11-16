@@ -55,6 +55,17 @@ option(BUILD_TESTS "Build unit test targets" ON)
 # toast.cpp from the build even when the flag was set.
 option(ENABLE_MEDIA_BROWSER "Build experimental Media Browser feature" OFF)
 
+# TEST-ONLY: a Tube CRT renderer preview build (removed by the plan's last task).
+# ON turns app::kTubeRendererReady on, so a Pi 5 offers and draws the Tube engine;
+# the binary logs "TUBE PREVIEW BUILD" at start and CI (test-local.yml kiosk-build,
+# release.yml) refuses one. Defined here, before any target, so every translation
+# unit (kiosk and tests alike) sees the same constant.
+option(MDB_TUBE_PREVIEW "TEST-ONLY Tube renderer preview build - never ship" OFF)
+if(MDB_TUBE_PREVIEW)
+    add_compile_definitions(MDB_TUBE_PREVIEW=1)
+    message(WARNING "MDB_TUBE_PREVIEW=ON: a TEST-ONLY Tube preview build - never ship it")
+endif()
+
 # The Tube renderer's GLSL files, embedded at configure time into
 # ${CMAKE_BINARY_DIR}/generated/tube/tube_shader_sources.h (on the kiosk's and
 # test_app_unit's include paths). Each file is a configure dependency.

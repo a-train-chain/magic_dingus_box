@@ -71,6 +71,8 @@
 #include "app/settings_persistence.h"
 #include "app/status_writer.h"
 #include "app/tube_live.h"
+#include "app/tube_pacing.h"
+#include "app/tube_redraw.h"
 #include "app/playback_reset.h"
 #include "app/redraw_gate.h"
 #include "app/post_game_gate.h"
@@ -180,6 +182,9 @@ int main(int /* argc */, char* /* argv */[]) {
     logging::init(log_path);
 
     LOG_INFO("Magic Dingus Box C++ Kiosk Engine (Async PageFlip)");
+#ifdef MDB_TUBE_PREVIEW
+    LOG_WARN("TUBE PREVIEW BUILD — test only, never ship");
+#endif
     LOG_DEBUG("Log file: {}", log_path.empty() ? "console only" : log_path);
 
     // Initialize random number generator for Master Shuffle
@@ -908,6 +913,11 @@ int main(int /* argc */, char* /* argv */[]) {
 #ifdef HAVE_SYSTEMD
     sd_notify(0, "READY=1");
 #endif
+    // The Tube engine may build shader programs only from here: the watchdog
+    // runs from READY=1, so a compile that hangs is caught in ~10 s instead of
+    // leaving a blank TV until the start timeout. Compiled out of production
+    // (app::kTubeRendererReady false).
+    if constexpr (app::kTubeRendererReady) ui_renderer.allow_tube_builds();
 
     // Graceful-stop signals — see handle_shutdown_signal at the top of
     // this file.
@@ -1035,6 +1045,15 @@ int main(int /* argc */, char* /* argv */[]) {
     int64_t crt_last_drawn_field = 0;
     bool crt_field_rate_logged = false;
     auto last_present_done = std::chrono::steady_clock::now();
+
+    // The Tube engine's pacing (app/tube_pacing.h): late presents counted while
+    // the tube draws, reset when its setting or frame class changes. Used only
+    // when app::kTubeRendererReady (TEST-ONLY preview builds until the plan's last
+    // task); in production it is constructed here and never called.
+    app::TubePacingMonitor tube_pacing;
+    tube::TubeSetting tube_pacing_setting{};
+    tube::FrameClass tube_pacing_class = tube::FrameClass::Lean60;
+    bool tube_pacing_armed = false;
 
     // UI draw calls per drawn frame (MDB_BATCH_UI A/B), reported per minute.
     struct {
@@ -2141,6 +2160,75 @@ int main(int /* argc */, char* /* argv */[]) {
             last_render_decision = should_render_video;
         }
 
+        // Modern TV uses a 4:3 area for the playlist/guide UI and the whole
+        // output for a full-screen film. Video and UI share the content rect.
+        // Computed here, once per iteration and before the gate, because the
+        // Tube engine's picture (below) is this same rectangle; the drawing
+        // block uses these values.
+        bool use_letterbox = (state.display_settings.mode == app::DisplayMode::MODERN_TV);
+        const bool movie_full_screen_now = app::movie_full_screen(state);
+
+        // Media Browser content is modern 16:9 (movie posters, movie
+        // playback) — skip the 4:3 pillarbox viewport that wraps the
+        // main UI's 4:3 playlist videos. Full-screen guide films also use
+        // the whole output, with no bezel. Both the per-screen layouts
+        // and ad-hoc movie playback assume the full 1280x720 viewport.
+        // Same gating idea as the bezel skip below (kept as a separate
+        // flag so future tweaks to either don't have to touch the other).
+#ifdef MEDIA_BROWSER_ENABLED
+        const bool media_browser_now =
+            state.current_screen == app::AppScreen::MediaBrowser;
+#else
+        const bool media_browser_now = false;
+#endif
+        // The content rect in PHYSICAL framebuffer pixels (`content`:
+        // glViewport and the video's 4:3 area) and in the UI's LOGICAL
+        // canvas (`logical_content`: set_content_viewport) — see
+        // video/content_area.h for why the two differ at 1080p. The Tube
+        // engine takes its rectangle from the same function.
+        const int fb_w = static_cast<int>(mode.width);
+        const int fb_h = static_cast<int>(mode.height);
+        const config::display::Size ui_canvas = config::display::logical_canvas(
+            state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
+        const video::ContentRects frame_rects = video::content_rects(
+            use_letterbox, movie_full_screen_now, media_browser_now,
+            fb_w, fb_h, ui_canvas.w, ui_canvas.h);
+
+        // ── The Tube engine: what it asks of this iteration ──────────────
+        // Compiled out of production (app::kTubeRendererReady false): there
+        // tube_now stays "not drawing" and tube_redraw_now asks for nothing,
+        // so the gate, the swap and the sleeps below are exactly as before.
+        // The clock is this iteration's `now` (steady_clock) in seconds: the
+        // same value reaches peek() here and frame()/mean_due() in the
+        // composite (Renderer::set_tube_clock).
+        ui::Renderer::TubeStatus tube_now;
+        app::TubeRedraw tube_redraw_now;
+        bool tube_frame_held = false;   // this iteration's flip was held (rich frame)
+        if constexpr (app::kTubeRendererReady) {
+            const double tube_clock =
+                std::chrono::duration<double>(now.time_since_epoch()).count();
+            ui_renderer.set_tube_picture(
+                frame_rects.content,
+                state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
+            ui_renderer.set_tube_clock(tube_clock);
+            tube_now = ui_renderer.tube_status(state, tube_clock);
+            tube_redraw_now = app::tube_redraw(tube_now.drawing, tube_now.cls, tube_now.moving,
+                                               static_cast<int>(mode_info.vrefresh));
+            // The pacing evidence is about one look at one frame class.
+            if (tube_now.drawing &&
+                (!tube_pacing_armed || state.display_settings.tube != tube_pacing_setting ||
+                 tube_now.cls != tube_pacing_class)) {
+                tube_pacing.reset();
+                tube_pacing_setting = state.display_settings.tube;
+                tube_pacing_class = tube_now.cls;
+                tube_pacing_armed = true;
+            }
+            state.tube_render.drawing = tube_now.drawing;
+            state.tube_render.frame_rate = tube::frames_per_second(tube_now.cls);
+            state.tube_render.too_heavy = tube_pacing.too_heavy();
+            state.tube_render.unavailable = std::string(ui_renderer.tube_unavailable_reason());
+        }
+
         // ── Redraw gate ──────────────────────────────────────────────────
         // Everything above (input, settings/wizard pumps, pipeline and
         // playlist state) has run; from here to the present is drawing,
@@ -2209,6 +2297,16 @@ int main(int /* argc */, char* /* argv */[]) {
                        state.display_settings.mb_interlacing_intensity > 0.0f)
                     : (state.display_settings.flicker_intensity > 0.0f ||
                        state.display_settings.interlacing_intensity > 0.0f);
+            // A drawing tube replaces the Enhanced time effects: lean motion
+            // at field rate, rich motion continuous (the flip is held below),
+            // and a still tube rests like any static menu. Compiled out of
+            // production.
+            if constexpr (app::kTubeRendererReady) {
+                if (tube_now.drawing) {
+                    act.crt_time_effects = tube_redraw_now.field_rate_motion;
+                    act.tube_rich_motion = tube_redraw_now.continuous_motion;
+                }
+            }
 
             // What the static menu draws that can change with no input and
             // no activity flag. The blink phase is the one that changes on
@@ -2400,36 +2498,9 @@ int main(int /* argc */, char* /* argv */[]) {
             glClear(GL_COLOR_BUFFER_BIT);
         }
         
-        // Modern TV uses a 4:3 area for the playlist/guide UI and the whole
-        // output for a full-screen film. Video and UI share the content rect.
-        bool use_letterbox = (state.display_settings.mode == app::DisplayMode::MODERN_TV);
-        const bool movie_full_screen_now = app::movie_full_screen(state);
-
-        // Media Browser content is modern 16:9 (movie posters, movie
-        // playback) — skip the 4:3 pillarbox viewport that wraps the
-        // main UI's 4:3 playlist videos. Full-screen guide films also use
-        // the whole output, with no bezel. Both the per-screen layouts
-        // and ad-hoc movie playback assume the full 1280x720 viewport.
-        // Same gating idea as the bezel skip below (kept as a separate
-        // flag so future tweaks to either don't have to touch the other).
-#ifdef MEDIA_BROWSER_ENABLED
-        const bool media_browser_now =
-            state.current_screen == app::AppScreen::MediaBrowser;
-#else
-        const bool media_browser_now = false;
-#endif
-        // The content rect in PHYSICAL framebuffer pixels (`content`:
-        // glViewport and the video's 4:3 area) and in the UI's LOGICAL
-        // canvas (`logical_content`: set_content_viewport) — see
-        // video/content_area.h for why the two differ at 1080p. The Tube
-        // engine takes its rectangle from the same function.
-        const int fb_w = static_cast<int>(mode.width);
-        const int fb_h = static_cast<int>(mode.height);
-        const config::display::Size ui_canvas = config::display::logical_canvas(
-            state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
-        const video::ContentRects frame_rects = video::content_rects(
-            use_letterbox, movie_full_screen_now, media_browser_now,
-            fb_w, fb_h, ui_canvas.w, ui_canvas.h);
+        // The content rects (`frame_rects`, with use_letterbox,
+        // movie_full_screen_now, fb_w and fb_h) are computed once per
+        // iteration before the redraw gate, above.
         const bool letterbox_active = frame_rects.letterbox_active;
         const video::IRect content = frame_rects.content;
         const video::IRect logical_content = frame_rects.logical_content;
@@ -3121,6 +3192,25 @@ int main(int /* argc */, char* /* argv */[]) {
                 std::cerr << "Failed to swap buffers!" << std::endl;
             }
 
+            // A rich Tube frame's flip is held so it lands two vblanks (at
+            // 50/60 Hz) after the last one (utils::present_hold). The clock is
+            // read FRESH here: the iteration's `now` would make every rich frame
+            // flip late. Bounded to two refreshes whatever the arithmetic says.
+            // Only while the tube draws (hold_present is false otherwise, and
+            // always in production).
+            if constexpr (app::kTubeRendererReady) {
+                if (tube_redraw_now.hold_present) {
+                    const int hz = mode_info.vrefresh > 0 ? static_cast<int>(mode_info.vrefresh) : 60;
+                    const auto since_last_present =
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - last_present_done);
+                    const auto hold = std::min(utils::present_hold(hz, since_last_present),
+                                               std::chrono::microseconds(2 * 1000000 / hz));
+                    if (hold.count() > 0) std::this_thread::sleep_for(hold);
+                    tube_frame_held = true;
+                }
+            }
+
             if (frame_count == 0) {
                 std::cout << "  Buffers swapped, locking front buffer..." << std::endl;
             }
@@ -3129,6 +3219,24 @@ int main(int /* argc */, char* /* argv */[]) {
             // Use shared lambda
             present_frame();
             last_present_done = std::chrono::steady_clock::now();
+
+            // The Tube engine's pacing: presents counted only while it draws;
+            // a per-minute report; the too-heavy toast once per look/class.
+            if constexpr (app::kTubeRendererReady) {
+                if (tube_now.drawing) {
+                    tube_pacing.on_present(last_present_done, tube_now.cls,
+                                           static_cast<int>(mode_info.vrefresh),
+                                           state.video_active);
+                    if (auto report = tube_pacing.take_report(last_present_done)) {
+                        LOG_INFO("Tube pacing: class {}, {} presents ({} with video), {} late",
+                                 tube::frames_per_second(report->cls), report->presents,
+                                 report->video_presents, report->late);
+                    }
+                    if (tube_pacing.take_toast()) {
+                        ui::Toast::show("This CRT look is too heavy for smooth video");
+                    }
+                }
+            }
 
             // UI draw calls per drawn frame, reported per minute (first
             // window at INFO so the journal alone shows it; DEBUG after).
@@ -3202,7 +3310,7 @@ int main(int /* argc */, char* /* argv */[]) {
         const auto pace_now = std::chrono::steady_clock::now();
         const auto iteration_elapsed =
             std::chrono::duration_cast<std::chrono::microseconds>(pace_now - now);
-        const auto pace_sleep =
+        auto pace_sleep =
             (crt_field_rate_this_iteration && !draw_this_frame)
                 ? utils::field_rate_skip_sleep(
                       pacing, static_cast<int>(mode_info.vrefresh),
@@ -3210,6 +3318,15 @@ int main(int /* argc */, char* /* argv */[]) {
                           pace_now - last_present_done),
                       iteration_elapsed)
                 : utils::frame_cap_sleep(pacing, iteration_elapsed);
+        // A held Tube frame already waited before its flip: only the floor on
+        // the whole iteration remains (utils::held_frame_sleep). Never in
+        // production (tube_frame_held is set only in the compiled-out hold).
+        if constexpr (app::kTubeRendererReady) {
+            if (tube_frame_held) {
+                pace_sleep = utils::held_frame_sleep(static_cast<int>(mode_info.vrefresh),
+                                                     iteration_elapsed);
+            }
+        }
         if (pace_sleep.count() > 0) std::this_thread::sleep_for(pace_sleep);
     }
     

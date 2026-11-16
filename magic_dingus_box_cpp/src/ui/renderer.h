@@ -8,12 +8,20 @@
 #include <thread>
 #include <vector>
 #include <memory>
+#include <string_view>
 #include <unordered_map>
 #include "theme.h"               // For Color type
 #include "ui_batch.h"
 #include "pairing_screen_renderer.h"  // For PairedDevice
+#include "../tube/tube_frame_class.h"  // TubeStatus::cls
+#include "../video/picture_placement.h" // video::IRect (the tube's picture)
+
+namespace tube {
+class FrameDriver;
+}
 
 namespace ui {
+class TubeRenderer;
 class Theme;
 class FontManager;
 class ControllerWizard;
@@ -302,6 +310,47 @@ public:
     // frame shows the opposite field (ui::crt_render_field).
     void set_crt_field_override(int64_t field) { crt_field_override_ = field; }
 
+    // ----- The Tube CRT engine (ui/tube_renderer.h, tube/tube_driver.h) -----
+    //
+    // INERT unless app::kTubeRendererReady (a TEST-ONLY preview build until the
+    // plan's last task): only then does initialize() make the TubeRenderer and its
+    // FrameDriver, and main.cpp calls the four methods below only then. Without
+    // them every method here is a no-op, tube_status() reports "not drawing" and
+    // begin_scene_fbo / end_scene_fbo_and_composite take exactly today's path.
+    //
+    // A Tube frame: the effective engine is Tube (app::effective_crt_engine with
+    // app::tube_offered), the Media Browser does not own the screen, and the
+    // guard did not trip ("build_hung"). It draws through the scene FBO even with
+    // every Enhanced slider at 0 (Enhanced's gates 1 and 4 do not apply), and
+    // when TubeRenderer::composite() cannot draw the frame, the Enhanced composite
+    // draws it, as for any other engine.
+    //
+    // The picture: the content rectangle (video::content_rects().content,
+    // top-left-origin framebuffer px) and whether the output is CRT Native. Stores
+    // two values; main.cpp sets it every iteration before tube_status().
+    void set_tube_picture(video::IRect content, bool crt_native) {
+        tube_picture_ = content;
+        tube_crt_native_ = crt_native;
+    }
+    // The loop's clock for this iteration, in seconds (the iteration's
+    // steady_clock time point), so the composite's FrameDriver::frame() and
+    // mean_due() read the same clock tube_status()'s peek() did.
+    void set_tube_clock(double now_seconds) { tube_now_ = now_seconds; }
+    struct TubeStatus {
+        bool drawing = false;
+        tube::FrameClass cls = tube::FrameClass::Lean60;
+        bool moving = false;
+    };
+    // Whether the tube draws this iteration (a Tube frame as above, and
+    // TubeRenderer::available()), and its frame class and motion from
+    // FrameDriver::peek() - const: advances nothing. Not drawing: the defaults.
+    TubeStatus tube_status(const app::AppState& state, double now_seconds) const;
+    // "" | "build_hung" | "build_failed" (TubeRenderer::unavailable_reason()).
+    std::string_view tube_unavailable_reason() const;
+    // Right after READY=1 (the watchdog runs from there): no program is built
+    // before it. Preview builds also read MDB_TUBE_VALIDATE here (once).
+    void allow_tube_builds();
+
     // Marquee wood-grain frame — the "TV cabinet" outer 30px border.
     // Used ONLY when the kiosk is on Marquee (Media Browser) screens. Other
     // surfaces (main playlist, settings, RetroArch handoff) keep their
@@ -438,6 +487,27 @@ private:
     uint32_t scene_fbo_width_ = 0;
     uint32_t scene_fbo_height_ = 0;
     bool scene_fbo_active_ = false;
+
+    // The Tube engine (see set_tube_picture). Both null unless
+    // app::kTubeRendererReady; every tube path below starts with `if (!tube_)`.
+    //   tube_scene_: the last begin_scene_fbo() began a Tube scene (called
+    //     TubeRenderer::begin_scene); read by this frame's composite and, at the
+    //     next begin_scene_fbo(), to notice the tube stopped (end_tube_scene).
+    //   tube_engine_was_tube_: the engine was Tube on the last Tube scene and no
+    //     drawn frame since had another engine (Media Browser frames do not
+    //     count) - the first Tube scene after another engine starts the driver.
+    std::unique_ptr<TubeRenderer> tube_;
+    std::unique_ptr<tube::FrameDriver> tube_driver_;
+    video::IRect tube_picture_{};
+    bool tube_crt_native_ = false;
+    double tube_now_ = 0.0;
+    bool tube_scene_ = false;
+    bool tube_engine_was_tube_ = false;
+    bool tube_validate_pending_ = false;   // preview builds: MDB_TUBE_VALIDATE=1
+    bool tube_gl_live_ = false;            // the tube touched GL since its last release_gl()
+    bool tube_frame_wanted(const app::AppState& state) const;
+    bool tube_composite(const app::AppState& state);
+    void release_tube_gl();
     bool last_scanlines_enabled_ = true;
 
     // Actual HDMI default-framebuffer size, set by set_framebuffer_size().

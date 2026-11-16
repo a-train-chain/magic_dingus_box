@@ -79,7 +79,27 @@ constexpr std::optional<CrtEngine> parse_crt_engine(std::string_view word) noexc
 // is offered nowhere (no menu option, no Tube rows, no Degauss, no web tab) on any
 // board. Plan 3 (the renderer) sets it to true. Read through tube_offered(), never
 // directly; AppState::tube_renderer_ready copies it so tests can open the gate.
+// TEST-ONLY: a preview build (CMake -DMDB_TUBE_PREVIEW=ON, which defines
+// MDB_TUBE_PREVIEW for every target) turns it on to try the renderer on a box;
+// it logs "TUBE PREVIEW BUILD" at start and CI refuses to ship one. The plan's
+// last task sets it true for good and removes the preview build.
+#ifdef MDB_TUBE_PREVIEW
+inline constexpr bool kTubeRendererReady = true;
+#else
 inline constexpr bool kTubeRendererReady = false;
+#endif
+
+// What the Tube renderer is doing, refilled by the main loop every iteration
+// (only when kTubeRendererReady; the defaults otherwise). `drawing`: the tube
+// draws the picture; `frame_rate`: 60 (lean) or 30 (rich); `too_heavy`: video
+// presents ran late (app::TubePacingMonitor, latched until the setting or the
+// frame class changes); `unavailable`: "" | "build_hung" | "build_failed".
+struct TubeRenderStatus {
+    bool drawing = false;
+    int frame_rate = 60;
+    bool too_heavy = false;
+    std::string unavailable;
+};
 
 // The op log's progress and the Degauss presses. In memory only.
 struct TubeLiveState {
@@ -932,6 +952,7 @@ public:
     // gate above; production never changes the flag from kTubeRendererReady.
     TubeLiveState tube_live;
     bool tube_renderer_ready = kTubeRendererReady;
+    TubeRenderStatus tube_render;
 
     // Available bezels (loaded from bezels.json)
     std::vector<BezelInfo> available_bezels;

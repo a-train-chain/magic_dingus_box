@@ -143,7 +143,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
         ui_test::fake_reset();
         app::AppState state{};
         state.platform_profile.tube_crt_engine = true;
-        REQUIRE_FALSE(state.tube_renderer_ready);
+        state.tube_renderer_ready = false;   // the production default (a preview build opens it)
         SettingsMenuManager sm{&state};
         sm.enter_submenu(MenuSection::DISPLAY);
         CHECK(labels(sm) == kTodaysLabels);
@@ -154,7 +154,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
             ui_test::fake_reset();
             app::AppState state{};
             state.platform_profile.tube_crt_engine = pi5;
-            REQUIRE_FALSE(state.tube_renderer_ready);
+            state.tube_renderer_ready = false;   // the production default (a preview build opens it)
             state.display_settings.mode = app::DisplayMode::MODERN_TV;
             SettingsMenuManager sm{&state};
             sm.enter_submenu(MenuSection::DISPLAY);
@@ -171,7 +171,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
                 ui_test::fake_reset();
                 app::AppState state{};
                 state.platform_profile.tube_crt_engine = pi5;
-                REQUIRE_FALSE(state.tube_renderer_ready);
+                state.tube_renderer_ready = false;   // the production default (a preview build opens it)
                 state.display_settings.set_crt_engine(saved[i]);
                 SettingsMenuManager sm{&state};
                 sm.enter_submenu(MenuSection::DISPLAY);
@@ -238,7 +238,7 @@ TEST_CASE("Tube menu: a Pi 4B is offered Classic and Enhanced only", "[settings_
 TEST_CASE("Tube menu: a Pi 5 with the renderer not ready offers nothing new", "[settings_menu][tube]") {
     ui_test::fake_reset(); app::AppState state{};
     state.platform_profile.tube_crt_engine = true;
-    REQUIRE_FALSE(state.tube_renderer_ready);
+    state.tube_renderer_ready = false;   // the production default (a preview build opens it)
     check_not_offered_cycle(state);
 }
 

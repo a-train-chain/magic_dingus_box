@@ -73,6 +73,9 @@ public:
     // different plan nor retry_builds() has cleared it since ("build_failed").
     bool available() const;
     std::string_view unavailable_reason() const;       // "" | "build_hung" | "build_failed"
+    // What the marker named when the guard tripped at startup (log-safe; see
+    // app::TubeBuildGuard::tripped_program()); "" when it did not trip.
+    std::string_view hung_program() const;
     const Caps& caps();                                // probed once per context (again after release_gl)
     void allow_builds();                               // main calls it right after READY=1; prepare() does nothing before
 

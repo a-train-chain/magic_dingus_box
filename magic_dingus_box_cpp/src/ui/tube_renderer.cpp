@@ -607,6 +607,10 @@ std::string_view TubeRenderer::unavailable_reason() const {
     return "";
 }
 
+std::string_view TubeRenderer::hung_program() const {
+    return impl_->guard.tripped() ? std::string_view(impl_->guard.tripped_program()) : std::string_view();
+}
+
 const TubeRenderer::Caps& TubeRenderer::caps() {
     if (!impl_->caps_probed) impl_->probe_caps();
     return impl_->caps;
