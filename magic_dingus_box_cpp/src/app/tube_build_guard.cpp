@@ -1,5 +1,6 @@
 #include "app/tube_build_guard.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -65,7 +66,7 @@ void TubeBuildGuard::begin(std::string_view programs) {
         // armed) - Tube off until a reboot for a write error. Remove it now, and with it
         // anything this instance wrote before (the open truncated it): disarm.
         // A failed OPEN touched nothing: whatever an earlier begin() wrote is still
-        // there and still ours, so armed_ and the recorded file stay as they were and
+        // there and still ours, so armed_ and the recorded text stay as they were and
         // end() still removes it. A file we never opened is not ours to remove.
         if (opened) {
             std::error_code ec;
@@ -74,15 +75,9 @@ void TubeBuildGuard::begin(std::string_view programs) {
         }
         return;
     }
-    // Which file this is, so end() removes this file and never one that replaced it.
-    struct stat st{};
-    if (::stat(path_.c_str(), &st) == 0) {
-        written_dev_ = static_cast<unsigned long long>(st.st_dev);
-        written_ino_ = static_cast<unsigned long long>(st.st_ino);
-        written_known_ = true;
-    } else {
-        written_known_ = false;
-    }
+    // What this instance last wrote with a SUCCESSFUL begin(): end() recognises its own
+    // marker by this content (a failed open or write never reaches here).
+    written_.assign(programs.data(), programs.size());
     armed_ = true;
 }
 
@@ -90,13 +85,24 @@ void TubeBuildGuard::end() {
     // Only a marker this instance wrote is ours to remove.
     if (!armed_) return;
     armed_ = false;
-    // The path must still be a regular file and, when begin() could record it, the very
-    // file begin() wrote: a directory or someone else's file put there since is left.
+    // Identity is by CONTENT, not device + inode: Linux filesystems (ext4, tmpfs,
+    // overlayfs) hand a freed inode number to the very next file created, so a look-alike
+    // written right after ours was removed has the same device and inode. The path must
+    // be a regular file (never a directory) holding exactly what begin() last wrote.
+    // A file with our exact content written by someone else is indistinguishable and
+    // removing it is harmless: a marker with our content means "our build is in
+    // progress", which is no longer true. The read is bounded (one byte past our length
+    // is enough to tell "longer"); a short read on memory-backed /dev/shm is acceptable,
+    // it only makes end() leave a file it could not confirm.
     struct stat st{};
     if (::lstat(path_.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return;
-    if (written_known_ && (static_cast<unsigned long long>(st.st_dev) != written_dev_ ||
-                           static_cast<unsigned long long>(st.st_ino) != written_ino_))
-        return;
+    std::ifstream in(path_, std::ios::binary);
+    if (!in) return;
+    const std::size_t want = std::min(written_.size(), kMaxMarkerBytes) + 1;
+    std::string text(want, '\0');
+    in.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<std::size_t>(in.gcount()));
+    if (text != written_) return;
     std::error_code ec;
     std::filesystem::remove(path_, ec);
 }

@@ -40,8 +40,12 @@ public:
     void begin(std::string_view programs);
 
     // Removes the marker only if this instance's begin() wrote it and the path is still
-    // that file (same device and inode); a tripped guard, one that never began, or a
-    // path now holding a directory or someone else's file removes nothing.
+    // a regular file holding exactly the text begin() last wrote successfully (identity
+    // by CONTENT: Linux reuses inode numbers at once, so device + inode cannot tell our
+    // file from a look-alike). A tripped guard, one that never began, or a path now
+    // holding a directory or a file with other content removes nothing. A file with our
+    // exact content written by someone else is indistinguishable and removed: it would
+    // only claim a build in progress that has ended.
     void end();
 
 private:
@@ -49,10 +53,8 @@ private:
     std::string program_;
     bool tripped_ = false;
     bool armed_ = false;
-    // The file begin() last wrote (stat's device and inode), so end() never removes a
-    // file or directory that replaced it. written_known_ false: only "a regular file".
-    unsigned long long written_dev_ = 0, written_ino_ = 0;
-    bool written_known_ = false;
+    // The text the last successful begin() wrote; end() removes only a file holding it.
+    std::string written_;
 };
 
 }  // namespace app

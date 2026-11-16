@@ -207,7 +207,7 @@ TEST_CASE("tube build guard: a re-open that fails keeps the marker this instance
 TEST_CASE("tube build guard: a re-open that fails on something not ours removes nothing", "[tube]") {
     // Armed, then someone replaces the marker with a directory, so the re-open fails.
     // What is at the path now was not written by this instance: end() leaves it (it
-    // removes only the very file this instance wrote, never a look-alike).
+    // removes only a file holding the text this instance wrote, never a look-alike).
     LogSilence quiet;
     const auto path = temp_marker("mdb-tube-build-test-replaced");
     std::filesystem::remove_all(path);
