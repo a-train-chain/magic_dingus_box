@@ -88,3 +88,20 @@ TEST_CASE("tube gpu timing: one line every ten seconds", "[tube]") {
             "tube gpu: 2 frames: quarter - glow - signal - lines - output 7.50 history - probe 0.20 = 7.70 ms");
     REQUIRE_FALSE(a.take_line(15.0));                                         // a new window began at 10 s
 }
+
+TEST_CASE("tube pacing: a lean look at 120 Hz presents every two vblanks and is not late", "[tube]") {
+    // The kiosk caps every frame at 60 fps (utils::frame_pacing_for(60, hz)): two
+    // refreshes at 120 Hz, one at 50 and 60 Hz.
+    REQUIRE(app::TubePacingMonitor::cadence_vblanks(FrameClass::Lean60, 120) == 2);
+    REQUIRE(app::TubePacingMonitor::cadence_vblanks(FrameClass::Lean60, 60) == 1);
+    REQUIRE(app::TubePacingMonitor::cadence_vblanks(FrameClass::Lean60, 50) == 1);
+    REQUIRE(app::TubePacingMonitor::cadence_vblanks(FrameClass::Rich30, 120) == 4);
+    REQUIRE(app::TubePacingMonitor::cadence_vblanks(FrameClass::Rich30, 60) == 2);
+    REQUIRE(app::TubePacingMonitor::cadence_vblanks(FrameClass::Rich30, 50) == 2);
+    app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+    m.take_report(t);
+    for (int i = 0; i < 2000; ++i) { t += 16667us; m.on_present(t, FrameClass::Lean60, 120, true); }
+    t += 30000us; m.on_present(t, FrameClass::Lean60, 120, true);             // 30 ms > 16.7 + 4.2: late
+    auto r = m.take_report(t + 60s); REQUIRE(r); REQUIRE(r->late == 1); REQUIRE(r->video_late == 1);
+    REQUIRE_FALSE(m.too_heavy());
+}

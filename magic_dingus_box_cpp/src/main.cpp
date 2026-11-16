@@ -3198,20 +3198,19 @@ int main(int /* argc */, char* /* argv */[]) {
                 std::cerr << "Failed to swap buffers!" << std::endl;
             }
 
-            // A rich Tube frame's flip is held so it lands two vblanks (at
-            // 50/60 Hz) after the last one (utils::present_hold). The clock is
-            // read FRESH here: the iteration's `now` would make every rich frame
-            // flip late. Bounded to two refreshes whatever the arithmetic says.
-            // Only while the tube draws (hold_present is false otherwise, and
-            // always in production).
+            // A rich Tube frame's flip is held so it lands utils::held_vblanks
+            // vblanks (2 at 50/60 Hz, 4 at 120 Hz) after the last one. The clock
+            // is read FRESH here: the iteration's `now` would make every rich
+            // frame flip late. Bounded to that many refreshes whatever the clock
+            // says (utils::capped_present_hold). Only while the tube draws
+            // (hold_present is false otherwise, and always in production).
             if constexpr (app::kTubeRendererReady) {
                 if (tube_redraw_now.hold_present) {
                     const int hz = mode_info.vrefresh > 0 ? static_cast<int>(mode_info.vrefresh) : 60;
                     const auto since_last_present =
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - last_present_done);
-                    const auto hold = std::min(utils::present_hold(hz, since_last_present),
-                                               std::chrono::microseconds(2 * 1000000 / hz));
+                    const auto hold = utils::capped_present_hold(hz, since_last_present);
                     if (hold.count() > 0) std::this_thread::sleep_for(hold);
                     tube_frame_held = true;
                 }

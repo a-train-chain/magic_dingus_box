@@ -128,6 +128,23 @@ inline std::chrono::microseconds present_hold(int refresh_hz,
     return std::max(std::chrono::microseconds{0}, p.post_present_gap - since_last_present);
 }
 
+// The longest a held frame may wait: held_vblanks(refresh_hz) refreshes (2 at 50/60 Hz,
+// 4 at 120 Hz). A defence against a clock that reads the last flip in the future; on a
+// real clock present_hold() is at most (held_vblanks - 1) refreshes plus an eighth and
+// the cap never binds. A fixed two refreshes would cut the 120 Hz hold (26.0 ms) to
+// 16.7 ms, landing a rich frame early.
+inline std::chrono::microseconds present_hold_cap(int refresh_hz) {
+    if (refresh_hz <= 0) refresh_hz = 60;
+    return std::chrono::microseconds{1000000 / refresh_hz} * held_vblanks(refresh_hz);
+}
+
+// What main.cpp sleeps between eglSwapBuffers and the flip of a held frame:
+// present_hold(), never longer than present_hold_cap().
+inline std::chrono::microseconds capped_present_hold(int refresh_hz,
+                                                     std::chrono::microseconds since_last_present) {
+    return std::min(present_hold(refresh_hz, since_last_present), present_hold_cap(refresh_hz));
+}
+
 // The bottom-of-loop sleep for a held frame: ONLY the floor on the whole
 // iteration (period * held_vblanks - period / 8), which binds when the flip
 // did not block (SetCrtc fallback). Never a post-present gap — the hold

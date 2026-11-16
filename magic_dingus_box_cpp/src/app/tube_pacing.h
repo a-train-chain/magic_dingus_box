@@ -2,8 +2,8 @@
 // for the box. Pure: time arrives as a parameter, nothing is read or written here.
 //
 // A present is LATE when the interval since the previous one exceeds the class's
-// cadence (one refresh for Lean60, utils::held_vblanks(hz) refreshes for Rich30)
-// plus half a refresh. The first present ever, and a present after a gap over
+// cadence (cadence_vblanks: the 60 fps frame cap's refreshes for Lean60 - one at 50/60
+// Hz, two at 120 Hz - and utils::held_vblanks(hz) for Rich30) plus half a refresh. The first present ever, and a present after a gap over
 // 250 ms (a menu, a pause, a mode change), says nothing about pacing: the first
 // ever counts as a present that is not late; one after a gap counts nothing.
 #pragma once
@@ -28,6 +28,17 @@ public:
         tube::FrameClass cls = tube::FrameClass::Lean60;
     };
 
+    // Refreshes between two on-time presents of a class at `vrefresh_hz` (<= 0 reads as
+    // 60). Rich30: the held flip's utils::held_vblanks (2 at 50/60 Hz, 4 at 120 Hz).
+    // Lean60: the main loop's own 60 fps cap, utils::frame_pacing_for(60, hz) - one
+    // refresh at 50/60 Hz but TWO at 120 Hz, where counting one made every lean present
+    // late (and every lean look "too heavy" after 30 s of video). The tube never draws
+    // while the Media Browser plays a movie (the loop's 30 fps cap), so 60 is the cap.
+    static int cadence_vblanks(tube::FrameClass cls, int vrefresh_hz) {
+        return cls == tube::FrameClass::Rich30 ? utils::held_vblanks(vrefresh_hz)
+                                               : utils::frame_pacing_for(60, vrefresh_hz).vblanks_per_frame;
+    }
+
     void on_present(Clock::time_point done, tube::FrameClass cls, int vrefresh_hz, bool video_playing) {
         using namespace std::chrono;
         report_.cls = cls;
@@ -45,8 +56,7 @@ public:
         if (had_previous) {
             if (vrefresh_hz <= 0) vrefresh_hz = 60;
             const microseconds period{1000000 / vrefresh_hz};
-            const int vblanks = cls == tube::FrameClass::Rich30 ? utils::held_vblanks(vrefresh_hz) : 1;
-            late = interval > period * vblanks + period / 2;
+            late = interval > period * cadence_vblanks(cls, vrefresh_hz) + period / 2;
         }
         ++report_.presents;
         if (late) ++report_.late;
