@@ -279,8 +279,9 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
             tube_->end_tube_scene(scene_color_tex_, static_cast<int>(scene_fbo_width_),
                                   static_cast<int>(scene_fbo_height_));
             if (engine_tube) {
-                // The engine is still Tube (the Media Browser took the screen; or
-                // no picture rectangle this frame): free the render targets only
+                // The engine is still Tube (the Media Browser took the screen; a
+                // full-screen film the look yields to Enhanced; or no picture
+                // rectangle this frame): free the render targets only
                 // (~25-40 MB at 1440x1080, which a 2 GB board needs back for a
                 // movie) and keep the programs, so the return has no build hitch
                 // and no marker. The targets come back cleared: no stale
@@ -400,6 +401,25 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
 // guard did not trip and there is a picture. A recorded build FAILURE is still a
 // Tube frame: composite() -> prepare() is what clears it once the plan changes.
 bool Renderer::tube_frame_wanted(const app::AppState& state) const {
+    return tube_engine_frame(state) && !tube_yields_now(state);
+}
+
+bool Renderer::tube_yields_now(const app::AppState& state) const {
+    const tube::TubeSetting& setting = state.display_settings.tube;
+    if (!tube_yield_known_ || setting != tube_yield_setting_ || tube_picture_.w != tube_yield_picture_.w ||
+        tube_picture_.h != tube_yield_picture_.h || tube_crt_native_ != tube_yield_crt_native_) {
+        const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
+                                    tube_crt_native_};
+        tube_yield_ = tube::tube_yields_to_enhanced(tube::resolve(setting), picture);
+        tube_yield_setting_ = setting;
+        tube_yield_picture_ = tube_picture_;
+        tube_yield_crt_native_ = tube_crt_native_;
+        tube_yield_known_ = true;
+    }
+    return tube_yield_;
+}
+
+bool Renderer::tube_engine_frame(const app::AppState& state) const {
     if (!tube_ || crt_composite_shader_program_ == 0) return false;
 #ifdef MEDIA_BROWSER_ENABLED
     if (state.current_screen == app::AppScreen::MediaBrowser) return false;
@@ -419,7 +439,12 @@ void Renderer::skip_missed_tube_degauss(const app::AppState& state) {
 
 Renderer::TubeStatus Renderer::tube_status(const app::AppState& state, double now_seconds) const {
     TubeStatus status;
-    if (!tube_frame_wanted(state) || !tube_->available()) return status;
+    if (!tube_engine_frame(state)) return status;
+    if (tube_yields_now(state)) {   // Enhanced draws this picture: not a Tube frame
+        status.yielding = true;
+        return status;
+    }
+    if (!tube_->available()) return status;
     const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
                                 tube_crt_native_};
     const tube::DriverPeek peek =

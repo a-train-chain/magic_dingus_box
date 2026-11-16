@@ -96,13 +96,20 @@ inline constexpr bool kTubeRendererReady = false;
 // presents ran late (app::TubePacingMonitor, latched until the setting or the
 // frame class changes); `unavailable`: "" | "build_hung" | "build_failed";
 // `picture`: the picture the tube draws into (meaningful while `drawing`), which
-// app::tube_not_drawn() plans against - the renderer's own plan for it.
+// app::tube_not_drawn() plans against - the renderer's own plan for it;
+// `yielding`: the tube is not drawing because the look yields this picture (a
+// full-screen film) to the Enhanced engine (tube::tube_yields_to_enhanced);
+// `film_picture`: the picture a full-screen film would have at the current output
+// (the whole framebuffer, the same size video::content_rects gives a film; 0x0 until
+// the main loop has run), for app::tube_film_engine().
 struct TubeRenderStatus {
     bool drawing = false;
     int frame_rate = 60;
     bool too_heavy = false;
     std::string unavailable;
     tube::Picture picture{0.0, 0.0, false};
+    bool yielding = false;
+    tube::Picture film_picture{0.0, 0.0, false};
 };
 
 // The op log's progress and the Degauss presses. In memory only.

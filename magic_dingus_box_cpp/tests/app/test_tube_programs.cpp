@@ -618,3 +618,46 @@ TEST_CASE("tube programs: a wide glow is blurred at half the quarter's size", "[
     const TargetSizes th = target_sizes(odd, Picture{1440.0, 1080.0, false}, tube_uniforms_for(resolve(TubeSetting{}), pic));
     REQUIRE(target_bytes(full, tf, true) - target_bytes(odd, th, true) == 2u * (360u * 270u - 180u * 135u) * 4u);
 }
+
+// Owner's decision (2026-11-15): on a full-screen film (a picture larger than the
+// reference), a look whose plan does not fit even after the ladder yields the film to
+// the Enhanced engine. At or below the reference nothing ever yields.
+TEST_CASE("tube programs: a look too heavy for a full-screen film yields it to Enhanced", "[tube]") {
+    const Picture film{1920.0, 1080.0, false};
+    CHECK_FALSE(tube_yields_to_enhanced(look_resolved(Look::pvm), film));       // fits without afterglow
+    CHECK_FALSE(tube_yields_to_enhanced(look_resolved(Look::monitor), film));   // fits as asked
+    for (Look heavy : {Look::trinitron, Look::arcade, Look::tv, Look::everything}) {
+        INFO(look_name(heavy));
+        const PlannedPasses pp = plan_passes_and_drops(look_resolved(heavy), film);
+        CHECK(pp.yields_to_enhanced);
+        CHECK(tube_yields_to_enhanced(look_resolved(heavy), film));
+        CHECK_FALSE(pp.not_drawn.any());   // nothing is "not drawn": Enhanced draws the film
+    }
+    // A film-sized picture where the setting fits only after dropping afterglow: Tube draws it.
+    const PlannedPasses pvm = plan_passes_and_drops(look_resolved(Look::pvm), film);
+    CHECK_FALSE(pvm.yields_to_enhanced);
+    CHECK(pvm.not_drawn == NotDrawn{true, false});
+}
+
+TEST_CASE("tube programs: nothing yields at or below the reference picture, whatever the cost", "[tube]") {
+    for (const Picture pic : {Picture{1440.0, 1080.0, false}, Picture{960.0, 720.0, false},
+                              Picture{1280.0, 720.0, true}, Picture{1440.0, 1060.0, false}})
+        for (Look look : kLooks) {
+            INFO(look_name(look) << " at " << pic.w << "x" << pic.h);
+            CHECK_FALSE(tube_yields_to_enhanced(look_resolved(look), pic));
+        }
+    // A setting over the budget at 1440x1080 even after the ladder (no shipped price set
+    // makes one: the heaviest, TV without both, predicts 22.04, so the budget is lowered to
+    // 21 ms to stand for it): drawn by Tube as asked, late, with the pacing monitor's
+    // notice; never yielded.
+    const Picture ref{1440.0, 1080.0, false};
+    const Resolved r = look_resolved(Look::tv);
+    const PlannedPasses pp = plan_passes_and_drops(r, ref, 21.0);
+    REQUIRE(plan_ms(pp.plan, r, ref) > 21.0);
+    CHECK_FALSE(pp.not_drawn.any());
+    CHECK_FALSE(pp.yields_to_enhanced);
+    // A tighter budget on the film shows the yield follows the plan AS DRAWN.
+    const Picture film{1920.0, 1080.0, false};
+    CHECK(plan_passes_and_drops(look_resolved(Look::monitor), film, 20.0).yields_to_enhanced);
+    CHECK_FALSE(plan_passes_and_drops(look_resolved(Look::monitor), film, 25.0).yields_to_enhanced);
+}

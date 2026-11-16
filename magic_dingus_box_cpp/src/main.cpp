@@ -2235,6 +2235,12 @@ int main(int /* argc */, char* /* argv */[]) {
             state.tube_render.too_heavy = tube_pacing.too_heavy();
             state.tube_render.unavailable = std::string(ui_renderer.tube_unavailable_reason());
             state.tube_render.picture = tube_now.picture;
+            state.tube_render.yielding = tube_now.yielding;
+            // What a full-screen film would be drawn into: content_rects gives a film
+            // the whole framebuffer (fb_w x fb_h above).
+            state.tube_render.film_picture = tube::Picture{
+                static_cast<double>(fb_w), static_cast<double>(fb_h),
+                state.display_settings.mode == app::DisplayMode::CRT_NATIVE};
         }
 
         // ── Redraw gate ──────────────────────────────────────────────────

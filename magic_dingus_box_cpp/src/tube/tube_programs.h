@@ -427,9 +427,12 @@ inline NotDrawnRows not_drawn_rows(const NotDrawn& d) noexcept {
 }
 
 // A plan and what it left out.
+// `yields_to_enhanced`: a full-screen film whose plan does not fit even after the ladder;
+// the Tube engine does not draw it and the Enhanced engine does (see below).
 struct PlannedPasses {
     PassPlan plan;
     NotDrawn not_drawn;
+    bool yields_to_enhanced = false;
 };
 
 // THE ONE PLACE A LOOK GIVES WAY (owner's decision, 2026-11-15). The plan for a resolved
@@ -445,6 +448,16 @@ struct PlannedPasses {
 // picture only (never a frame's timing), so it cannot flap from frame to frame. The driver
 // draws with the dropped rows at 0 (apply_plan); the status, the TV menu and the web page
 // read `not_drawn` from here. `budget_ms` exists for tests; every caller uses the default.
+//
+// FILMS YIELD TO ENHANCED (owner's decision, 2026-11-15, on window 5's measured film:
+// Trinitron 30.7, Arcade 30.7, TV 32.7, Everything 32.9 ms, 20 fps; PVM without afterglow
+// 23.2 and Monitor 22.8 held 30 fps): on a picture LARGER than the reference (a
+// full-screen film) a plan that does not fit even after the ladder is not drawn by Tube at
+// all: `yields_to_enhanced` is true, the plan is the one as asked, nothing is "not drawn",
+// and the renderer hands the frame to the Enhanced engine the way it does for the Media
+// Browser (Renderer::tube_frame_wanted). A smooth film matters more than the exact tube
+// look. At or below the reference nothing yields: a too-heavy custom setting there draws
+// late with the pacing monitor's notice, as before.
 inline PlannedPasses plan_passes_and_drops(const Resolved& resolved, const Picture& picture,
                                            double budget_ms = kRichBudgetMs) noexcept {
     const TubeUniforms still = tube_uniforms_for(resolved, picture);
@@ -461,8 +474,7 @@ inline PlannedPasses plan_passes_and_drops(const Resolved& resolved, const Pictu
         return predicted_ms(p, target_sizes(p, picture, still), sigma) <= budget_ms;
     };
     const PlannedPasses as_asked{plan(asked, larger), {}};
-    if (as_asked.plan.cls != FrameClass::Rich30 || (!asked.afterglow && !asked.glow) || fits(as_asked.plan))
-        return as_asked;
+    if (as_asked.plan.cls != FrameClass::Rich30 || fits(as_asked.plan)) return as_asked;
     Needs n = asked;
     if (asked.afterglow) {
         n.afterglow = false;
@@ -474,11 +486,18 @@ inline PlannedPasses plan_passes_and_drops(const Resolved& resolved, const Pictu
         const PassPlan p = plan(n, true);
         if (fits(p)) return {p, {asked.afterglow, true}};
     }
-    return as_asked;
+    PlannedPasses kept = as_asked;
+    kept.yields_to_enhanced = larger;
+    return kept;
 }
 
 inline PassPlan plan_passes(const Resolved& resolved, const Picture& picture) noexcept {
     return plan_passes_and_drops(resolved, picture).plan;
+}
+
+// Whether Tube hands this picture to the Enhanced engine (plan_passes_and_drops above).
+inline bool tube_yields_to_enhanced(const Resolved& resolved, const Picture& picture) noexcept {
+    return plan_passes_and_drops(resolved, picture).yields_to_enhanced;
 }
 
 // The still uniforms as the plan draws them: a row whose pass the plan dropped reads 0.

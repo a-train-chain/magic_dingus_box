@@ -319,8 +319,13 @@ public:
     // begin_scene_fbo / end_scene_fbo_and_composite take exactly today's path.
     //
     // A Tube frame: the effective engine is Tube (app::effective_crt_engine with
-    // app::tube_offered), the Media Browser does not own the screen, and the
-    // guard did not trip ("build_hung"). It draws through the scene FBO even with
+    // app::tube_offered), the Media Browser does not own the screen, the guard did
+    // not trip ("build_hung"), and the look does not YIELD this picture to Enhanced
+    // (tube::tube_yields_to_enhanced: a full-screen film it cannot afford even after
+    // dropping afterglow and glow; owner's decision 2026-11-15). A yielded picture is
+    // handed over exactly like a Media Browser frame - the tube stops drawing, its
+    // targets go, its programs stay, no warm-up on the way back - and the Enhanced
+    // composite draws it under its own gates (1 and 4), as if the engine were Enhanced. It draws through the scene FBO even with
     // every Enhanced slider at 0 (Enhanced's gates 1 and 4 do not apply), and
     // when TubeRenderer::composite() cannot draw the frame, the Enhanced composite
     // draws it, as for any other engine.
@@ -350,6 +355,7 @@ public:
         tube::FrameClass cls = tube::FrameClass::Lean60;
         bool moving = false;
         tube::Picture picture{0.0, 0.0, false};   // what the tube draws into (app::tube_not_drawn)
+        bool yielding = false;   // not drawing because this picture is yielded to Enhanced
     };
     // Whether the tube draws this iteration (a Tube frame as above, and
     // TubeRenderer::available()), and its frame class and motion from
@@ -527,6 +533,17 @@ private:
     TubeValidate tube_validate_next_ = TubeValidate::None;
     bool tube_gl_live_ = false;            // the tube touched GL since its last release_gl()
     bool tube_frame_wanted(const app::AppState& state) const;
+    // tube_frame_wanted() but for the yield: every other condition of a Tube frame.
+    bool tube_engine_frame(const app::AppState& state) const;
+    // Whether the current setting yields the current picture (tube_picture_) to
+    // Enhanced. Cached on (setting, picture): both are stable frame to frame, so the
+    // pure decision runs once per change, not three times a frame.
+    bool tube_yields_now(const app::AppState& state) const;
+    mutable tube::TubeSetting tube_yield_setting_{};
+    mutable video::IRect tube_yield_picture_{};
+    mutable bool tube_yield_crt_native_ = false;
+    mutable bool tube_yield_known_ = false;
+    mutable bool tube_yield_ = false;
     bool tube_composite(const app::AppState& state);
     void release_tube_gl();
     bool last_scanlines_enabled_ = true;
