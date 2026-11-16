@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "tube/tube_frame_class.h"
 #include "tube/tube_groups.h"
 #include "tube/tube_inputs.h"
 #include "tube/tube_rows.h"
@@ -63,12 +64,20 @@ inline tube::Look next_look(tube::Look look) noexcept {
     return tube::kLooks[i < n ? (i + 1) % n : 0];
 }
 
-// "Look: TV", or "Look: TV (2 moved)" when rows are moved off it.
-inline std::string tube_look_label(const tube::TubeSetting& setting) {
+// "Look: TV · 30 fps", or "Look: TV (2 moved) · 30 fps". The rate is the frame class
+// of the setting as it stands; `crt_native` is the display mode (the rows a real tube
+// draws itself count as neutral there, so the rate can differ).
+inline std::string tube_look_label(const tube::TubeSetting& setting, bool crt_native) {
     std::string label = "Look: " + std::string(tube::look_choice(setting.look).label);
     const std::size_t moved = tube::moved_keys(setting).size();
     if (moved > 0) label += " (" + std::to_string(moved) + " moved)";
-    return label;
+    const int fps = tube::frames_per_second(tube::setting_frame_class(tube::resolve(setting), crt_native));
+    return label + " \xC2\xB7 " + std::to_string(fps) + " fps";
+}
+
+// "30 fps" for a row that forces the 30 fps class when moved off neutral, else "".
+inline std::string_view tube_rate_tag(tube::Effect effect) noexcept {
+    return tube::forces_30fps(effect) ? "30 fps" : "";
 }
 
 // The six look words, in kLooks order, joined by " · ".

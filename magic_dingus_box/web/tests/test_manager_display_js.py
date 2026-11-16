@@ -567,3 +567,27 @@ def test_a_device_change_stops_the_slow_recheck():
         return {armed, afterChange, asked, left: live().length};
     """)
     assert result == {"armed": 1, "afterChange": 0, "asked": 3, "left": 0}
+
+
+def test_rate_tag_marks_only_forcing_rows():
+    result = run_js("""
+        return [tubeRateTag({forces_30fps: true}), tubeRateTag({forces_30fps: false}), tubeRateTag(undefined)];
+    """)
+    assert result == ["30 fps", "", ""]
+
+
+def test_header_text_shows_the_rate_and_the_warnings():
+    result = run_js("""
+        return [
+            tubeRateText({frame_rate: 60}),
+            tubeRateText({frame_rate: 30, too_heavy: true}),
+            tubeRateText({frame_rate: 30, unavailable: 'build_hung'}),
+            tubeRateText({}),
+        ];
+    """)
+    assert result == [
+        "60 fps",
+        "30 fps. This look is too heavy for smooth video on this TV",
+        "Tube is unavailable on this TV",
+        "",
+    ]

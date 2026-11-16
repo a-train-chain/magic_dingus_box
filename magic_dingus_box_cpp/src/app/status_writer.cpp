@@ -11,6 +11,7 @@
 #include <json/json.h>
 #include "utils/logger.h"
 #include "ui/virtual_keyboard.h"
+#include "tube/tube_frame_class.h"
 
 namespace app {
 
@@ -73,6 +74,15 @@ Json::Value tube_status_json(const AppState& state) {
     for (std::size_t i = 0; i < tube::kEffectCount; ++i)
         values[std::string(tube::effect_key(tube::kEffects[i]))] = resolved.effects[i];
     t["values"] = std::move(values);
+    // The live rate while the renderer is drawing; before that (or with it idle) the
+    // rate this setting will draw at, so the page never shows a stale default.
+    const bool crt_native = state.display_settings.mode == DisplayMode::CRT_NATIVE;
+    t["frame_rate"] = state.tube_render.drawing
+        ? state.tube_render.frame_rate
+        : tube::frames_per_second(tube::setting_frame_class(resolved, crt_native));
+    t["too_heavy"] = state.tube_render.too_heavy;
+    if (state.tube_render.unavailable.empty()) t["unavailable"] = Json::Value::null;
+    else t["unavailable"] = state.tube_render.unavailable;
     t["handled_seq"] = static_cast<Json::UInt64>(state.tube_live.handled_seq);
     t["degauss_requests"] = static_cast<Json::UInt64>(state.tube_live.degauss_requests);
     return t;

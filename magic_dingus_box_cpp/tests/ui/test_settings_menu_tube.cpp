@@ -206,7 +206,7 @@ TEST_CASE("Tube menu: the engine cycles through Tube when offered and the rows f
     const auto at = std::find(all.begin(), all.end(), "CRT Engine: Tube");
     REQUIRE(at != all.end());
     CHECK(std::vector<std::string>(at + 1, all.end()) == std::vector<std::string>{
-        "Look: PVM", "Reset to look", "Picture", "Scanlines", "Mask", "Light", "Glass", "Signal",
+        "Look: PVM · 30 fps", "Reset to look", "Picture", "Scanlines", "Mask", "Light", "Glass", "Signal",
         "Supply", "Character", "Sync", "Colour purity", "Degauss", "Back"});
     CHECK(row(sm, "Picture")->section == MenuSection::TUBE_GROUP);
     CHECK(row(sm, "Picture")->sublabel == "5 rows");
@@ -306,7 +306,7 @@ TEST_CASE("Tube menu: a group opens its rows and Back returns to it", "[settings
     CHECK(sm.submenu_title() == "Supply");
     CHECK(labels(sm) == std::vector<std::string>{
         "FLICKER: 0", "HUM BAR: 0", "BRIGHTNESS LIMIT: 20", "BREATHING: 15", "Back"});
-    CHECK(row(sm, "HUM BAR")->sublabel == "soft at low · pronounced at 100");
+    CHECK(row(sm, "HUM BAR")->sublabel == "soft at low · pronounced at 100 · 30 fps");   // hum forces 30 fps
     CHECK(row(sm, "HUM BAR")->section == MenuSection::TUBE_VALUE);
     CHECK(row(sm, "Back")->section == MenuSection::TUBE_GROUP_BACK);
     press(sm, "Back");

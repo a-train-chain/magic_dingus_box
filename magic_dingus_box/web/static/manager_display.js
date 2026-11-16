@@ -241,6 +241,24 @@ function tubeNotice(available, answered, status) {
     return { text: '', retry: false };
 }
 
+/** "30 fps" for a row that forces the 30 fps class when moved off neutral, else "". */
+function tubeRateTag(row) {
+    return row && row.forces_30fps ? '30 fps' : '';
+}
+
+/**
+ * The frame-rate line in the header: "<n> fps", then the warning when the look is
+ * too heavy for smooth video, or the unavailable notice (nothing else is true then).
+ * Plain text (the page sets it as textContent); '' when the kiosk reports no rate.
+ */
+function tubeRateText(kiosk) {
+    if (!kiosk) return '';
+    if (kiosk.unavailable) return 'Tube is unavailable on this TV';
+    if (!Number.isInteger(kiosk.frame_rate)) return '';
+    const rate = `${kiosk.frame_rate} fps`;
+    return kiosk.too_heavy ? `${rate}. This look is too heavy for smooth video on this TV` : rate;
+}
+
 // ===== DOM (thin) =====
 
 const CRT_LOOK_POLL_MS = 1000;
@@ -414,7 +432,7 @@ function buildCrtLook(st) {
     const engineOptions = rows.engines.map(e =>
         `<option value="${escapeHtml(e.key)}">${escapeHtml(e.word)}</option>`).join('');
     const lookOptions = rows.looks.map(l =>
-        `<option value="${escapeHtml(l.key)}">${escapeHtml(l.word)}</option>`).join('');
+        `<option value="${escapeHtml(l.key)}">${escapeHtml(l.word)}${Number.isInteger(l.fps) ? ` \u00b7 ${l.fps} fps` : ''}</option>`).join('');
     const maskOptions = rows.mask.choices.map(c =>
         `<option value="${escapeHtml(c.key)}">${escapeHtml(c.word)}</option>`).join('');
 
@@ -432,7 +450,7 @@ function buildCrtLook(st) {
         const hint = isMask ? '' : crtLookHintHtml(row.hint);
         return `<div data-tube-line="${escapeHtml(key)}" style="padding: 0.6rem 0; border-top: 1px solid var(--bg-mid);">
                     <div style="display: flex; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.3rem;">
-                        <strong>${escapeHtml(row.label)}</strong>
+                        <strong>${escapeHtml(row.label)}${tubeRateTag(row) ? ` <span class="settings-description" data-tube-rate="${escapeHtml(key)}" style="font-weight: normal; font-size: 0.8rem;">${escapeHtml(tubeRateTag(row))}</span>` : ''}</strong>
                         <span data-tube-moved="${escapeHtml(key)}" style="color: var(--accent); font-size: 0.8rem;">moved</span>
                     </div>
                     ${control}
@@ -454,6 +472,7 @@ function buildCrtLook(st) {
                 <label class="settings-description" for="crtLookEngine" style="display: block; margin-bottom: 0.35rem;">CRT Engine</label>
                 <select id="crtLookEngine" style="${sel} width: 100%;">${engineOptions}</select>
                 <p ${desc} id="crtLookEngineNote">The sliders apply when CRT Engine is Tube.</p>
+                <p ${desc} id="crtLookRate" role="status"></p>
 
                 <label class="settings-description" for="crtLookLook" style="display: block; margin: 0.9rem 0 0.35rem;">Look</label>
                 <select id="crtLookLook" style="${sel} width: 100%;">${lookOptions}</select>
@@ -472,6 +491,7 @@ function buildCrtLook(st) {
     const els = {
         engine: document.getElementById('crtLookEngine'),
         engineNote: document.getElementById('crtLookEngineNote'),
+        rate: document.getElementById('crtLookRate'),
         look: document.getElementById('crtLookLook'),
         lookHint: document.getElementById('crtLookLookHint'),
         reset: document.getElementById('crtLookReset'),
@@ -538,6 +558,7 @@ function renderCrtLook() {
     els.engine.value = shown.engine;
     els.engine.disabled = waiting;
     els.engineNote.style.display = shown.engine === 'tube' ? 'none' : '';
+    els.rate.textContent = tubeRateText(kiosk);
     els.look.value = shown.look;
     els.look.disabled = waiting;
     const look = rows.looks.find(l => l.key === shown.look);

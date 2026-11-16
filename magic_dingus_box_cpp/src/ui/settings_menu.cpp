@@ -271,7 +271,8 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
 
     if (app::display_crt_rows(settings.crt_engine, tube_offered).tube) {
         auto& tube_setting = settings.tube;
-        items.emplace_back(app::tube_look_label(tube_setting), MenuSection::CYCLE_TUBE_LOOK,
+        const bool crt_native = settings.mode == app::DisplayMode::CRT_NATIVE;
+        items.emplace_back(app::tube_look_label(tube_setting, crt_native), MenuSection::CYCLE_TUBE_LOOK,
                            app::tube_look_sublabel(), [this, &tube_setting]() {
                                tube::select_look(tube_setting, app::next_look(tube_setting.look));
                                rebuild_current_submenu();
@@ -869,8 +870,11 @@ std::vector<MenuItem> SettingsMenuManager::build_tube_group_submenu() {
                 continue;
             }
             const bool editing = tube_edit_.active && !tube_edit_.mask && tube_edit_.effect == effect;
+            std::string sublabel(info.hint1);
+            const std::string_view rate_tag = app::tube_rate_tag(effect);
+            if (!rate_tag.empty()) sublabel += " \xC2\xB7 " + std::string(rate_tag);
             items.emplace_back(app::tube_value_label(effect, resolved.effects[tube::index_of(effect)], editing),
-                               MenuSection::TUBE_VALUE, std::string(info.hint1),
+                               MenuSection::TUBE_VALUE, std::move(sublabel),
                                [this, effect]() { begin_tube_edit(effect); });
         }
     }

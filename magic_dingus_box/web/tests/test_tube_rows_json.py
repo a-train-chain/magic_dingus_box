@@ -138,3 +138,19 @@ def test_engines():
     words = re.findall(r'"([^"]*)"', _block(r"kCrtEngineWords\{(.*?)\};", APP_H))
     assert len(names) == len(words) == 3
     assert DATA["engines"] == [{"key": n, "word": w} for n, w in zip(names, words)]
+
+
+def test_forces_30fps_includes_the_always_rich_rows():
+    always = PARITY.parse_always_rich((TUBE / "tube_budget.h").read_text("utf-8"))
+    assert always == {"glow", "afterglow", "sharpness", "convergence", "chromaBleed", "raster", "colorDrift"}
+    assert always <= {r["key"] for r in DATA["rows"] if r["forces_30fps"]}
+
+
+# Today's measured facts, pinned so a change to the lean set is a visible diff here.
+# tube_budget.h (kLeanSet, kAlwaysRich) is what decides them.
+def test_shipped_lean_set_forces_30fps_on_14_rows_and_every_look_is_30fps():
+    forcing = {r["key"] for r in DATA["rows"] if r["forces_30fps"]}
+    always = PARITY.parse_always_rich((TUBE / "tube_budget.h").read_text("utf-8"))
+    assert forcing == always | {"noise", "flicker", "hum", "rollBand", "purity", "abl", "breathing"}
+    assert len(forcing) == 14
+    assert [l["fps"] for l in DATA["looks"]] == [30] * 6

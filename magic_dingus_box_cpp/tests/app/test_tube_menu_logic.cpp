@@ -4,6 +4,8 @@
 #include <optional>
 #include "app/app_state.h"
 #include "app/tube_menu_logic.h"
+#include "tube/tube_budget.h"
+#include "tube/tube_frame_class.h"
 #include "tube/tube_groups.h"
 #include "tube/tube_setting.h"
 using app::CrtEngine;
@@ -37,11 +39,11 @@ TEST_CASE("tube menu logic: the engine cycle offers Tube only when offered", "[t
 TEST_CASE("tube menu logic: labels", "[tube]") {
     using namespace tube;
     TubeSetting s; select_look(s, Look::tv);
-    REQUIRE(app::tube_look_label(s) == "Look: TV");
+    REQUIRE(app::tube_look_label(s, false) == "Look: TV · 30 fps");
     REQUIRE(app::tube_look_sublabel() == "PVM · Monitor · Trinitron · TV · Arcade · Everything");
     REQUIRE(app::tube_reset_sublabel(s) == "nothing moved");
     set_row(s, Effect::hum, 20); set_mask(s, Mask::dots);
-    REQUIRE(app::tube_look_label(s) == "Look: TV (2 moved)");
+    REQUIRE(app::tube_look_label(s, false) == "Look: TV (2 moved) · 30 fps");
     REQUIRE(app::tube_reset_sublabel(s) == "2 rows moved");
     REQUIRE(app::tube_group_sublabel(kGroups[6], s) == "4 rows · 1 moved");   // SUPPLY
     REQUIRE(app::tube_group_sublabel(kGroups[2], s) == "3 rows · 1 moved");   // MASK counts its word row
@@ -64,4 +66,13 @@ TEST_CASE("tube menu logic: a production build is not renderer-ready", "[tube]")
     s.display_settings.set_crt_engine(app::CrtEngine::Tube);
     REQUIRE(app::effective_crt_engine(s.display_settings.crt_engine, app::tube_offered(s)) == app::CrtEngine::Enhanced);
 #endif
+}
+TEST_CASE("tube menu logic: the Look row says its rate; forcing rows are tagged", "[tube]") {
+    tube::TubeSetting s; for (auto e : tube::kAlwaysRich) tube::set_row(s, e, tube::rate_neutral(e));
+    const bool lean = tube::setting_frame_class(tube::resolve(s), false) == tube::FrameClass::Lean60;
+    REQUIRE(app::tube_look_label(s, false).find(lean ? " · 60 fps" : " · 30 fps") != std::string::npos);
+    tube::set_row(s, tube::Effect::glow, 10);
+    REQUIRE(app::tube_look_label(s, false).find(" · 30 fps") != std::string::npos);
+    REQUIRE(app::tube_rate_tag(tube::Effect::glow) == "30 fps");
+    REQUIRE(app::tube_rate_tag(tube::Effect::brightness).empty());
 }

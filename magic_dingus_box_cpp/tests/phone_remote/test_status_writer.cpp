@@ -319,6 +319,26 @@ TEST_CASE("status_writer publishes the tube state", "[remote][status][tube]") {
     REQUIRE(t["degauss_requests"].asUInt64() == 3);
 }
 
+TEST_CASE("status_writer: the tube block carries the frame rate, too_heavy and unavailable",
+          "[remote][status][tube]") {
+    app::AppState state;
+    tube_state(state);
+    // Not drawing yet: the rate the setting will draw at (look tv is rich).
+    Json::Value t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_rate.json");
+    REQUIRE(t["frame_rate"].asInt() == 30);
+    REQUIRE_FALSE(t["too_heavy"].asBool());
+    REQUIRE(t["unavailable"].isNull());
+    // Drawing: the renderer's own numbers win.
+    state.tube_render.drawing = true;
+    state.tube_render.frame_rate = 60;
+    state.tube_render.too_heavy = true;
+    state.tube_render.unavailable = "build_hung";
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_rate.json");
+    REQUIRE(t["frame_rate"].asInt() == 60);
+    REQUIRE(t["too_heavy"].asBool());
+    REQUIRE(t["unavailable"].asString() == "build_hung");
+}
+
 TEST_CASE("status_writer: Tube not offered publishes the engine and the reason only",
           "[remote][status][tube]") {
     app::AppState state;

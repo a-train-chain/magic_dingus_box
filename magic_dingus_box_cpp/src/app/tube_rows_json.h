@@ -16,6 +16,7 @@
 
 #include "app/app_state.h"
 #include "app/tube_menu_logic.h"
+#include "tube/tube_frame_class.h"
 #include "tube/tube_groups.h"
 #include "tube/tube_inputs.h"
 #include "tube/tube_looks.h"
@@ -42,6 +43,14 @@ inline std::string json_hint(std::string_view a, std::string_view b) {
 }
 
 inline std::string json_bool(bool b) { return b ? "true" : "false"; }
+
+// A look's frame rate as it stands, on a non-CRT-Native output (the web page shows one
+// number; CRT Native only ever lowers the class).
+inline int look_fps(tube::Look look) {
+    tube::TubeSetting setting;
+    tube::select_look(setting, look);
+    return tube::frames_per_second(tube::setting_frame_class(tube::resolve(setting), false));
+}
 
 }  // namespace detail
 
@@ -71,7 +80,8 @@ inline std::string tube_rows_json() {
         o += i4 + "{\"key\": " + json_str(tube::effect_key(e)) + ", \"label\": " + json_str(info.label) +
              ", \"hint\": " + json_hint(info.hint1, info.hint2) + ", \"step\": " +
              std::to_string(tube::row_step(e)) + ", \"crt_native_neutral\": " +
-             json_bool(tube::neutral_in_crt_native(e)) + "}" + (i + 1 < tube::kEffectCount ? "," : "") + "\n";
+             json_bool(tube::neutral_in_crt_native(e)) + ", \"forces_30fps\": " +
+             json_bool(tube::forces_30fps(e)) + "}" + (i + 1 < tube::kEffectCount ? "," : "") + "\n";
     }
     o += i2 + "],\n";
 
@@ -110,7 +120,7 @@ inline std::string tube_rows_json() {
         const tube::LookValues& v = tube::look_values(look);
         o += i4 + "{\"key\": " + json_str(tube::look_name(look)) + ", \"word\": " + json_str(c.label) +
              ", \"hint\": " + json_hint(c.hint1, c.hint2) + ", \"mask\": " + json_str(tube::mask_name(v.mask)) +
-             ",\n";
+             ", \"fps\": " + std::to_string(detail::look_fps(look)) + ",\n";
         o += i6 + "\"values\": {\n";
         for (std::size_t i = 0; i < tube::kEffectCount; ++i)
             o += i8 + json_str(tube::effect_key(tube::kEffects[i])) + ": " + std::to_string(v.effects[i]) +
