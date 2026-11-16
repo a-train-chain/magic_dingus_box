@@ -83,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1 AM; manually chosen programmes finish whole.
 
 ### Fixed
+- **Videos keep playing smoothly while you upload a big file.** Uploads
+  used to be written to the SD card twice, as fast as the card would take
+  them, so the TV froze, jumped ahead or restarted its channel. Each upload
+  is now written once, in small steps, and the upload itself finishes
+  about twice as fast.
 - **No more TV restarts while a big upload is copying.** Saving
   settings, keeping watch history and typing from the phone no longer
   wait on a busy SD card, which could make the TV app stop and restart

@@ -39,6 +39,13 @@ Channel Guide style, TV on **HDMI 0** (DRM `HDMI-A-1`).
    contention, not CPU. It is the single-card limitation CLAUDE.md describes;
    whether a viewer-visible stutter during big uploads is acceptable is an
    owner call.
+   **Follow-up (same night):** root-caused and fixed in the web admin
+   (`upload_io.py`; `2026-11-15-upload-sd-contention.md`). Every upload was
+   written to the card twice, unpaced. Uploads are now spooled in paced
+   1 MiB slices and hard-linked instead of copied. The same upload then took
+   236 s instead of 463 s, with no stall in the kiosk journal. A same-hour
+   rerun on main's code stalled, reloaded and had the kiosk killed by its
+   watchdog.
 2. **In Channel Guide style, Settings opens only from the guide.** BLACK /
    B during full-screen playback does nothing (`ui_available` needs the UI
    visible), so the owner guide's "Press B to open Settings" does not work
@@ -52,7 +59,7 @@ Channel Guide style, TV on **HDMI 0** (DRM `HDMI-A-1`).
 | Row | Result | Evidence |
 |---|---|---|
 | 13.8 | PASS | Pair Wireless Controller on the 640x480 canvas: all lines fit, cancel hint visible (c07, c08); no line needed wrapping. |
-| 14.5 | PASS / FINDING | Guide Mode, CRT Engine (x4), Scanlines (full cycle) toggled during the upload: UI and settings.json agree (live / True / 0.5). FINDING: channel playback during the SD-write phase ran fast — position advanced 29.6 s in 10 s, 39.6 s in 21 s, 39.4 s in 35 s (frames dropped to catch up after read stalls); one >3 s stall logged "reloading channel 2 at its live point". During the CPU-bound transcode afterwards playback kept real time (ratio 0.93–1.05). No watchdog kill, NRestarts 0. Volume hold not exercised (driver sends taps, not a held chord). |
+| 14.5 | PASS / FINDING | Guide Mode, CRT Engine (x4), Scanlines (full cycle) toggled during the upload: UI and settings.json agree (live / True / 0.5). FINDING: channel playback during the SD-write phase ran fast — position advanced 29.6 s in 10 s, 39.6 s in 21 s, 39.4 s in 35 s (frames dropped to catch up after read stalls); one >3 s stall logged "reloading channel 2 at its live point". During the CPU-bound transcode afterwards playback kept real time (ratio 0.93–1.05). No watchdog kill, NRestarts 0. Volume hold not exercised (driver sends taps, not a held chord). Fixed and re-measured: see the follow-up under finding 1. |
 | 14.6 | PASS | Scanlines Medium→High during the copy phase, then `systemctl stop` at once: stop 0.7 s, Result=success, 0.75 saved; restart resumed the last channel. |
 | 14.7 | not run | 30 min of Media Browser playback through an upload. |
 | 14.8 | not run | Phone typing during an upload. |
@@ -95,7 +102,7 @@ Channel Guide style, TV on **HDMI 0** (DRM `HDMI-A-1`).
 | 16.34 / 16.14 | PASS | Each game was launched from the guide → Settings → Video Games; every return was full-screen (guide closed) on the last channel, live. |
 | 16.35 | PASS | 30–40 s test items (~34 px) show empty cells, no stray "…" (a01). |
 | 16.37 | not run separately | Same behaviour seen past the slot; the inside-the-slot case on a long item was not run. |
-| 16.38 | PASS (partial) | One >3 s stall → reload at the live point, no failed item for a good file; but sub-3 s stalls caused visible jumps (see 14.5 finding). |
+| 16.38 | PASS (partial) | One >3 s stall → reload at the live point, no failed item for a good file; but sub-3 s stalls caused visible jumps (see 14.5 finding). With paced uploads (`2026-11-15-upload-sd-contention.md`): no stall at all during a 2.57 GB upload. |
 | 16.39 | PASS | 10/10 launches over a playing guide channel, TV on HDMI 0 (DRM HDMI-A-1): FBNeo Asteroids x3, nestopia x3, genesis_plus_gx x2, snes9x2010 x2. During each game RetroArch owned card0 pcm0p, state RUNNING (48 kHz IEC958). Judged by ALSA state, not by ear. |
 | 16.43 | PASS | After each of the 10 games: PulseAudio sink RUNNING, card0 owned by PulseAudio, kiosk video playing. |
 | 16.44 | PASS | `systemctl restart` mid-game (NES): "[audio] resumed 1 PulseAudio sink(s)" before the stop; after start "[audio] start-up: 1 of 1 PulseAudio sink(s) listed SUSPENDED … cleared"; sink RUNNING; RetroArch stopped cleanly. |

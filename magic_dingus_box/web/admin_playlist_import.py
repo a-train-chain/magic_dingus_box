@@ -33,6 +33,7 @@ try:
     )
     from admin_security import _is_within
     from media_record import record_media_info
+    from upload_io import background_io
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
@@ -45,6 +46,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     )
     from .admin_security import _is_within
     from .media_record import record_media_info
+    from .upload_io import background_io
 
 
 def _safe_media_basename(name: str) -> str:
@@ -246,6 +248,7 @@ def register(app, ctx) -> None:
 
     @app.post("/admin/playlists/import-package")
     @require_csrf
+    @background_io
     def import_package():  # type: ignore[no-redef]
         """Import a complete playlist package (ZIP with videos + playlist YAML).
 
