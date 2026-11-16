@@ -3,6 +3,7 @@
 #include <chrono>
 
 #include "app/tube_pacing.h"
+#include "app/tube_redraw.h"
 #include "tube/tube_gpu_timing.h"
 
 using namespace std::chrono_literals;
@@ -123,4 +124,25 @@ TEST_CASE("tube pacing: the report is INFO only when it says something new", "[t
     m.reset();                                              // a new look or class, or the tube restarted
     auto r4 = minute(false, false);
     REQUIRE(r4); REQUIRE(r4->first); REQUIRE(app::TubePacingMonitor::report_at_info(*r4));
+}
+
+TEST_CASE("tube pacing: the late threshold agrees with the held cadence of each class", "[tube]") {
+    // Wherever a frame is held, the monitor's cadence is the hold's: a held
+    // present on time is never late, and one a vblank later always is.
+    for (const int hz : {50, 60, 100, 120, 144}) {
+        for (const FrameClass cls : {FrameClass::Lean60, FrameClass::Rich30}) {
+            const auto r = app::tube_redraw(true, cls, true, hz);
+            const int cadence = app::TubePacingMonitor::cadence_vblanks(cls, hz);
+            if (r.hold_present) CHECK(cadence == utils::held_vblanks_at(r.hold_fps, hz));
+            const std::chrono::microseconds period{1000000 / hz};
+            app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+            m.take_report(t);
+            for (int i = 0; i < 20; ++i) { t += period * cadence; m.on_present(t, cls, hz, true); }
+            t += period * (cadence + 1); m.on_present(t, cls, hz, true);
+            const auto rep = m.take_report(t + 60s);
+            REQUIRE(rep); CHECK(rep->late == 1);
+        }
+    }
+    // Lean at 120 Hz: held to two vblanks (16.67 ms); late past 20.8 ms.
+    CHECK(app::TubePacingMonitor::cadence_vblanks(FrameClass::Lean60, 120) == 2);
 }

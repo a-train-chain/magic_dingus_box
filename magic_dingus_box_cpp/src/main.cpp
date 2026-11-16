@@ -2203,7 +2203,7 @@ int main(int /* argc */, char* /* argv */[]) {
         // composite (Renderer::set_tube_clock).
         ui::Renderer::TubeStatus tube_now;
         app::TubeRedraw tube_redraw_now;
-        bool tube_frame_held = false;   // this iteration's flip was held (rich frame)
+        bool tube_frame_held = false;   // this iteration's flip was held (TubeRedraw::hold_present)
         if constexpr (app::kTubeRendererReady) {
             const double tube_clock =
                 std::chrono::duration<double>(now.time_since_epoch()).count();
@@ -3199,11 +3199,13 @@ int main(int /* argc */, char* /* argv */[]) {
                 std::cerr << "Failed to swap buffers!" << std::endl;
             }
 
-            // A rich Tube frame's flip is held so it lands utils::held_vblanks
-            // vblanks (2 at 50/60 Hz, 4 at 120 Hz) after the last one. The clock
-            // is read FRESH here: the iteration's `now` would make every rich
-            // frame flip late. Bounded to that many refreshes whatever the clock
-            // says (utils::capped_present_hold). Only while the tube draws
+            // A held Tube frame's flip lands utils::held_vblanks_at(hold_fps)
+            // vblanks after the last one: a rich frame (30) 2 at 50/60 Hz, 4 at
+            // 120 Hz; a lean frame (60) only where the 60 fps cap spans two
+            // vblanks (2 at 100/120/144 Hz; never at 50/60). The clock is read
+            // FRESH here: the iteration's `now` would make every held frame flip
+            // late. Bounded to that many refreshes whatever the clock says
+            // (utils::capped_present_hold_at). Only while the tube draws
             // (hold_present is false otherwise, and always in production).
             if constexpr (app::kTubeRendererReady) {
                 if (tube_redraw_now.hold_present) {
@@ -3211,7 +3213,8 @@ int main(int /* argc */, char* /* argv */[]) {
                     const auto since_last_present =
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - last_present_done);
-                    const auto hold = utils::capped_present_hold(hz, since_last_present);
+                    const auto hold = utils::capped_present_hold_at(tube_redraw_now.hold_fps, hz,
+                                                                    since_last_present);
                     if (hold.count() > 0) std::this_thread::sleep_for(hold);
                     tube_frame_held = true;
                 }
@@ -3339,12 +3342,13 @@ int main(int /* argc */, char* /* argv */[]) {
                       iteration_elapsed)
                 : utils::frame_cap_sleep(pacing, iteration_elapsed);
         // A held Tube frame already waited before its flip: only the floor on
-        // the whole iteration remains (utils::held_frame_sleep). Never in
+        // the whole iteration remains (utils::held_frame_sleep_at). Never in
         // production (tube_frame_held is set only in the compiled-out hold).
         if constexpr (app::kTubeRendererReady) {
             if (tube_frame_held) {
-                pace_sleep = utils::held_frame_sleep(static_cast<int>(mode_info.vrefresh),
-                                                     iteration_elapsed);
+                pace_sleep = utils::held_frame_sleep_at(tube_redraw_now.hold_fps,
+                                                        static_cast<int>(mode_info.vrefresh),
+                                                        iteration_elapsed);
             }
         }
         if (pace_sleep.count() > 0) std::this_thread::sleep_for(pace_sleep);

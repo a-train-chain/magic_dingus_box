@@ -98,11 +98,61 @@ inline std::chrono::microseconds field_rate_skip_sleep(
     return std::max(frame_cap_sleep(p, iteration_elapsed), past_skipped_vblank);
 }
 
+// ── Held tube frames at a class's target rate ───────────────────────────
+// The *_at functions are the held-frame arithmetic for any target rate:
+// 30 for a Rich30 frame, 60 for a Lean60 frame (tube::frames_per_second).
+// The 30 fps functions below are exactly the *_at(30, ...) case.
+//
+// A Lean60 frame is held only where the 60 fps cap spans two or more
+// vblanks (100, 120, 144 Hz: app::tube_redraw). There the ordinary cap
+// sleeps (vblanks - 1) refreshes plus an eighth AFTER the flip and leaves
+// the frame the rest of ONE refresh to render (7.3 ms at 120 Hz, for a
+// lean frame of 10.6-12.3 ms): it missed, landing on the 3rd vblank.
+// Rendering straight after the flip and holding only the flip gives it the
+// whole two-refresh budget (16.7 ms at 120 Hz), as for a rich frame.
+
+// How many vblanks apart held frames at target_fps land: round(refresh /
+// target_fps), at least 1. <= 0 refresh reads as 60.
+inline int held_vblanks_at(int target_fps, int refresh_hz) noexcept {
+    return frame_pacing_for(target_fps, refresh_hz).vblanks_per_frame;
+}
+
+// The wait before a held frame's flip (see present_hold below for why and
+// when the clock must be read): until (held_vblanks_at - 1) refreshes plus
+// an eighth after the last flip; 0 when a frame spans one vblank.
+inline std::chrono::microseconds present_hold_at(int target_fps, int refresh_hz,
+                                                 std::chrono::microseconds since_last_present) {
+    const FramePacing p = frame_pacing_for(target_fps, refresh_hz);
+    if (p.vblanks_per_frame == 1) return std::chrono::microseconds{0};
+    return std::max(std::chrono::microseconds{0}, p.post_present_gap - since_last_present);
+}
+
+// The longest a held frame may wait: held_vblanks_at refreshes.
+inline std::chrono::microseconds present_hold_cap_at(int target_fps, int refresh_hz) {
+    if (refresh_hz <= 0) refresh_hz = 60;
+    return std::chrono::microseconds{1000000 / refresh_hz} * held_vblanks_at(target_fps, refresh_hz);
+}
+
+// What main.cpp sleeps between eglSwapBuffers and the flip of a held frame.
+inline std::chrono::microseconds capped_present_hold_at(int target_fps, int refresh_hz,
+                                                        std::chrono::microseconds since_last_present) {
+    return std::min(present_hold_at(target_fps, refresh_hz, since_last_present),
+                    present_hold_cap_at(target_fps, refresh_hz));
+}
+
+// The bottom-of-loop sleep after a held frame: only the floor on the whole
+// iteration (period * held_vblanks_at - period / 8).
+inline std::chrono::microseconds held_frame_sleep_at(int target_fps, int refresh_hz,
+                                                     std::chrono::microseconds iteration_elapsed) {
+    const FramePacing p = frame_pacing_for(target_fps, refresh_hz);
+    return std::max(std::chrono::microseconds{0}, p.min_iteration - iteration_elapsed);
+}
+
 // Rich30 tube frames (app::TubeRedraw::hold_present): each flip is held so
 // it lands round(refresh / 30) vblanks after the previous one — 2 at 50/60
 // Hz, 4 at 120 Hz, 1 at 30 Hz or below (nothing to hold). <= 0 reads as 60.
 inline int held_vblanks(int refresh_hz) noexcept {
-    return frame_pacing_for(30, refresh_hz).vblanks_per_frame;
+    return held_vblanks_at(30, refresh_hz);
 }
 
 // How long to wait before the page flip of a held frame. Called AFTER
@@ -122,10 +172,8 @@ inline int held_vblanks(int refresh_hz) noexcept {
 // that waits for nothing and flips at the next vblank (counted late).
 inline std::chrono::microseconds present_hold(int refresh_hz,
                                               std::chrono::microseconds since_last_present) {
-    const FramePacing p = frame_pacing_for(30, refresh_hz);
-    if (p.vblanks_per_frame == 1) return std::chrono::microseconds{0};
     // post_present_gap = period * (held_vblanks - 1) + period / 8.
-    return std::max(std::chrono::microseconds{0}, p.post_present_gap - since_last_present);
+    return present_hold_at(30, refresh_hz, since_last_present);
 }
 
 // The longest a held frame may wait: held_vblanks(refresh_hz) refreshes (2 at 50/60 Hz,
@@ -134,15 +182,14 @@ inline std::chrono::microseconds present_hold(int refresh_hz,
 // the cap never binds. A fixed two refreshes would cut the 120 Hz hold (26.0 ms) to
 // 16.7 ms, landing a rich frame early.
 inline std::chrono::microseconds present_hold_cap(int refresh_hz) {
-    if (refresh_hz <= 0) refresh_hz = 60;
-    return std::chrono::microseconds{1000000 / refresh_hz} * held_vblanks(refresh_hz);
+    return present_hold_cap_at(30, refresh_hz);
 }
 
 // What main.cpp sleeps between eglSwapBuffers and the flip of a held frame:
 // present_hold(), never longer than present_hold_cap().
 inline std::chrono::microseconds capped_present_hold(int refresh_hz,
                                                      std::chrono::microseconds since_last_present) {
-    return std::min(present_hold(refresh_hz, since_last_present), present_hold_cap(refresh_hz));
+    return capped_present_hold_at(30, refresh_hz, since_last_present);
 }
 
 // The bottom-of-loop sleep for a held frame: ONLY the floor on the whole
@@ -152,8 +199,7 @@ inline std::chrono::microseconds capped_present_hold(int refresh_hz,
 // right after it.
 inline std::chrono::microseconds held_frame_sleep(int refresh_hz,
                                                   std::chrono::microseconds iteration_elapsed) {
-    const FramePacing p = frame_pacing_for(30, refresh_hz);
-    return std::max(std::chrono::microseconds{0}, p.min_iteration - iteration_elapsed);
+    return held_frame_sleep_at(30, refresh_hz, iteration_elapsed);
 }
 
 }  // namespace utils
