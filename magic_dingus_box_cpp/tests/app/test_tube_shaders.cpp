@@ -9,14 +9,17 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "tube/tube_driver.h"
 #include "tube/tube_programs.h"
 #include "tube/tube_shader_assembly.h"
 
@@ -389,4 +392,110 @@ TEST_CASE("tube shaders: written out for the validator when asked", "[tube][tube
     }
     std::ofstream(std::string(dir) + "/fullscreen.vert") << assemble_vertex();
     REQUIRE(n == 28);
+}
+
+// Real uniform sets for scripts/dev/tube_shaderstat (the on-Pi compile/compare tool),
+// written only when asked: for each look at a 1440x1080 Modern TV picture (1920x1080
+// framebuffer, picture at x 240), what FrameDriver::frame uploads at a mid-run moment
+// (warm-up over, phases non-zero, the limiter fed a mean) - `<look>.txt` - and the same
+// with a degauss 0.4 s in - `<look>.degauss.txt`. `<look>.synthetic.txt` is NOT what
+// the driver uploads (it has no power-off animation yet, and no look moves the band,
+// purity, tracking or flagging rows): the mid-run set with power 0.6, spot 0.3,
+// warmupGain 0.7 and those character blocks on, so a comparison reaches every branch.
+// Each file: every TubeUniforms field (`tint` as three values), the renderer's own
+// uniforms at this picture (tube_renderer_passes.cpp: uMaskSize, uSceneMap,
+// uSceneClamp; uOrigin depends on the program's target and the tool derives it) and
+// the directives @fb, @pic and @mask (the look's mask tile).
+TEST_CASE("tube shaders: real uniform sets written out when asked", "[tube][tube_shaders]") {
+    const char* dir = std::getenv("MDB_WRITE_TUBE_UNIFORMS");
+    if (dir == nullptr || *dir == '\0') return;
+    std::filesystem::create_directories(dir);
+    using TU = TubeUniforms;
+    static constexpr std::pair<const char*, float TU::*> kFields[] = {
+        {"outW", &TU::outW}, {"outH", &TU::outH}, {"pxPerMm", &TU::pxPerMm}, {"curvature", &TU::curvature},
+        {"cornerPx", &TU::cornerPx}, {"marginPx", &TU::marginPx}, {"flatFit", &TU::flatFit},
+        {"scanlines", &TU::scanlines}, {"lines", &TU::lines}, {"raster", &TU::raster}, {"beamMin", &TU::beamMin},
+        {"beamMax", &TU::beamMax}, {"maskType", &TU::maskType}, {"maskStrength", &TU::maskStrength},
+        {"maskGain", &TU::maskGain}, {"maskPitch", &TU::maskPitch}, {"glow", &TU::glow},
+        {"sharpness", &TU::sharpness}, {"brightness", &TU::brightness}, {"contrast", &TU::contrast},
+        {"saturation", &TU::saturation}, {"convergence", &TU::convergence}, {"persistence", &TU::persistence},
+        {"flicker", &TU::flicker}, {"hum", &TU::hum}, {"vignette", &TU::vignette}, {"rim", &TU::rim},
+        {"noise", &TU::noise}, {"jitter", &TU::jitter}, {"glassBlack", &TU::glassBlack},
+        {"reflection", &TU::reflection}, {"abl", &TU::abl}, {"breathe", &TU::breathe},
+        {"chromaBleed", &TU::chromaBleed}, {"humPhase", &TU::humPhase}, {"flickerWave", &TU::flickerWave},
+        {"noiseSeed", &TU::noiseSeed}, {"jitterSeed", &TU::jitterSeed}, {"degaussPhaseA", &TU::degaussPhaseA},
+        {"degaussPhaseB", &TU::degaussPhaseB}, {"jitterBias", &TU::jitterBias}, {"ablLevel", &TU::ablLevel},
+        {"power", &TU::power}, {"degauss", &TU::degauss}, {"spot", &TU::spot}, {"warmupGain", &TU::warmupGain},
+        {"rollAmount", &TU::rollAmount}, {"rollPosition", &TU::rollPosition},
+        {"rollHalfWidth", &TU::rollHalfWidth}, {"rollTint", &TU::rollTint},
+        {"trackingOffset", &TU::trackingOffset}, {"trackingPosition", &TU::trackingPosition},
+        {"trackingHalfWidth", &TU::trackingHalfWidth}, {"driftOffset", &TU::driftOffset},
+        {"flagOffset", &TU::flagOffset}, {"flagExtent", &TU::flagExtent}, {"purityAmount", &TU::purityAmount},
+        {"purityX", &TU::purityX}, {"purityY", &TU::purityY}, {"purityRadius", &TU::purityRadius},
+        {"purityR", &TU::purityR}, {"purityG", &TU::purityG}, {"purityB", &TU::purityB},
+    };
+    static_assert(sizeof(TU) == (std::size(kFields) + 3) * sizeof(float), "a TubeUniforms field is missing here");
+    constexpr int kFbW = 1920, kFbH = 1080, kPicX = 240, kPicY = 0, kPicW = 1440, kPicH = 1080;
+    const Picture picture{kPicW, kPicH, false};
+    const auto write = [&](const std::string& path, const TU& u, const DriverFrame& first) {
+        std::ofstream out(path);
+        out.precision(9);
+        out << "# " << path.substr(path.find_last_of('/') + 1) << ": output " << program_info(first.plan.output).name
+            << "\n@fb=" << kFbW << "," << kFbH << "\n@pic=" << kPicX << "," << kPicY << "," << kPicW << "," << kPicH
+            << "\n@mask=" << first.mask.w << "," << first.mask.h << ",";
+        for (std::uint8_t b : first.mask.rgb) {
+            static constexpr char kHex[] = "0123456789abcdef";
+            out << kHex[b >> 4] << kHex[b & 15];
+        }
+        out << "\n";
+        for (const auto& [name, member] : kFields) out << name << "=" << u.*member << "\n";
+        out << "tint=" << u.tint[0] << "," << u.tint[1] << "," << u.tint[2] << "\n";
+        const float W = kFbW, H = kFbH, x = kPicX, y = kPicY, w = kPicW, h = kPicH;   // scene_uniforms()
+        out << "uMaskSize=" << first.mask.w << "," << first.mask.h << "\nuSceneMap=" << x / W << "," << (H - y) / H
+            << "," << w / W << "," << h / H << "\nuSceneClamp=" << (x + 0.5f) / W << "," << (H - y - h + 0.5f) / H
+            << "," << (x + w - 0.5f) / W << "," << (H - y - 0.5f) / H << "\n";
+    };
+    int n = 0;
+    for (const Look look : kLooks) {
+        TubeSetting setting;
+        setting.look = look;
+        // From t = 100 s at 30 fps; a mean of 0.35 fed while the plan has the probe.
+        const auto run = [&](double until, double degauss_at, DriverFrame& first) {
+            FrameDriver d;
+            DriverFrame f;
+            bool have_first = false;
+            std::uint64_t requests = 0;
+            for (double t = 100.0; t <= until + 1e-9; t += 1.0 / 30.0) {
+                if (t >= degauss_at) requests = 1;
+                f = d.frame(setting, picture, t, requests);
+                if (!have_first) first = f, have_first = true;
+                d.on_mean(0.35);
+            }
+            return f;
+        };
+        DriverFrame first;
+        const DriverFrame mid = run(106.4, 1e9, first);
+        REQUIRE(mid.u.warmupGain == 1.0f);
+        REQUIRE(mid.u.degauss == 0.0f);
+        REQUIRE(first.mask_changed);
+        const std::string base = std::string(dir) + "/" + std::string(look_name(look));
+        write(base + ".txt", mid.u, first);
+        DriverFrame first_d;
+        const DriverFrame deg = run(106.4, 106.0, first_d);
+        REQUIRE(deg.u.degauss > 0.5f);
+        REQUIRE(deg.u.degauss < 1.0f);
+        write(base + ".degauss.txt", deg.u, first_d);
+        TU syn = mid.u;
+        syn.power = 0.6f;
+        syn.spot = 0.3f;
+        syn.warmupGain = 0.7f;
+        syn.rollAmount = 1.2f, syn.rollPosition = 0.4f, syn.rollHalfWidth = 0.1f, syn.rollTint = 0.5f;
+        syn.purityAmount = 0.8f, syn.purityX = 0.3f, syn.purityY = 0.6f, syn.purityRadius = 40.0f;
+        syn.purityR = 0.9f, syn.purityG = 0.2f, syn.purityB = 0.5f;
+        syn.trackingOffset = 5.0f, syn.trackingPosition = 0.5f, syn.trackingHalfWidth = 0.05f;
+        syn.flagOffset = 6.0f, syn.flagExtent = 0.2f;
+        write(base + ".synthetic.txt", syn, first);
+        n += 3;
+    }
+    REQUIRE(n == 18);
 }
