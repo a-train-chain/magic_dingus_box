@@ -105,3 +105,22 @@ TEST_CASE("tube pacing: a lean look at 120 Hz presents every two vblanks and is 
     auto r = m.take_report(t + 60s); REQUIRE(r); REQUIRE(r->late == 1); REQUIRE(r->video_late == 1);
     REQUIRE_FALSE(m.too_heavy());
 }
+
+TEST_CASE("tube pacing: the report is INFO only when it says something new", "[tube]") {
+    app::TubePacingMonitor m; auto t = app::TubePacingMonitor::Clock::time_point{} + 1h;
+    m.take_report(t);
+    auto minute = [&](bool video, bool one_late) {
+        for (int i = 0; i < 100; ++i) { t += 16667us; m.on_present(t, FrameClass::Lean60, 60, video); }
+        if (one_late) { t += 30000us; m.on_present(t, FrameClass::Lean60, 60, video); }
+        t += 60s; return m.take_report(t);
+    };
+    auto r1 = minute(false, false);                         // the first report since the tube started
+    REQUIRE(r1); REQUIRE(r1->first); REQUIRE(app::TubePacingMonitor::report_at_info(*r1));
+    auto r2 = minute(false, true);                          // a still menu: late, but no video
+    REQUIRE(r2); REQUIRE_FALSE(r2->first); REQUIRE_FALSE(app::TubePacingMonitor::report_at_info(*r2));
+    auto r3 = minute(true, true);                           // a late present with video
+    REQUIRE(r3); REQUIRE(r3->video_late == 1); REQUIRE(app::TubePacingMonitor::report_at_info(*r3));
+    m.reset();                                              // a new look or class, or the tube restarted
+    auto r4 = minute(false, false);
+    REQUIRE(r4); REQUIRE(r4->first); REQUIRE(app::TubePacingMonitor::report_at_info(*r4));
+}

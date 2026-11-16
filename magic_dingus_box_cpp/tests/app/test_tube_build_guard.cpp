@@ -3,6 +3,9 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <sys/resource.h>
+
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -127,4 +130,38 @@ TEST_CASE("tube build guard: begin in a missing directory warns and continues", 
     logger->flush();
     spdlog::set_default_logger(previous);
     REQUIRE(out.str().find("tube build guard") != std::string::npos);
+}
+
+TEST_CASE("tube build guard: a marker whose write fails after the open is removed and cannot trip", "[tube]") {
+    // The open succeeds and the write fails part-way: a file-size limit (RLIMIT_FSIZE,
+    // POSIX, so the same on the Mac and on the Pi) lets the first 8 bytes through and
+    // fails the rest with EFBIG. SIGXFSZ, which the kernel sends then, is ignored for
+    // the duration. Without the removal the partial file stays - and end() would not
+    // remove it (the guard is not armed) - so the next start reads it as a hang and
+    // keeps Tube off until a reboot.
+    const auto path = temp_marker("mdb-tube-build-test-partial");
+    std::filesystem::remove(path);
+    std::ostringstream out;
+    auto previous = spdlog::default_logger();
+    auto logger = std::make_shared<spdlog::logger>("capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(out));
+    spdlog::set_default_logger(logger);
+    app::TubeBuildGuard g(path);
+    REQUIRE_FALSE(g.tripped());
+    rlimit saved{};
+    REQUIRE(getrlimit(RLIMIT_FSIZE, &saved) == 0);
+    rlimit small = saved;
+    small.rlim_cur = 8;
+    auto* const old_handler = std::signal(SIGXFSZ, SIG_IGN);
+    REQUIRE(setrlimit(RLIMIT_FSIZE, &small) == 0);
+    g.begin(std::string(64, 'p'));
+    setrlimit(RLIMIT_FSIZE, &saved);
+    std::signal(SIGXFSZ, old_handler);
+    logger->flush();
+    spdlog::set_default_logger(previous);
+    REQUIRE(out.str().find("could not write") != std::string::npos);
+    REQUIRE_FALSE(std::filesystem::exists(path));
+    REQUIRE_FALSE(app::TubeBuildGuard(path).tripped());   // the next start is clean
+    g.end();                                             // and end() has nothing to do
+    REQUIRE_FALSE(std::filesystem::exists(path));
+    std::filesystem::remove(path);
 }

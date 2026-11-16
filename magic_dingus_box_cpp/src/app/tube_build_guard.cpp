@@ -50,6 +50,7 @@ void TubeBuildGuard::begin(std::string_view programs) {
         return;
     }
     std::ofstream out(path_, std::ios::binary | std::ios::trunc);
+    const bool opened = out.is_open();
     if (out) {
         out.write(programs.data(), static_cast<std::streamsize>(programs.size()));
         out.flush();
@@ -57,6 +58,15 @@ void TubeBuildGuard::begin(std::string_view programs) {
     }
     if (!out) {
         LOG_WARN("tube build guard: could not write {}; building without a marker", path_);
+        // Opened (so created or truncated by us) but not fully written: a partial file
+        // would read as a hang at the next start, and end() would not remove it (not
+        // armed) - Tube off until a reboot for a write error. Remove it now. A file we
+        // never opened is not ours to remove.
+        if (opened) {
+            std::error_code ec;
+            std::filesystem::remove(path_, ec);
+        }
+        armed_ = false;
         return;
     }
     armed_ = true;

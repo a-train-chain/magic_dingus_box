@@ -26,7 +26,15 @@ public:
     struct Report {
         std::uint64_t presents = 0, late = 0, video_presents = 0, video_late = 0;
         tube::FrameClass cls = tube::FrameClass::Lean60;
+        bool first = false;   // the first report since construction or reset()
     };
+
+    // The journal level for a report, as main.cpp's UI draw-call line: INFO for the first
+    // report after the tube starts drawing or its look/class changes (both reset()), and
+    // for any report with a late present while video played (the evidence the too-heavy
+    // toast judges); DEBUG otherwise, so a still menu - which keeps presenting through
+    // the redraw gate's safety redraw - is not one INFO line a minute forever.
+    static bool report_at_info(const Report& r) { return r.first || r.video_late > 0; }
 
     // Refreshes between two on-time presents of a class at `vrefresh_hz` (<= 0 reads as
     // 60). Rich30: the held flip's utils::held_vblanks (2 at 50/60 Hz, 4 at 120 Hz).
@@ -89,6 +97,7 @@ public:
         }
         if (now - *window_start_ < std::chrono::seconds(60)) return std::nullopt;
         Report out = report_;
+        out.first = std::exchange(first_report_pending_, false);
         report_ = Report{};
         report_.cls = out.cls;
         window_start_ = now;
@@ -119,6 +128,7 @@ public:
         streak_start_.reset();
         toast_pending_ = heavy_ = false;
         last_present_.reset();
+        first_report_pending_ = true;
     }
 
 private:
@@ -127,7 +137,7 @@ private:
     std::optional<Clock::time_point> last_present_, window_start_, streak_start_;
     std::deque<std::pair<Clock::time_point, bool>> video_window_;
     std::size_t video_late_ = 0;
-    bool toast_pending_ = false, heavy_ = false;
+    bool toast_pending_ = false, heavy_ = false, first_report_pending_ = true;
 };
 
 }  // namespace app

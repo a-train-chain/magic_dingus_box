@@ -30,7 +30,9 @@ public:
 
     // A tripped guard never writes: the marker and tripped_program() stay as they were
     // (one WARN). Otherwise writes, flushes and closes the marker before returning. A write error logs a
-    // WARN and continues (a build with no marker is the pre-guard behaviour). This is
+    // WARN and continues (a build with no marker is the pre-guard behaviour); a file it
+    // opened but could not finish writing is removed, so a partial marker never trips the
+    // next start. This is
     // a file write on the main thread, a rare bounded exception to the no-writes rule:
     // /dev/shm is RAM, so it never touches the SD card.
     void begin(std::string_view programs);

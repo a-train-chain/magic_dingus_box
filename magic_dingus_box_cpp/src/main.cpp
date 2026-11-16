@@ -3237,10 +3237,20 @@ int main(int /* argc */, char* /* argv */[]) {
                         // "late" counts every present, so a lean look drawn at
                         // field rate on a still menu reads mostly late; the
                         // video figure is the one the too-heavy toast judges.
-                        LOG_INFO("Tube pacing: class {}, {} presents ({} with video), {} late, "
-                                 "{} late with video",
-                                 tube::frames_per_second(report->cls), report->presents,
-                                 report->video_presents, report->late, report->video_late);
+                        // INFO for the first report after the tube starts or its
+                        // look/class changes, and whenever video was late; DEBUG
+                        // otherwise (app::TubePacingMonitor::report_at_info).
+                        if (app::TubePacingMonitor::report_at_info(*report)) {
+                            LOG_INFO("Tube pacing: class {}, {} presents ({} with video), {} late, "
+                                     "{} late with video",
+                                     tube::frames_per_second(report->cls), report->presents,
+                                     report->video_presents, report->late, report->video_late);
+                        } else {
+                            LOG_DEBUG("Tube pacing: class {}, {} presents ({} with video), {} late, "
+                                      "{} late with video",
+                                      tube::frames_per_second(report->cls), report->presents,
+                                      report->video_presents, report->late, report->video_late);
+                        }
                     }
                     if (tube_pacing.take_toast()) {
                         ui::Toast::show("This CRT look is too heavy for smooth video");
