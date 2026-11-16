@@ -214,49 +214,68 @@ def background_io(view):
 
 # --------------------------------------------------------------- the spool
 
+class WriteBackPacer:
+    """Keeps one growing file's write-back to a slice at a time.
+
+    Call wrote(f) after each write to `f`. Every `flush_every` bytes it
+    pushes the newest slice to the card and waits for it (_writeback), then
+    drops it from the page cache, so the card never has more than one slice
+    of this file queued ahead of the kiosk's reads and the kiosk's own
+    cached pages stay put. Used for upload spools (SpoolFile) and for
+    anything else that writes a big file to the SD card in a request — a
+    package import's extraction.
+
+    Holds no reference to the file, so a file that owns its pacer is still
+    freed (and a spool removed) by reference counting.
+    """
+
+    def __init__(self, flush_every: Optional[int] = None):
+        self._every = flush_every_bytes() if flush_every is None else flush_every
+        self._flushed = 0
+        self._failed = False
+
+    def wrote(self, f) -> None:
+        if self._every <= 0 or self._failed:
+            return
+        end = f.tell()
+        if end - self._flushed < self._every:
+            return
+        # Python's own buffer first. Outside the try: a write that fails
+        # here (a full card) is the caller's error, never swallowed.
+        f.flush()
+        try:
+            _writeback(f.fileno(), self._flushed, end - self._flushed)
+            _drop_cache(f.fileno(), self._flushed, end - self._flushed)
+        except OSError as e:
+            # Pacing is a courtesy to the kiosk, never a reason to fail the
+            # write: fall back to the kernel's own write-back.
+            self._failed = True
+            print(f"[upload_io] write pacing off for this file: {e}",
+                  file=sys.stderr)
+        self._flushed = end
+
+
 class SpoolFile(io.FileIO):
     """A request body's file part, spooled to a named file and paced.
 
     Writes go straight to the file (unbuffered: werkzeug already writes in
-    64 KiB pieces). Every `flush_every` bytes the newest slice is written
-    back and dropped from the page cache, so this upload never has more
-    than one slice dirty and never pushes the kiosk's pages out of the
-    cache. The file is removed when it is closed — at the end of the
-    request — unless a route has linked it to a name of its own first.
+    64 KiB pieces) and are paced by a WriteBackPacer. The file is removed
+    when it is closed — at the end of the request — unless a route has
+    linked it to a name of its own first.
     """
 
     def __init__(self, directory, flush_every: Optional[int] = None):
         self.path = Path(directory) / f"{SPOOL_PREFIX}{uuid.uuid4().hex}"
         super().__init__(str(self.path), "x+")
-        self._flush_every = (flush_every_bytes() if flush_every is None
-                             else flush_every)
-        self._flushed = 0
-        self._pacing_failed = False
+        self._pacer = WriteBackPacer(flush_every)
 
     def write(self, b) -> int:
         view = memoryview(b).cast("B")
         done = 0
         while done < len(view):
             done += super().write(view[done:])
-        self._pace()
+        self._pacer.wrote(self)
         return done
-
-    def _pace(self) -> None:
-        if self._flush_every <= 0 or self._pacing_failed:
-            return
-        end = self.tell()
-        if end - self._flushed < self._flush_every:
-            return
-        try:
-            _writeback(self.fileno(), self._flushed, end - self._flushed)
-            _drop_cache(self.fileno(), self._flushed, end - self._flushed)
-        except OSError as e:
-            # Pacing is a courtesy to the kiosk, never a reason to fail the
-            # upload: fall back to the kernel's own write-back.
-            self._pacing_failed = True
-            print(f"[upload_io] upload pacing off for this file: {e}",
-                  file=sys.stderr)
-        self._flushed = end
 
     def link_to(self, dest) -> bool:
         """Give the spooled bytes a second name; False if the filesystem
@@ -308,6 +327,6 @@ class PacedUploadRequest(Request):
 
 __all__ = [
     "DEFAULT_FLUSH_MIB", "IOPRIO_IDLE", "PacedUploadRequest", "SPOOL_PREFIX",
-    "SpoolFile", "background_io", "flush_every_bytes", "idle_io",
-    "save_upload",
+    "SpoolFile", "WriteBackPacer", "background_io", "flush_every_bytes",
+    "idle_io", "save_upload",
 ]

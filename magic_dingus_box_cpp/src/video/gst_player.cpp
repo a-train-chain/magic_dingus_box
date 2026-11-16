@@ -4,8 +4,6 @@
 #include "../utils/logger.h"
 #include <iostream>
 #include <cmath>
-#include <cstdio>
-#include <cstring>
 #include <cstdlib>
 #include <thread>
 #include <chrono>
@@ -286,7 +284,6 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     playbin_ = playbin.release();
     pipeline_ = playbin_;  // pipeline acts as the playbin
     appsink_ = appsink_raw;
-    volume_pct_ = 100.0;  // a new playbin starts at volume 1.0
 
     initialized_ = true;
     LOG_DEBUG("GStreamer initialization complete");
@@ -502,17 +499,13 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
 bool GstPlayer::load_file(const std::string& path, double start, double /*end*/, bool /*loop*/) {
     if (!initialized_) return false;
 
-    // Whatever was playing is forgotten NOW (as the old synchronous stop()
-    // did); the control thread takes the pipeline through NULL as the first
-    // step of the load.
-    forget_stream();
+    stop();
     decoder_inspected_ = false;  // Re-inspect decoder for new media
 
-    // New stream boundary. The renderer pulls nothing until the control
-    // thread has emptied the appsink through NULL for THIS generation
-    // (frames_current()), so the first sample it pulls after this bump
-    // belongs to the new stream. Bumped even if the load later fails — the
-    // previous stream's frame must not linger over an error state either.
+    // New stream boundary. stop() above flushed the appsink (pipeline to
+    // NULL), so any sample the renderer pulls after this bump belongs to
+    // the new stream. Bumped even if the load later fails — the previous
+    // stream's frame must not linger over an error state either.
     ++stream_generation_;
 
     // Reset the QoS rate-limiter — the new file's pipeline starts with
@@ -540,16 +533,13 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
         }
     }
 
-    LOG_DEBUG("GstPlayer::load_file() - queueing URI: {}", uri);
-    // NULL, the URI, PLAYING — on the control thread (pipeline_control.h):
-    // each of those can wait on the SD card, NULL for the old stream's read
-    // in flight and PLAYING for the new file's open()s.
-    PipelineCommand cmd;
-    cmd.op = PipelineOp::Load;
-    cmd.uri = uri;
-    cmd.generation = stream_generation_;
-    cmd.target = pipeline_ref();
-    control_.submit(std::move(cmd));
+    LOG_DEBUG("GstPlayer::load_file() - setting URI: {}", uri);
+    g_object_set(G_OBJECT(playbin_), "uri", uri.c_str(), nullptr);
+
+    // Start playback
+    play();
+
+    LOG_DEBUG("GstPlayer::load_file - Current volume: {}%", get_volume());
 
     // A seek issued before preroll can be dropped by some demuxers, so the
     // start offset waits for it — but NOT here. This used to block up to 3 s
@@ -563,18 +553,29 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
 
 void GstPlayer::play() {
     if (!initialized_) return;
-    // Queued, not run here: a state change takes the pipeline's state lock,
-    // which the control thread holds through a stop or load that is waiting
-    // on the card. Preroll completion is observed asynchronously as before:
-    // update_state() polls with a 0 timeout each frame and treats
-    // ASYNC+pending==PLAYING as playing, and the bus handler sees
-    // ASYNC_DONE. Callers that need playback confirmation poll is_playing()
-    // (see Controller::load_playlist_item).
-    LOG_DEBUG("GstPlayer::play() - queueing PLAYING");
-    PipelineCommand cmd;
-    cmd.op = PipelineOp::Play;
-    cmd.target = pipeline_ref();
-    control_.submit(std::move(cmd));
+
+    LOG_DEBUG("GstPlayer::play() called - setting state to PLAYING");
+    GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        LOG_ERROR("GstPlayer::play() - state change to PLAYING failed");
+        return;
+    }
+    LOG_DEBUG("GstPlayer::play() state change return: {}", static_cast<int>(ret));
+
+    // Zero-timeout state peek, purely for the debug log. This used to be a
+    // BLOCKING gst_element_get_state with a 3-second timeout — on every video
+    // launch AND every pause→resume the render thread froze until preroll
+    // completed (~0.3-3s), even though the result only fed these log lines.
+    // Preroll completion is already observed asynchronously: update_state()
+    // polls with a 0 timeout each frame and treats ASYNC+pending==PLAYING as
+    // playing, and the bus handler sees ASYNC_DONE. Callers that need
+    // playback confirmation poll is_playing() (see Controller::
+    // load_playlist_item) instead of blocking here.
+    GstState current, pending;
+    (void)gst_element_get_state(pipeline_, &current, &pending, 0);
+    LOG_DEBUG("GstPlayer::play() current state: {}, pending: {}",
+              gst_element_state_get_name(current),
+              gst_element_state_get_name(pending));
 }
 
 std::string GstPlayer::describe_state() const {
@@ -591,23 +592,12 @@ std::string GstPlayer::describe_state() const {
     out += " (";
     out += gst_element_state_change_return_get_name(ret);
     out += ")";
-    const auto control = control_.status();
-    if (control.running) {
-        char took[32];
-        std::snprintf(took, sizeof took, "%.1f", control.running_for_s);
-        out += std::string("; control: ") + pipeline_op_name(*control.running) +
-               " running " + took + " s";
-    }
-    if (control.queued > 0) out += "; " + std::to_string(control.queued) + " queued";
     return out;
 }
 
 void GstPlayer::pause() {
     if (!initialized_) return;
-    PipelineCommand cmd;
-    cmd.op = PipelineOp::Pause;
-    cmd.target = pipeline_ref();
-    control_.submit(std::move(cmd));
+    gst_element_set_state(pipeline_, GST_STATE_PAUSED);
 }
 
 void GstPlayer::toggle_pause() {
@@ -632,10 +622,6 @@ void GstPlayer::seek(double seconds) {
         deferred_start_.cancel();
     } else if (seek_in_progress_ || has_pending_seek_) {
         base = pending_seek_target_ns_;
-    } else if (control_.busy()) {
-        // The pipeline is the control thread's for now; the last position
-        // this thread saw is the base.
-        base = static_cast<gint64>(position_.load() * GST_SECOND);
     } else if (!gst_element_query_position(pipeline_, GST_FORMAT_TIME, &base)) {
         return;  // can't establish a base position; drop this scrub tick
     }
@@ -696,37 +682,38 @@ void GstPlayer::fire_seek() {
     // at its end, so the latch must release or is_playing_ stays false.
     at_eos_ = false;
     seek_started_at_ = std::chrono::steady_clock::now();
-    // The seek itself runs on the control thread: a FLUSH seek on the
-    // demuxer takes its streaming lock, i.e. waits for the read in flight.
-    // If it is rejected outright (seek_simple returns FALSE, e.g. the
-    // pipeline isn't in a seekable state this instant), no async operation
-    // started — so no ASYNC_DONE will ever arrive to clear
-    // seek_in_progress_. Left as-is, that would swallow every scrub until
-    // the 2s watchdog fires (the same freeze this coalescer exists to
-    // prevent): the control thread records the seek's serial and the next
-    // update_state() clears the flag so the next scrub retries without the
-    // 2s dead window.
-    PipelineCommand cmd;
-    cmd.op = PipelineOp::Seek;
-    cmd.generation = ++seek_serial_;  // a Seek's generation is its serial
-    cmd.seek_target_ns = pending_seek_target_ns_;
-    cmd.seek_flags = static_cast<int>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT |
-                                      pending_seek_snap_);
-    cmd.target = pipeline_ref();
-    control_.submit(std::move(cmd));
+    gboolean ok = gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
+        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH |
+                                   GST_SEEK_FLAG_KEY_UNIT |
+                                   pending_seek_snap_),
+        pending_seek_target_ns_);
+    // If the seek was rejected outright (returns FALSE, e.g. the pipeline
+    // isn't in a seekable state this instant), no async operation started
+    // — so no ASYNC_DONE will ever arrive to clear seek_in_progress_. Left
+    // as-is, that would swallow every scrub until the 2s watchdog fires
+    // (the same freeze this coalescer exists to prevent). Clear the flag
+    // immediately so the next scrub retries without the 2s dead window.
+    if (!ok) {
+        LOG_WARN("Seek was rejected by the pipeline; clearing in-flight flag");
+        seek_in_progress_ = false;
+    }
 }
 
 void GstPlayer::stop() {
     if (!initialized_) return;
 
-    // The pipeline goes to NULL on the control thread: NULL joins the
-    // demuxer's streaming thread, which can be inside a read() the SD card
-    // holds for seconds (pipeline_control.h). This thread only forgets the
-    // stream, at once, as it always did.
-    PipelineCommand cmd;
-    cmd.op = PipelineOp::Stop;
-    cmd.target = pipeline_ref();
-    control_.submit(std::move(cmd));
+    // Set pipeline to NULL (stops playback and releases stream resources)
+    GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_NULL);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        LOG_ERROR("Failed to set pipeline to NULL state in stop()");
+    }
+
+    // Wait for state change with timeout
+    GstState current_state, pending_state;
+    ret = gst_element_get_state(pipeline_, &current_state, &pending_state, GST_SECOND); // 1 second timeout
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        LOG_WARN("Pipeline did not reach NULL state within timeout");
+    }
 
     // Force update of our internal state immediately
     forget_stream();
@@ -748,7 +735,6 @@ void GstPlayer::forget_stream() {
     seek_in_progress_ = false;
     has_pending_seek_ = false;
     pending_seek_target_ns_ = 0;
-    ++seek_serial_;  // a rejection of a seek issued before this never matches
     deferred_start_.cancel();
 }
 
@@ -771,8 +757,6 @@ double GstPlayer::get_position() const {
     }
     // This frame's update_position() already asked the pipeline.
     if (position_query_.fresh(QueryCache::now_ns())) return position_;
-    // The control thread is changing the pipeline: ask it nothing.
-    if (control_.busy()) return position_;
     gint64 pos = 0;
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
         return static_cast<double>(pos) / GST_SECOND;
@@ -789,7 +773,6 @@ double GstPlayer::get_position() const {
 double GstPlayer::get_duration() const {
     if (!initialized_) return 0.0;
     if (duration_query_.fresh(QueryCache::now_ns())) return duration_;
-    if (control_.busy()) return duration_;
     gint64 dur = 0;
     if (gst_element_query_duration(pipeline_, GST_FORMAT_TIME, &dur)) {
         return static_cast<double>(dur) / GST_SECOND;
@@ -799,117 +782,19 @@ double GstPlayer::get_duration() const {
 
 void GstPlayer::set_volume(double volume) {
     if (!initialized_) return;
-    volume_pct_ = volume;
-    // Applied on the control thread: playbin hands it to pulsesink, which
-    // takes its PulseAudio lock (and playsink's), and the render thread must
-    // not queue behind a state change holding them.
-    control_.set_volume(volume, pipeline_ref());
+    // GStreamer volume is 0.0 to 1.0 (or more for boost)
+    g_object_set(G_OBJECT(playbin_), "volume", volume / 100.0, nullptr);
 }
 
 double GstPlayer::get_volume() const {
     if (!initialized_) return 0.0;
-    // What was last asked for — not a read-back: playbin's getter asks
-    // pulsesink, which waits for a PulseAudio round trip.
-    return volume_pct_.load();
-}
-
-std::shared_ptr<void> GstPlayer::pipeline_ref() const {
-    if (!pipeline_) return {};
-    return std::shared_ptr<void>(gst_object_ref(pipeline_),
-                                 [](void* p) { gst_object_unref(p); });
-}
-
-void GstPlayer::apply_volume(double volume, const std::shared_ptr<void>& target) {
-    if (!target) return;
-    // GStreamer volume is 0.0 to 1.0 (or more for boost)
-    g_object_set(G_OBJECT(target.get()), "volume", volume / 100.0, nullptr);
-}
-
-void GstPlayer::execute(const PipelineCommand& cmd) {
-    // CONTROL THREAD. Logs go to std::cerr (the journal), never spdlog: its
-    // file sink is on the SD card and has one mutex, so a write stuck here
-    // would hold the render thread's next log call too (utils/logger.h).
-    if (!cmd.target) return;
-    auto* pipeline = static_cast<GstElement*>(cmd.target.get());
-    const auto started = std::chrono::steady_clock::now();
-    auto to_null = [pipeline](const char* what) {
-        if (gst_element_set_state(pipeline, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE) {
-            std::cerr << "GstPlayer: failed to set the pipeline to NULL (" << what << ")"
-                      << std::endl;
-        }
-        // NULL is synchronous; kept from the old stop() for a pipeline that
-        // still reports a pending change.
-        GstState current, pending;
-        if (gst_element_get_state(pipeline, &current, &pending, GST_SECOND) ==
-            GST_STATE_CHANGE_FAILURE) {
-            std::cerr << "GstPlayer: pipeline did not reach NULL within 1 s (" << what
-                      << ")" << std::endl;
-        }
-    };
-    switch (cmd.op) {
-        case PipelineOp::Stop:
-            to_null("stop");
-            if (!cmd.uri.empty()) {
-                // It superseded a load that never ran: end where the old
-                // synchronous load-then-stop ended (pipeline_control.h).
-                flushed_generation_ = cmd.generation;
-                g_object_set(G_OBJECT(pipeline), "uri", cmd.uri.c_str(), nullptr);
-            }
-            break;
-        case PipelineOp::Load:
-            to_null("load");
-            // The appsink is empty now: what it receives from here on is
-            // this load's stream (frames_current()).
-            flushed_generation_ = cmd.generation;
-            g_object_set(G_OBJECT(pipeline), "uri", cmd.uri.c_str(), nullptr);
-            if (gst_element_set_state(pipeline, GST_STATE_PLAYING) ==
-                GST_STATE_CHANGE_FAILURE) {
-                std::cerr << "GstPlayer: state change to PLAYING failed for " << cmd.uri
-                          << std::endl;
-            }
-            break;
-        case PipelineOp::Play:
-            if (gst_element_set_state(pipeline, GST_STATE_PLAYING) ==
-                GST_STATE_CHANGE_FAILURE) {
-                std::cerr << "GstPlayer: state change to PLAYING failed" << std::endl;
-            }
-            break;
-        case PipelineOp::Pause:
-            gst_element_set_state(pipeline, GST_STATE_PAUSED);
-            break;
-        case PipelineOp::Seek:
-            if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME,
-                                         static_cast<GstSeekFlags>(cmd.seek_flags),
-                                         cmd.seek_target_ns)) {
-                // Which seek: a rejection that lands after forget_stream()
-                // must not clear the NEXT stream's seek (update_state()).
-                rejected_seek_serial_ = cmd.generation;
-            }
-            break;
-    }
-    const double took =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    if (took >= 1.0) {
-        // The render loop kept running meanwhile; before the control thread
-        // this was a frozen screen, and past 10 s a watchdog kill.
-        std::cerr << "GstPlayer: pipeline " << pipeline_op_name(cmd.op) << " took " << took
-                  << " s (render loop unaffected)" << std::endl;
-    }
+    gdouble vol = 0.0;
+    g_object_get(G_OBJECT(playbin_), "volume", &vol, nullptr);
+    return vol * 100.0;
 }
 
 void GstPlayer::update_state() {
     if (!initialized_ || !pipeline_) return;
-
-    // The control thread has a command in hand or queued: the pipeline's
-    // state, bus and queries describe a stream that is being replaced (or a
-    // change in progress), and a stop/load holds the state lock. Leave it
-    // alone; the stream was already forgotten, so nothing reads stale.
-    if (control_.busy()) return;
-
-    if (seek_in_progress_ && rejected_seek_serial_.load() == seek_serial_) {
-        LOG_WARN("Seek was rejected by the pipeline; clearing in-flight flag");
-        seek_in_progress_ = false;
-    }
 
     // Drain the GStreamer bus. Historically we used gst_bus_add_watch, which
     // dispatches messages via the default GLib main context. The kiosk has
@@ -924,10 +809,7 @@ void GstPlayer::update_state() {
     GstBus* bus = gst_element_get_bus(pipeline_);
     if (bus) {
         GstMessage* msg;
-        // A message handler can queue a command (ASYNC_DONE fires the next
-        // coalesced seek): from then on the pipeline is the control
-        // thread's, and the rest waits for the next frame.
-        while (!control_.busy() && (msg = gst_bus_pop(bus)) != nullptr) {
+        while ((msg = gst_bus_pop(bus)) != nullptr) {
             // bus_call returns gboolean for GLib main-loop convention; ignored here.
             (void)bus_call(bus, msg, this);
             gst_message_unref(msg);
@@ -953,7 +835,6 @@ void GstPlayer::update_state() {
             if (has_pending_seek_) fire_seek();
         }
     }
-    if (control_.busy()) return;  // a seek queued above, or by the drain
 
     // Poll current pipeline state (non-blocking to avoid stalling render loop)
     GstState current_state, pending_state;
@@ -1062,10 +943,8 @@ void GstPlayer::update_state() {
         }
     }
 
-    // Update position/duration periodically — unless a seek this call
-    // queued (the ASYNC_DONE handler, the seek watchdog, the deferred start)
-    // is being carried out right now: the next frame asks.
-    if (!control_.busy()) update_position();
+    // Update position/duration periodically
+    update_position();
 }
 
 void GstPlayer::update_position() {
@@ -1111,21 +990,6 @@ void GstPlayer::cleanup() {
     // any remaining bus messages will be dropped with the bus when the
     // pipeline is set to GST_STATE_NULL below.
     if (pipeline_) {
-        // The control thread may still be acting on this pipeline: drop what
-        // it has not started (a queued load would only start a stream to be
-        // torn down) and wait for the command in hand. Callers are the game
-        // launch (watchdog disarmed by the session bracket) and shutdown —
-        // never the playing loop — so waiting here is allowed; the old
-        // synchronous teardown waited on the same read.
-        const auto waited_from = std::chrono::steady_clock::now();
-        control_.cancel_pending();
-        control_.wait_idle();
-        const double waited = std::chrono::duration<double>(
-                                  std::chrono::steady_clock::now() - waited_from).count();
-        if (waited >= 1.0) {
-            std::cerr << "GstPlayer::cleanup waited " << waited
-                      << " s for the pipeline's control thread" << std::endl;
-        }
         gst_element_set_state(pipeline_, GST_STATE_NULL);
         gst_object_unref(pipeline_);
         pipeline_ = nullptr;
@@ -1133,7 +997,6 @@ void GstPlayer::cleanup() {
         appsink_ = nullptr;
     }
     initialized_ = false;
-    flushed_generation_ = stream_generation_;  // nothing of it can be pulled
     // The stream went with the pipeline. stop() is a no-op from here on (not
     // initialized) and initialize() builds an empty playbin whose queries
     // all fail, so nothing else would ever clear this: see forget_stream().

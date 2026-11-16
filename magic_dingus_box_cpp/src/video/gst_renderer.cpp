@@ -326,13 +326,8 @@ uint64_t GstRenderer::get_update_flags() const {
 void GstRenderer::render() {
     if (!gl_initialized_) init_gl_resources();
 
-    // Pull sample (non-blocking) — unless the pipeline's control thread has
-    // not yet emptied the appsink for the latest load (GstPlayer::
-    // frames_current): a sample in it now is the PREVIOUS stream's, and the
-    // gate below would take it for the new stream's first frame.
-    GstSample* sample = (player_ == nullptr || player_->frames_current())
-        ? gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 0)
-        : nullptr;
+    // Pull sample (non-blocking)
+    GstSample* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 0);
 
     // Ask the gate BEFORE drawing: across a stream boundary the textures
     // still hold the PREVIOUS video's last frame, and painting them here

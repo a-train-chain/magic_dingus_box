@@ -248,3 +248,90 @@ def test_background_io_decorator_wraps_the_route(monkeypatch):
     assert route() == "ok"
     assert route.__name__ == "route"  # Flask endpoint names come from this
     assert calls == [upload_io.IOPRIO_IDLE, "route", 0]
+
+
+# ----------------------------------------------------------- WriteBackPacer
+
+def test_pacer_flushes_python_buffer_before_each_write_back(tmp_path,
+                                                             monkeypatch):
+    seen = []
+
+    def wb(fd, off, n):
+        # The slice must already be in the file, not in Python's buffer.
+        seen.append((off, n, os.fstat(fd).st_size))
+    monkeypatch.setattr(upload_io, "_writeback", wb)
+    monkeypatch.setattr(upload_io, "_drop_cache", lambda fd, off, n: None)
+    pacer = upload_io.WriteBackPacer(flush_every=MiB)
+    data = os.urandom(MiB // 2)
+    with open(tmp_path / "out.bin", "wb") as f:   # buffered, like extraction
+        for _ in range(5):                        # 2.5 MiB
+            f.write(data)
+            pacer.wrote(f)
+    assert [(o, n) for o, n, _ in seen] == [(0, MiB), (MiB, MiB)]
+    assert all(size >= off + n for off, n, size in seen)
+    assert (tmp_path / "out.bin").stat().st_size == 5 * len(data)
+
+
+def test_pacer_never_swallows_a_failed_write(tmp_path, flushes):
+    # A full card is the caller's error: the flush ahead of the write-back
+    # must raise, not turn pacing off quietly.
+    class FullCard(io.BytesIO):
+        def fileno(self):
+            return 0
+
+        def flush(self):
+            raise OSError(28, "No space left on device")
+
+    f = FullCard()
+    f.write(b"x" * (2 * MiB))
+    with pytest.raises(OSError):
+        upload_io.WriteBackPacer(flush_every=MiB).wrote(f)
+    assert flushes == []
+
+
+# ------------------------------------------- package import extraction
+
+def _package_with(video: bytes, rom: bytes) -> io.BytesIO:
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("playlist.yaml",
+                    "title: Pkg\nitems:\n- title: Clip\n"
+                    "  path: media/clip.mp4\n  source_type: local\n")
+        zf.writestr("media/clip.mp4", video)
+        zf.writestr("roms/nes/game.nes", rom)
+    buf.seek(0)
+    return buf
+
+
+def test_package_import_extracts_in_paced_slices(client, temp_data_dir,
+                                                 monkeypatch):
+    import media_probe
+    monkeypatch.setattr(media_probe, "probe_source", lambda path: None)
+    slices = []    # (inode, offset, length): which file got which slice
+
+    def wb(fd, off, n):
+        slices.append((os.fstat(fd).st_ino, off, n))
+    monkeypatch.setattr(upload_io, "_writeback", wb)
+    monkeypatch.setattr(upload_io, "_drop_cache", lambda fd, off, n: None)
+    calls = []
+    monkeypatch.setattr(upload_io, "_ioprio_get", lambda: 0)
+    monkeypatch.setattr(upload_io, "_ioprio_set", calls.append)
+    video, rom = os.urandom(3 * MiB), os.urandom(2 * MiB)
+
+    resp = client.post("/admin/playlists/import-package",
+                       data={"file": (_package_with(video, rom), "pkg.zip")},
+                       content_type="multipart/form-data")
+
+    assert resp.status_code == 200, resp.get_json()
+    out_video = temp_data_dir / "media" / "clip.mp4"
+    out_rom = temp_data_dir / "roms" / "nes" / "game.nes"
+    assert out_video.read_bytes() == video
+    assert out_rom.read_bytes() == rom
+
+    def paced(path):
+        ino = path.stat().st_ino   # os.replace keeps the staging inode
+        return [(off, n) for i, off, n in slices if i == ino]
+    assert paced(out_video) == [(0, MiB), (MiB, MiB), (2 * MiB, MiB)]
+    assert paced(out_rom) == [(0, MiB), (MiB, MiB)]
+    assert calls == [upload_io.IOPRIO_IDLE, 0]

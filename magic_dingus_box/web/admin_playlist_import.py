@@ -33,7 +33,7 @@ try:
     )
     from admin_security import _is_within
     from media_record import record_media_info
-    from upload_io import background_io
+    from upload_io import WriteBackPacer, background_io
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .admin_common import (
         _ExtractTooLarge, _read_zip_entry_capped, _sanitize_filename,
@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover - exercised by whichever form runs
     )
     from .admin_security import _is_within
     from .media_record import record_media_info
-    from .upload_io import background_io
+    from .upload_io import WriteBackPacer, background_io
 
 
 def _safe_media_basename(name: str) -> str:
@@ -494,6 +494,9 @@ def register(app, ctx) -> None:
                             suffix=".part",
                         )
                         tmp = Path(tmp_name)
+                        # Paced like an upload spool (upload_io): the
+                        # kiosk may be playing from this card.
+                        pacer = WriteBackPacer()
                         try:
                             with zf.open(member) as src, os.fdopen(fd, 'wb') as dst:
                                 while True:
@@ -504,6 +507,7 @@ def register(app, ctx) -> None:
                                     if written > remaining:
                                         raise _ExtractTooLarge()
                                     dst.write(chunk)
+                                    pacer.wrote(dst)
                                 dst.flush()
                                 os.fsync(dst.fileno())
                         except BaseException:
@@ -608,6 +612,11 @@ def register(app, ctx) -> None:
                             suffix=".part",
                         )
                         tmp_media = Path(tmp_name)
+                        # Paced like an upload spool (upload_io). Unpaced, a
+                        # 1 GiB copy like this stalled a kiosk-like reader
+                        # on magicpi5 for up to 3.7 s; paced, a 1 GiB
+                        # extraction's slowest read was 0.99 s.
+                        pacer = WriteBackPacer()
                         try:
                             with zf.open(media_file) as src, os.fdopen(tmp_fd, 'wb') as dst:
                                 while True:
@@ -618,6 +627,7 @@ def register(app, ctx) -> None:
                                     if actual_written > remaining:
                                         raise _ExtractTooLarge()
                                     dst.write(chunk)
+                                    pacer.wrote(dst)
                                 dst.flush()
                                 os.fsync(dst.fileno())
                         except _ExtractTooLarge:
