@@ -4,8 +4,12 @@
 #include <vector>
 #include <functional>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+
+#include "../tube/tube_edit.h"
 
 namespace app {
     struct AppState;
@@ -54,7 +58,14 @@ enum class MenuSection {
     CYCLE_RGB_MASK,    // Renamed from CYCLE_PHOSPHOR_MASK to match the UI label "RGB Mask"
     CYCLE_INTERLACING,
     CYCLE_FLICKER,
-    TOGGLE_ENHANCED_CRT,   // Classic ↔ Enhanced CRT pipeline (Phase 1+ shader rework)
+    CYCLE_CRT_ENGINE,      // Classic → Enhanced (→ Tube when app::tube_offered) → Classic
+    CYCLE_TUBE_LOOK,       // Tube: the look (PVM → Monitor → … → Everything)
+    TUBE_RESET_LOOK,       // Tube: clear every row moved off the look
+    TUBE_GROUP,            // Tube: a group row on Display, and the submenu it opens
+    TUBE_GROUP_BACK,       // Tube: "Back" inside a group submenu (returns to Display)
+    TUBE_VALUE,            // Tube: a 0..100 row inside a group
+    TUBE_MASK,             // Tube: the MASK row inside the MASK group
+    TUBE_DEGAUSS,          // Tube: demagnetize the tube (a live request, never saved)
     DOWNLOAD_CORES
 #ifdef MEDIA_BROWSER_ENABLED
     ,
@@ -132,6 +143,27 @@ public:
     void enter_submenu(MenuSection section);
     void exit_submenu();
     void rebuild_current_submenu();
+
+    // Opens one of the Tube groups (an index into tube::kGroups) from its row
+    // on the Display page, remembering that row for the way back.
+    void enter_tube_group(std::size_t group);
+    // Back from a group to the Display page, on the group's own row; ends (and
+    // saves) any open edit first.
+    // Does nothing unless a group is the open page.
+    void exit_tube_group();
+    std::size_t tube_group_index() const { return tube_group_index_; }
+
+    // EDIT MODE on one row of the open group (tube/tube_edit.h): SELECT on a
+    // row begins it, each knob click / D-pad press steps it, SELECT or BTN4
+    // ends it and saves once if anything changed. Every path that leaves the
+    // group or closes the menu ends it first, so no change is left unsaved.
+    bool is_tube_editing() const { return tube_edit_.active; }
+    void begin_tube_edit(std::optional<tube::Effect> effect);  // nullopt: the MASK row
+    void step_tube_edit(int direction);
+    void end_tube_edit();
+
+    // The header the renderer draws over the open page.
+    std::string submenu_title() const;
     
     void enter_game_browser();
     void exit_game_browser();
@@ -152,6 +184,11 @@ public:
     void set_max_visible_items(int n) { max_visible_items_ = std::max(1, n); }
     int get_max_visible_items() const { return max_visible_items_; }
     MenuSection get_current_submenu() const { return current_submenu_; }
+    // The open page draws Tube state (the Display page or a Tube group): the
+    // only pages a web-applied Tube change needs rebuilt.
+    bool page_shows_tube_state() const {
+        return current_submenu_ == MenuSection::DISPLAY || current_submenu_ == MenuSection::TUBE_GROUP;
+    }
     bool is_game_browser_active() const { return game_browser_active_; }
     bool is_viewing_games_in_playlist() const { return viewing_games_in_playlist_; }
     int get_game_browser_selected() const { return game_browser_selected_; }
@@ -229,6 +266,11 @@ private:
     std::chrono::steady_clock::time_point last_scan_refresh_{};
     
     MenuSection current_submenu_;
+    // The Tube group open in TUBE_GROUP (an index into tube::kGroups), and the
+    // Display row to put the cursor back on when it closes.
+    std::size_t tube_group_index_ = 0;
+    int tube_group_return_index_ = 0;
+    tube::Edit tube_edit_;
     std::vector<MenuItem> menu_items_;
     std::vector<MenuItem> submenu_items_;
     
@@ -245,6 +287,10 @@ private:
     std::vector<MenuItem> build_system_submenu();
     std::vector<MenuItem> build_wifi_submenu();
     std::vector<MenuItem> build_wifi_networks_submenu();
+    std::vector<MenuItem> build_tube_group_submenu();
+    // Ends an open edit WITHOUT rebuilding the rows (for paths that are about
+    // to rebuild or leave them) and saves once if it changed anything.
+    void settle_tube_edit();
     std::string intensity_to_label(float intensity);
 
     std::unique_ptr<PairingScreen> pairing_screen_;

@@ -190,8 +190,7 @@ It is a POLICY row in the classification table in `platform_profile.h`, so
 in `tests/platform/`.
 
 When the gate is false: the engine row offers only Classic/Enhanced, the
-Tube submenus are absent, the web page says the look is not available on
-this box, and a `crt_engine: "tube"` found in settings (a Pi 5 backup
+Tube submenus are absent, the web page's tab is not shown, and a `crt_engine: "tube"` found in settings (a Pi 5 backup
 restored onto a Pi 4B) **runs as Enhanced without rewriting the file**
 (the same shape as `sanitize_for_platform`).
 
@@ -370,7 +369,7 @@ in one press.
 picker, Reset, and the ten groups as sliders (0–100, the same steps
 available but any whole number allowed), each with its hint and a mark
 when it differs from the look. On a box where the gate is false the tab
-explains that the look needs a Pi 5.
+is not shown.
 
 New route module `admin_display.py`, registered through
 `register(app, ctx)` like the others; new script
@@ -388,10 +387,12 @@ The kiosk owns the setting; the web admin only asks.
   applied. The page reads it through a `GET` route and polls it about once
   a second, refreshing any slider the user is not holding.
 - **Write:** a `POST` validates against the row table and writes one small
-  request file in the data directory, atomically. A request is the
-  **whole desired state** (engine, look, mask, sparse rows) with an
-  increasing sequence number, so a later request replaces an earlier one
-  without losing anything.
+  request file in the data directory, atomically. The file is an **op
+  log**: each op (one row, the mask, a look, Reset, the engine, Degauss)
+  carries an increasing sequence number; the web side appends, drops ops
+  the kiosk has already handled and keeps only the newest op per row, so
+  no change is lost while dragging and no older change can undo another
+  row.
 - **Apply:** the kiosk checks for the request about ten times a second (a
   stat, not a write), applies it in memory at once, and saves
   `settings.json` once changes have stopped for about a second.
@@ -578,6 +579,9 @@ against current `main`:
 - Hints copied from Sound Factory quote millimetres of its panel ("0: 8 mm
   · 100: 60 mm"). On a TV those sizes scale with the picture; Plan 2
   decides whether to reword them.
+- The Tube option stays hidden behind a "renderer ready" constant
+  (Plan 2) until the renderer plan flips it, so a release between the two
+  plans is safe: it offers nothing new.
 
 ### Open, for the owner, before the renderer plan
 

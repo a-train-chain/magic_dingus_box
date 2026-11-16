@@ -12,6 +12,7 @@
 #include "../ui/settings_menu.h"
 #include "../ui/toast.h"
 #include "../ui/virtual_keyboard.h"
+#include "../tube/tube_edit.h"
 #include "../utils/config.h"
 #include "../utils/logger.h"
 #ifdef MEDIA_BROWSER_ENABLED
@@ -309,6 +310,32 @@ bool dispatch_overlay_input(SettingsInputContext& ctx,
                 }
             }
             return true; // eat all other inputs while pairing screen is up
+        }
+        // ─────────────────────────────────────────────────────────────
+
+        // ── Tube edit mode: the knob / D-pad change the value, not the cursor ──
+        // BTN4 never reaches here (handle_menu_button routes its short press to
+        // toggle(), which ends the edit); BTN4 held + turn is still volume.
+        if (settings_menu.is_tube_editing()) {
+            switch (ev.action) {
+                case InputAction::ROTATE:
+                case InputAction::ROTATE_VERTICAL:
+                    settings_menu.step_tube_edit(
+                        tube::edit_direction(ev.delta, ev.action == InputAction::ROTATE_VERTICAL));
+                    break;
+                case InputAction::SELECT:
+                case InputAction::QUIT:
+                    // QUIT (keyboard) leaves edit mode, not the menu: it ends on
+                    // the release, so no QUIT is left over to close the menu.
+                    if (tube_edit_ends_on(ev.action == InputAction::SELECT ? TubeEditKey::Select
+                                                                           : TubeEditKey::Quit,
+                                          ev.pressed)) {
+                        settings_menu.end_tube_edit();
+                    }
+                    break;
+                default: break;
+            }
+            return true;
         }
         // ─────────────────────────────────────────────────────────────
 

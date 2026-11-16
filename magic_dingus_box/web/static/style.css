@@ -10073,3 +10073,21 @@ body.faceplate .bottom-nav {
 .settings-section-mobile input[id*="tmdb"] {
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
+
+/* Six bottom-nav items: both optional tabs (Movies, CRT Look) are shown.
+   Five items keep the rules above untouched. Six at 360px leave each item
+   about 41px of content width with the 8px gaps, and "Settings" needs about
+   48px at 2.7vw; a 4px gap, 1px side padding and an 8-10px label (no extra
+   letter spacing) give it about 46px for about 39px of text. Matches only
+   while neither optional button carries its inline display:none. */
+@media (max-width: 600px) {
+    .bottom-nav:has(#mbBottomNavBtn:not([style*="none"])):has(#crtLookBottomNavBtn:not([style*="none"])) {
+        gap: 4px;
+    }
+    .bottom-nav:has(#mbBottomNavBtn:not([style*="none"])):has(#crtLookBottomNavBtn:not([style*="none"])) .bottom-nav-item {
+        padding-left: 1px;
+        padding-right: 1px;
+        font-size: clamp(8px, 2.3vw, 10px);
+        letter-spacing: 0;
+    }
+}

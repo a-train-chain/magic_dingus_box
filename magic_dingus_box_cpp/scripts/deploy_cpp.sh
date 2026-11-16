@@ -185,6 +185,7 @@ rsync -avz --checksum \
     --exclude 'data/flask_secret.key' \
     --exclude 'data/kiosk_status.json' \
     --exclude 'data/seek_request.json' \
+    --exclude 'data/tube_request.json' \
     --exclude 'data/text_input_queue.jsonl' \
     --exclude 'data/media_browser.db*' \
     --exclude 'data/media_info.json' \

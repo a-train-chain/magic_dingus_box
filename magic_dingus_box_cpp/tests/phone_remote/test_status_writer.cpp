@@ -265,3 +265,87 @@ TEST_CASE("status_writer: destruction publishes the final snapshot",
     f >> root;
     REQUIRE(root["screen"].asString() == "retroarch");
 }
+
+namespace {
+void tube_state(app::AppState& state) {
+    state.platform_profile.tube_crt_engine = true;
+    state.tube_renderer_ready = true;
+    state.display_settings.mode = app::DisplayMode::MODERN_TV;
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    tube::select_look(state.display_settings.tube, tube::Look::tv);
+    tube::set_row(state.display_settings.tube, tube::Effect::hum, 20);
+    tube::set_mask(state.display_settings.tube, tube::Mask::dots);
+}
+
+Json::Value written_tube(const app::AppState& state, const fs::path& tmp) {
+    fs::remove(tmp);
+    app::StatusWriter w(tmp.string());
+    w.write_now(state);
+    w.flush();
+    Json::Value root;
+    std::ifstream(tmp) >> root;
+    fs::remove(tmp);
+    return root["tube"];
+}
+
+Json::Value tube_of(const std::string& body) {
+    std::istringstream in(body);
+    Json::Value root;
+    in >> root;
+    return root["tube"];
+}
+} // namespace
+
+TEST_CASE("status_writer publishes the tube state", "[remote][status][tube]") {
+    app::AppState state;
+    tube_state(state);
+    state.tube_live.handled_seq = 12;
+    state.tube_live.degauss_requests = 3;
+    const Json::Value t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube.json");
+    REQUIRE(t["gate"].asBool());
+    REQUIRE(t["engine"].asString() == "tube");
+    REQUIRE(t["effective_engine"].asString() == "tube");
+    REQUIRE_FALSE(t["crt_native"].asBool());
+    REQUIRE(t["look"].asString() == "tv");
+    REQUIRE(t["mask"].asString() == "dots");
+    REQUIRE(t["custom"].asBool());
+    REQUIRE(t["moved"].size() == 2);
+    REQUIRE(t["moved"][0].asString() == "hum");
+    REQUIRE(t["moved"][1].asString() == "mask");
+    REQUIRE(t["values"].size() == 44);
+    REQUIRE(t["values"]["hum"].asInt() == 20);
+    REQUIRE(t["values"]["brightness"].asInt() == 58);
+    REQUIRE(t["handled_seq"].asUInt64() == 12);
+    REQUIRE(t["degauss_requests"].asUInt64() == 3);
+}
+
+TEST_CASE("status_writer: Tube not offered publishes the engine and the reason only",
+          "[remote][status][tube]") {
+    app::AppState state;
+    tube_state(state);
+    state.tube_renderer_ready = false;
+    Json::Value t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube2.json");
+    REQUIRE(t.getMemberNames() ==
+            std::vector<std::string>{"effective_engine", "engine", "gate", "reason"});
+    REQUIRE(t["reason"].asString() == "not_ready");
+    REQUIRE(t["effective_engine"].asString() == "enhanced");
+    REQUIRE(t["engine"].asString() == "tube");
+    state.platform_profile.tube_crt_engine = false;
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube2.json");
+    REQUIRE(t["reason"].asString() == "needs_pi5");
+}
+
+TEST_CASE("status_writer: a tube change is written at once", "[remote][status][tube]") {
+    StalledSink rec;
+    rec.release();
+    app::AppState state;
+    tube_state(state);
+    app::StatusWriter w("/nonexistent/kiosk_status.json", rec.sink());
+    w.write_now(state);
+    tube::set_row(state.display_settings.tube, tube::Effect::hum, 25);
+    w.write_now(state);  // well inside the 2 s heartbeat: only the change can cause a write
+    w.flush();
+    REQUIRE(rec.bodies.size() == 2);
+    REQUIRE(tube_of(rec.bodies[0])["values"]["hum"].asInt() == 20);
+    REQUIRE(tube_of(rec.bodies[1])["values"]["hum"].asInt() == 25);
+}

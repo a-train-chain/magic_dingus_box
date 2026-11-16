@@ -23,6 +23,9 @@
 #include "../app/app_state.h"
 #include "../app/redraw_gate.h"
 #include "../app/settings_persistence.h"
+#include "../app/tube_menu_logic.h"
+#include "../tube/tube_groups.h"
+#include "../tube/tube_setting.h"
 #ifdef MEDIA_BROWSER_ENABLED
 #include "../media_browser/mb_entry_gate.h"
 #endif
@@ -243,27 +246,58 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
     }
     
     // CRT effect settings (show for both modes, but mostly useful for CRT Native).
-    // The "CRT Engine" toggle controls which shader implementation processes
-    // these effects: the v1.4.3 procedural alpha-overlay (Classic) or the
-    // physically-motivated FBO-based pipeline (Enhanced — Lottes mask,
-    // Gaussian scanlines, gamma+temp warmth, convergence error, halation).
-    // Both interpret the 7 intensity sliders below, so flipping the engine
-    // is a live A/B comparison without touching slider values.
-    items.insert(items.end(), {
-        MenuItem(std::string("CRT Engine: ") +
-                     (settings.enhanced_crt_enabled ? "Enhanced" : "Classic"),
-                 MenuSection::TOGGLE_ENHANCED_CRT, "Classic / Enhanced",
-                 [&]() {
-                     // Through the setter so crt_engine and the old flag
-                     // stay in step. Classic/Enhanced only for now: a saved
-                     // Tube reads "Enhanced" here and toggles to Classic.
-                     settings.set_crt_engine(settings.enhanced_crt_enabled
-                                                 ? app::CrtEngine::Classic
-                                                 : app::CrtEngine::Enhanced);
-                     rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_);
-                 }),
+    // The "CRT Engine" row picks which shader implementation draws them: the
+    // v1.4.3 procedural alpha-overlay (Classic), the physically-motivated
+    // FBO-based pipeline (Enhanced — Lottes mask, Gaussian scanlines, gamma+temp
+    // warmth, convergence error, halation), or — only where app::tube_offered —
+    // the look-based Tube engine. Classic and Enhanced both interpret the 7
+    // intensity sliders below, so flipping between them is a live A/B
+    // comparison without touching slider values; Tube swaps those rows for its
+    // own (look, reset, the ten groups, Degauss).
+    const bool tube_offered = app::tube_offered(*app_state_);
+    items.emplace_back(app::crt_engine_label(settings.crt_engine, tube_offered),
+                       MenuSection::CYCLE_CRT_ENGINE,
+                       std::string(app::crt_engine_sublabel(tube_offered)),
+                       [this, &settings]() {
+                           // Through the setter so crt_engine and the old flag
+                           // stay in step. Stepped from the EFFECTIVE engine: a
+                           // saved Tube where Tube is not offered reads
+                           // "Enhanced" and steps to Classic.
+                           settings.set_crt_engine(app::next_crt_engine(
+                               settings.crt_engine, app::tube_offered(*app_state_)));
+                           rebuild_current_submenu();
+                           app::SettingsPersistence::save_settings(*app_state_);
+                       });
 
+    if (app::display_crt_rows(settings.crt_engine, tube_offered).tube) {
+        auto& tube_setting = settings.tube;
+        items.emplace_back(app::tube_look_label(tube_setting), MenuSection::CYCLE_TUBE_LOOK,
+                           app::tube_look_sublabel(), [this, &tube_setting]() {
+                               tube::select_look(tube_setting, app::next_look(tube_setting.look));
+                               rebuild_current_submenu();
+                               app::SettingsPersistence::save_settings(*app_state_);
+                           });
+        items.emplace_back("Reset to look", MenuSection::TUBE_RESET_LOOK,
+                           app::tube_reset_sublabel(tube_setting), [this, &tube_setting]() {
+                               if (tube::moved_keys(tube_setting).empty()) return;
+                               tube::reset_to_look(tube_setting);
+                               rebuild_current_submenu();
+                               app::SettingsPersistence::save_settings(*app_state_);
+                           });
+        for (std::size_t i = 0; i < tube::kGroups.size(); ++i) {
+            items.emplace_back(app::tube_group_label(tube::kGroups[i]), MenuSection::TUBE_GROUP,
+                               app::tube_group_sublabel(tube::kGroups[i], tube_setting),
+                               [this, i]() { enter_tube_group(i); });
+        }
+        // A live request, never saved and never toasted: the renderer (Plan 3)
+        // consumes the increase; until then nothing is drawn.
+        items.emplace_back("Degauss", MenuSection::TUBE_DEGAUSS, "demagnetize the tube",
+                           [this]() { ++app_state_->tube_live.degauss_requests; });
+        items.emplace_back("Back", MenuSection::BACK);
+        return items;
+    }
+
+    items.insert(items.end(), {
         MenuItem("Scanlines: " + intensity_to_label(settings.scanline_intensity),
                  MenuSection::CYCLE_SCANLINES, "Horizontal CRT lines",
                  [&]() {
@@ -378,6 +412,18 @@ void SettingsMenuManager::toggle() {
         return;
     }
 
+    // Tube edit mode: MENU ends the edit (saving it), and only that.
+    if (tube_edit_.active) {
+        end_tube_edit();
+        return;
+    }
+
+    // Depth 3: a Tube group (one level under Display).
+    if (current_submenu_ == MenuSection::TUBE_GROUP) {
+        exit_tube_group();
+        return;
+    }
+
     // Depth 2: any first-level submenu (Display, Audio, Wi-Fi, System, etc.).
     if (current_submenu_ != MenuSection::BACK) {
         exit_submenu();
@@ -394,6 +440,7 @@ void SettingsMenuManager::open() {
         is_opening_ = true;
         is_closing_ = false;
         animation_start_ = std::chrono::steady_clock::now() - std::chrono::milliseconds(50);
+        settle_tube_edit();
         selected_index_ = 0;
         scroll_offset_ = 0;
         current_submenu_ = MenuSection::BACK;
@@ -498,6 +545,7 @@ void SettingsMenuManager::open() {
 }
 
 void SettingsMenuManager::close() {
+    end_tube_edit();   // saves a pending edit; the sliding-out row drops its "< >"
     if (active_ || is_opening_) {
         is_closing_ = true;
         is_opening_ = false;
@@ -520,6 +568,7 @@ void SettingsMenuManager::close() {
 }
 
 void SettingsMenuManager::force_close() {
+    end_tube_edit();
     active_ = false;
     is_opening_ = false;
     is_closing_ = false;
@@ -545,6 +594,10 @@ uint64_t SettingsMenuManager::redraw_signature() const {
     sig.add(static_cast<uint64_t>(scroll_offset_));
     sig.add(static_cast<uint64_t>(wifi_disconnect_confirm_));
     sig.add(static_cast<uint64_t>(controller_reset_confirm_));
+    sig.add(static_cast<uint64_t>(tube_group_index_));
+    sig.add(static_cast<uint64_t>(tube_edit_.active));
+    sig.add(static_cast<uint64_t>(tube_edit_.mask));
+    sig.add(static_cast<uint64_t>(tube::index_of(tube_edit_.effect)));
     for (const auto* items : {&menu_items_, &submenu_items_}) {
         sig.add(static_cast<uint64_t>(items->size()));
         for (const auto& item : *items) {
@@ -680,6 +733,7 @@ void SettingsMenuManager::enter_submenu(MenuSection section) {
     // forget_network() call. Same trap applied to any future submenu
     // action that needs to manage transient confirm-style state.
     const bool reentering = (current_submenu_ == section);
+    if (!reentering) settle_tube_edit();   // leaving a group mid-edit saves it
     const int preserved_index  = reentering ? selected_index_  : 0;
     const int preserved_scroll = reentering ? scroll_offset_   : 0;
 
@@ -702,6 +756,24 @@ void SettingsMenuManager::enter_submenu(MenuSection section) {
         submenu_items_ = build_wifi_submenu();
     } else if (section == MenuSection::WIFI_NETWORKS) {
         submenu_items_ = build_wifi_networks_submenu();
+    } else if (section == MenuSection::TUBE_GROUP) {
+        // The engine changed (or Tube stopped being offered) while the group
+        // was open: Tube rows would be lying, so go back to Display instead.
+        if (!app_state_ || !app::display_crt_rows(app_state_->display_settings.crt_engine,
+                                                  app::tube_offered(*app_state_)).tube) {
+            settle_tube_edit();
+            exit_tube_group();
+            return;
+        }
+        // The row being edited became n/a (the mode changed to CRT Native from
+        // elsewhere): it no longer shows, so its edit must not go on unseen.
+        if (tube_edit_.active &&
+            app::tube_row_kind(tube_edit_.mask ? std::nullopt : std::optional<tube::Effect>(tube_edit_.effect),
+                               app_state_->display_settings.mode == app::DisplayMode::CRT_NATIVE) ==
+                app::TubeRowKind::NotApplicable) {
+            settle_tube_edit();
+        }
+        submenu_items_ = build_tube_group_submenu();
     }
 
     // Restore index + scroll, clamped to the (possibly newly-rebuilt)
@@ -711,7 +783,117 @@ void SettingsMenuManager::enter_submenu(MenuSection section) {
     scroll_offset_  = std::min(preserved_scroll, max_idx);
 }
 
+void SettingsMenuManager::enter_tube_group(std::size_t group) {
+    tube_group_index_ = group < tube::kGroups.size() ? group : 0;
+    tube_group_return_index_ = selected_index_;
+    enter_submenu(MenuSection::TUBE_GROUP);
+}
+
+void SettingsMenuManager::exit_tube_group() {
+    // Only from a group: elsewhere it would re-enter Display and move the cursor.
+    if (current_submenu_ != MenuSection::TUBE_GROUP) return;
+    settle_tube_edit();
+    enter_submenu(MenuSection::DISPLAY);
+    // Back on the group's own row (found by its label: the cursor that opened
+    // it is only a fallback), scrolled into view.
+    const int last = std::max(0, static_cast<int>(submenu_items_.size()) - 1);
+    selected_index_ = std::clamp(tube_group_return_index_, 0, last);
+    const std::string group_label = app::tube_group_label(tube::kGroups[tube_group_index_]);
+    for (std::size_t i = 0; i < submenu_items_.size(); ++i) {
+        if (submenu_items_[i].section == MenuSection::TUBE_GROUP &&
+            submenu_items_[i].label == group_label) {
+            selected_index_ = static_cast<int>(i);
+            break;
+        }
+    }
+    if (selected_index_ < scroll_offset_) {
+        scroll_offset_ = selected_index_;
+    } else if (selected_index_ >= scroll_offset_ + max_visible_items_) {
+        scroll_offset_ = selected_index_ - max_visible_items_ + 1;
+    }
+}
+
+void SettingsMenuManager::begin_tube_edit(std::optional<tube::Effect> effect) {
+    if (!app_state_ || current_submenu_ != MenuSection::TUBE_GROUP) return;
+    // An edit already open is saved first (tube::begin_edit would carry its
+    // change over, but each row's edit saves on its own).
+    settle_tube_edit();
+    tube::begin_edit(tube_edit_, effect);
+    rebuild_current_submenu();
+}
+
+void SettingsMenuManager::step_tube_edit(int direction) {
+    if (!app_state_) return;
+    if (tube::edit_turn(tube_edit_, app_state_->display_settings.tube, direction)) {
+        rebuild_current_submenu();   // never saves: end_tube_edit saves once
+    }
+}
+
+void SettingsMenuManager::end_tube_edit() {
+    if (!tube_edit_.active) return;
+    settle_tube_edit();
+    rebuild_current_submenu();       // the row drops its "< >"
+}
+
+void SettingsMenuManager::settle_tube_edit() {
+    if (!tube_edit_.active) return;
+    if (tube::end_edit(tube_edit_) && app_state_) {
+        app::SettingsPersistence::save_settings(*app_state_);
+    }
+}
+
+std::vector<MenuItem> SettingsMenuManager::build_tube_group_submenu() {
+    std::vector<MenuItem> items;
+    if (app_state_) {
+        const tube::Group& group = tube::kGroups[tube_group_index_];
+        const tube::Resolved resolved = tube::resolve(app_state_->display_settings.tube);
+        const bool crt_native = app_state_->display_settings.mode == app::DisplayMode::CRT_NATIVE;
+        const auto not_applicable = [&items](std::string_view label) {
+            items.emplace_back(app::tube_na_label(label), MenuSection::INFO,
+                               std::string(app::kTubeNaSublabel));
+        };
+        if (group.has_mask_row) {
+            if (app::tube_row_kind(std::nullopt, crt_native) == app::TubeRowKind::NotApplicable) {
+                not_applicable(tube::kMaskRowInfo.label);
+            } else {
+                const bool editing = tube_edit_.active && tube_edit_.mask;
+                items.emplace_back(app::tube_mask_label(resolved.mask, editing), MenuSection::TUBE_MASK,
+                                   std::string(tube::mask_choice(resolved.mask).hint1),
+                                   [this]() { begin_tube_edit(std::nullopt); });
+            }
+        }
+        for (const tube::Effect effect : group.rows) {
+            const tube::RowInfo& info = tube::row_info(effect);
+            if (app::tube_row_kind(effect, crt_native) == app::TubeRowKind::NotApplicable) {
+                not_applicable(info.label);
+                continue;
+            }
+            const bool editing = tube_edit_.active && !tube_edit_.mask && tube_edit_.effect == effect;
+            items.emplace_back(app::tube_value_label(effect, resolved.effects[tube::index_of(effect)], editing),
+                               MenuSection::TUBE_VALUE, std::string(info.hint1),
+                               [this, effect]() { begin_tube_edit(effect); });
+        }
+    }
+    items.emplace_back("Back", MenuSection::TUBE_GROUP_BACK, "", [this]() { exit_tube_group(); });
+    return items;
+}
+
+std::string SettingsMenuManager::submenu_title() const {
+    switch (current_submenu_) {
+        case MenuSection::BACK:          return "Settings";
+        case MenuSection::VIDEO_GAMES:   return "Video games";
+        case MenuSection::DISPLAY:       return "Display";
+        case MenuSection::AUDIO:         return "Audio";
+        case MenuSection::SYSTEM:        return "System info";
+        case MenuSection::WIFI:          return "Wi-Fi";
+        case MenuSection::WIFI_NETWORKS: return "Wi-Fi Networks";
+        case MenuSection::TUBE_GROUP:    return app::tube_group_label(tube::kGroups[tube_group_index_]);
+        default:                         return "Settings";
+    }
+}
+
 void SettingsMenuManager::exit_submenu() {
+    settle_tube_edit();
     current_submenu_ = MenuSection::BACK;
     selected_index_ = 0;
     scroll_offset_ = 0;
@@ -725,9 +907,12 @@ void SettingsMenuManager::rebuild_current_submenu() {
         return;
     }
 
+    const MenuSection section = current_submenu_;
     int old_index = selected_index_;
     int old_scroll = scroll_offset_;
-    enter_submenu(current_submenu_);
+    enter_submenu(section);
+    // A group that redirected to Display (see enter_submenu) placed its own cursor.
+    if (current_submenu_ != section) return;
     selected_index_ = std::min(old_index, static_cast<int>(submenu_items_.size() - 1));
     scroll_offset_ = std::min(old_scroll, std::max(0, static_cast<int>(submenu_items_.size()) - 1));
 }

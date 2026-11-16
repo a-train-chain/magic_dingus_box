@@ -37,7 +37,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=107">
+    <link rel="stylesheet" href="/static/style.css?v=108">
 </head>
 
 <body class="faceplate">
@@ -134,6 +134,7 @@
             <button class="tab active" data-tab="videos"><svg class="ic" aria-hidden="true"><use href="#ic-videos"/></svg> Videos & Playlists</button>
             <button class="tab" data-tab="roms"><svg class="ic" aria-hidden="true"><use href="#ic-games"/></svg> ROMs & Games</button>
             <button class="tab" data-tab="mediabrowser" id="mbTabNavBtn" style="display: none;"><svg class="ic" aria-hidden="true"><use href="#ic-movies"/></svg> Media Browser</button>
+            <button class="tab" data-tab="crtlook" id="crtLookTabNavBtn" style="display: none;"><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> CRT Look</button>
             <button class="tab" data-tab="remote"><svg class="ic" aria-hidden="true"><use href="#ic-remote"/></svg> Remote</button>
             <button class="tab" data-tab="settings"><svg class="ic" aria-hidden="true"><use href="#ic-settings"/></svg> Settings</button>
         </nav>
@@ -972,6 +973,19 @@
             </div>
         </section>
 
+        <!-- CRT Look Tab (hidden by default; revealed by checkCrtLookVisibility() only
+             where the kiosk offers the Tube engine — manager_display.js) -->
+        <section id="crtlook" class="tab-content" style="display: none;">
+            <div class="view-header">
+                <h3>CRT Look</h3>
+            </div>
+            <div id="crtLookStatusBox" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem;">
+                <p id="crtLookStatus" class="settings-description" role="status" style="margin: 0;">Loading…</p>
+                <button class="btn-secondary small" id="crtLookRetry" onclick="crtLookRetry()" style="display: none;">Try again</button>
+            </div>
+            <div id="crtLookBody"></div>
+        </section>
+
         <section id="remote" class="tab-content">
             <div id="remoteFrameWrap"
                  style="width: 100%; max-width: 600px; margin: 24px auto; padding: 0 16px;">
@@ -1002,6 +1016,10 @@
             <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#ic-movies"/></svg></span>
             <span>Movies</span>
         </button>
+        <button class="bottom-nav-item" data-tab="crtlook" id="crtLookBottomNavBtn" style="display: none;">
+            <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg></span>
+            <span>CRT</span>
+        </button>
         <button class="bottom-nav-item" data-tab="remote">
             <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#ic-remote"/></svg></span>
             <span>Remote</span>
@@ -1026,7 +1044,7 @@
 
     <!-- Classic scripts sharing one global scope; ORDER MATTERS (see the note
          at the top of manager.js). Bump a file's ?v= whenever it changes. -->
-    <script src="/static/manager.js?v=126"></script>
+    <script src="/static/manager.js?v=128"></script>
     <script src="/static/manager_devices.js?v=2"></script>
     <script src="/static/manager_media.js?v=8"></script>
     <script src="/static/manager_roms.js?v=2"></script>
@@ -1035,6 +1053,7 @@
     <script src="/static/manager_settings.js?v=2"></script>
     <script src="/static/manager_media_browser.js?v=4"></script>
     <script src="/static/vpn_settings.js?v=2"></script>
+    <script src="/static/manager_display.js?v=4"></script>
 
 </body>
 

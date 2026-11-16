@@ -3,6 +3,7 @@
 #include <string_view>
 #include <utility>
 #include "tube/tube_groups.h"
+#include "tube/tube_inputs.h"
 using namespace tube;
 
 TEST_CASE("tube groups: every row is in exactly one group", "[tube]") {
@@ -45,4 +46,30 @@ TEST_CASE("tube groups: a step reads only the direction's sign, and 0 moves noth
     REQUIRE(step_row(Effect::hum, -5, 0) == 0);
     REQUIRE(step_row(Effect::hum, 20, +7) == 25);   // one step, whatever the size of the delta
     REQUIRE(step_row(Effect::hum, 20, -3) == 15);
+}
+
+TEST_CASE("tube groups: mask and look words", "[tube]") {
+    REQUIRE(mask_choice(Mask::magentaGreen).label == "MAGENTA-GREEN");
+    REQUIRE(mask_choice(Mask::none).label == "OFF");
+    REQUIRE(mask_choice(Mask::slot).hint2 == "a 1990s TV set");
+    for (auto m : kMasks) { REQUIRE_FALSE(mask_choice(m).hint1.empty()); REQUIRE_FALSE(mask_choice(m).hint2.empty()); }
+    REQUIRE(look_choice(Look::tv).label == "TV");
+    REQUIRE(look_choice(Look::everything).label == "Everything");
+    REQUIRE(look_choice(Look::tv).hint1 == "a 1990s set, slot mask");
+}
+TEST_CASE("tube groups: a look's hint says whether it moves", "[tube]") {
+    for (auto look : kLooks) {
+        TubeSetting s; select_look(s, look);
+        const bool says_still = look_choice(look).hint2.rfind("nothing moves", 0) == 0;
+        INFO(look_choice(look).label);
+        REQUIRE(says_still == !moves_on_its_own(resolve(s)));
+    }
+}
+TEST_CASE("tube groups: no hint quotes the panel's millimetres", "[tube]") {
+    for (auto e : kEffects) {
+        REQUIRE(row_info(e).hint1.find(" mm") == std::string_view::npos);
+        REQUIRE(row_info(e).hint2.find(" mm") == std::string_view::npos);
+    }
+    REQUIRE(row_info(Effect::rollWidth).hint2 == "0: 4 % · 100: 31 % of picture width");
+    REQUIRE(row_info(Effect::puritySize).hint2 == "0: 5 % · 100: 36 % of picture width");
 }
