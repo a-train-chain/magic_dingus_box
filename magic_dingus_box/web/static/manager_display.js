@@ -246,6 +246,18 @@ function tubeRateTag(row) {
     return row && row.forces_30fps ? '30 fps' : '';
 }
 
+/** Whether a row's rate tag shows: it forces 30 fps AND the box does not ignore the
+    row (a real tube draws those itself in CRT Native, so they never force a rate there). */
+function tubeRateTagShown(row, native) {
+    return tubeRateTag(row) !== '' && !(native && !!row.crt_native_neutral);
+}
+
+/** A look's picker text: its word, plus its Modern TV rate. In CRT Native the rate
+    may not apply, so it is left out (the live header rate stays). */
+function tubeLookOptionText(look, native) {
+    return !native && Number.isInteger(look.fps) ? `${look.word} \u00b7 ${look.fps} fps` : look.word;
+}
+
 /**
  * The frame-rate line in the header: "<n> fps", then the warning when the look is
  * too heavy for smooth video, or the unavailable notice (nothing else is true then).
@@ -253,7 +265,12 @@ function tubeRateTag(row) {
  */
 function tubeRateText(kiosk) {
     if (!kiosk) return '';
-    if (kiosk.unavailable) return 'Tube is unavailable on this TV';
+    if (kiosk.unavailable === 'build_hung') {
+        return 'Tube could not start on this box, so it is showing the Enhanced look. Restart the box to try again.';
+    }
+    if (kiosk.unavailable) {
+        return 'Tube could not draw this look, so the box is showing the Enhanced look. Try a different look.';
+    }
     if (!Number.isInteger(kiosk.frame_rate)) return '';
     const rate = `${kiosk.frame_rate} fps`;
     return kiosk.too_heavy ? `${rate}. This look is too heavy for smooth video on this TV` : rate;
@@ -432,7 +449,7 @@ function buildCrtLook(st) {
     const engineOptions = rows.engines.map(e =>
         `<option value="${escapeHtml(e.key)}">${escapeHtml(e.word)}</option>`).join('');
     const lookOptions = rows.looks.map(l =>
-        `<option value="${escapeHtml(l.key)}">${escapeHtml(l.word)}${Number.isInteger(l.fps) ? ` \u00b7 ${l.fps} fps` : ''}</option>`).join('');
+        `<option value="${escapeHtml(l.key)}">${escapeHtml(tubeLookOptionText(l, false))}</option>`).join('');
     const maskOptions = rows.mask.choices.map(c =>
         `<option value="${escapeHtml(c.key)}">${escapeHtml(c.word)}</option>`).join('');
 
@@ -497,12 +514,13 @@ function buildCrtLook(st) {
         reset: document.getElementById('crtLookReset'),
         degauss: document.getElementById('crtLookDegauss'),
         mask: body.querySelector('[data-tube-mask]'),
-        ranges: {}, nums: {}, moved: {}, hints: {}, na: {},
+        ranges: {}, nums: {}, moved: {}, hints: {}, na: {}, rates: {},
     };
     body.querySelectorAll('[data-tube-row]').forEach(el => { els.ranges[el.dataset.tubeRow] = el; });
     body.querySelectorAll('[data-tube-num]').forEach(el => { els.nums[el.dataset.tubeNum] = el; });
     body.querySelectorAll('[data-tube-moved]').forEach(el => { els.moved[el.dataset.tubeMoved] = el; });
     body.querySelectorAll('[data-tube-hint]').forEach(el => { els.hints[el.dataset.tubeHint] = el; });
+    body.querySelectorAll('[data-tube-rate]').forEach(el => { els.rates[el.dataset.tubeRate] = el; });
     body.querySelectorAll('[data-tube-na]').forEach(el => { els.na[el.dataset.tubeNa] = el; });
 
     els.engine.addEventListener('change', () => crtLookSend({ op: 'engine', engine: els.engine.value }));
@@ -558,7 +576,12 @@ function renderCrtLook() {
     els.engine.value = shown.engine;
     els.engine.disabled = waiting;
     els.engineNote.style.display = shown.engine === 'tube' ? 'none' : '';
-    els.rate.textContent = tubeRateText(kiosk);
+    const rateText = tubeRateText(kiosk);
+    if (els.rate.textContent !== rateText) els.rate.textContent = rateText;  // role=status: no re-announce
+    Array.from(els.look.options).forEach(opt => {
+        const l = rows.looks.find(x => x.key === opt.value);
+        if (l) opt.textContent = tubeLookOptionText(l, native);
+    });
     els.look.value = shown.look;
     els.look.disabled = waiting;
     const look = rows.looks.find(l => l.key === shown.look);
@@ -582,6 +605,7 @@ function renderCrtLook() {
         range.disabled = waiting || na;
         if (na && st.held === range) st.held = null;
         els.na[key].style.display = na ? '' : 'none';
+        if (els.rates[key]) els.rates[key].style.display = tubeRateTagShown(rowByKey[key], native) ? '' : 'none';
         els.moved[key].style.visibility = moved.includes(key) ? 'visible' : 'hidden';
         if (st.held === range) return;  // never repaint a slider the pointer is holding
         const value = shown.values[key];

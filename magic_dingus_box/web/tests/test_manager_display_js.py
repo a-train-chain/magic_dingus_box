@@ -583,11 +583,37 @@ def test_header_text_shows_the_rate_and_the_warnings():
             tubeRateText({frame_rate: 30, too_heavy: true}),
             tubeRateText({frame_rate: 30, unavailable: 'build_hung'}),
             tubeRateText({}),
+            tubeRateText({frame_rate: 30, unavailable: 'build_failed'}),
         ];
     """)
     assert result == [
         "60 fps",
         "30 fps. This look is too heavy for smooth video on this TV",
-        "Tube is unavailable on this TV",
+        "Tube could not start on this box, so it is showing the Enhanced look. Restart the box to try again.",
         "",
+        "Tube could not draw this look, so the box is showing the Enhanced look. Try a different look.",
     ]
+
+
+def test_rate_tag_hides_on_rows_a_real_crt_ignores():
+    result = run_js("""
+        const neutral = ROWS.rows.find(r => r.forces_30fps && r.crt_native_neutral);
+        const kept = ROWS.rows.find(r => r.forces_30fps && !r.crt_native_neutral);
+        const plain = ROWS.rows.find(r => !r.forces_30fps);
+        return {
+            neutral: neutral && [tubeRateTagShown(neutral, false), tubeRateTagShown(neutral, true)],
+            kept: kept && [tubeRateTagShown(kept, false), tubeRateTagShown(kept, true)],
+            plain: [tubeRateTagShown(plain, false), tubeRateTagShown(plain, true)],
+        };
+    """)
+    assert result["neutral"] == [True, False]
+    assert result["kept"] == [True, True]
+    assert result["plain"] == [False, False]
+
+
+def test_look_picker_drops_the_rate_in_crt_native():
+    result = run_js("""
+        const tv = ROWS.looks.find(l => l.key === 'tv');
+        return [tubeLookOptionText(tv, false), tubeLookOptionText(tv, true)];
+    """)
+    assert result == ["TV \u00b7 30 fps", "TV"]

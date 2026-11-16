@@ -154,3 +154,12 @@ def test_shipped_lean_set_forces_30fps_on_14_rows_and_every_look_is_30fps():
     assert forcing == always | {"noise", "flicker", "hum", "rollBand", "purity", "abl", "breathing"}
     assert len(forcing) == 14
     assert [l["fps"] for l in DATA["looks"]] == [30] * 6
+
+
+def test_parse_always_rich_ignores_commented_out_entries():
+    text = """inline constexpr std::array<Effect, 2> kAlwaysRich{
+    Effect::glow,
+    // Effect::afterglow,
+    Effect::raster,  // Effect::colorDrift
+};"""
+    assert PARITY.parse_always_rich(text) == {"glow", "raster"}
