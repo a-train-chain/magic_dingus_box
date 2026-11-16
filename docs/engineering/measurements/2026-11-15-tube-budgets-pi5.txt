@@ -8,7 +8,7 @@ kiosk stopped for each window and restored afterwards (binary hash and settings.
 "ms" is the kiosk's own GPU timers (MDB_TUBE_GPU_TIMING=1), a 10 s average; "frames" is frames drawn in those 10 s
 (300 = 30 fps; 200 = every third vblank = 20 fps).
 
-RESULT (after window 4)
+RESULT (after window 5; windows 1-4 below led to the afterglow rule, section 8 measures it)
 - The practical ceiling for 30 fps is about 23.5 ms of tube GPU time per frame; the cliff to 20 fps is near 24.5 ms.
 - Two changes that keep the picture: (1) values that depend only on uniforms are computed once a frame on the CPU
   (commits b778afa..9e65ff9): 1.3-1.9 ms per look, no pixel over 1/255; (2) a wide glow is blurred on targets half the
@@ -118,5 +118,38 @@ everything -afterglow glowSize10 295 quarter 0.63 glow 1.64 signal 5.23 lines 1.
    b5f67d2            everything, afterglow 0  1800 / 2
    No GL error, build failure or refused frame in any run of this window.
 
+8. Window 5 (22:01-22:23 box time), binary d45fee7 (sha256 bdbbb3a0...): the afterglow rule built in
+   (a look drops afterglow, then glow, only when that gets it under the 23.1 ms budget; else it is kept as asked).
+   1440x1080 picture, timers on (the last column is the kiosk's own status field tube.not_drawn):
+   pvm         300 quarter 0.64 glow 0.43 signal 5.35 lines - output 10.01 history 2.47 probe 0.22 = 19.12 ms | []
+   monitor     299 quarter 0.66 glow 0.32 signal 5.40 lines - output 10.70 history - probe 0.23 = 17.30 ms | []
+   trinitron   292 quarter 0.63 glow 0.49 signal 4.01 lines 1.05 output 13.92 history 2.54 probe 0.22 = 22.87 ms | []
+   tv          296 quarter 0.64 glow 0.62 signal 5.31 lines 1.01 output 14.80 history - probe 0.22 = 22.59 ms | ["afterglow"]
+   arcade      295 quarter 0.63 glow 0.68 signal 5.32 lines 1.00 output 12.55 history 2.53 probe 0.22 = 22.93 ms | []
+   everything  291 quarter 0.64 glow 0.61 signal 5.27 lines 1.01 output 14.84 history - probe 0.22 = 22.59 ms | ["afterglow"]
+   Pacing, timers OFF, 128 s each (presents / late per one-minute report):
+   tv          1780 / 10   1795 / 11
+   everything  1763 / 39 (the minute containing the look change)   1797 / 7
+
+   A FULL-SCREEN FILM (the DRAMA film channel, 1920x1080 picture; targets glass 1920x1080, signal 960x1080,
+   quarter 480x270, glow 240x135), timers on:
+   pvm         297 quarter 0.91 glow 0.66 signal 7.39 lines - output 13.98 history - probe 0.27 = 23.22 ms | ["afterglow"]
+   monitor     299 quarter 0.88 glow 0.49 signal 7.29 lines - output 13.84 history - probe 0.27 = 22.76 ms | []
+   trinitron   201 quarter 0.89 glow 0.81 signal 5.40 lines 1.43 output 18.92 history 2.98 probe 0.30 = 30.72 ms | []
+   tv          200 quarter 0.90 glow 0.99 signal 7.22 lines 1.46 output 18.93 history 2.96 probe 0.28 = 32.73 ms | []
+   arcade      201 quarter 0.88 glow 1.07 signal 7.22 lines 1.42 output 16.85 history 2.97 probe 0.28 = 30.70 ms | []
+   everything  201 quarter 0.90 glow 0.98 signal 7.26 lines 1.44 output 18.99 history 2.98 probe 0.30 = 32.85 ms | []
+   Predicted for the same film (code at d45fee7): pvm 22.94 (afterglow dropped), monitor 22.77, trinitron 30.48,
+   tv 32.46, arcade 30.63, everything 32.46 - every prediction within 0.4 ms of the measurement.
+   Film pacing, timers OFF (presents / late per one-minute report):
+   pvm         1797 / 6    1792 / 17      (the first report, 1433 / 556, spans the previous look and the channel change)
+   monitor     1795 / 10   1788 / 25
+   tv          1300 / 999  -> the status shows too_heavy true (the "too heavy" notice): 20 fps on a film.
+   So on a full-screen film PVM (without afterglow) and Monitor hold 30 fps; Trinitron, TV, Arcade and Everything
+   draw the film at 20 fps as asked. What a film should do with those looks is an open owner question.
+   No GL error, build failure or refused frame in any run of this window.
+   NOT DONE in this window: a game and return (the virtual gamepad's menu button did not open Settings on the
+   test kiosk; not investigated).
+
 NOT COVERED: ten-minute pacing runs; a game and return; a display-mode change; 50 and 120 Hz; CRT Native; a
-full-screen film; a same-frame picture comparison of the cheap beam; a Pi 4B.
+same-frame picture comparison of the cheap beam; a Pi 4B.
