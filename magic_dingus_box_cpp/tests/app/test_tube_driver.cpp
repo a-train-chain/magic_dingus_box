@@ -372,3 +372,31 @@ TEST_CASE("tube driver: gpu_lost re-sends the glass, mask and targets and touche
     REQUIRE(next.mask.rgb.empty());
     REQUIRE(next.u.rollPosition == twin.frame(s, k1080, 0.8, 0).u.rollPosition);
 }
+
+// ---- Whole-branch fix wave ------------------------------------------------------
+
+TEST_CASE("tube driver: a degauss asked for while the tube was not drawing is skipped", "[tube]") {
+    FrameDriver d; TubeSetting s; set_row(s, Effect::afterglow, 0); d.start(0.0, 3);
+    REQUIRE(d.frame(s, k1080, 5.0, 3).u.degauss == 0.0f);
+    // The Media Browser had the screen: frame() was not called while the op log's
+    // counter rose from 3 to 5. Without the skip, the first frame back degausses.
+    REQUIRE(d.peek(s, k1080, 60.0, 5).moving);
+    d.skip_degauss_to(5);
+    REQUIRE_FALSE(d.peek(s, k1080, 60.0, 5).moving);          // peek agrees: nothing owed
+    const DriverFrame back = d.frame(s, k1080, 60.0, 5);
+    REQUIRE(back.u.degauss == 0.0f);
+    REQUIRE_FALSE(back.moving);
+    REQUIRE_FALSE(back.still_changed);                         // nothing else was touched
+    // A press after the tube is drawing again still degausses.
+    REQUIRE(d.peek(s, k1080, 61.0, 6).moving);
+    REQUIRE(d.frame(s, k1080, 61.0, 6).u.degauss == Approx(1.0f));
+}
+
+TEST_CASE("tube driver: skipping to a lower counter is only a new baseline", "[tube]") {
+    FrameDriver d; TubeSetting s; set_row(s, Effect::afterglow, 0); d.start(0.0, 9);
+    REQUIRE(d.frame(s, k1080, 5.0, 9).u.degauss == 0.0f);
+    d.skip_degauss_to(2);                                      // the op log restarted its count
+    REQUIRE_FALSE(d.peek(s, k1080, 6.0, 2).moving);
+    REQUIRE(d.frame(s, k1080, 6.0, 2).u.degauss == 0.0f);
+    REQUIRE(d.frame(s, k1080, 7.0, 3).u.degauss == Approx(1.0f));
+}

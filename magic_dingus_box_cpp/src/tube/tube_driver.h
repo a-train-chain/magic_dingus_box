@@ -347,15 +347,27 @@ public:
     // is rebuilt on return). The next frame reports:
     //   - glass_changed: the baked glass texture is gone, so it must be baked again;
     //   - mask_changed, with the tile's pixels: the mask texture is gone;
-    //   - still_changed: the plan's programs and targets (sizes, the afterglow history)
-    //     must be created again, and still_changed is the one flag the renderer builds
-    //     them on. It also re-arms the settle debt, which an emptied history needs.
+    //   - still_changed: it re-arms the settle debt, which an emptied afterglow history
+    //     needs, and tells a reader of the frame that everything is new. The GL renderer
+    //     does NOT build on it: it makes its programs from the plan it is handed
+    //     (TubeRenderer::prepare) and its targets from its own record of what exists
+    //     (ensure_targets, every frame), so it remakes whatever release_gl() freed
+    //     whatever this flag says.
     // No clock, phase or limiter is touched: this is not a tube starting (start()).
     void gpu_lost() noexcept {
         have_glass_ = false;
         have_mask_ = false;
         gpu_lost_ = true;
     }
+
+    // The tube did not draw for a while with the engine still Tube (the Media Browser
+    // had the screen): the op log's degauss counter may have risen meanwhile with no
+    // frame to show it. The caller passes the counter's current value before the
+    // first Tube frame after such a stretch; it becomes the baseline, so a press nobody
+    // saw is dropped instead of degaussing the picture unprompted later. peek() and
+    // frame() both judge a rise against this baseline, so they agree. Nothing else is
+    // touched (the start() of an engine change takes its own baseline).
+    void skip_degauss_to(std::uint64_t degauss_requests) noexcept { degauss_seen_ = degauss_requests; }
 
     // Whether the renderer should run the probe and read a mean this frame: only on a
     // plan with the probe, at most once every kMeanPeriodSeconds.

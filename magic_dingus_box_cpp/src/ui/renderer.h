@@ -314,7 +314,7 @@ public:
     //
     // INERT unless app::kTubeRendererReady (a TEST-ONLY preview build until the
     // plan's last task): only then does initialize() make the TubeRenderer and its
-    // FrameDriver, and main.cpp calls the four methods below only then. Without
+    // FrameDriver, and main.cpp calls the methods below only then. Without
     // them every method here is a no-op, tube_status() reports "not drawing" and
     // begin_scene_fbo / end_scene_fbo_and_composite take exactly today's path.
     //
@@ -336,6 +336,15 @@ public:
     // steady_clock time point), so the composite's FrameDriver::frame() and
     // mean_due() read the same clock tube_status()'s peek() did.
     void set_tube_clock(double now_seconds) { tube_now_ = now_seconds; }
+    // After a stretch in which the tube did not draw with the engine still Tube
+    // (the Media Browser had the screen; the web's op log is applied meanwhile),
+    // the first iteration that would draw it re-baselines the degauss counter
+    // (FrameDriver::skip_degauss_to): a press made while nothing showed it is
+    // dropped, not fired unprompted later. main.cpp calls it every iteration,
+    // BEFORE tube_status(), so peek() agrees with the frame. A no-op otherwise.
+    // (A game is not such a stretch: the loop does not run during it, so a press
+    // made then is applied after the return and degausses then, like any press.)
+    void skip_missed_tube_degauss(const app::AppState& state);
     struct TubeStatus {
         bool drawing = false;
         tube::FrameClass cls = tube::FrameClass::Lean60;
@@ -496,6 +505,10 @@ private:
     //   tube_engine_was_tube_: the engine was Tube on the last Tube scene and no
     //     drawn frame since had another engine (Media Browser frames do not
     //     count) - the first Tube scene after another engine starts the driver.
+    //   tube_degauss_resync_: the tube stopped drawing with the engine still Tube
+    //     (the Media Browser); the next iteration that would draw it skips any
+    //     degauss asked for meanwhile (skip_missed_tube_degauss). Cleared there,
+    //     and by start().
     //   tube_driver_ is declared BEFORE tube_ so it is destroyed AFTER it: the
     //     TubeRenderer's mean sink holds a raw pointer to the driver.
     std::unique_ptr<tube::FrameDriver> tube_driver_;
@@ -505,6 +518,7 @@ private:
     double tube_now_ = 0.0;
     bool tube_scene_ = false;
     bool tube_engine_was_tube_ = false;
+    bool tube_degauss_resync_ = false;
     // Preview builds, MDB_TUBE_VALIDATE=1: the validation passes still owed, ONE
     // per Tube frame so the loop pings the watchdog between them - Shader decode,
     // then Hardware decode when the context has it. None: nothing owed (always in production).

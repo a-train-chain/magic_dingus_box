@@ -263,12 +263,14 @@ struct TubeRenderer::Impl {
     bool glass_valid = false; // the glass target holds a bake: bake when !glass_valid OR glass_changed
     GLenum signal_format() const;   // RGBA16F with half-float targets, else SRGB8_ALPHA8
     // Makes what the plan needs at these sizes, frees what it no longer needs. Called by
-    // Task 11's composite on still_changed (and whenever a target is missing). False: an
-    // FBO was incomplete; the failure is recorded (retried as a build failure).
+    // composite's draw_frame on EVERY frame: in the steady state it is size and format
+    // comparisons only, and it remakes whatever release_targets() or release_gl() freed.
+    // False: an FBO was incomplete; the failure is recorded (retried as a build failure).
     bool ensure_targets(const tube::PassPlan& plan, const tube::TargetSizes& sizes);
     bool make_target(Target& t, const char* name, int w, int h, GLenum fmt, int levels);
     static void free_target(Target& t);
     void free_targets();
+    void release_targets();   // TubeRenderer::release_targets(): the targets, the probe's read FBO
 
     // The mask (one period, NEAREST + REPEAT, RGBA8), from DriverFrame::mask on mask_changed.
     GLuint mask_tex = 0;

@@ -26,10 +26,13 @@
 //   start, and Tube stays off ("build_hung") for as long as the marker survives (/dev/shm:
 //   until a reboot). A compile or link failure, or an incomplete render target, removes the
 //   marker (a failure is not a hang) and records the plan as failed ("build_failed"): it is
-//   retried when prepare() is given a different plan, or after retry_builds(). A hang is
-//   never retried within a process. The marker is also removed when Tube stops drawing
+//   retried when prepare() is given a different plan, or after retry_builds(). A scene
+//   texture that would not become SRGB8_ALPHA8 (begin_scene) is the exception: a different
+//   plan does not clear it, only retry_builds() or release_gl() does. A hang is never
+//   retried within a process. The marker is also removed when Tube stops drawing
 //   (end_tube_scene), by release_gl() and by the destructor: programs that are not being
 //   drawn cannot hang, and a stale marker would read as a hang at the next restart.
+//   release_targets() neither writes nor removes it: it deletes no program.
 //
 // THE CALLING PATTERN (Task 12), every frame the engine is Tube:
 //     if (tube.composite(env, picture, frame)) ...   (composite() calls prepare() itself)
@@ -39,8 +42,13 @@
 //   gating it on available() would keep Tube off forever. prepare() is cheap when nothing
 //   changed (no allocation, no GL query). available() / unavailable_reason() are for
 //   status only. Calling prepare() on its own beforehand is harmless (the fast path).
-//   On an engine change call retry_builds() (beside FrameDriver::start); on leaving Tube,
-//   end_tube_scene().
+//   On an engine change INTO Tube call retry_builds() (beside FrameDriver::start). When Tube
+//   stops drawing, end_tube_scene(), then:
+//     - the engine changed AWAY from Tube: release_gl() + FrameDriver::gpu_lost() (the
+//       pair) - nothing is held while another engine draws;
+//     - the engine is still Tube (the Media Browser took the screen): release_targets() -
+//       the memory back, the programs kept, no warm-up and no build on the way back.
+//   A game hand-off goes through Renderer::reset_gl(): release_gl() + gpu_lost().
 #pragma once
 
 #include <GLES3/gl3.h>
@@ -70,7 +78,8 @@ public:
 
     // Status only, never a gate on prepare(): false when the guard tripped at startup
     // ("build_hung", for the life of the process) or a build failed and no prepare() with a
-    // different plan nor retry_builds() has cleared it since ("build_failed").
+    // different plan nor retry_builds() has cleared it since ("build_failed"; a
+    // scene-texture failure only retry_builds() or release_gl() clears).
     bool available() const;
     std::string_view unavailable_reason() const;       // "" | "build_hung" | "build_failed"
     // What the marker named when the guard tripped at startup (log-safe; see
@@ -89,16 +98,21 @@ public:
     // recorded ("build_failed") until retry_builds() or release_gl() (a new context tries
     // again; see release_gl()).
     void begin_scene(GLuint scene_tex, int w, int h);
-    // Back to RGBA8 (and FRAMEBUFFER_SRGB to its default, on): the engine left Tube. Also
+    // Back to RGBA8 (and FRAMEBUFFER_SRGB to its default, on): Tube stopped drawing. Also
     // removes the guard's marker and forgets the plan (the next prepare() starts afresh).
+    // Frees nothing: the caller follows it with release_targets() or release_gl() (see
+    // THE CALLING PATTERN).
     void end_tube_scene(GLuint scene_tex, int w, int h);
 
     // Compiles and links what the plan lacks, the marker written first. False: not
-    // allowed yet, hang-tripped, or a build failed (now or before, for this plan).
+    // allowed yet, hang-tripped, a scene-texture failure (begin_scene; until
+    // retry_builds() or release_gl(), whatever the plan), or a build failed (now or
+    // before, for this plan and decode).
     bool prepare(const tube::PassPlan&, tube::SceneDecode);
-    // Clears a recorded build failure so the next prepare() tries again. Task 12 calls it
-    // on an engine change (where it calls FrameDriver::start); a changed plan clears the
-    // failure by itself. Never clears a hang.
+    // Clears a recorded build failure, the scene texture's included, so the next
+    // prepare() tries again. Task 12 calls it on an engine change (where it calls
+    // FrameDriver::start). A changed plan clears a build failure by itself, but not the
+    // scene texture's. Never clears a hang.
     void retry_builds();
 
     // ONE FRAME (Task 11), from end_scene_fbo_and_composite with the UI batch flushed, in
@@ -114,9 +128,10 @@ public:
     //      while it persists);
     //   3. prepare(frame.plan, scene_decode_for(caps())) (cheap when nothing changed);
     //   4. the plan's passes - the glass bake and mask upload when the frame says so, the
-    // mean probe when request_mean() asked for one, quarter -> blur H -> blur V, signal,
-    // lines - and the output into `picture` (top-left-origin framebuffer px; the bars
-    // around it cleared black), through the afterglow history when the plan has one.
+    //      mean probe when request_mean() asked for one, quarter -> blur H -> blur V,
+    //      signal, lines - and the output into `picture` (top-left-origin framebuffer px;
+    //      the bars around it cleared black), through the afterglow history when the plan
+    //      has one. The targets are made (cleared) here whenever one is missing.
     // CALL ORDER: composite() calls prepare() itself (step 3), then draws only the plan prepare()
     // succeeded with; it refuses (returns false, draws nothing, marks nothing drawn) when
     // there is no current plan or it is not frame.plan - e.g. after end_tube_scene(). A
@@ -156,8 +171,19 @@ public:
     // next frame); if no real tile was ever handed over, composite() refuses (once-logged)
     // until a frame carries mask_changed.
     bool validate_all_programs(const GlEnv&, video::IRect picture, tube::SceneDecode);
-    // Every GL object deleted (a game took the display, or the Renderer is going). The next
-    // composite() makes everything again. Clears a failure whose cause was the scene
+    // The render TARGETS freed - quarter, glow, signal, lines, the afterglow history, the
+    // probe's mean target (and its read framebuffer) and the glass - while the programs,
+    // the mask texture, the kept mask tile, the drawn flags and any recorded failure stay.
+    // A probe in flight is abandoned. For a Tube that stopped drawing with the engine
+    // still Tube (the Media Browser took the screen): call it right after
+    // end_tube_scene(). The next composite() remakes the targets cleared to black (an
+    // empty afterglow history: no stale picture fades in) and re-bakes the glass from
+    // that frame's own uniforms; the mask is not uploaded again and no program is rebuilt,
+    // so there is no build hitch and no marker (every program is still drawn). No
+    // FrameDriver::gpu_lost() is needed: nothing the driver hands over once was lost.
+    void release_targets();
+    // Every GL object deleted (a game took the display, the engine changed away from Tube,
+    // or the Renderer is going). The next composite() makes everything again. Clears a failure whose cause was the scene
     // texture (a new context gets one more try). Does NOT clear the other recorded failures
     // - a program that failed to compile or link, an incomplete render target, a malformed
     // mask tile, a GL error during a frame: those stay until a prepare() with a different

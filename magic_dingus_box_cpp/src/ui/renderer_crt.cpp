@@ -268,20 +268,39 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
     bool tube_frame = false;
     if (tube_) {
         tube_frame = tube_frame_wanted(state);
+        const bool engine_tube =
+            app::effective_crt_engine(state.display_settings.crt_engine, app::tube_offered(state)) ==
+            app::CrtEngine::Tube;
         if (tube_scene_ && !tube_frame) {
-            // The tube stopped drawing (another engine, or the Media Browser took
-            // the screen): the scene texture back to RGBA8, FRAMEBUFFER_SRGB back
-            // on, the guard's marker dropped and the plan forgotten.
+            // The tube stopped drawing: the scene texture back to RGBA8,
+            // FRAMEBUFFER_SRGB back on, the guard's marker dropped and the plan
+            // forgotten.
             flush_ui_batch();
             tube_->end_tube_scene(scene_color_tex_, static_cast<int>(scene_fbo_width_),
                                   static_cast<int>(scene_fbo_height_));
+            if (engine_tube) {
+                // The engine is still Tube (the Media Browser took the screen; or
+                // no picture rectangle this frame): free the render targets only
+                // (~25-40 MB at 1440x1080, which a 2 GB board needs back for a
+                // movie) and keep the programs, so the return has no build hitch
+                // and no marker. The targets come back cleared: no stale
+                // afterglow fades in. No warm-up replay (the engine did not
+                // change), and a degauss asked for meanwhile is skipped.
+                tube_->release_targets();
+                tube_degauss_resync_ = true;
+            }
         }
         tube_scene_ = false;
-        // Another engine drew: the next Tube scene starts the tube afresh (warm-up).
-        // A Media Browser frame with the engine still Tube does not count.
-        if (app::effective_crt_engine(state.display_settings.crt_engine, app::tube_offered(state)) !=
-            app::CrtEngine::Tube)
+        if (!engine_tube) {
+            // Another engine: the next Tube scene starts the tube afresh (warm-up),
+            // and every tube GL object goes now (release_gl + gpu_lost) - programs,
+            // targets, the mask - so nothing is held while another engine draws,
+            // and a later Tube starts from a clear afterglow history. Also reached
+            // when the engine changes while the Media Browser has the screen. Once:
+            // a no-op while nothing is live.
             tube_engine_was_tube_ = false;
+            release_tube_gl();
+        }
     }
 
     // Gate 1: feature flag must be on. (A Tube frame skips it: the engine is
@@ -357,6 +376,7 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
             tube_driver_->start(tube_now_, state.tube_live.degauss_requests);
             tube_->retry_builds();
             tube_engine_was_tube_ = true;
+            tube_degauss_resync_ = false;   // start() took the counter as its baseline
         }
         flush_ui_batch();
         tube_->begin_scene(scene_color_tex_, static_cast<int>(scene_fbo_width_),
@@ -389,6 +409,12 @@ bool Renderer::tube_frame_wanted(const app::AppState& state) const {
         return false;
     if (tube_->unavailable_reason() == "build_hung") return false;
     return tube_picture_.w > 0 && tube_picture_.h > 0;
+}
+
+void Renderer::skip_missed_tube_degauss(const app::AppState& state) {
+    if (!tube_ || !tube_degauss_resync_ || !tube_frame_wanted(state)) return;
+    tube_driver_->skip_degauss_to(state.tube_live.degauss_requests);
+    tube_degauss_resync_ = false;
 }
 
 Renderer::TubeStatus Renderer::tube_status(const app::AppState& state, double now_seconds) const {

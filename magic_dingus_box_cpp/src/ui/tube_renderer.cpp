@@ -351,6 +351,18 @@ void TubeRenderer::Impl::free_targets() {
     glass_valid = false;
 }
 
+// The targets only (TubeRenderer::release_targets). The probe's read framebuffer goes too:
+// it is attached to the mean target, and a deleted texture still attached to an unbound
+// framebuffer stays alive until the attachment changes. No TubeGlState: like release(),
+// it only deletes - restoring a binding to a deleted name would create a new object.
+void TubeRenderer::Impl::release_targets() {
+    abandon_mean();   // the fence; a reading in flight is dropped
+    mean_requested = false;
+    if (mean_read_fbo) glDeleteFramebuffers(1, &mean_read_fbo);
+    mean_read_fbo = 0;
+    free_targets();   // also glass_valid = false, history_index = 0
+}
+
 // Spike ensure_tex: immutable storage, LINEAR + CLAMP_TO_EDGE (the mean probe's mips:
 // LINEAR_MIPMAP_NEAREST), an FBO on level 0, cleared to black (the history is read before
 // it is written). Binds on the ACTIVE unit and the FBO: the caller's TubeGlState restores.
@@ -761,6 +773,11 @@ bool TubeRenderer::prepare(const tube::PassPlan& plan, tube::SceneDecode decode)
     }
     m.prepared_ok = true;
     return true;
+}
+
+void TubeRenderer::release_targets() {
+    impl_->release_targets();
+    LOG_INFO("tube: render targets released; made again (cleared) on the next Tube frame");
 }
 
 void TubeRenderer::release_gl() {

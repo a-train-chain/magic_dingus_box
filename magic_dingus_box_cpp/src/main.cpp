@@ -2211,6 +2211,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 frame_rects.content,
                 state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
             ui_renderer.set_tube_clock(tube_clock);
+            ui_renderer.skip_missed_tube_degauss(state);   // before peek(), so they agree
             tube_now = ui_renderer.tube_status(state, tube_clock);
             tube_redraw_now = app::tube_redraw(tube_now.drawing, tube_now.cls, tube_now.moving,
                                                static_cast<int>(mode_info.vrefresh));
