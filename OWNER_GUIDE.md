@@ -273,6 +273,8 @@ default, **List**, keeps the familiar playlist menu).
 - **Change channels** with the yellow and green buttons, or open the
   guide: turn the knob to move through the channels and press to watch
   the one you've highlighted.
+- **Settings while you watch:** a channel is always playing in this
+  style, so open the guide first (press the knob), then press **B**.
 - The box remembers the last channel you watched and goes back to it
   after you turn it on, finish a game or leave Movies.
 - Each day at 4 AM the channels start from a new point and the mixes
