@@ -632,10 +632,162 @@ std::vector<float> read_back(const Program& p) {
     return out;
 }
 
+
+// ---- --glowchain: the glow blur as two chains, through the output -------------------
+//
+// The quarter program draws the procedural scene into a quarter target; chain A blurs
+// it with OLD_BLUR at the quarter's size (H then V, sigma S, radius ceil(3S) <= 24);
+// chain B with NEW_BLUR either the same way or, with --half, on targets half the
+// quarter's size in each direction (H with uDown 1 from the quarter, V with uDown 0;
+// sigma S/2). The output program then draws twice, its glow sampler fed by A's result
+// and by B's, and the two pictures are compared. S: --sigma, else the file's uSigma.
+struct Fbo {
+    GLuint tex = 0, fbo = 0;
+    int w = 0, h = 0;
+};
+
+Fbo make_fbo(int w, int h) {
+    Fbo f;
+    f.w = w;
+    f.h = h;
+    glGenTextures(1, &f.tex);
+    glBindTexture(GL_TEXTURE_2D, f.tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_SRGB8_ALPHA8, w, h);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1, &f.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, f.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, f.tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) die(1, "glow target incomplete");
+    return f;
+}
+
+void blur_pass(GLuint prog, GLuint src, const Fbo& dst, float dx, float dy, float sigma, int down, bool srgb_switch) {
+    glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
+    if (srgb_switch) glEnable(GL_FRAMEBUFFER_SRGB_EXT);
+    glViewport(0, 0, dst.w, dst.h);
+    glUseProgram(prog);
+    glUniform2f(glGetUniformLocation(prog, "uDir"), dx, dy);
+    glUniform1f(glGetUniformLocation(prog, "uSigma"), sigma);
+    glUniform1i(glGetUniformLocation(prog, "uRadius"), std::min(static_cast<int>(std::ceil(3.0f * sigma)), 24));
+    const GLint d = glGetUniformLocation(prog, "uDown");
+    if (d >= 0) glUniform1i(d, down);
+    else if (down) die(1, "this blur source has no uDown");
+    glUniform1i(glGetUniformLocation(prog, "src"), 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, src);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
+int glow_chain(const std::string& vs, const std::vector<std::string>& f, const std::vector<std::string>& uniforms,
+               Setup s, float sigma_override, bool half, int time_frames, bool srgb_switch) {
+    // f: quarter, old blur, new blur, output
+    if (uniforms.empty()) die(2, "--glowchain needs --uniforms");
+    StderrCapture cap;
+    const GLuint quarter = link(vs, read_file(f[0]), "quarter");
+    const GLuint old_blur = link(vs, read_file(f[1]), "old blur");
+    const GLuint new_blur = link(vs, read_file(f[2]), "new blur");
+    const Inputs& in = s.in;
+    const Fbo q = make_fbo(in.quarter_w, in.quarter_h);
+    const Fbo a1 = make_fbo(in.quarter_w, in.quarter_h), a2 = make_fbo(in.quarter_w, in.quarter_h);
+    const int ew = half ? (in.quarter_w + 1) / 2 : in.quarter_w, eh = half ? (in.quarter_h + 1) / 2 : in.quarter_h;
+    const Fbo b1 = make_fbo(ew, eh), b2 = make_fbo(ew, eh);
+    Program out = build(vs, f[3], s, srgb_switch);
+    std::string other;
+    const Stats st = parse_shaderdb(cap.finish(), other);
+    std::printf("shaderdb lines (quarter, blurs, output, in compile order): %s\n", st.compact().c_str());
+    // The scene, as the output's own unit-0 texture (same procedural content).
+    Program qp;
+    qp.prog = quarter;
+    qp.name = "quarter";
+    long worst2 = 0;
+    for (const std::string& file : uniforms) {
+        Setup sk = s;
+        read_inputs(file, sk.in);
+        float sigma = sigma_override;
+        if (sigma <= 0.0f) {
+            const auto it = sk.in.values.find("uSigma");
+            if (it == sk.in.values.end()) die(2, file + " has no uSigma (use --sigma)");
+            sigma = it->second[0];
+        }
+        set_uniforms(qp, sk);
+        glBindFramebuffer(GL_FRAMEBUFFER, q.fbo);
+        if (srgb_switch) glEnable(GL_FRAMEBUFFER_SRGB_EXT);
+        glViewport(0, 0, q.w, q.h);
+        glUseProgram(quarter);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, out.tex[0]);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        const auto chain_a = [&] {
+            blur_pass(old_blur, q.tex, a1, 1, 0, sigma, 0, srgb_switch);
+            blur_pass(old_blur, a1.tex, a2, 0, 1, sigma, 0, srgb_switch);
+        };
+        const auto chain_b = [&] {
+            if (half) {
+                blur_pass(new_blur, q.tex, b1, 1, 0, sigma * 0.5f, 1, srgb_switch);
+                blur_pass(new_blur, b1.tex, b2, 0, 1, sigma * 0.5f, 0, srgb_switch);
+            } else {
+                blur_pass(new_blur, q.tex, b1, 1, 0, sigma, 0, srgb_switch);
+                blur_pass(new_blur, b1.tex, b2, 0, 1, sigma, 0, srgb_switch);
+            }
+        };
+        chain_a();
+        chain_b();
+        out.tex[7] = make_mask(sk.in, out.tex[7]);
+        set_uniforms(out, sk);
+        out.tex[1] = a2.tex;
+        draw(out, srgb_switch);
+        const std::vector<float> ra = read_back(out);
+        out.tex[1] = b2.tex;
+        draw(out, srgb_switch);
+        const std::vector<float> rb = read_back(out);
+        float mx = 0;
+        long over1 = 0, over2 = 0;
+        int shown = 0;
+        for (std::size_t i = 0; i < ra.size(); i += 4) {
+            float d = 0;
+            for (int c = 0; c < 3; ++c) d = std::max(d, std::fabs(ra[i + c] - rb[i + c]));
+            mx = std::max(mx, d);
+            over1 += d > 1.0f;
+            over2 += d > 2.0f;
+            if (d > 2.0f && shown++ < 3) {
+                const long px = static_cast<long>(i / 4);
+                std::printf("  over 2/255 at %ld,%ld (picture px, from the bottom): A %g %g %g B %g %g %g\n",
+                            px % out.vw, px / out.vw, ra[i], ra[i + 1], ra[i + 2], rb[i], rb[i + 1], rb[i + 2]);
+            }
+        }
+        worst2 = std::max(worst2, over2);
+        std::printf("glowchain %s sigma %.3f (%s): max %.0f/255, %ld px over 1/255, %ld px over 2/255 of %ld\n",
+                    file.c_str(), sigma, half ? "B on half-size targets" : "B full size", mx, over1, over2,
+                    static_cast<long>(ra.size() / 4));
+        if (time_frames > 0) {
+            using Clock = std::chrono::steady_clock;
+            double best_a = 1e9, best_b = 1e9;
+            for (int n = 0; n < time_frames; ++n) {
+                for (int which = 0; which < 2; ++which) {
+                    glFinish();
+                    const auto t0 = Clock::now();
+                    if (which == 0) chain_a(); else chain_b();
+                    glFinish();
+                    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                    (which == 0 ? best_a : best_b) = std::min(which == 0 ? best_a : best_b, ms);
+                }
+            }
+            std::printf("glowchain time (min of %d, alternated, wall clock): A %.3f ms, B %.3f ms\n", time_frames,
+                        best_a, best_b);
+        }
+        check_gl("glow chain");
+    }
+    return worst2 > 0 ? 3 : 0;
+}
+
 void usage() {
     std::fputs(
         "usage: shaderstat [--uniforms FILE] [--time N] [--float] VERT FRAG\n"
         "       shaderstat [--uniforms FILE]... [--float] --compare VERT A.frag B.frag\n"
+        "       shaderstat --uniforms FILE... [--sigma S] [--half] [--time N] --glowchain VERT QUARTER.frag OLD_BLUR.frag NEW_BLUR.frag OUTPUT.frag\n"
         "Run under: timeout 20 env V3D_DEBUG=shaderdb ./shaderstat ...\n",
         stderr);
     std::exit(2);
@@ -647,7 +799,8 @@ int main(int argc, char** argv) {
     Setup s;
     std::vector<std::string> uniforms;
     int time_frames = 0;
-    bool compare = false;
+    bool compare = false, glowchain = false, half = false;
+    float sigma_override = 0.0f;
     std::vector<std::string> files;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -655,11 +808,14 @@ int main(int argc, char** argv) {
         else if (a == "--time" && i + 1 < argc) time_frames = std::atoi(argv[++i]);
         else if (a == "--float") s.float_target = true;
         else if (a == "--compare") compare = true;
+        else if (a == "--glowchain") glowchain = true;
+        else if (a == "--half") half = true;
+        else if (a == "--sigma" && i + 1 < argc) sigma_override = std::strtof(argv[++i], nullptr);
         else if (!a.empty() && a[0] == '-') usage();
         else files.push_back(a);
     }
-    if (files.size() != (compare ? 3u : 2u)) usage();
-    if (uniforms.size() > 1 && !compare) usage();
+    if (files.size() != (glowchain ? 5u : compare ? 3u : 2u)) usage();
+    if (uniforms.size() > 1 && !compare && !glowchain) usage();
     if (!uniforms.empty()) read_inputs(uniforms[0], s.in);
 
     // Mesa's on-disk shader cache would skip the compile (and its shaderdb line) and
@@ -676,6 +832,12 @@ int main(int argc, char** argv) {
 
     const std::string vs = read_file(files[0]);
     quad_vao();
+    if (glowchain) {
+        const int rc = glow_chain(vs, {files[1], files[2], files[3], files[4]}, uniforms, s, sigma_override, half,
+                                  time_frames, srgb_switch);
+        close_gpu(gpu);
+        return rc;
+    }
     if (!compare) {
         Program p = build(vs, files[1], s, srgb_switch);
         std::printf("%s: %s | target 0x%x %dx%d viewport %d,%d %dx%d\n", p.name.c_str(), p.stats.compact().c_str(),

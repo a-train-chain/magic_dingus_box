@@ -90,6 +90,16 @@ Prints, per program, the fragment shader's statistics from Mesa's shaderdb line:
   different render-target format, so not the kiosk's variant and its statistics are
   not the kiosk's).
 
+- `--glowchain VERT QUARTER.frag OLD_BLUR.frag NEW_BLUR.frag OUTPUT.frag` (with
+  `--uniforms`, optional `--sigma S`, `--half`, `--time N`): the quarter program
+  draws the procedural scene into a quarter target; chain A blurs it with OLD_BLUR at
+  the quarter's size (H then V, sigma S or the file's `uSigma`); chain B with NEW_BLUR
+  the same way, or with `--half` on targets half the quarter's size (H with `uDown` 1
+  straight from the quarter, V with `uDown` 0, sigma S/2). The output program then
+  draws twice, fed by A's glow and by B's, and the two FINAL pictures are compared
+  (largest difference, pixels over 1/255 and over 2/255, where the first ones over
+  2/255 are). `--time N`: the two chains alone, alternated, minimum ms of N.
+
 Exit codes: 0 fine; 1 a GL/EGL failure, a compile or link error (the log is printed)
 or an incomplete framebuffer; 2 usage, an unreadable source or uniform file, or a bad
 line in one; 3 a comparison found a difference beyond 1/255.
