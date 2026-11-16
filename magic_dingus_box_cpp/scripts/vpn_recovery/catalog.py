@@ -28,6 +28,8 @@ from .common import atomic_json, bounded_lock, load_config
 CATALOG_URL = 'https://raw.githubusercontent.com/qdm12/gluetun-servers/main/pkg/servers/protonvpn.json'
 MAX_BYTES = 8*1024*1024
 HISTORY_LIMIT = 256
+# A failed endpoint is not selected again for this long.
+EXCLUSION_S = 1800
 # A server that failed this many times, each within 24 h of the one before,
 # goes to the back of its pool (never out of it). The stored count is capped.
 REPEAT_FAILURES = 2
@@ -191,7 +193,10 @@ def record_failure(history, hostname, endpoint_ip, now):
     """History plus one failure of this endpoint; no mutation.
 
     The count grows while each failure lands within 24 h of the previous one
-    (bounded_history's retention), so a quiet day starts it over.
+    (bounded_history's retention), so a quiet day starts it over. A record
+    inside the previous one's exclusion window is the same incident (a failed
+    rotation away and its escalation restart both record the server): it
+    moves failed_at, extending the exclusion, but does not add to the count.
     """
     current = bounded_history(history, now)
     try:
@@ -200,7 +205,11 @@ def record_failure(history, hostname, endpoint_ip, now):
         return current
     prior = next((e for e in current if e['hostname'] == hostname and e['endpoint_ip'] == ip), None)
     entry = {'hostname': hostname, 'endpoint_ip': ip, 'failed_at': now}
-    count = min(REPEAT_COUNT_CAP, prior.get('count', 1)+1) if prior else 1
+    count = 1
+    if prior:
+        count = prior.get('count', 1)
+        if now-prior['failed_at'] >= EXCLUSION_S:
+            count = min(REPEAT_COUNT_CAP, count+1)
     if count > 1:
         entry['count'] = count
     return bounded_history([e for e in current if e is not prior]+[entry], now)
@@ -229,7 +238,7 @@ def select_candidate(candidates, history, preferred_countries, fallback_countrie
     preferred = [c for c in candidates if c.country in preferred_countries]
     fallback = [c for c in candidates if c.country in fallback_countries and c not in preferred]
     tried = {c.hostname for c in preferred if c.hostname in attempts}
-    recent = {e['endpoint_ip']: e['failed_at'] for e in failures if now-e['failed_at'] < 1800}
+    recent = {e['endpoint_ip']: e['failed_at'] for e in failures if now-e['failed_at'] < EXCLUSION_S}
     # Proton lists same-block neighbours together (node-ca-59/60 are both
     # 84.20.16.x), and a site-wide fault takes the whole block. Within a pool,
     # prefer a server outside every block that just failed or was tried this
@@ -237,10 +246,12 @@ def select_candidate(candidates, history, preferred_countries, fallback_countrie
     avoid = {_network(ip) for ip in recent}
     avoid |= {_network(c.endpoint_ip) for c in candidates if c.hostname in attempts}
     avoid.discard(None)
-    # A server that keeps failing goes after every other eligible one: once
-    # its 30-minute exclusion lapsed, node-us-119 (first in catalog order,
-    # never leased a port) was picked again and again, and leaving it hung
-    # Gluetun's settings request for two minutes each time (2026-11-15).
+    # A server that keeps failing goes after every other eligible one, so a
+    # server first in catalog order is not picked again the moment its
+    # 30-minute exclusion lapses. Proton's port-forwarding refusals have been
+    # server-specific (2026-10). Caveat, 2026-11-15: the repeat "no lease"
+    # failures of node-us-119 that motivated this were Gluetun's, not the
+    # server's (see CLAUDE.md, Native VPN recovery).
     repeat = {e['endpoint_ip'] for e in failures if e.get('count', 1) >= REPEAT_FAILURES}
     pools = [preferred, fallback] if len(tried) < 2 else [fallback]
     for pool in pools:

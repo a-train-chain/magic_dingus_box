@@ -1007,9 +1007,12 @@ series, which would have destroyed already-watched seasons too.
   restarted. A server that failed twice, each failure within 24 h of the
   one before (the history entry's `count`, capped at 16; only
   `catalog.record_failure` increments it), goes to the back of its pool
-  for as long as the count lasts, never out of it: node-us-119 never
-  leased a port on three fallback runs that afternoon, and was picked
-  again each time its exclusion had lapsed. Exclusion 1800s, bounded 24h
+  for as long as the count lasts, never out of it, so a server first in
+  catalog order is not re-picked the moment its exclusion lapses. A record
+  inside the previous
+  one's 30-min exclusion is the same incident and does not count again:
+  a failed rotation PUT leaves the server as `attempted`, so the rotation
+  away and the escalation restart both record it. Exclusion 1800s, bounded 24h
   history/newest 256 endpoints, failed-round backoff 120/300/600s and at
   most one disruptive restart per 600s. API success alone is not Ready.
   Host WAN classification uses a certificate-verifying stdlib HTTPS child
@@ -1074,9 +1077,19 @@ series, which would have destroyed already-watched seasons too.
   - Live proof uses `tests/vpn_fault/` (attended, magicpi5-only, opt-in;
     see its README): `check_network_fault.py` modes capability /
     port-loss / first-lease / fallback, plus a read-only `soak.py`. The
-    fallback window is 600 s and any allowed US server counts as proof,
-    because the projected first US server may never lease a port
-    (2026-11-15 run 4: node-us-119). A new policy timer must be added to
+    fallback window is 600 s and any allowed US server counts as proof.
+    **Known Gluetun v3.41.3 race (magicpi5 2026-11-15, 4 of 4 fallback
+    runs): a settings PUT that lands while Gluetun is restart-looping on a
+    dead server (its own 6 s healthcheck cycle) wedges it.** The new
+    server's startup checks fail at once ("lookup …: operation was
+    canceled", 19 and 236 sub-second restarts), port forwarding never
+    starts, and the next PUT hangs ~2 min; only the escalation restart
+    recovers. So after a traffic-loss rotation the next server never
+    leases, whoever it is (node-us-119 and node-us-390 were wrongly blamed),
+    and the allowed fallback country did not engage in any of the four
+    runs: recovery ended in a container restart on the `.env` country. A rotation whose old
+    server still carries traffic (port-loss) is clean: port 7 s after the
+    PUT. Open: a rotation path that does not race it. A new policy timer must be added to
     BOTH `policy.py`'s `timers` and `runtime.restore_policy`; kept raw it
     becomes a future timestamp after a reboot and the policy discards
     all of its state.

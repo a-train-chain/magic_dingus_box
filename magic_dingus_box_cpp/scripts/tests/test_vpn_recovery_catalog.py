@@ -346,10 +346,8 @@ class CatalogTests(unittest.TestCase):
                          'node-us-69.protonvpn.net')
 
     def test_a_server_that_keeps_failing_goes_to_the_back_of_its_pool(self):
-        # node-us-119 never got a first port lease twice in one afternoon
-        # (2026-11-15), and moving off it hung Gluetun's settings request for
-        # two minutes each time. Its 30-minute exclusion had lapsed, and being
-        # first in catalog order it was picked again.
+        # node-us-119 is first in the US catalog order: once its 30-minute
+        # exclusion lapsed after a failure, it was picked again (2026-11-15).
         self._add('node-us-69.protonvpn.net', 'United States', '89.187.170.135')
         candidates = [c for c in eligible_candidates(validate_catalog(self.provider, NOW), ['Canada', 'United States'])
                       if ':' not in c.endpoint_ip]
@@ -386,8 +384,24 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([e.get('count', 1) for e in other], [2, 1])
         capped = twice
         for i in range(REPEAT_COUNT_CAP+5):
-            capped = record_failure(capped, host, ip, NOW+1+i)
+            capped = record_failure(capped, host, ip, NOW+1800*(i+1))
         self.assertEqual(capped[0]['count'], REPEAT_COUNT_CAP)
+
+    def test_records_within_one_exclusion_window_are_one_failure(self):
+        # One incident can record the same server twice: magicpi5 2026-11-15,
+        # the rotation away from node-us-119 recorded it, its settings PUT
+        # hung, and the escalation restart recorded it again 60 s later. The
+        # newer time still extends its exclusion; only a failure after the
+        # exclusion lapsed (picked again, failed again) counts as a repeat.
+        host, ip = 'node-us-119.protonvpn.net', '185.156.46.33'
+        once = record_failure([], host, ip, NOW)
+        again = record_failure(once, host, ip, NOW+60)
+        self.assertEqual(again, [{'hostname': host, 'endpoint_ip': ip, 'failed_at': NOW+60}])
+        self.assertNotIn('count', record_failure(again, host, ip, NOW+60+1799)[0])
+        self.assertEqual(record_failure(again, host, ip, NOW+60+1800)[0]['count'], 2)
+        twice = record_failure(again, host, ip, NOW+60+1800)
+        self.assertEqual(record_failure(twice, host, ip, NOW+60+1900)[0],
+                         {'hostname': host, 'endpoint_ip': ip, 'failed_at': NOW+60+1900, 'count': 2})
 
     def test_repeat_count_survives_history_bounding_without_inflating(self):
         base = {'hostname': 'node-us-119.protonvpn.net', 'endpoint_ip': '185.156.46.33'}
