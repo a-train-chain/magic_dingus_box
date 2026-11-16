@@ -23,6 +23,29 @@ tests/ota_rehearsal/run.sh scenario old_web # one scenario
 
 See the header of `run.sh` and `box/scenario.sh` for the scenarios.
 
+### From the latest release (what field boxes run)
+
+The default OLD is v1.9.14, which covers boxes that skipped releases. The
+path most units will take is the latest release → the next one. `main`'s
+`VERSION` still reads the latest release until the next stable is cut, so
+stamp the version the tag will carry, and give each OLD its own box image
+(the image is built once, from that release's `install_deps.sh`, and is
+reused by name):
+
+```bash
+OTA_OLD_REF=v1.11.0 OTA_NEW_VERSION=1.12.0 \
+  OTA_BOX_IMAGE=mdb-ota-box:trixie-1110 OTA_WORK="$TMPDIR/ota-1110" \
+  tests/ota_rehearsal/run.sh
+```
+
+`box/scenario.sh` adapts its assertions with `old_at_least`. From v1.11.0
+on, four OLD behaviours differ from the v1.9.14 baseline:
+- the admin answers an update job id from its on-disk record, with 200 and
+  `complete`, not 404;
+- the box image already has gunicorn, so there's no Werkzeug fallback;
+- the updater no longer prints the Phone Remote bootstrap line;
+- a TV-off install (kiosk exit 69) is kept rather than rolled back.
+
 ## Hardware rehearsal
 
 ```bash

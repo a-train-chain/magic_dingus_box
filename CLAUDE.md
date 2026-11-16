@@ -1010,7 +1010,29 @@ series, which would have destroyed already-watched seasons too.
   Observe port/qBit every 10s, DNS/TCP/TLS traffic every 30s; first port and
   candidate grace 120s, established port loss 90s, traffic loss 60s. Try at
   most two distinct preferred-country hostnames before explicitly allowed
-  fallback; healthy fallback stays selected. Exclusion 1800s, bounded 24h
+  fallback; healthy fallback stays selected. Within a country the next
+  candidate avoids the /24 (IPv6 /48) of anything that just failed or was
+  tried this round: Proton lists same-block neighbours together
+  (node-ca-59/60 are both 84.20.16.x) and a site fault takes the block; a
+  pool never falls through to the fallback country just to diversify. A
+  rotated-to candidate whose own new tunnel shows 60 s of verified traffic
+  loss is judged then (dead-candidate rule, `rotated_at`), not after the
+  full 120 s grace, which stays for a slow first port lease; container
+  starts, restarts, maintenance resets and failed rotation PUTs keep the
+  full grace. A failed rotation PUT (api_failed) leaves no candidate, so it
+  escalates to the one container restart one loss window after the
+  rotation instead of after the grace: Gluetun v3.41.3 hung that PUT for
+  2 min on magicpi5 (2026-11-15) while rotating away from a server with
+  traffic but no port. A server that recovers first is Ready and is never
+  restarted. A server that failed twice, each failure within 24 h of the
+  one before (the history entry's `count`, capped at 16; only
+  `catalog.record_failure` increments it), goes to the back of its pool
+  for as long as the count lasts, never out of it, so a server first in
+  catalog order is not re-picked the moment its exclusion lapses. A record
+  inside the previous
+  one's 30-min exclusion is the same incident and does not count again:
+  a failed rotation PUT leaves the server as `attempted`, so the rotation
+  away and the escalation restart both record it. Exclusion 1800s, bounded 24h
   history/newest 256 endpoints, failed-round backoff 120/300/600s and at
   most one disruptive restart per 600s. API success alone is not Ready.
   Host WAN classification uses a certificate-verifying stdlib HTTPS child
@@ -1065,6 +1087,42 @@ series, which would have destroyed already-watched seasons too.
   - Never run `scripts/tests` suites that write `/tmp/mdb_*` on a box:
     `test_gluetun_cascade.py` used to create/delete the real playback-pause
     marker (it now uses a private `PAUSE_MARKER`).
+  - **One restart authority: Gluetun's own health restart is OFF where
+    the controller owns recovery.** The compose `entrypoint` wrapper
+    exports `HEALTH_RESTART_VPN=off` exactly when provider = protonvpn,
+    type = wireguard and forwarding = on (the controller's `supported`
+    gate and the healthcheck's native branch; `compose_image_pins.bats`
+    runs the wrapper). Every other configuration keeps Gluetun's
+    self-restart. Takes effect when the container is next created (the
+    boot-time `compose up -d`, a reconfigure, `recreate_gluetun.sh`).
+    Consequence: Gluetun no longer self-hops under its `.env` selection
+    (before, it picked another server of the country within ~45 s of a
+    fault); a dead server waits for the controller's loss window. A
+    container restart still returns to the `.env` selection, which is why
+    the restart escalation reverts country.
+  - Live proof uses `tests/vpn_fault/` (attended, magicpi5-only, opt-in;
+    see its README): `check_network_fault.py` modes capability /
+    port-loss / first-lease / fallback, plus a read-only `soak.py`. The
+    fallback window is 600 s and any allowed US server counts as proof.
+    **Why Gluetun's self-restart is off (magicpi5 2026-11-15, 4 of 4
+    fallback runs before the fix):** a settings PUT is stop + start
+    (`state.SetSettings`). On a dead server Gluetun's ~6 s startup health
+    check is almost always in flight; the stop cancels it, Gluetun takes
+    the cancellation for a health failure and fires its own stop + start
+    (`restartVPN`), and the two restart sequences then cancel each other's
+    checks ("lookup …: operation was canceled", 19 and 236 sub-second
+    restarts). Port forwarding never started, the next PUT hung ~2 min,
+    and only the escalation restart recovered, on the `.env` country:
+    after a traffic-loss rotation no server ever leased (node-us-119 and
+    node-us-390 were wrongly blamed) and the fallback country never
+    engaged. A rotation whose old server still carries traffic (port-loss)
+    was always clean: port 7 s after the PUT. With the restart off, the
+    fallback test PASSED on the first run (18:58: `ca-44` → `ca-37` →
+    `us-391`, port 7 s after the switch, 0 cancelled checks, no container
+    restart). A new policy timer must be added to
+    BOTH `policy.py`'s `timers` and `runtime.restore_policy`; kept raw it
+    becomes a future timestamp after a reboot and the policy discards
+    all of its state.
 - **Legacy gluetun-cascade-restart.service** (unsupported VPN configurations;
   systemd, on Pi host) — long-running watcher subscribed to `docker events --filter container=mdb_gluetun --filter event=start --filter event=health_status`. Four roles:
   - **netns re-link**: On Gluetun `start` events, runs `docker compose restart` then `up -d` on the four netns-sharing dependents (Radarr/Prowlarr/qBit/Byparr) to refresh port-forwarding DNAT rules that get torn down with the old netns. The restart-then-up-d sequence handles both Gluetun-was-just-restarted (dependents still running but disconnected) and Gluetun-was-recreated (dependents crashed with exit 128, need to be brought back up) cases. **Playback-pause aware**: while `/tmp/mdb_playback_services_paused` exists (maintained by `playback_services_pause.sh` during games/movies), the cascade re-links qBittorrent ONLY and enforces `docker stop` on Radarr/Prowlarr/Byparr — pre-fix, the cascade's `up -d` revived the paused three mid-game and defeated the RAM-freeing pause on the 2 GB boxes (observed live 2026-07-31). The paused three re-link via the kiosk's unpause, which falls back to `compose up -d` when plain `docker start` fails (network_mode pins Gluetun's container ID at create time, so a Gluetun RECREATE mid-pause invalidates plain start).
