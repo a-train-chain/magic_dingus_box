@@ -123,3 +123,31 @@ TEST_CASE("FbCache: re-inserting a handle replaces and RmFBs the stale fb",
     CHECK(*c.find(1) == 201);
     CHECK(log.removed == std::vector<uint32_t>{101});
 }
+
+TEST_CASE("FbCache: trim keeps the fb of a pending page flip too",
+          "[fb_cache]") {
+    // After a flip wait times out, one fb is on screen and another is the
+    // target of a flip the kernel has not completed. RmFB'ing either takes
+    // the picture away.
+    FbCache c;
+    RmLog log;
+    for (uint32_t i = 1; i <= 6; ++i) c.insert(i, 100 + i);
+    // The two OLDEST entries are the on-screen and the pending fb.
+    c.trim(4, /*current_fb=*/101, log.fn(), /*pending_fb=*/102);
+    CHECK(c.size() == 4);
+    CHECK(log.removed == std::vector<uint32_t>{103, 104});
+    CHECK(c.find(1).has_value());
+    CHECK(c.find(2).has_value());
+}
+
+TEST_CASE("FbCache: drop_all_except keeps the pending flip's fb",
+          "[fb_cache]") {
+    FbCache c;
+    RmLog log;
+    for (uint32_t i = 1; i <= 4; ++i) c.insert(i, 100 + i);
+    c.drop_all_except(/*current_fb=*/102, log.fn(), /*pending_fb=*/104);
+    CHECK(log.removed == std::vector<uint32_t>{101, 103});
+    CHECK(c.size() == 2);
+    CHECK(c.find(2).has_value());
+    CHECK(c.find(4).has_value());
+}

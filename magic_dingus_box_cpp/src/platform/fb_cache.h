@@ -11,11 +11,12 @@
 //   1. An fb that leaves the cache is RmFB'd. The old trim erased the
 //      on-screen entry WITHOUT RmFB — the kernel object outlived its only
 //      reference, one leak per such eviction until the fd closed.
-//   2. The fb currently scanned out is never RmFB'd by a trim/recovery.
+//   2. The fb currently scanned out is never RmFB'd by a trim/recovery,
+//      and neither is the fb of a page flip still pending in the kernel.
 //      Removing a framebuffer that is on screen makes the kernel disable
 //      the CRTC: a black TV, not a leak. So a trim evicts the oldest
-//      entry that is NOT on screen (one always exists when size > max),
-//      and the exhaustion recovery keeps the current entry.
+//      entry that is neither (one always exists when size > max),
+//      and the exhaustion recovery keeps both.
 //
 // Eviction order is insertion order — "oldest" now means oldest, rather
 // than whatever bucket the hash map iterated first.
@@ -53,12 +54,15 @@ public:
         entries_.emplace_back(bo_handle, fb_id);
     }
 
-    // Evicts oldest-first down to max_entries, skipping current_fb_id.
+    // Evicts oldest-first down to max_entries, skipping current_fb_id and
+    // pending_fb_id (the fb of a page flip the kernel has not completed:
+    // it is about to be on screen, and RmFB would take it off again).
     void trim(std::size_t max_entries, uint32_t current_fb_id,
-              const RemoveFn& rm) {
+              const RemoveFn& rm, uint32_t pending_fb_id = 0) {
         auto it = entries_.begin();
         while (entries_.size() > max_entries && it != entries_.end()) {
-            if (it->second == current_fb_id) {
+            if (it->second == current_fb_id ||
+                (pending_fb_id != 0 && it->second == pending_fb_id)) {
                 ++it;
                 continue;
             }
@@ -67,11 +71,14 @@ public:
         }
     }
 
-    // Buffer-exhaustion recovery: drop everything but the on-screen fb.
-    // current_fb_id == 0 (nothing presented yet) drops everything.
-    void drop_all_except(uint32_t current_fb_id, const RemoveFn& rm) {
+    // Buffer-exhaustion recovery: drop everything but the on-screen fb
+    // and the fb of a pending page flip. An id of 0 (nothing presented
+    // yet / no flip pending) protects nothing.
+    void drop_all_except(uint32_t current_fb_id, const RemoveFn& rm,
+                         uint32_t pending_fb_id = 0) {
         for (auto it = entries_.begin(); it != entries_.end();) {
-            if (current_fb_id != 0 && it->second == current_fb_id) {
+            if ((current_fb_id != 0 && it->second == current_fb_id) ||
+                (pending_fb_id != 0 && it->second == pending_fb_id)) {
                 ++it;
                 continue;
             }
