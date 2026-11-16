@@ -1044,7 +1044,10 @@ int main(int /* argc */, char* /* argv */[]) {
 
     // CRT field rate (redraw gate, static CRT menu at 30 fps): the field
     // the last drawn frame showed, and when that frame's present returned
-    // (field_rate_skip_sleep paces the skipped iteration off it).
+    // (field_rate_skip_sleep paces the skipped iteration off it). A frame
+    // the presenter DROPPED is not a present and does not move it: nothing
+    // reached the screen at that time, so the Tube hold and the pacing
+    // monitor must keep measuring from the last frame that did.
     int64_t crt_last_drawn_field = 0;
     bool crt_field_rate_logged = false;
     auto last_present_done = std::chrono::steady_clock::now();
@@ -3241,13 +3244,27 @@ int main(int /* argc */, char* /* argv */[]) {
 
             // Present the GBM buffer to the display using page flip
             // Use shared lambda
-            redraw_dropped_frame = !present_frame();
-            last_present_done = std::chrono::steady_clock::now();
+            //
+            // false = the presenter dropped the frame (a page flip from an
+            // earlier frame was still pending when this frame's wait budget
+            // ended, or the kernel refused it): it is not on screen and will
+            // not be. Then the next iteration draws again
+            // (redraw_dropped_frame), last_present_done stays at the last
+            // frame that was shown — so a held Tube frame after it is not
+            // held again (the hold reads a long time since the last present)
+            // — and the Tube pacing monitor is not told of a present: the
+            // next frame that is shown reads as late, which it is. A flip
+            // that was requested but had not completed inside the budget
+            // (true) is a present: that frame will be shown.
+            const bool frame_presented = present_frame();
+            redraw_dropped_frame = !frame_presented;
+            if (frame_presented) last_present_done = std::chrono::steady_clock::now();
 
-            // The Tube engine's pacing: presents counted only while it draws;
-            // a per-minute report; the too-heavy toast once per look/class.
+            // The Tube engine's pacing: presents counted only while it draws
+            // (and only frames that were presented, see above); a per-minute
+            // report; the too-heavy toast once per look/class.
             if constexpr (app::kTubeRendererReady) {
-                if (tube_now.drawing) {
+                if (tube_now.drawing && frame_presented) {
                     tube_pacing.on_present(last_present_done, tube_now.cls,
                                            static_cast<int>(mode_info.vrefresh),
                                            state.video_active);
