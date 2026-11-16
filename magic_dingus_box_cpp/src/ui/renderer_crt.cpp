@@ -412,11 +412,14 @@ void Renderer::allow_tube_builds() {
     if (!tube_) return;
     tube_->allow_builds();
 #ifdef MDB_TUBE_PREVIEW
-    // Task 14: the first Tube frame builds and draws every program of the table.
+    // Task 14: the first Tube frames build and draw every program of the table,
+    // one decode path per frame (Shader, then Hardware where the context has it).
     const char* validate = std::getenv("MDB_TUBE_VALIDATE");
-    tube_validate_pending_ = validate != nullptr && std::string_view(validate) == "1";
-    if (tube_validate_pending_)
-        LOG_WARN("tube: MDB_TUBE_VALIDATE=1 (preview build): the first Tube frame validates every program");
+    if (validate != nullptr && std::string_view(validate) == "1") {
+        tube_validate_next_ = TubeValidate::Shader;
+        LOG_WARN("tube: MDB_TUBE_VALIDATE=1 (preview build): the first Tube frames validate every program, one "
+                 "decode path per frame");
+    }
 #endif
 }
 
@@ -445,14 +448,24 @@ bool Renderer::tube_composite(const app::AppState& state) {
     env.vbo = vbo_;
     env.ui_program = shader_program_;
 #ifdef MDB_TUBE_PREVIEW
-    if (tube_validate_pending_) {
-        tube_validate_pending_ = false;
-        // Shader decode first, so the programs left built are this context's own
-        // decode's (a scene-reading program built for the other decode is rebuilt).
-        tube_->validate_all_programs(env, tube_picture_, tube::SceneDecode::Shader);
-        if (scene_decode_for(tube_->caps()) == tube::SceneDecode::Hardware)
-            tube_->validate_all_programs(env, tube_picture_, tube::SceneDecode::Hardware);
+    // ONE pass per Tube frame (each rebuilds all 19 programs: seconds on a cold
+    // shader cache), so the main loop returns and pings the watchdog between them.
+    // Shader decode first, so the programs left built are this context's own
+    // decode's. A validation frame draws nothing else: false -> this frame's
+    // Enhanced composite.
+    if (tube_validate_next_ != TubeValidate::None) {
+        const bool shader = tube_validate_next_ == TubeValidate::Shader;
+        const tube::SceneDecode decode = shader ? tube::SceneDecode::Shader : tube::SceneDecode::Hardware;
+        tube_validate_next_ = shader && scene_decode_for(tube_->caps()) == tube::SceneDecode::Hardware
+                                  ? TubeValidate::Hardware
+                                  : TubeValidate::None;
+        const auto started = std::chrono::steady_clock::now();
+        tube_->validate_all_programs(env, tube_picture_, decode);
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        LOG_INFO("tube validate: {} pass took {:.0f} ms", shader ? "shader" : "hardware", ms);
         tube_driver_->gpu_lost();   // validation deleted the mask: the next frame carries it
+        return false;
     }
 #endif
     const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),

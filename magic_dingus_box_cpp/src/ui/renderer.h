@@ -496,14 +496,20 @@ private:
     //   tube_engine_was_tube_: the engine was Tube on the last Tube scene and no
     //     drawn frame since had another engine (Media Browser frames do not
     //     count) - the first Tube scene after another engine starts the driver.
-    std::unique_ptr<TubeRenderer> tube_;
+    //   tube_driver_ is declared BEFORE tube_ so it is destroyed AFTER it: the
+    //     TubeRenderer's mean sink holds a raw pointer to the driver.
     std::unique_ptr<tube::FrameDriver> tube_driver_;
+    std::unique_ptr<TubeRenderer> tube_;
     video::IRect tube_picture_{};
     bool tube_crt_native_ = false;
     double tube_now_ = 0.0;
     bool tube_scene_ = false;
     bool tube_engine_was_tube_ = false;
-    bool tube_validate_pending_ = false;   // preview builds: MDB_TUBE_VALIDATE=1
+    // Preview builds, MDB_TUBE_VALIDATE=1: the validation passes still owed, ONE
+    // per Tube frame so the loop pings the watchdog between them - Shader decode,
+    // then Hardware decode when the context has it. None: nothing owed (always in production).
+    enum class TubeValidate { None, Shader, Hardware };
+    TubeValidate tube_validate_next_ = TubeValidate::None;
     bool tube_gl_live_ = false;            // the tube touched GL since its last release_gl()
     bool tube_frame_wanted(const app::AppState& state) const;
     bool tube_composite(const app::AppState& state);

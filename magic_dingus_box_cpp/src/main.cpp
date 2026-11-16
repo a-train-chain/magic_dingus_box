@@ -2214,7 +2214,10 @@ int main(int /* argc */, char* /* argv */[]) {
             tube_now = ui_renderer.tube_status(state, tube_clock);
             tube_redraw_now = app::tube_redraw(tube_now.drawing, tube_now.cls, tube_now.moving,
                                                static_cast<int>(mode_info.vrefresh));
-            // The pacing evidence is about one look at one frame class.
+            // The pacing evidence is about one look at one frame class, while it
+            // draws: a new look or class restarts it, and so does the tube
+            // stopping (the Media Browser, another engine) - a heavy latch must
+            // not outlive the drawing it was about.
             if (tube_now.drawing &&
                 (!tube_pacing_armed || state.display_settings.tube != tube_pacing_setting ||
                  tube_now.cls != tube_pacing_class)) {
@@ -2222,6 +2225,9 @@ int main(int /* argc */, char* /* argv */[]) {
                 tube_pacing_setting = state.display_settings.tube;
                 tube_pacing_class = tube_now.cls;
                 tube_pacing_armed = true;
+            } else if (!tube_now.drawing && tube_pacing_armed) {
+                tube_pacing.reset();
+                tube_pacing_armed = false;
             }
             state.tube_render.drawing = tube_now.drawing;
             state.tube_render.frame_rate = tube::frames_per_second(tube_now.cls);
@@ -3228,9 +3234,13 @@ int main(int /* argc */, char* /* argv */[]) {
                                            static_cast<int>(mode_info.vrefresh),
                                            state.video_active);
                     if (auto report = tube_pacing.take_report(last_present_done)) {
-                        LOG_INFO("Tube pacing: class {}, {} presents ({} with video), {} late",
+                        // "late" counts every present, so a lean look drawn at
+                        // field rate on a still menu reads mostly late; the
+                        // video figure is the one the too-heavy toast judges.
+                        LOG_INFO("Tube pacing: class {}, {} presents ({} with video), {} late, "
+                                 "{} late with video",
                                  tube::frames_per_second(report->cls), report->presents,
-                                 report->video_presents, report->late);
+                                 report->video_presents, report->late, report->video_late);
                     }
                     if (tube_pacing.take_toast()) {
                         ui::Toast::show("This CRT look is too heavy for smooth video");
