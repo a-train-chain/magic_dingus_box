@@ -108,7 +108,48 @@ kiosk_status.json; pictures from the kiosk's own screenshot request.
       first minute after start-up 1682 / 131; the next three minutes logged no late present with video.
    Not done: a degauss pressed while a film is handed to Enhanced (no film was yielded in this window).
 
+10. WINDOW 8, the same day 12:55-14:26, with the page-flip fix (#33) and then the watchdog fix (#34) in the build
+   The box was restored afterwards as before (production kiosk PID 568422, NRestarts 0, binary 1e858f05771f6727,
+   settings.json identical). Builds, all from the aarch64 container, none installed under /opt:
+     A  #33 alone at 8b14d9a (engine off)                               sha256 2b0af2cfae69...
+     B  switch-on + #33 (local merge fb02727)                           sha256 928b1c0c9f88...
+     C  switch-on + #33 + #34 + the stall rule (local merge 973380d)    sha256 82d7068296f0...
+     D  as C with the per-minute rule = the code of 85ae838             sha256 7321d5e8f481...
+   a. THE PAGE-FLIP FIX, build A, saved engine Enhanced: three NES game launches and exits; after each exactly one
+      "Page flip recovered after 27 ms (28 once): 1 flip error(s), 1 shown by SetCrtc instead (last errno 22)";
+      0 ret=-16 lines, no restart.
+      A timed-out wait could not be forced: the validation run and 40 s of GPU load from a second GL program
+      (33% of presents late on builds with and without the fix) produced none. It then happened by itself (9c).
+   b. A DEGAUSS PRESSED WHILE A FILM IS HANDED TO ENHANCED, build B: degauss_requests 0 -> 1 with yielding true;
+      back on a normal channel 1.4 s later the capture shows a normal picture (no degauss), counter unchanged.
+   c. TEN-MINUTE SOAKS, build B, late presents per minute of ~1795 (class 30):
+        pvm         [13:13-13:15 the four containers restarted: 1738/125, 1173/475, 1429/280; twelve
+                    "Page flip recovered after 48-514 ms: N flip wait(s) timed out" (17 waits), 0 ret=-16]
+                    then 1 3 2 1 3 7
+        monitor     1 1 1 0 0 0 1 0, then [13:30-13:31, cause not found - Docker logged an exec error on one
+                    container, nothing restarted, no flip waited over 100 ms: 1728/102, 1449/557], then 9
+        trinitron   9 9 11 14 14 13 10 16 12 14
+        tv          6 7 10 12 16 10 7 10 9 3
+        everything  6 3 3 7 12 3 12 6 7 8 4
+        pvm again, build C (14:05-14:16):  9 3 5 5 6 7 2 1 1 2
+      0 ret=-16 lines in all of it. The seventeen timed-out flip waits each recovered; on the old presenter the
+      first would have started the permanent failure loop of section 8b.
+      too_heavy latched twice more in this run, both false: PVM during the container restart (more than half
+      late for 30 s) and Monitor in the unexplained minute (the same, with no interval over 100 ms). That is why
+      the rule changed twice more: a present interval over 100 ms is a stall and clears the evidence (80b6ad7),
+      and the fast rule is now three consecutive full minutes each more than half late (a7c1a15); the slow rule
+      (ten consecutive minutes each over 5%) stands.
+   d. JOINT CHECK, build D, TV look, 14:16-14:25:
+      - no line matching "Render loop: an iteration took", "Slow on the render loop", "pipeline .* took" or
+        "wedged" (nor in the PVM soak on build C);
+      - ten channel changes at 3.5 s spacing over eight playlists (seven film channels: each handed to Enhanced);
+      - an NES game and back: one "Page flip recovered after 27 ms ... errno 22", video resumed, no restart;
+      - the containers restarted at 14:20:01: 1588/387, then 916/669 (the loop at about 15 fps for that minute),
+        two flip waits timed out and recovered (96 and 113 ms), then 1793/14, 1793/16, 1794/13;
+        too_heavy stayed false throughout (the per-minute rule), 0 ret=-16.
+      The 916-present minute is the worst post-game minute measured today; the test kiosk had 193 MB in swap
+      at the time. Not attributed to any change; asked of the #34 session.
+
 NOT COVERED: a real Pi 4B (none was on the network: a sweep found only this Pi 5); 50, 90, 100, 120 and 144 Hz
-displays; a degauss pressed while a film is handed to Enhanced; ten-minute pacing for the looks other than
-Arcade; an OTA install and rollback on real hardware of either board; the shipping binary installed under /opt
+displays; an OTA install and rollback on real hardware of either board; the shipping binary installed under /opt
 (it has only run from a home directory as a transient unit).
