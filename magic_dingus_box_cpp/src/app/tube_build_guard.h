@@ -31,14 +31,17 @@ public:
     // A tripped guard never writes: the marker and tripped_program() stay as they were
     // (one WARN). Otherwise writes, flushes and closes the marker before returning. A write error logs a
     // WARN and continues (a build with no marker is the pre-guard behaviour); a file it
-    // opened but could not finish writing is removed, so a partial marker never trips the
-    // next start. This is
+    // opened but could not finish writing is removed (and the guard disarmed), so a
+    // partial marker never trips the next start. An open that fails (out of file
+    // descriptors, a directory at the path) touches nothing and leaves the guard as it
+    // was: armed, end() still removes the marker an earlier begin() wrote. This is
     // a file write on the main thread, a rare bounded exception to the no-writes rule:
     // /dev/shm is RAM, so it never touches the SD card.
     void begin(std::string_view programs);
 
-    // Removes the marker only if this instance's begin() wrote it; a tripped guard or
-    // one that never began removes nothing.
+    // Removes the marker only if this instance's begin() wrote it and the path is still
+    // that file (same device and inode); a tripped guard, one that never began, or a
+    // path now holding a directory or someone else's file removes nothing.
     void end();
 
 private:
@@ -46,6 +49,10 @@ private:
     std::string program_;
     bool tripped_ = false;
     bool armed_ = false;
+    // The file begin() last wrote (stat's device and inode), so end() never removes a
+    // file or directory that replaced it. written_known_ false: only "a regular file".
+    unsigned long long written_dev_ = 0, written_ino_ = 0;
+    bool written_known_ = false;
 };
 
 }  // namespace app

@@ -4,6 +4,7 @@
 #include <spdlog/spdlog.h>
 
 #include <sys/resource.h>
+#include <unistd.h>
 
 #include <csignal>
 #include <filesystem>
@@ -163,5 +164,62 @@ TEST_CASE("tube build guard: a marker whose write fails after the open is remove
     REQUIRE_FALSE(app::TubeBuildGuard(path).tripped());   // the next start is clean
     g.end();                                             // and end() has nothing to do
     REQUIRE_FALSE(std::filesystem::exists(path));
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("tube build guard: a re-open that fails keeps the marker this instance wrote", "[tube]") {
+    // Armed, then begin() is called again (the undrawn programs changed) and the open
+    // fails - the process is out of file descriptors. The marker on disk is still the
+    // one this instance wrote, so end() must still remove it: otherwise the next start
+    // reads it as a shader hang and keeps Tube off until a reboot. RLIMIT_NOFILE set to
+    // the lowest free descriptor makes the next open fail with EMFILE, on macOS and
+    // Linux alike, and nothing else is touched.
+    LogSilence quiet;
+    const auto path = temp_marker("mdb-tube-build-test-emfile");
+    std::filesystem::remove(path);
+    app::TubeBuildGuard g(path);
+    REQUIRE_FALSE(g.tripped());
+    g.begin("sig_lean out_lean");
+    REQUIRE(read_all(path) == "sig_lean out_lean");
+    rlimit saved{};
+    REQUIRE(getrlimit(RLIMIT_NOFILE, &saved) == 0);
+    const int lowest_free = dup(0);
+    REQUIRE(lowest_free >= 0);
+    close(lowest_free);
+    rlimit none_left = saved;
+    none_left.rlim_cur = static_cast<rlim_t>(lowest_free);
+    REQUIRE(setrlimit(RLIMIT_NOFILE, &none_left) == 0);
+    REQUIRE_NOTHROW(g.begin("sig_rich out_rich"));
+    REQUIRE(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+    REQUIRE(quiet.out.str().find("could not write") != std::string::npos);
+    REQUIRE(read_all(path) == "sig_lean out_lean");      // untouched: the open never happened
+    g.end();
+    REQUIRE_FALSE(std::filesystem::exists(path));        // ours, so removed
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("tube build guard: a re-open that fails on something not ours removes nothing", "[tube]") {
+    // Armed, then someone replaces the marker with a directory, so the re-open fails.
+    // What is at the path now was not written by this instance: end() leaves it (it
+    // removes only the very file this instance wrote, never a look-alike).
+    LogSilence quiet;
+    const auto path = temp_marker("mdb-tube-build-test-replaced");
+    std::filesystem::remove_all(path);
+    app::TubeBuildGuard g(path);
+    g.begin("glass");
+    std::filesystem::remove(path);
+    std::filesystem::create_directory(path);
+    REQUIRE_NOTHROW(g.begin("glass sig_lean"));
+    REQUIRE(quiet.out.str().find("could not write") != std::string::npos);
+    REQUIRE_NOTHROW(g.end());
+    REQUIRE(std::filesystem::is_directory(path));
+    std::filesystem::remove_all(path);
+    // The same with a regular file someone else wrote in place of ours.
+    app::TubeBuildGuard h(path);
+    h.begin("glass");
+    std::filesystem::remove(path);
+    write_all(path, "someone else");
+    h.end();
+    REQUIRE(read_all(path) == "someone else");
     std::filesystem::remove(path);
 }

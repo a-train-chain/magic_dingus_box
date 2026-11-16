@@ -5,6 +5,8 @@
 #include <iterator>
 #include <system_error>
 
+#include <sys/stat.h>
+
 #include "../utils/logger.h"
 
 namespace app {
@@ -60,14 +62,26 @@ void TubeBuildGuard::begin(std::string_view programs) {
         LOG_WARN("tube build guard: could not write {}; building without a marker", path_);
         // Opened (so created or truncated by us) but not fully written: a partial file
         // would read as a hang at the next start, and end() would not remove it (not
-        // armed) - Tube off until a reboot for a write error. Remove it now. A file we
-        // never opened is not ours to remove.
+        // armed) - Tube off until a reboot for a write error. Remove it now, and with it
+        // anything this instance wrote before (the open truncated it): disarm.
+        // A failed OPEN touched nothing: whatever an earlier begin() wrote is still
+        // there and still ours, so armed_ and the recorded file stay as they were and
+        // end() still removes it. A file we never opened is not ours to remove.
         if (opened) {
             std::error_code ec;
             std::filesystem::remove(path_, ec);
+            armed_ = false;
         }
-        armed_ = false;
         return;
+    }
+    // Which file this is, so end() removes this file and never one that replaced it.
+    struct stat st{};
+    if (::stat(path_.c_str(), &st) == 0) {
+        written_dev_ = static_cast<unsigned long long>(st.st_dev);
+        written_ino_ = static_cast<unsigned long long>(st.st_ino);
+        written_known_ = true;
+    } else {
+        written_known_ = false;
     }
     armed_ = true;
 }
@@ -76,6 +90,13 @@ void TubeBuildGuard::end() {
     // Only a marker this instance wrote is ours to remove.
     if (!armed_) return;
     armed_ = false;
+    // The path must still be a regular file and, when begin() could record it, the very
+    // file begin() wrote: a directory or someone else's file put there since is left.
+    struct stat st{};
+    if (::lstat(path_.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return;
+    if (written_known_ && (static_cast<unsigned long long>(st.st_dev) != written_dev_ ||
+                           static_cast<unsigned long long>(st.st_ino) != written_ino_))
+        return;
     std::error_code ec;
     std::filesystem::remove(path_, ec);
 }
