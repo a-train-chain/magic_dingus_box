@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "tube/tube_derived.h"
 #include "tube/tube_driver.h"
 #include "tube/tube_programs.h"
 #include "tube/tube_shader_assembly.h"
@@ -402,10 +403,15 @@ TEST_CASE("tube shaders: written out for the validator when asked", "[tube][tube
 // the driver uploads (it has no power-off animation yet, and no look moves the band,
 // purity, tracking or flagging rows): the mid-run set with power 0.6, spot 0.3,
 // warmupGain 0.7 and those character blocks on, so a comparison reaches every branch.
-// Each file: every TubeUniforms field (`tint` as three values), the renderer's own
-// uniforms at this picture (tube_renderer_passes.cpp: uMaskSize, uSceneMap,
-// uSceneClamp; uOrigin depends on the program's target and the tool derives it) and
-// the directives @fb, @pic and @mask (the look's mask tile).
+// Each file: every TubeUniforms field (`tint` as three values), every TubeDerived
+// field (tube_derived.h, as the renderer works them out this frame), the renderer's
+// own uniforms at this picture, under their current names and under the names the
+// programs had before the derived values (so a file drives the old source and the new
+// one alike): uSceneMap, uSceneClamp, uMaskSize, uSigSize, uPicSize/uDstSize and
+// uPicTexel/uDstTexel (the quarter pass), uDir, uSigma, uRadius, uWeights and
+// uInvWeightSum (the horizontal glow blur); uOrigin depends on the program's target
+// and the tool derives it. Directives: @fb, @pic, @mask (the look's mask tile), and
+// @sig, @lines, @quarter (the plan's signal, lines and quarter target sizes).
 TEST_CASE("tube shaders: real uniform sets written out when asked", "[tube][tube_shaders]") {
     const char* dir = std::getenv("MDB_WRITE_TUBE_UNIFORMS");
     if (dir == nullptr || *dir == '\0') return;
@@ -438,6 +444,7 @@ TEST_CASE("tube shaders: real uniform sets written out when asked", "[tube][tube
     constexpr int kFbW = 1920, kFbH = 1080, kPicX = 240, kPicY = 0, kPicW = 1440, kPicH = 1080;
     const Picture picture{kPicW, kPicH, false};
     const auto write = [&](const std::string& path, const TU& u, const DriverFrame& first) {
+        const TargetSizes& t = first.sizes;
         std::ofstream out(path);
         out.precision(9);
         out << "# " << path.substr(path.find_last_of('/') + 1) << ": output " << program_info(first.plan.output).name
@@ -447,8 +454,19 @@ TEST_CASE("tube shaders: real uniform sets written out when asked", "[tube][tube
             static constexpr char kHex[] = "0123456789abcdef";
             out << kHex[b >> 4] << kHex[b & 15];
         }
-        out << "\n";
+        out << "\n@sig=" << t.signal_w << "," << t.signal_h << "\n@lines=" << t.lines_w << "," << t.lines_h
+            << "\n@quarter=" << t.quarter_w << "," << t.quarter_h << "\n";
         for (const auto& [name, member] : kFields) out << name << "=" << u.*member << "\n";
+        const TubeDerived d = tube_derived(u, DerivedSizes{first.mask.w, first.mask.h, t.signal_w, t.signal_h});
+        for (const DerivedField& f : kDerivedFields) out << f.name << "=" << d.*(f.member) << "\n";
+        const BlurWeights b = blur_weights(first.glow_sigma);
+        out << "uSigSize=" << t.signal_w << "," << t.signal_h << "\nuPicSize=" << kPicW << "," << kPicH
+            << "\nuDstSize=" << t.quarter_w << "," << t.quarter_h << "\nuPicTexel=" << texel_size(kPicW, kPicH)[0] << ","
+            << texel_size(kPicW, kPicH)[1] << "\nuDstTexel=" << texel_size(t.quarter_w, t.quarter_h)[0] << ","
+            << texel_size(t.quarter_w, t.quarter_h)[1] << "\nuDir=1,0\nuSigma=" << b.sigma << "\nuRadius=" << b.radius
+            << "\nuInvWeightSum=" << b.inv_sum << "\nuWeights=";
+        for (std::size_t k = 0; k < b.weight.size(); ++k) out << (k ? "," : "") << b.weight[k];
+        out << "\n";
         out << "tint=" << u.tint[0] << "," << u.tint[1] << "," << u.tint[2] << "\n";
         const float W = kFbW, H = kFbH, x = kPicX, y = kPicY, w = kPicW, h = kPicH;   // scene_uniforms()
         out << "uMaskSize=" << first.mask.w << "," << first.mask.h << "\nuSceneMap=" << x / W << "," << (H - y) / H

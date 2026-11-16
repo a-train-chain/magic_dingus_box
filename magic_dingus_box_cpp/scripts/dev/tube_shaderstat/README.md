@@ -25,9 +25,15 @@ outside the tool's folder).
   over, phases non-zero, the limiter fed), `<look>.degauss.txt` (a degauss under way)
   and `<look>.synthetic.txt` (NOT a driver frame: power-off values and the character
   blocks no look uses, so a comparison reaches every branch). Format: `name=v[,v...]`
-  per line, `#` comments, and three directives: `@fb=W,H` (the framebuffer and scene
-  texture), `@pic=X,Y,W,H` (the picture in it, top-down) and `@mask=W,H,<hex RGB>`
-  (the look's mask tile).
+  per line, `#` comments, and directives: `@fb=W,H` (the framebuffer and scene
+  texture), `@pic=X,Y,W,H` (the picture in it, top-down), `@mask=W,H,<hex RGB>`
+  (the look's mask tile) and `@sig`, `@lines`, `@quarter` `=W,H` (the plan's signal,
+  lines and quarter target sizes). Each file carries every `TubeUniforms` field, every
+  `TubeDerived` field (`tube_derived.h`) and the renderer's own uniforms under both
+  their current names and the names the programs had before the derived values
+  (`uSigSize`, `uPicSize`, `uDstSize`, `uSigma`, `uMaskSize`), so one file drives an
+  old and a new source alike. A float array uniform (`uWeights`) takes its values
+  comma-separated.
 
 ## What it reproduces
 
@@ -37,7 +43,11 @@ renderer's unit for every sampler the program declares (`ui` SRGB8_ALPHA8 sample
 DECODE when the source has `SCENE_HW_DECODE`, else RGBA8; `glowTex`, `prev`, `quarter`
 SRGB8_ALPHA8; `signalTex`, `linesTex` RGBA16F; `glassTex`, `maskTex` RGBA8, the mask
 NEAREST + REPEAT; units as `kSamplerUnits` in `tube_renderer_internal.h`) and draws
-into the program's own target as `tube_renderer_passes.cpp` does: an `OUT_HISTORY`
+into the program's own target as `tube_renderer_passes.cpp` does. The pass is told
+from the source: a signal program (`SIG_*`) draws into an RGBA16F `@sig` target,
+lines into RGBA16F `@lines`, quarter and blur into SRGB8_ALPHA8 `@quarter` (blur's
+`src` an SRGB8_ALPHA8 quarter texture), all whole-target at viewport 0,0 and
+FRAMEBUFFER_SRGB on; copy_encode to the screen. For the output programs: an `OUT_HISTORY`
 program into a picture-sized SRGB8_ALPHA8 target with FRAMEBUFFER_SRGB on and
 `uOrigin` 0,0; any other into a framebuffer-sized RGBA8 target, cleared, at the
 picture's viewport with `uOrigin` its corner. (The kiosk's screen is XRGB8888; the
@@ -71,7 +81,8 @@ Prints, per program, the fragment shader's statistics from Mesa's shaderdb line:
   the most repeatable figure), never as the kiosk's GPU time.
 - `--compare` renders both fragment programs with identical inputs, once per uniform
   file (one compile each), reads both back and prints the largest per-channel
-  difference (in 1/255 steps) and how many pixels differ by more than 1/255. Exit 3
+  difference (in 1/255 steps; an RGBA16F target is read as floats and the difference
+  scaled by 255) and how many pixels differ by more than 1/255. Exit 3
   when any pixel does. `--float` renders into RGBA32F instead (a finer comparison; a
   different render-target format, so not the kiosk's variant and its statistics are
   not the kiosk's).

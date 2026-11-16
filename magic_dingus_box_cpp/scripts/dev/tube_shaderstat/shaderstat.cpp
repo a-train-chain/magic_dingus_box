@@ -72,6 +72,9 @@ struct Inputs {
     std::map<std::string, std::vector<float>> values;
     int fb_w = 1440, fb_h = 1080;
     int pic_x = 0, pic_y = 0, pic_w = 1440, pic_h = 1080;
+    int sig_w = 720, sig_h = 1080;       // @sig: the signal target (also what lines and outputs read)
+    int lines_w = 720, lines_h = 270;    // @lines: the lines target
+    int quarter_w = 360, quarter_h = 270;   // @quarter: the quarter and glow targets
     int mask_w = 3, mask_h = 1;
     std::vector<std::uint8_t> mask_rgb{255, 64, 64, 64, 255, 64, 64, 64, 255};
 };
@@ -108,6 +111,13 @@ void read_inputs(const std::string& path, Inputs& in) {
             in.pic_y = static_cast<int>(v[1]);
             in.pic_w = static_cast<int>(v[2]);
             in.pic_h = static_cast<int>(v[3]);
+        } else if (name == "@sig" || name == "@lines" || name == "@quarter") {
+            const auto v = parse_floats(value);
+            if (v.size() != 2 || v[0] < 1 || v[1] < 1) die(2, name + " needs W,H");
+            int& w = name == "@sig" ? in.sig_w : name == "@lines" ? in.lines_w : in.quarter_w;
+            int& h = name == "@sig" ? in.sig_h : name == "@lines" ? in.lines_h : in.quarter_h;
+            w = static_cast<int>(v[0]);
+            h = static_cast<int>(v[1]);
         } else if (name == "@mask") {
             std::stringstream ss(value);
             std::string w, h, hex;
@@ -365,9 +375,15 @@ struct Setup {
                                  // a different render-target format, so NOT the kiosk's variant)
 };
 
+// Which pass a fragment program draws, from its source: its target follows
+// (tube_renderer.cpp ensure_targets, tube_renderer_passes.cpp draw_frame).
+enum class Kind { output, signal, lines, quarter, blur, copy_encode };
+
 struct Program {
     std::string name;
     GLuint prog = 0;
+    Kind kind = Kind::output;
+    GLenum fmt = GL_RGBA8;            // the target's internal format
     bool history = false, hw_decode = false;
     GLuint fbo = 0, target = 0;
     int tw = 0, th = 0;               // the target's size
@@ -410,6 +426,7 @@ void set_uniforms(Program& p, const Setup& s) {
         GLenum type = 0;
         glGetActiveUniform(p.prog, static_cast<GLuint>(i), sizeof name, nullptr, &size, &type, name);
         const GLint loc = glGetUniformLocation(p.prog, name);
+        if (char* bracket = std::strstr(name, "[0]")) *bracket = '\0';   // an array: by its name
         if (type == GL_SAMPLER_2D) {
             const int unit = sampler_unit(name);
             if (unit < 0) die(1, std::string("unknown sampler ") + name + " (not in the renderer's unit table)");
@@ -429,6 +446,12 @@ void set_uniforms(Program& p, const Setup& s) {
         const std::size_t need = type == GL_FLOAT ? 1 : type == GL_FLOAT_VEC2 ? 2 : type == GL_FLOAT_VEC3 ? 3
                                  : type == GL_FLOAT_VEC4 ? 4 : type == GL_INT ? 1 : 0;
         if (need == 0) die(1, std::string("uniform ") + name + " has a type this tool does not set");
+        if (size > 1) {   // a float array: every element from the file
+            if (type != GL_FLOAT || v->size() != static_cast<std::size_t>(size))
+                die(2, std::string("uniform ") + name + " needs " + std::to_string(size) + " values");
+            glUniform1fv(loc, size, v->data());
+            continue;
+        }
         if (v->size() != need) die(2, std::string("uniform ") + name + " needs " + std::to_string(need) + " values");
         const float* d = v->data();
         switch (type) {
@@ -449,7 +472,17 @@ void set_uniforms(Program& p, const Setup& s) {
 
 void make_target(Program& p, const Setup& s) {
     const Inputs& in = s.in;
-    if (p.history) {
+    if (p.kind != Kind::output && p.kind != Kind::copy_encode) {
+        // A whole intermediate target, viewport (0,0): the signal and lines RGBA16F, the
+        // quarter and glow SRGB8_ALPHA8.
+        p.tw = p.kind == Kind::signal ? in.sig_w : p.kind == Kind::lines ? in.lines_w : in.quarter_w;
+        p.th = p.kind == Kind::signal ? in.sig_h : p.kind == Kind::lines ? in.lines_h : in.quarter_h;
+        p.vx = p.vy = 0;
+        p.vw = p.tw;
+        p.vh = p.th;
+        p.fmt = s.float_target ? GL_RGBA32F
+                : (p.kind == Kind::signal || p.kind == Kind::lines) ? GL_RGBA16F : GL_SRGB8_ALPHA8;
+    } else if (p.history) {
         // The history: picture-sized SRGB8_ALPHA8, viewport (0,0), uOrigin (0,0).
         p.tw = in.pic_w;
         p.th = in.pic_h;
@@ -461,9 +494,12 @@ void make_target(Program& p, const Setup& s) {
         p.vx = in.pic_x;
         p.vy = in.fb_h - in.pic_y - in.pic_h;
     }
-    p.vw = in.pic_w;
-    p.vh = in.pic_h;
-    const GLenum fmt = s.float_target ? GL_RGBA32F : p.history ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+    if (p.kind == Kind::output || p.kind == Kind::copy_encode) {
+        p.vw = in.pic_w;
+        p.vh = in.pic_h;
+        p.fmt = s.float_target ? GL_RGBA32F : p.history ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+    }
+    const GLenum fmt = p.fmt;
     glGenTextures(1, &p.target);
     glBindTexture(GL_TEXTURE_2D, p.target);
     glTexStorage2D(GL_TEXTURE_2D, 1, fmt, p.tw, p.th);
@@ -473,8 +509,7 @@ void make_target(Program& p, const Setup& s) {
     const GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (st != GL_FRAMEBUFFER_COMPLETE) {
         char buf[128];
-        std::snprintf(buf, sizeof buf, "framebuffer incomplete (0x%x) for %s %dx%d", st,
-                      s.float_target ? "RGBA32F" : p.history ? "SRGB8_ALPHA8" : "RGBA8", p.tw, p.th);
+        std::snprintf(buf, sizeof buf, "framebuffer incomplete (0x%x) for format 0x%x %dx%d", st, fmt, p.tw, p.th);
         die(1, buf);
     }
     glClearColor(0, 0, 0, 1);
@@ -487,15 +522,18 @@ void make_inputs(Program& p, const Setup& s) {
         const auto it = in.values.find("lines");
         return it == in.values.end() ? 240 : std::max(1, static_cast<int>(std::ceil(it->second[0])));
     };
-    const int half_w = (in.pic_w + 1) / 2;
     // The scene: framebuffer-sized; SRGB8_ALPHA8 sampled with DECODE on the hardware path.
     p.tex[0] = make_tex(p.hw_decode ? GL_SRGB8_ALPHA8 : GL_RGBA8, in.fb_w, in.fb_h, 0, 1.0f);
     if (p.hw_decode) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SRGB_DECODE_EXT, GL_DECODE_EXT);
     p.tex[1] = make_tex(GL_SRGB8_ALPHA8, (in.pic_w + 3) / 4, (in.pic_h + 3) / 4, 1, 0.6f);   // glow_out
     p.tex[2] = make_tex(GL_SRGB8_ALPHA8, in.pic_w, in.pic_h, 2, 0.8f);                     // the previous history
-    p.tex[3] = make_tex(GL_RGBA16F, half_w, lines_of(), 3, 1.2f);                          // lines (half width)
-    p.tex[4] = make_tex(GL_SRGB8_ALPHA8, (in.pic_w + 3) / 4, (in.pic_h + 3) / 4, 4, 1.0f); // quarter
-    p.tex[5] = make_tex(GL_RGBA16F, half_w, in.pic_h, 6, 1.2f);                            // signal (half width)
+    p.tex[3] = make_tex(GL_RGBA16F, in.lines_w, lines_of(), 3, 1.2f);                      // lines
+    p.tex[4] = make_tex(GL_SRGB8_ALPHA8, in.quarter_w, in.quarter_h, 4, 1.0f);             // quarter
+    p.tex[5] = make_tex(GL_RGBA16F, in.sig_w, in.sig_h, 6, 1.2f);                          // signal
+    if (p.kind == Kind::blur)        // `src` (unit 0): the quarter picture, or the H pass's result
+        p.tex[0] = make_tex(GL_SRGB8_ALPHA8, in.quarter_w, in.quarter_h, 7, 1.0f);
+    if (p.kind == Kind::copy_encode)  // `src` (unit 0): the history just written
+        p.tex[0] = make_tex(GL_SRGB8_ALPHA8, in.pic_w, in.pic_h, 8, 1.0f);
     p.tex[6] = make_glass(in.pic_w, in.pic_h);
     p.tex[7] = make_mask(in);
 }
@@ -526,9 +564,10 @@ GLuint quad_vao() {
 void draw(const Program& p, bool srgb_switch) {
     glBindFramebuffer(GL_FRAMEBUFFER, p.fbo);
     if (srgb_switch) {
-        if (p.history) glEnable(GL_FRAMEBUFFER_SRGB_EXT); else glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+        // On for every pass into a target, off for the default framebuffer (the renderer's rule).
+        if (p.fmt == GL_RGBA8) glDisable(GL_FRAMEBUFFER_SRGB_EXT); else glEnable(GL_FRAMEBUFFER_SRGB_EXT);
     }
-    if (!p.history) {   // clear_bars(): the whole framebuffer, then the picture's viewport
+    if (p.fmt == GL_RGBA8) {   // clear_bars(): the whole framebuffer, then the picture's viewport
         glViewport(0, 0, p.tw, p.th);
         glClear(GL_COLOR_BUFFER_BIT);
     }
@@ -552,6 +591,12 @@ Program build(const std::string& vs, const std::string& fs_path, const Setup& s,
     p.name = fs_path.substr(fs_path.find_last_of('/') + 1);
     const std::string fs = read_file(fs_path);
     p.history = has_define(fs, "OUT_HISTORY");
+    p.kind = fs.find("#define OUT_") != std::string::npos   ? Kind::output
+             : fs.find("#define SIG_") != std::string::npos ? Kind::signal
+             : fs.find("uniform vec2 uDir") != std::string::npos ? Kind::blur
+             : fs.find("uniform ivec2 uSrcOffset") != std::string::npos ? Kind::copy_encode
+             : fs.find("uniform sampler2D signalTex") != std::string::npos ? Kind::lines
+             : Kind::quarter;
     p.hw_decode = has_define(fs, "SCENE_HW_DECODE");
     make_target(p, s);
     make_inputs(p, s);
@@ -569,7 +614,10 @@ Program build(const std::string& vs, const std::string& fs_path, const Setup& s,
     return p;
 }
 
-std::vector<float> read_back(const Program& p, bool float_target) {
+bool float_format(GLenum f) { return f == GL_RGBA16F || f == GL_RGBA32F; }
+
+std::vector<float> read_back(const Program& p) {
+    const bool float_target = float_format(p.fmt);
     glBindFramebuffer(GL_FRAMEBUFFER, p.fbo);
     std::vector<float> out(static_cast<std::size_t>(p.vw) * p.vh * 4);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -630,9 +678,8 @@ int main(int argc, char** argv) {
     quad_vao();
     if (!compare) {
         Program p = build(vs, files[1], s, srgb_switch);
-        std::printf("%s: %s | target %s %dx%d viewport %d,%d %dx%d\n", p.name.c_str(), p.stats.compact().c_str(),
-                    s.float_target ? "RGBA32F" : p.history ? "SRGB8_ALPHA8" : "RGBA8", p.tw, p.th, p.vx, p.vy, p.vw,
-                    p.vh);
+        std::printf("%s: %s | target 0x%x %dx%d viewport %d,%d %dx%d\n", p.name.c_str(), p.stats.compact().c_str(),
+                    p.fmt, p.tw, p.th, p.vx, p.vy, p.vw, p.vh);
         if (time_frames > 0) {
             using Clock = std::chrono::steady_clock;
             std::vector<double> ms;
@@ -654,7 +701,7 @@ int main(int argc, char** argv) {
     } else {
         Program a = build(vs, files[1], s, srgb_switch);
         Program b = build(vs, files[2], s, srgb_switch);
-        if (a.history != b.history || a.vw != b.vw || a.vh != b.vh) die(1, "the two programs draw into different targets");
+        if (a.fmt != b.fmt || a.vw != b.vw || a.vh != b.vh) die(1, "the two programs draw into different targets");
         std::printf("A %s: %s\nB %s: %s\n", a.name.c_str(), a.stats.compact().c_str(), b.name.c_str(),
                     b.stats.compact().c_str());
         long worst = 0;
@@ -671,11 +718,12 @@ int main(int argc, char** argv) {
                 set_uniforms(*q, sk);
                 draw(*q, srgb_switch);
             }
-            const std::vector<float> ra = read_back(a, s.float_target);
-            const std::vector<float> rb = read_back(b, s.float_target);
+            const std::vector<float> ra = read_back(a);
+            const std::vector<float> rb = read_back(b);
+            const bool fl = float_format(a.fmt);
             float max_diff[3] = {0, 0, 0};
             long over = 0;
-            const float tol = s.float_target ? 1.0f / 255.0f : 1.0f;
+            const float tol = fl ? 1.0f / 255.0f : 1.0f;
             for (std::size_t i = 0; i < ra.size(); i += 4) {
                 bool bad = false;
                 for (int c = 0; c < 3; ++c) {
@@ -686,11 +734,12 @@ int main(int argc, char** argv) {
                 over += bad;
             }
             worst = std::max(worst, over);
-            const float unit = s.float_target ? 255.0f : 1.0f;   // reported in 1/255 steps
+            const float unit = fl ? 255.0f : 1.0f;   // reported in 1/255 steps
             const std::string label = uniforms.empty() ? "(no uniform file)" : uniforms[k];
             std::printf("compare %s %s: max |A-B| R %.3f G %.3f B %.3f (1/255 steps); %ld of %ld pixels differ by more "
                         "than 1/255\n",
-                        s.float_target ? "RGBA32F" : a.history ? "SRGB8_ALPHA8" : "RGBA8", label.c_str(),
+                        a.fmt == GL_RGBA32F ? "RGBA32F" : a.fmt == GL_RGBA16F ? "RGBA16F"
+                        : a.fmt == GL_SRGB8_ALPHA8 ? "SRGB8_ALPHA8" : "RGBA8", label.c_str(),
                         max_diff[0] * unit, max_diff[1] * unit, max_diff[2] * unit, over,
                         static_cast<long>(ra.size() / 4));
         }
