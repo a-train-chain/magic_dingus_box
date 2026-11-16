@@ -46,8 +46,12 @@ inline constexpr double kLeanBudgetMs = 11.8;
 //   23.47 ms  tv -glow, window 2 (sec. 4) 25 late of 1780  98.6 %
 //   24.4-24.5 TV, Everything, window 4    draw at 20 fps (203 and 205 frames in 10 s)
 // 23.1 sits between the heaviest setting measured to hold 99 % and the ~23.5 ms one that
-// did not, and keeps the looks that held on the right side with the prediction's own
-// error (at most ~0.2 ms, see kPassCosts below).
+// did not. The prediction's own error is up to 0.2 ms (kPassCosts below), which is MORE
+// than Arcade's predicted margin: Arcade predicts 22.91, 0.19 under. Arcade is the
+// fragile one: a rise of more than 0.19 ms in any single price of its plan flips it to
+// dropping afterglow (history 2.49 -> 2.69, the raster-only output into the history
+// 12.54 -> 12.74, guns + chroma at half width 5.26 -> 5.46, lines 1.07 -> 1.27, quarter
+// 0.64 -> 0.84). Its own measured passes total 22.94, under the budget.
 inline constexpr double kRichBudgetMs = 23.1;
 inline constexpr bool kRichBeamCheap = false;   // the acceptance ladder may flip it
 
@@ -82,16 +86,23 @@ struct PassCosts {
     double probe;
 };
 
-// Signal at half width / at full width, from an earlier round (Task 1b's table: a
-// signal program measured at both widths). Used ONLY to derive the widths window 4 did
-// not measure.
-inline constexpr double kHalfWidthFactor = 0.56;
+// Signal at half width / at full width: the one program measured at both widths in one
+// run, guns at half width 4.03 against 7.60 at full width (the TV ladder, "+ chroma bleed 0"
+// and "+ true raster 0", docs/engineering/measurements/2026-11-15-tube-programs-pi5.txt
+// section 6, binary 4ad8223). Used ONLY to derive the widths no window measured. (It
+// replaces 0.56, which was the plan's round-2 PREDICTION, never a measurement.)
+inline constexpr double kHalfWidthFactor = 4.03 / 7.60;
 
 namespace detail {
 // window 4: sharp at full width (PVM 5.24, Monitor 5.23); guns at half width (Trinitron
 // 3.90; tv -chroma 3.89, everything -chroma 3.84); guns + chroma at half width (TV 5.28,
 // Arcade 5.25, Everything 5.25; the -afterglow rows 5.23, 5.22): 5.26, their mean.
 inline constexpr double kSigSharpFull = 5.24, kSigGunsHalf = 3.90, kSigGunsChromaHalf = 5.26;
+// Guns at full width: TV with chroma bleed 0 and true raster 0 (convergence 33 and
+// sharpness 40 on: sig_guns), section 6 of 2026-11-15-tube-programs-pi5.txt, binary
+// 4ad8223. That run read 4.03 at half width where window 4 reads 3.90, so this is likely
+// ~3 % high for today's binary; kept as measured.
+inline constexpr double kSigGunsFull = 7.60;
 // What chroma bleed adds to the signal at half width: guns + chroma less guns (derived).
 inline constexpr double kChromaHalf = kSigGunsChromaHalf - kSigGunsHalf;
 }  // namespace detail
@@ -99,25 +110,27 @@ inline constexpr double kChromaHalf = kSigGunsChromaHalf - kSigGunsHalf;
 inline constexpr PassCosts kPassCosts{
     0.64,   // quarter: 0.64 on five looks, 0.65 on TV
     1.64,   // glow_blur: window 2 (binary 1f8cdc4, the full-size chain, unchanged since): Monitor at
-            // GLOW SIZE 10 and every "glowSize10" row, 1.64-1.66. Sigma 1.92 quarter px, radius 6:
-            // the largest a narrow glow (sigma < kGlowHalfSigma) can be, so the upper end for every
-            // glow drawn at this size
+            // GLOW SIZE 10 and every "glowSize10" row, 1.64-1.66, at sigma 1.92 quarter px, radius 6.
+            // (Sigma 1.92 is itself WIDE at 1440 wide; it was measured on the full-size chain before
+            // the half-size one existed.) A narrow glow (sigma < kGlowHalfSigma = 1.9) has a radius
+            // of at most ceil(3 x 1.9) = 6, so 1.64 is the upper end for every glow drawn full size
     0.12,   // glow_blur_half_base, and
     0.062,  // glow_blur_half_per_radius: the least-squares line through window 4's five half-size
             // blurs against their radius (Monitor r3 0.31, PVM r5 0.43, Trinitron r6 0.49, TV and
             // Everything r8 0.62, Arcade r9 0.68; the line is within 0.01 of each). Each blur
             // pass reads 2r+1 taps a pixel, so the time follows the radius; a constant would
             // misprice Monitor's and Arcade's by 0.2-0.3 ms
-    {detail::kSigSharpFull, detail::kSigSharpFull * kHalfWidthFactor},   // sig_sharp: full measured; half derived (2.93)
+    {detail::kSigSharpFull, detail::kSigSharpFull * kHalfWidthFactor},   // sig_sharp: full measured; half derived (2.78)
     {(detail::kSigSharpFull * kHalfWidthFactor + detail::kChromaHalf) / kHalfWidthFactor,
-     detail::kSigSharpFull * kHalfWidthFactor + detail::kChromaHalf},    // sig_sharp_chroma: derived (half 4.29:
+     detail::kSigSharpFull * kHalfWidthFactor + detail::kChromaHalf},    // sig_sharp_chroma: derived (half 4.14:
             // sharp's half plus chroma's half-width increment). NOT measured in any window. Its
             // full width is never drawn (chroma always runs at half width: plan_for)
-    {detail::kSigGunsHalf / kHalfWidthFactor, detail::kSigGunsHalf},     // sig_guns: half measured; full derived (6.96)
+    {detail::kSigGunsFull, detail::kSigGunsHalf},     // sig_guns: both measured (full in an earlier binary, above)
     {detail::kSigGunsChromaHalf / kHalfWidthFactor, detail::kSigGunsChromaHalf},   // sig_guns_chroma: half
             // measured; full derived and never drawn (chroma always runs at half width)
     1.07,   // lines: the mean of window 4's six (Trinitron 1.02, TV 1.13, Arcade 1.16, Everything
-            // 1.12, tv -afterglow 0.99, everything -afterglow 1.00)
+            // 1.12, tv -afterglow 0.99, everything -afterglow 1.00); its target is 720 x 270 there
+            // (kReferenceLinesPixels) and it scales with that target, not the picture
     12.3,   // out_lean: earlier round (round 3, 2026-11-15-tube-lean-pricing.txt): the shipped lean
             // set (8.85 base + bend 0.47 + cheap beam 1.31 + tone 0.61 + displace 1.03)
     {10.66, 10.09},   // out_rich: to the screen Monitor 10.66; into the history PVM 10.09. The SCENE
@@ -131,18 +144,20 @@ inline constexpr PassCosts kPassCosts{
             // against arcade 12.56) = 12.98. Window 4's raster difference (0.87) would give 13.41
     2.49,   // history: the mean of window 4's five (PVM 2.49, Trinitron 2.43, TV 2.54, Arcade 2.45,
             // Everything 2.55)
-    0.23,   // probe: 0.23 on five looks, 0.24 on TV
+    0.23,   // probe: 0.23 on five looks, 0.24 on TV. Its target is a fixed 64x64: never scaled
 };
 
 // HOW CLOSE THE PREDICTION IS (pinned by a test, tube programs: "the kiosk's totals"):
-// within 0.02 ms of PVM 19.11, Monitor 17.08 and Arcade 22.94, and of 0.10-0.14 of the
-// two -afterglow totals (TV 22.56, Everything 22.52), but Trinitron predicts 22.79 for
-// 22.62 and TV 24.28 for 24.47. No set of per-pass prices does better than about
-// 0.18 ms on both: those two run the SAME lines, raster output and history programs,
-// and TV's measured 0.11 ms more on each of the three (it drew at 20 fps, Trinitron at
-// 30). The errors fall away from the budget on both sides that matter: the four looks
-// that hold 30 fps all predict under 23.1, TV and Everything over it, and both of them
-// under it once afterglow is dropped.
+// within 0.01 ms of PVM 19.11 and Monitor 17.08, 0.03 of Arcade 22.94, 0.13 of Everything
+// 24.41 and 0.10-0.14 of the two -afterglow totals (TV 22.56, Everything 22.52), but
+// Trinitron predicts 22.79 for 22.62 (+0.17) and TV 24.28 for 24.47 (-0.19). No set of
+// per-pass prices does better than about 0.18 ms on both: those two run the SAME lines,
+// raster output and history programs, and TV measured 0.11 ms more on each of the three
+// (it drew at 20 fps, Trinitron at 30). Both of those errors point TOWARD the budget
+// (Trinitron is predicted heavier, TV lighter), yet every shipped look still lands on
+// its side of 23.1: the four that hold 30 fps predict under it (Arcade 22.91 the
+// closest, see kRichBudgetMs), TV and Everything over it, and both under it once
+// afterglow is dropped (22.66).
 
 // The rows that always need a rich pass, whatever the lean set. One per line:
 // Task 13's Python check reads this as text.

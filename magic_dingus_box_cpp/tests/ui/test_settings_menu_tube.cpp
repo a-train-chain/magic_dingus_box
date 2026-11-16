@@ -632,8 +632,8 @@ TEST_CASE("Tube menu: a row whose effect is not drawn at this size says so", "[s
     CHECK(ends_with_tag("AFTERGLOW"));
     CHECK_FALSE(ends_with_tag("GLOW:"));
     CHECK_FALSE(ends_with_tag("GLOW SIZE"));
-    // A full-screen picture drops the glow too; GLOW SIZE then sizes nothing.
-    state.tube_render.picture = tube::Picture{1920.0, 1080.0, false};
+    // A picture where TV fits only without both drops the glow too; GLOW SIZE then sizes nothing.
+    state.tube_render.picture = tube::Picture{1440.0, 1110.0, false};
     press(sm, "Back");
     press(sm, "Light");
     CHECK(ends_with_tag("AFTERGLOW"));

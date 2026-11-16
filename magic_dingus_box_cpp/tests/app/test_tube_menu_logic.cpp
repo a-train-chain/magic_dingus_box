@@ -90,7 +90,7 @@ void drawing_tube(app::AppState& state, tube::Look look, tube::Picture picture) 
 
 TEST_CASE("tube menu logic: what is not drawn is the renderer's plan for the real picture", "[tube]") {
     const tube::Picture ref{1440.0, 1080.0, false};
-    const tube::Picture film{1920.0, 1080.0, false};
+    const tube::Picture film{1440.0, 1110.0, false};   // TV fits there only without both
     app::AppState tv, trinitron, tv_film;
     drawing_tube(tv, tube::Look::tv, ref);
     drawing_tube(trinitron, tube::Look::trinitron, ref);

@@ -145,12 +145,13 @@ TEST_CASE("tube driver: apply_plan zeroes the rows of a pass the plan dropped", 
     REQUIRE(u.glow == 0.0f);
 }
 
-TEST_CASE("tube driver: a full-screen picture whose plan drops glow draws no glow", "[tube]") {
-    // The TV look at 1920x1080: over the rich budget, so plan_passes drops the
-    // afterglow, then the glow (tube_programs.h). Every rich output program still
-    // compiles OUT_GLOW, so a glow left in the uniforms would read a stale texture.
+TEST_CASE("tube driver: a picture whose plan drops glow draws no glow", "[tube]") {
+    // The TV look at 1440x1110: over the rich budget as asked and without afterglow, under
+    // it without both, so plan_passes drops the afterglow and the glow (tube_programs.h).
+    // Every rich output program still compiles OUT_GLOW, so a glow left in the uniforms
+    // would read a stale texture.
     TubeSetting s; select_look(s, Look::tv);
-    const Picture wide{1920.0, 1080.0, false};
+    const Picture wide{1440.0, 1110.0, false};
     const Resolved r = resolve(s);
     REQUIRE(r.effects[index_of(Effect::glow)] > 0);
     REQUIRE(r.effects[index_of(Effect::afterglow)] > 0);

@@ -259,12 +259,12 @@ TEST_CASE("tube programs: the 720p Modern TV and CRT Native pictures drop nothin
             CHECK(dropped(look, pic).empty());
         }
     // Only until a restart: switching a 1080p Modern TV to CRT Native defers the mode
-    // change, so the tube draws CRT Native into the 1920x1080 framebuffer meanwhile; it
-    // then gives way like a full-screen film (the same drops, test below).
+    // change, so the tube draws CRT Native into the 1920x1080 framebuffer meanwhile (with
+    // the rows a real tube draws at 0, so it is lighter than a film).
     const Picture deferred{1920.0, 1080.0, true};
     CHECK(dropped(Look::pvm, deferred) == "afterglow");
     CHECK(dropped(Look::monitor, deferred).empty());
-    CHECK(dropped(Look::trinitron, deferred) == "afterglow,glow");
+    CHECK(dropped(Look::trinitron, deferred).empty());   // ~28.8 ms whatever it drops: kept as asked
     CHECK(dropped(Look::tv, deferred) == "afterglow,glow");
     CHECK(dropped(Look::arcade, deferred) == "afterglow,glow");
     CHECK(dropped(Look::everything, deferred) == "afterglow,glow");
@@ -285,27 +285,101 @@ TEST_CASE("tube programs: the rule applies below the reference size too", "[tube
     REQUIRE_FALSE(pp.not_drawn.any());
 }
 
-TEST_CASE("tube programs: a full-screen film drops afterglow, then glow, to fit", "[tube]") {
+TEST_CASE("tube programs: a full-screen film drops only what gets a look under the budget", "[tube]") {
+    // A third more pixels than the reference; none of these figures was measured (they are
+    // the 1440x1080 prices scaled by area).
     const Picture film{1920.0, 1080.0, false};
+    const auto as_asked_ms = [&](Look look) {
+        const Resolved r = look_resolved(look);
+        PassPlan p = plan_for(needs_of(tube_uniforms_for(r, film), r), true);
+        p.glow_half = p.glow && glow_is_wide(glow_sigma_px(r, film));
+        return plan_ms(p, r, film);
+    };
     for (Look look : kLooks) {
         const Resolved r = look_resolved(look);
-        const PassPlan full = plan_for(needs_of(tube_uniforms_for(r, film), r), true);
-        const PassPlan p = plan_passes(r, film);
+        const PlannedPasses pp = plan_passes_and_drops(r, film);
         INFO(look_name(look));
-        REQUIRE(p.cls == FrameClass::Rich30);
-        PassPlan full_wide = full;
-        full_wide.glow_half = full.glow && glow_is_wide(glow_sigma_px(r, film));
-        if (plan_ms(full_wide, r, film) <= kRichBudgetMs) REQUIRE(p == full_wide);
-        if (full.glow && !p.glow) REQUIRE_FALSE(p.afterglow);   // glow goes only after afterglow
-        if (full.afterglow && !p.afterglow && p.glow) REQUIRE(plan_ms(p, r, film) <= kRichBudgetMs);
+        REQUIRE(pp.plan.cls == FrameClass::Rich30);
+        // Either what is drawn fits, or nothing was dropped (it would not have helped).
+        if (pp.not_drawn.any()) REQUIRE(plan_ms(pp.plan, r, film) <= kRichBudgetMs);
+        else if (plan_ms(pp.plan, r, film) > kRichBudgetMs) REQUIRE(pp.plan == plan_passes(r, film));
     }
-    // Pinned per look: a third more pixels than the reference.
-    CHECK(dropped(Look::pvm, film) == "afterglow");
-    CHECK(dropped(Look::monitor, film).empty());
-    CHECK(dropped(Look::trinitron, film) == "afterglow,glow");
-    CHECK(dropped(Look::tv, film) == "afterglow,glow");
-    CHECK(dropped(Look::arcade, film) == "afterglow,glow");
-    CHECK(dropped(Look::everything, film) == "afterglow,glow");
+    CHECK(dropped(Look::pvm, film) == "afterglow");        // 25.5 as asked -> 22.9
+    CHECK(dropped(Look::monitor, film).empty());           // 22.8: fits as asked
+    // Over the budget whatever is dropped: kept as asked, and the pacing monitor's
+    // "too heavy" notice tells the truth.
+    for (Look heavy : {Look::trinitron, Look::tv, Look::arcade, Look::everything}) {
+        INFO(look_name(heavy));
+        CHECK(dropped(heavy, film).empty());
+        CHECK(as_asked_ms(heavy) > kRichBudgetMs);
+    }
+}
+
+TEST_CASE("tube programs: the ladder takes the first step that fits, else nothing", "[tube]") {
+    // TV at the reference picture predicts 24.28 as asked, 22.66 without afterglow and
+    // 22.04 without afterglow and glow; the budget is moved to land in each gap.
+    const Picture pic{1440.0, 1080.0, false};
+    const Resolved tv = look_resolved(Look::tv);
+    const auto drops = [&](double budget) { return plan_passes_and_drops(tv, pic, budget).not_drawn; };
+    CHECK(drops(25.0) == NotDrawn{false, false});   // fits as asked
+    CHECK(drops(23.0) == NotDrawn{true, false});    // afterglow alone is enough
+    CHECK(drops(22.3) == NotDrawn{true, true});     // both are needed, and fit
+    const PlannedPasses none = plan_passes_and_drops(tv, pic, 21.0);   // nothing fits
+    CHECK(none.not_drawn == NotDrawn{false, false});
+    CHECK(none.plan.afterglow);
+    CHECK(none.plan.glow);
+    CHECK(none.plan == plan_passes_and_drops(tv, pic, 1000.0).plan);   // the plan as asked
+}
+
+TEST_CASE("tube programs: dropping an effect never changes the frame class", "[tube]") {
+    // A setting whose ONLY rich needs are afterglow and glow would plan Lean60 without them;
+    // a plan that dropped them must stay Rich30. Swept over every budget step and the
+    // three picture sizes, and over every row one at a time.
+    TubeSetting only;
+    for (auto e : kEffects)
+        if (forces_30fps(e)) set_row(only, e, rate_neutral(e));
+    set_row(only, Effect::glow, 60);
+    set_row(only, Effect::afterglow, 60);
+    std::vector<TubeSetting> settings{only};
+    for (const Effect e : kEffects) {
+        TubeSetting s = only;
+        set_row(s, e, e == Effect::glow || e == Effect::afterglow ? 0 : 70);
+        settings.push_back(s);
+    }
+    int dropped_any = 0;
+    for (const TubeSetting& s : settings)
+        for (const Picture pic : {Picture{960.0, 720.0, false}, Picture{1440.0, 1080.0, false},
+                                  Picture{1920.0, 1080.0, false}})
+            for (int tenth = 0; tenth <= 400; tenth += 5) {
+                const Resolved r = resolve(s);
+                const PlannedPasses pp = plan_passes_and_drops(r, pic, tenth / 10.0);
+                INFO("budget " << tenth / 10.0 << " at " << pic.w);
+                REQUIRE(pp.plan.cls == frame_class(r, pic));
+                if (pp.not_drawn.any()) {
+                    ++dropped_any;
+                    REQUIRE(pp.plan.cls == FrameClass::Rich30);
+                    REQUIRE_FALSE(is_lean_output(pp.plan.output));
+                }
+            }
+    REQUIRE(dropped_any > 0);   // the sweep did exercise the ladder
+}
+
+TEST_CASE("tube programs: the rows a dropped effect silences", "[tube]") {
+    const NotDrawnRows none = not_drawn_rows({});
+    CHECK(none.count == 0);
+    const NotDrawnRows ag = not_drawn_rows({true, false});
+    REQUIRE(ag.count == 1);
+    CHECK(ag.rows[0] == Effect::afterglow);
+    const NotDrawnRows both = not_drawn_rows({true, true});
+    REQUIRE(both.count == 3);
+    CHECK(both.rows[0] == Effect::afterglow);
+    CHECK(both.rows[1] == Effect::glow);
+    CHECK(both.rows[2] == Effect::glowSize);   // it sizes a glow that is not drawn
+    CHECK(both.contains(Effect::glowSize));
+    CHECK_FALSE(both.contains(Effect::hum));
+    const NotDrawnRows glow_only = not_drawn_rows({false, true});   // a look with no afterglow
+    REQUIRE(glow_only.count == 2);
+    CHECK(glow_only.rows[0] == Effect::glow);
 }
 
 TEST_CASE("tube programs: the prediction adds the plan's passes from the measured prices", "[tube]") {
@@ -345,10 +419,15 @@ TEST_CASE("tube programs: the prediction adds the plan's passes from the measure
     sharp.signal = Program::sig_sharp;
     sharp.signal_half = false;
     REQUIRE(predicted_ms(sharp, t, sigma) == Catch::Approx(expect - c.sig_guns.half + c.sig_sharp.full));
-    // The same plan on a picture a third larger costs a third more.
+    // The same plan on a picture a third larger: every picture-sized pass a third more; the
+    // lines pass follows its own target and the probe's 64x64 target does not grow.
     TargetSizes wide = t;
     wide.pic_w = 1920;
-    REQUIRE(predicted_ms(p, wide, sigma) == Catch::Approx(expect * (1920.0 * 1080.0) / kReferencePicturePixels));
+    REQUIRE(predicted_ms(p, wide, sigma) ==
+            Catch::Approx((expect - c.lines - c.probe) * (1920.0 * 1080.0) / kReferencePicturePixels + c.lines + c.probe));
+    TargetSizes wide_lines = wide;
+    wide_lines.lines_w = 960;
+    REQUIRE(predicted_ms(p, wide_lines, sigma) - predicted_ms(p, wide, sigma) == Catch::Approx(c.lines / 3.0));
     // A lean plan is the lean output alone.
     REQUIRE(predicted_ms(PassPlan{}, t, 0.0f) == Catch::Approx(c.out_lean));
 }
