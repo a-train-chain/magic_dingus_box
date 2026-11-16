@@ -283,11 +283,10 @@ to black. Consequences:
   its window and the video in it are drawn through the tube together.
 - *A full-screen channel film* (no cabinet art) is a 1920×1080 picture, a
   third more pixels than the budgets were measured at. **It always draws as
-  Rich30, and drops the afterglow pass, then the glow passes, whenever the
-  look's predicted cost at that size exceeds the rich budget (call).** The
-  prediction is the measured per-pass costs (plan 3, Task 1b's table)
-  scaled by pixel count — a pure, tested function; a film is 30 fps or
-  less, so it loses nothing to the rate. Per-film picture fill
+  Rich30.** Like every picture (below, "When a look cannot afford an
+  effect") it drops the afterglow pass, then the glow passes, whenever the
+  look's predicted cost at that size exceeds the rich budget. A film is
+  30 fps or less, so it loses nothing to the rate. Per-film picture fill
   (`video/picture_placement`) only changes where the video sits inside the
   picture; the tube does not see it.
 - *Bezels with a recorded opening*: the tube's opening is the content
@@ -323,6 +322,33 @@ the web page show beside them, and the Look row shows "60 fps" or
 misses the lean budget): every shipped look is Rich30, the Lean60 path stays
 for any custom mix that qualifies, and the owner is told.
 
+**When a look cannot afford an effect (owner's decision, 2026-11-15).** The
+box draws afterglow whenever the look can afford it at the current picture
+size; when it cannot, afterglow is dropped first, then glow, automatically,
+with no look's or row's value changed, and the controls say when an effect
+is not being drawn. This applies at EVERY picture size, not only above the
+1440×1080 reference (the rule before this decision). The owner chose it
+from three ways measured on the Pi 5 to bring TV and Everything under the
+ceiling (`docs/engineering/measurements/2026-11-15-tube-budgets-pi5.txt`,
+RESULT and section 7): afterglow off (TV 22.6, Everything 22.5 ms; pacing
+5-9 and 2 late of ~1800 a minute), the cheap beam on the rich outputs (22.6
+and 22.7 ms, but up to 9-33/255 different pixels) and chroma bleed off
+(23.0 and 22.8 ms). The decision is one pure function,
+`tube::plan_passes_and_drops()`: the plan for the setting and the picture
+and, while its predicted cost (window 4's kiosk-measured per-pass prices,
+scaled by pixel count) exceeds the rich budget (23.1 ms), the same plan
+without afterglow, then without glow, and no further. It reads the setting
+and the picture only, so it cannot flap; the class never changes (a look
+that drops afterglow is still Rich30). Its result is published as the
+status block's `not_drawn` list and shown on the TV menu's AFTERGLOW, GLOW
+and GLOW SIZE rows (" · not drawn") and on the web page ("Not drawn at
+this picture size", the slider still editable). As predicted: at a
+1440×1080 picture TV and Everything drop afterglow and keep glow, the other
+four looks drop nothing; at 960×720 (720p Modern TV) and the 1280×720 CRT
+Native picture nothing is dropped; a 1920×1080 picture drops afterglow on
+PVM, afterglow and glow on Trinitron, TV, Arcade and Everything, nothing on
+Monitor.
+
 **The shipped looks in two classes (call).** As copied from Sound Factory
 every look is rich (each has GLOW > 0 and SHARPNESS ≠ 50). Task 1b
 decided pvm_lean: no. PVM's ABL 20 and breathing 15 need the brightness probe;
@@ -332,8 +358,11 @@ disturbed outlier (78.8 % on time, max interval 283 ms), and Task 15's
 ten-minute runs decide it. Until then PVM and Monitor stay exactly as Sound
 Factory has them, at 30 fps, and no look value changes. The 60 fps class is
 for a custom mix that leaves every 30 fps row neutral. Trinitron, TV, Arcade
-and Everything stay Rich30, with rows taken to neutral by the hardware
-acceptance where they miss the rich budget (Acceptance's ladder).
+and Everything stay Rich30. No look's values were changed to meet the rich
+budget: measured with both optimisations (window 4), PVM, Monitor, Trinitron
+and Arcade hold 30 fps as shipped, and TV and Everything give up their
+afterglow automatically (the owner's decision above) instead of the
+Acceptance ladder taking rows to neutral.
 
 *Rows that differ from Sound Factory's, for the owner* (plan 3 keeps this
 table current; the parity script lists each cell as deliberate):
@@ -342,7 +371,7 @@ table current; the parity script lists each cell as deliberate):
 |---|---|---|---|---|
 | all six | lineSize, maskSize | see plan 1 Task 2 | see plan 1 Task 2 | whole TV pixels (§5) |
 | pvm, monitor | (none) | Sound Factory's | the same | Task 1b: PVM-lean needs the probe (ABL 20, breathing 15), which is not lean; PVM-lean without it was not established (one disturbed run) and Task 15 decides, so no row differs for now |
-| rich looks | the rows the ladder neutralises | — | recorded by plan 3 Task 15 | the rich budget |
+| rich looks | (none) | Sound Factory's | the same | no value changed (owner, 2026-11-15); TV and Everything do not DRAW their afterglow at a 1440×1080 or larger picture — the setting keeps it, and the controls say it is not drawn |
 
 **The pipeline (call).** The spike's pipeline 2, with these fixed choices:
 
@@ -702,7 +731,9 @@ playing, for **each of the six looks**:
   ≥ **99%** of frames land on their cadence over a 10-minute pacing run
   with the timers off: every vblank for Lean60, every 33.3 ms for Rich30.
 - **A look that misses takes its costly rows to neutral, one at a time, in
-  the order of their measured saving** — each step removes a whole pass or
+  the order of their measured saving** (superseded for afterglow and glow
+  by the owner's decision of 2026-11-15, §3: those two are dropped from the
+  DRAWING automatically, never from the look's values) — each step removes a whole pass or
   selects a smaller program, never "a lower value" (the measurements show
   values cost nothing; structure does). Rich30: AFTERGLOW 0 (the history
   pass and copy, 2.1–4.7 ms), then GLOW 0 (the glow chain, ~3–4.7 ms), then
