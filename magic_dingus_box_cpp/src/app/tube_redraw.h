@@ -17,8 +17,8 @@
 //                      Rich30 at >= 48 Hz: 2 vblanks at 50/60 Hz, 4 at 120
 //                      Hz (below 48 Hz a rich frame already spans a vblank).
 //                      Lean60 only where the loop's 60 fps cap spans two or
-//                      more vblanks (utils::frame_pacing_for(60, hz) >= 2:
-//                      100, 120, 144 Hz): 2 vblanks there. Without the hold
+//                      more vblanks (utils::frame_pacing_for(60, hz) >= 2, i.e.
+//                      lround(hz / 60) >= 2: 90, 100, 120, 144 Hz): 2 vblanks there. Without the hold
 //                      the cap's post-flip sleep left a lean frame less than
 //                      one refresh to render and it landed a vblank late. At
 //                      50/60 Hz a lean frame is one vblank: never held.

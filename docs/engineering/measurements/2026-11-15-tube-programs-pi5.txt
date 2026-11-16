@@ -25,7 +25,7 @@ RESULT
   threads 15.77 ms -> 523 / 4 threads 16.75 ms (about 6 % slower); out_rich_raster 15.98 -> 17.30 ms. The output
   pass's time follows its per-pixel instruction count (exp/sqrt/divide most of all). Moving the uniform-only work to
   the CPU (src/tube/tube_derived.h) cut out_rich_raster_ag 474 -> 431 instructions, still 2 threads, 15.7 -> 14.2 ms
-  (-9.6 %). Figures and method: .superpowers/sdd/2026-11-15-tube-crt-renderer/perf-4thread-report.md. These are
+  (-9.6 %). Figures and method: docs/engineering/tube-perf-2026-11-15.md. These are
   off-screen tool timings beside the running kiosk, relative, not the kiosk's GPU timers; on those estimates the
   four raster looks still miss 30 fps.
 
@@ -134,8 +134,7 @@ about 17:38:20 arcade; about 17:38:42 everything; about 17:42 pvm with the video
    SLOWER, and 474/2t against 523/4t and 417/2t against 445/4t were each slower at 4 threads by roughly the extra
    instructions. The output pass's time follows its per-pixel instruction count (exp/sqrt/divide), not the thread
    count; the raster outputs cost more than out_rich_signal_ag (11.3 ms in section 6) for their two extra
-   beam-weighted line taps and their extra instructions. See perf-4thread-report.md (".superpowers/sdd/2026-11-15-
-   tube-crt-renderer/") "The finding" and "CPU-derived values".
+   beam-weighted line taps and their extra instructions. See docs/engineering/tube-perf-2026-11-15.md "The finding" and "CPU-derived values".
 
 5. FORCED HANG - MDB_TUBE_FORCE_HANG=sig_sharp, Type=notify, WatchdogSec=10, Restart=on-failure (journal, mdb-tube-hang)
 [2026-11-15 17:43:06.065] [warning] tube: MDB_TUBE_FORCE_HANG=sig_sharp (preview build): that build will hang

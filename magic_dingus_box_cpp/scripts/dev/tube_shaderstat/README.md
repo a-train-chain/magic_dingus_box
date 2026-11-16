@@ -98,7 +98,8 @@ Prints, per program, the fragment shader's statistics from Mesa's shaderdb line:
   straight from the quarter, V with `uDown` 0, sigma S/2). The output program then
   draws twice, fed by A's glow and by B's, and the two FINAL pictures are compared
   (largest difference, pixels over 1/255 and over 2/255, where the first ones over
-  2/255 are). `--time N`: the two chains alone, alternated, minimum ms of N.
+  2/255 are). `--time N`: the two chains alone, alternated, minimum ms of N. The run that
+  proved the half-size glow, with its figures: `docs/engineering/tube-perf-2026-11-15.md`.
 
 - `--blit` (with `--time N`): an RGBA8 framebuffer object (a stand-in for the screen;
   the tool has no default framebuffer) of the picture's size blitted, FRAMEBUFFER_SRGB

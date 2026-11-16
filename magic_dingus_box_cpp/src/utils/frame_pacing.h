@@ -104,7 +104,7 @@ inline std::chrono::microseconds field_rate_skip_sleep(
 // The 30 fps functions below are exactly the *_at(30, ...) case.
 //
 // A Lean60 frame is held only where the 60 fps cap spans two or more
-// vblanks (100, 120, 144 Hz: app::tube_redraw). There the ordinary cap
+// vblanks (lround(hz / 60) >= 2: 90, 100, 120, 144 Hz; app::tube_redraw). There the ordinary cap
 // sleeps (vblanks - 1) refreshes plus an eighth AFTER the flip and leaves
 // the frame the rest of ONE refresh to render (7.3 ms at 120 Hz, for a
 // lean frame of 10.6-12.3 ms): it missed, landing on the 3rd vblank.
