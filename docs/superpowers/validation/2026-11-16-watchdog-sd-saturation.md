@@ -233,6 +233,10 @@ first and were identical afterwards.
 
 - **`dd` alone reproduces the kill** on origin/main, with no upload. This
   answers the "any other heavy writer" follow-up.
+- **The page-flip bug did not fire here.** That is the one where a timed-out
+  page flip leaves later flips failing, fixed separately in PR #33. No
+  `Page flip wait timed out` or `ret=-16` line was logged anywhere in the
+  window, so it played no part in the baseline's kill.
 - **With the fix, the GStreamer calls that waited on the card waited on
   the control thread.** Together (12 s) they are more than the watchdog's
   10 s.
