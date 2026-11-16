@@ -564,6 +564,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // Match the encoder accumulator to this board's pulse rate, or the
         // UI advances every other click (Pi 5) / skips items (Pi 4).
         input.set_rotary_events_per_detent(profile.rotary_events_per_detent);
+        // The Tube engine exists only where it is offered (app::tube_offered:
+        // the Pi 5 board gate, closed on a Pi 4B and under the pi4 policy
+        // override). The gate cannot change while the kiosk runs, so this is
+        // decided once: a box that is not offered it constructs none of it
+        // (no TubeRenderer, no /dev/shm stat, no tube log line).
+        if (app::tube_offered(state)) ui_renderer.enable_tube();
     }
 
     // Phone-remote status writer — writes kiosk_status.json at 5 Hz so the
@@ -914,7 +920,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // The Tube engine may build shader programs only from here: the watchdog
     // runs from READY=1, so a compile that hangs is caught in ~10 s instead of
     // leaving a blank TV until the start timeout.
-    if constexpr (app::kTubeRendererReady) ui_renderer.allow_tube_builds();
+    if (app::tube_offered(state)) ui_renderer.allow_tube_builds();
 
     // Graceful-stop signals — see handle_shutdown_signal at the top of
     // this file.
@@ -2190,16 +2196,19 @@ int main(int /* argc */, char* /* argv */[]) {
             fb_w, fb_h, ui_canvas.w, ui_canvas.h);
 
         // ── The Tube engine: what it asks of this iteration ──────────────
-        // While the tube is not drawing (another engine, a Pi 4B: Tube not
-        // offered) tube_now stays "not drawing" and tube_redraw_now asks for
-        // nothing, so the gate, the swap and the sleeps below are as without it.
+        // While the tube is not drawing (another engine; or not offered, where
+        // the block does not run at all) tube_now stays "not drawing" and
+        // tube_redraw_now asks for nothing, so the gate, the swap and the sleeps
+        // below are as without it.
         // The clock is this iteration's `now` (steady_clock) in seconds: the
         // same value reaches peek() here and frame()/mean_due() in the
         // composite (Renderer::set_tube_clock).
         ui::Renderer::TubeStatus tube_now;
         app::TubeRedraw tube_redraw_now;
         bool tube_frame_held = false;   // this iteration's flip was held (TubeRedraw::hold_present)
-        if constexpr (app::kTubeRendererReady) {
+        // Not offered (a Pi 4B; the pi4 override): none of this runs and every
+        // tube_* value above keeps its "not drawing" default.
+        if (app::tube_offered(state)) {
             const double tube_clock =
                 std::chrono::duration<double>(now.time_since_epoch()).count();
             ui_renderer.set_tube_picture(

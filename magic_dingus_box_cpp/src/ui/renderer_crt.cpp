@@ -262,9 +262,10 @@ void Renderer::ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height) {
 }
 
 bool Renderer::begin_scene_fbo(const app::AppState& state) {
-    // The Tube engine (renderer.h, set_tube_picture). Without it (production: tube_
-    // is null) this block is skipped and tube_frame stays false, so every gate
-    // below is exactly as before.
+    // The Tube engine (renderer.h, set_tube_picture). On a box that is not offered
+    // the engine (a Pi 4B; a Pi 5 under MDB_PLATFORM_POLICY_OVERRIDE=pi4) tube_ is
+    // null: this block is skipped and tube_frame stays false, so every gate below
+    // is exactly the Classic/Enhanced path.
     bool tube_frame = false;
     if (tube_) {
         tube_frame = tube_frame_wanted(state);
@@ -447,6 +448,20 @@ Renderer::TubeStatus Renderer::tube_status(const app::AppState& state, double no
     return status;
 }
 
+void Renderer::enable_tube() {
+    if (tube_) return;
+    // Constructing the TubeRenderer touches no GL; it reads the build guard's
+    // marker once (one stat, before the main loop). Nothing is built until the
+    // effective engine is Tube, and only after READY=1 (allow_tube_builds()).
+    tube_ = std::make_unique<TubeRenderer>();
+    tube_driver_ = std::make_unique<tube::FrameDriver>();
+    tube::FrameDriver* driver = tube_driver_.get();
+    tube_->set_mean_sink([driver](double light) { driver->on_mean(light); });
+    if (tube_->unavailable_reason() == "build_hung")
+        LOG_ERROR("tube: the last kiosk died building {} — Tube draws as Enhanced until reboot",
+                  tube_->hung_program());
+}
+
 std::string_view Renderer::tube_unavailable_reason() const {
     return tube_ ? tube_->unavailable_reason() : std::string_view();
 }
@@ -490,7 +505,8 @@ bool Renderer::tube_composite(const app::AppState& state) {
     env.vao = vao_;
     env.vbo = vbo_;
     env.ui_program = shader_program_;
-    // MDB_TUBE_VALIDATE=1 only (developer switch). ONE pass per Tube frame (each rebuilds all 19 programs: seconds on a cold
+    // MDB_TUBE_VALIDATE=1 only (developer switch). ONE pass per Tube frame (each rebuilds all 19 programs: about half a second
+    // a pass on a Pi 5 - 648 ms Shader, 409 ms Hardware, 5-48 ms per program measured; more on a cold
     // shader cache), so the main loop returns and pings the watchdog between them.
     // Shader decode first, so the programs left built are this context's own
     // decode's. A validation frame draws nothing else: false -> this frame's

@@ -313,11 +313,14 @@ public:
 
     // ----- The Tube CRT engine (ui/tube_renderer.h, tube/tube_driver.h) -----
     //
-    // initialize() makes the TubeRenderer and its FrameDriver when
-    // app::kTubeRendererReady (every build since the switch-on); it touches no GL.
-    // Nothing is built or drawn unless the effective engine is Tube (a Pi 5 that
-    // chose it): otherwise tube_status() reports "not drawing" and
-    // begin_scene_fbo / end_scene_fbo_and_composite take the Classic/Enhanced path.
+    // enable_tube() makes the TubeRenderer and its FrameDriver. main() calls it
+    // once, after the platform profile is known and before the main loop, ONLY
+    // when app::tube_offered(state) (a Pi 5, not under the pi4 policy override);
+    // the gate cannot change while the kiosk runs. Without it every method here is
+    // a no-op, tube_status() reports "not drawing" and begin_scene_fbo /
+    // end_scene_fbo_and_composite take the Classic/Enhanced path. With it, nothing
+    // is built or drawn unless the effective engine is Tube.
+    void enable_tube();
     //
     // A Tube frame: the effective engine is Tube (app::effective_crt_engine with
     // app::tube_offered), the Media Browser does not own the screen, the guard did
@@ -508,8 +511,9 @@ private:
     uint32_t scene_fbo_height_ = 0;
     bool scene_fbo_active_ = false;
 
-    // The Tube engine (see set_tube_picture). Both null until initialize() makes
-    // them; every tube path below starts with `if (!tube_)`.
+    // The Tube engine (see set_tube_picture). Both null unless enable_tube() made
+    // them (never on a box that is not offered the engine); every tube path below
+    // starts with `if (!tube_)`.
     //   tube_scene_: the last begin_scene_fbo() began a Tube scene (called
     //     TubeRenderer::begin_scene); read by this frame's composite and, at the
     //     next begin_scene_fbo(), to notice the tube stopped (end_tube_scene).

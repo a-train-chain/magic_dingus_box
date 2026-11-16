@@ -434,10 +434,14 @@ TEST_CASE("status_writer: switched on, the board gate alone decides the web tab"
     REQUIRE(t["gate"].asBool());
     REQUIRE(t["engine"].asString() == "classic");
     REQUIRE(t["effective_engine"].asString() == "classic");
-    state.platform_profile.tube_crt_engine = false;
+    state.platform_profile.tube_crt_engine = false;   // a real Pi 4B: the flag stays open
     t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube3.json");
+    REQUIRE(t.getMemberNames() ==
+            std::vector<std::string>{"effective_engine", "engine", "gate", "reason"});
     REQUIRE_FALSE(t["gate"].asBool());
     REQUIRE(t["reason"].asString() == "needs_pi5");
+    REQUIRE(t["engine"].asString() == "classic");
+    REQUIRE(t["effective_engine"].asString() == "classic");
 }
 
 TEST_CASE("status_writer: a tube change is written at once", "[remote][status][tube]") {
