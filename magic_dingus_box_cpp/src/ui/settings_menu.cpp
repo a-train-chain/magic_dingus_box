@@ -113,6 +113,16 @@ void SettingsMenuManager::update() {
         was_scanning_ = is_scanning;
     }
 
+    // An open Tube group shows which effects the box is not drawing. A web edit already
+    // rebuilds the page (main.cpp, page_shows_tube_state); the renderer's own changes (the
+    // picture, drawing starting or stopping) are caught here: one allocation-free
+    // plan_passes_and_drops() a frame, only while a group is open, and a rebuild only when
+    // the answer differs from the one the rows were built with.
+    if (current_submenu_ == MenuSection::TUBE_GROUP && app_state_ &&
+        app::tube_not_drawn(*app_state_) != tube_page_not_drawn_) {
+        rebuild_current_submenu();
+    }
+
     // Track connection state edges (across all submenus, not just WIFI/WIFI_NETWORKS).
     // Fires Toasts on both START and END so the operator gets immediate
     // feedback regardless of which submenu they happen to be looking at
@@ -850,6 +860,7 @@ std::vector<MenuItem> SettingsMenuManager::build_tube_group_submenu() {
         const tube::Resolved resolved = tube::resolve(app_state_->display_settings.tube);
         const bool crt_native = app_state_->display_settings.mode == app::DisplayMode::CRT_NATIVE;
         const tube::NotDrawn not_drawn = app::tube_not_drawn(*app_state_);
+        tube_page_not_drawn_ = not_drawn;
         const auto not_applicable = [&items](std::string_view label) {
             items.emplace_back(app::tube_na_label(label), MenuSection::INFO,
                                std::string(app::kTubeNaSublabel));

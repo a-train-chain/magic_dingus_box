@@ -619,15 +619,19 @@ def test_look_picker_drops_the_rate_in_crt_native():
     assert result == ["TV \u00b7 30 fps", "TV"]
 
 
-def test_a_row_the_box_is_not_drawing_is_marked_from_the_status_list():
+def test_a_row_the_box_is_not_drawing_is_marked_exactly_as_the_status_lists_it():
     result = run_js("""
         const k = {not_drawn: ['afterglow']};
-        const both = {not_drawn: ['afterglow', 'glow']};
+        const both = {not_drawn: ['afterglow', 'glow', 'glowSize']};
+        const odd = {not_drawn: ['notARow', 'afterglow', 42, null]};
         return {
             afterglow: [tubeRowNotDrawn(k, 'afterglow'), tubeRowNotDrawn(both, 'afterglow')],
             glow: [tubeRowNotDrawn(k, 'glow'), tubeRowNotDrawn(both, 'glow')],
-            glowSize: [tubeRowNotDrawn(k, 'glowSize'), tubeRowNotDrawn(both, 'glowSize')],
+            glowSize: [tubeRowNotDrawn(k, 'glowSize'), tubeRowNotDrawn(both, 'glowSize'),
+                       tubeRowNotDrawn({not_drawn: ['glow']}, 'glowSize')],
             hum: tubeRowNotDrawn(both, 'hum'),
+            unknown_key: [tubeRowNotDrawn(odd, 'afterglow'), tubeRowNotDrawn(odd, 'hum'),
+                          ROWS.rows.filter(r => tubeRowNotDrawn(odd, r.key)).map(r => r.key)],
             older_kiosk: [tubeRowNotDrawn({}, 'afterglow'), tubeRowNotDrawn({not_drawn: null}, 'glow'),
                           tubeRowNotDrawn(null, 'glow')],
             note: TUBE_NOT_DRAWN_NOTE,
@@ -635,8 +639,10 @@ def test_a_row_the_box_is_not_drawing_is_marked_from_the_status_list():
     """)
     assert result["afterglow"] == [True, True]
     assert result["glow"] == [False, True]
-    assert result["glowSize"] == [False, True]  # it sizes a glow that is not drawn (as on the TV)
+    # The kiosk names GLOW SIZE itself; the page has no rule of its own.
+    assert result["glowSize"] == [False, True, False]
     assert result["hum"] is False
+    assert result["unknown_key"] == [True, False, ["afterglow"]]  # an unknown key is ignored
     assert result["older_kiosk"] == [False, False, False]  # absent reads as empty
     assert result["note"] == "Not drawn at this picture size"
 

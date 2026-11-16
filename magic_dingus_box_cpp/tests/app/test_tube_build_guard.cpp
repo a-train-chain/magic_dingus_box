@@ -229,3 +229,14 @@ TEST_CASE("tube build guard: a re-open that fails on something not ours removes 
     REQUIRE(read_all(path) == "someone else");
     std::filesystem::remove(path);
 }
+
+TEST_CASE("tube build guard: an over-long marker text is bounded, and end() still removes it", "[tube]") {
+    const auto path = temp_marker("mdb-tube-build-test-long");
+    std::filesystem::remove(path);
+    const std::string text(5000, 'p');
+    app::TubeBuildGuard g(path);
+    g.begin(text);
+    REQUIRE(std::filesystem::file_size(path) == 4096u);   // what end() can read back in full
+    g.end();
+    REQUIRE_FALSE(std::filesystem::exists(path));
+}

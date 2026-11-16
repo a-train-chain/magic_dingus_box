@@ -81,16 +81,10 @@ inline std::string_view tube_rate_tag(tube::Effect effect) noexcept {
     return tube::forces_30fps(effect) ? "30 fps" : "";
 }
 
-// Whether a row's effect is one the box is not drawing (app::tube_not_drawn): AFTERGLOW
-// when afterglow gave way, GLOW when glow did, and GLOW SIZE with it (it sizes a glow
-// that is not drawn).
+// Whether a row's effect is one the box is not drawing (app::tube_not_drawn): exactly the
+// rows tube::not_drawn_rows lists (the status publishes the same list for the web page).
 inline bool tube_row_not_drawn(tube::Effect effect, const tube::NotDrawn& not_drawn) noexcept {
-    switch (effect) {
-        case tube::Effect::afterglow: return not_drawn.afterglow;
-        case tube::Effect::glow:
-        case tube::Effect::glowSize: return not_drawn.glow;
-        default: return false;
-    }
+    return tube::not_drawn_rows(not_drawn).contains(effect);
 }
 
 // The note such a row wears. Shortened from "not drawn at this size": with it, GLOW's

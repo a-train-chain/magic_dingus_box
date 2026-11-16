@@ -256,14 +256,14 @@ function tubeRateTagShown(row, native) {
 const TUBE_NOT_DRAWN_NOTE = 'Not drawn at this picture size';
 
 /** Whether the box is not drawing a row's effect: the kiosk lists, in its status's
-    `not_drawn`, the effects the look cannot afford at the picture it draws into (the
-    kiosk decides that, tube::plan_passes_and_drops; the page only reads it). GLOW SIZE
-    follows GLOW, as on the TV (app::tube_row_not_drawn): it sizes a glow that is not
-    drawn. A kiosk from before the field publishes none: nothing is marked. The row
-    stays editable; its value is kept and drawn again once the look can afford it. */
+    `not_drawn`, every row a dropped effect silences (it decides that,
+    tube::plan_passes_and_drops / tube::not_drawn_rows; the page only reads it), and the
+    page marks exactly the keys listed. A key that is not a row is never asked about; a
+    kiosk from before the field publishes none, so nothing is marked. The row stays
+    editable; its value is kept and drawn again once the look can afford it. */
 function tubeRowNotDrawn(kiosk, key) {
     const list = kiosk && Array.isArray(kiosk.not_drawn) ? kiosk.not_drawn : [];
-    return list.includes(key === 'glowSize' ? 'glow' : key);
+    return list.includes(key);
 }
 
 /** A look's picker text: its word, plus its Modern TV rate. In CRT Native the rate

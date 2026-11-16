@@ -82,12 +82,13 @@ Json::Value tube_status_json(const AppState& state) {
         ? state.tube_render.frame_rate
         : tube::frames_per_second(tube::setting_frame_class(resolved, crt_native));
     t["too_heavy"] = state.tube_render.too_heavy;
-    // The effects the look cannot afford at the picture the tube draws into, in drop
-    // order (row keys); [] while the tube is not drawing. One plan_passes() per refresh.
-    const tube::NotDrawn not_drawn = tube_not_drawn(state);
+    // Every row a dropped effect silences (tube::not_drawn_rows: AFTERGLOW; GLOW and GLOW
+    // SIZE), in drop order, as row keys; [] while the tube is not drawing. The page marks
+    // exactly these. One plan_passes() per refresh.
+    const tube::NotDrawnRows not_drawn = tube::not_drawn_rows(tube_not_drawn(state));
     Json::Value not_drawn_keys(Json::arrayValue);
-    if (not_drawn.afterglow) not_drawn_keys.append(json_word(tube::effect_key(tube::Effect::afterglow)));
-    if (not_drawn.glow) not_drawn_keys.append(json_word(tube::effect_key(tube::Effect::glow)));
+    for (std::size_t i = 0; i < not_drawn.count; ++i)
+        not_drawn_keys.append(json_word(tube::effect_key(not_drawn.rows[i])));
     t["not_drawn"] = std::move(not_drawn_keys);
     if (state.tube_render.unavailable.empty()) t["unavailable"] = Json::Value::null;
     else t["unavailable"] = state.tube_render.unavailable;

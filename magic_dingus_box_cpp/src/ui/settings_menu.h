@@ -10,6 +10,7 @@
 #include <optional>
 
 #include "../tube/tube_edit.h"
+#include "../tube/tube_programs.h"   // tube::NotDrawn
 
 namespace app {
     struct AppState;
@@ -269,6 +270,10 @@ private:
     // The Tube group open in TUBE_GROUP (an index into tube::kGroups), and the
     // Display row to put the cursor back on when it closes.
     std::size_t tube_group_index_ = 0;
+    // What the open Tube group's rows were built saying is not drawn (app::tube_not_drawn):
+    // update() rebuilds the page when the renderer's answer differs (the picture changed,
+    // drawing started or stopped).
+    tube::NotDrawn tube_page_not_drawn_{};
     int tube_group_return_index_ = 0;
     tube::Edit tube_edit_;
     std::vector<MenuItem> menu_items_;

@@ -357,9 +357,11 @@ TEST_CASE("status_writer: the tube block lists the effects the box is not drawin
     // A larger picture where TV fits only without both: afterglow, then glow, in drop order.
     state.tube_render.picture = tube::Picture{1440.0, 1110.0, false};
     t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_nd.json");
-    REQUIRE(t["not_drawn"].size() == 2u);
+    // Every row a dropped effect silences: GLOW SIZE with GLOW.
+    REQUIRE(t["not_drawn"].size() == 3u);
     REQUIRE(t["not_drawn"][0].asString() == "afterglow");
     REQUIRE(t["not_drawn"][1].asString() == "glow");
+    REQUIRE(t["not_drawn"][2].asString() == "glowSize");
     // A look that affords everything at the reference size.
     state.tube_render.picture = tube::Picture{1440.0, 1080.0, false};
     tube::select_look(state.display_settings.tube, tube::Look::trinitron);

@@ -645,3 +645,27 @@ TEST_CASE("Tube menu: a row whose effect is not drawn at this size says so", "[s
     press(sm, "Light");
     CHECK_FALSE(ends_with_tag("AFTERGLOW"));
 }
+
+TEST_CASE("Tube menu: the open group's notes follow the renderer without a rebuild from outside",
+          "[settings_menu][tube]") {
+    ui_test::fake_reset(); app::AppState state{}; offer_tube(state);
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    tube::select_look(state.display_settings.tube, tube::Look::tv);
+    state.tube_render.drawing = false;   // not drawing yet: no note
+    state.tube_render.picture = tube::Picture{1440.0, 1080.0, false};
+    SettingsMenuManager sm{&state}; sm.open();
+    sm.enter_submenu(MenuSection::DISPLAY);
+    press(sm, "Light");
+    const auto afterglow_sub = [&] { return row(sm, "AFTERGLOW")->sublabel; };
+    REQUIRE(afterglow_sub().find("not drawn") == std::string::npos);
+    const uint64_t before = sm.redraw_signature();
+    sm.update();   // nothing changed: nothing rebuilt
+    CHECK(sm.redraw_signature() == before);
+    state.tube_render.drawing = true;   // the renderer starts drawing: TV cannot afford afterglow
+    sm.update();
+    CHECK(afterglow_sub().find("not drawn") != std::string::npos);
+    CHECK(sm.redraw_signature() != before);
+    state.tube_render.picture = tube::Picture{960.0, 720.0, false};   // a smaller picture affords it
+    sm.update();
+    CHECK(afterglow_sub().find("not drawn") == std::string::npos);
+}

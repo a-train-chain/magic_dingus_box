@@ -52,6 +52,10 @@ void TubeBuildGuard::begin(std::string_view programs) {
         LOG_WARN("tube build guard: tripped by {}; not writing a new marker", program_);
         return;
     }
+    // Bounded to what end() reads back: a longer text would never match there, and the
+    // marker would be stranded (Tube off until a reboot). The truncated text is what is
+    // written AND recorded, so the two stay equal.
+    programs = programs.substr(0, std::min(programs.size(), kMaxMarkerBytes));
     std::ofstream out(path_, std::ios::binary | std::ios::trunc);
     const bool opened = out.is_open();
     if (out) {
