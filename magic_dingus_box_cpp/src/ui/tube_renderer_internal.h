@@ -1,0 +1,282 @@
+// tube_renderer_internal.h - private to TubeRenderer's implementation files
+// (tube_renderer.cpp: capabilities, builds, targets, mask, glass; tube_renderer_passes.cpp:
+// the frame's passes, Task 11). Not an API: nothing else includes it. KIOSK-ONLY (GL).
+#pragma once
+
+#include <GLES3/gl3.h>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "tube_renderer.h"
+
+// Extension tokens (GL_EXT_sRGB_write_control, GL_EXT_texture_sRGB_decode,
+// GL_EXT_disjoint_timer_query), in case the GLES3 headers lack gl2ext's copies.
+#ifndef GL_FRAMEBUFFER_SRGB_EXT
+#define GL_FRAMEBUFFER_SRGB_EXT 0x8DB9
+#endif
+#ifndef GL_TEXTURE_SRGB_DECODE_EXT
+#define GL_TEXTURE_SRGB_DECODE_EXT 0x8A48
+#endif
+#ifndef GL_DECODE_EXT
+#define GL_DECODE_EXT 0x8A49
+#endif
+#ifndef GL_SKIP_DECODE_EXT
+#define GL_SKIP_DECODE_EXT 0x8A4A
+#endif
+#ifndef GL_TIME_ELAPSED_EXT
+#define GL_TIME_ELAPSED_EXT 0x88BF
+#endif
+#ifndef GL_GPU_DISJOINT_EXT
+#define GL_GPU_DISJOINT_EXT 0x8FBB
+#endif
+
+namespace ui {
+
+// ---- Uniform tables --------------------------------------------------------------
+//
+// FOR TASK 11 - uploading a frame's uniforms with no string lookup per frame:
+//   kTubeFields lists every float field of tube::TubeUniforms with its GLSL name (and
+//   `tint`, the one vec3, is separate). When a program is built, each name uniforms_of(p)
+//   returns is resolved ONCE into its slot:
+//     - a TubeUniforms float field -> ProgramSlot::uploads gets {field index, location}
+//       (only when the location is >= 0; three names are declared but unread, -1 is legal);
+//     - "tint"                      -> ProgramSlot::tint;
+//     - one of kOwnUniformNames     -> ProgramSlot::own[OwnUniform] (-1 when absent);
+//     - one of kSamplerUnits         -> glUniform1i(location, unit) at build, never again.
+//   Each frame: upload_tube_uniforms(slot, frame.u) sends every TubeUniforms field the
+//   program lists; the pass then sets its own with slot.own[...] and binds its textures to
+//   kSamplerUnits' units.
+
+struct TubeField {
+    const char* name;
+    float tube::TubeUniforms::*member;
+};
+using TU = tube::TubeUniforms;
+inline constexpr TubeField kTubeFields[] = {
+    {"outW", &TU::outW}, {"outH", &TU::outH}, {"pxPerMm", &TU::pxPerMm},
+    {"curvature", &TU::curvature}, {"cornerPx", &TU::cornerPx}, {"marginPx", &TU::marginPx}, {"flatFit", &TU::flatFit},
+    {"scanlines", &TU::scanlines}, {"lines", &TU::lines}, {"raster", &TU::raster},
+    {"beamMin", &TU::beamMin}, {"beamMax", &TU::beamMax},
+    {"maskType", &TU::maskType}, {"maskStrength", &TU::maskStrength}, {"maskGain", &TU::maskGain},
+    {"maskPitch", &TU::maskPitch},
+    {"glow", &TU::glow}, {"sharpness", &TU::sharpness}, {"brightness", &TU::brightness},
+    {"contrast", &TU::contrast}, {"saturation", &TU::saturation}, {"convergence", &TU::convergence},
+    {"persistence", &TU::persistence}, {"flicker", &TU::flicker}, {"hum", &TU::hum},
+    {"vignette", &TU::vignette}, {"rim", &TU::rim},
+    {"noise", &TU::noise}, {"jitter", &TU::jitter}, {"glassBlack", &TU::glassBlack},
+    {"reflection", &TU::reflection}, {"abl", &TU::abl}, {"breathe", &TU::breathe},
+    {"chromaBleed", &TU::chromaBleed},
+    {"humPhase", &TU::humPhase}, {"flickerWave", &TU::flickerWave}, {"noiseSeed", &TU::noiseSeed},
+    {"jitterSeed", &TU::jitterSeed}, {"degaussPhaseA", &TU::degaussPhaseA},
+    {"degaussPhaseB", &TU::degaussPhaseB}, {"jitterBias", &TU::jitterBias},
+    {"ablLevel", &TU::ablLevel}, {"power", &TU::power}, {"degauss", &TU::degauss}, {"spot", &TU::spot},
+    {"warmupGain", &TU::warmupGain},
+    {"rollAmount", &TU::rollAmount}, {"rollPosition", &TU::rollPosition},
+    {"rollHalfWidth", &TU::rollHalfWidth}, {"rollTint", &TU::rollTint},
+    {"trackingOffset", &TU::trackingOffset}, {"trackingPosition", &TU::trackingPosition},
+    {"trackingHalfWidth", &TU::trackingHalfWidth}, {"driftOffset", &TU::driftOffset},
+    {"flagOffset", &TU::flagOffset}, {"flagExtent", &TU::flagExtent},
+    {"purityAmount", &TU::purityAmount}, {"purityX", &TU::purityX}, {"purityY", &TU::purityY},
+    {"purityRadius", &TU::purityRadius}, {"purityR", &TU::purityR}, {"purityG", &TU::purityG},
+    {"purityB", &TU::purityB},
+};
+inline constexpr std::size_t kTubeFieldCount = sizeof(kTubeFields) / sizeof(kTubeFields[0]);
+// + tint (three floats): every TubeUniforms member is in the table.
+static_assert(sizeof(TU) == (kTubeFieldCount + 3) * sizeof(float), "a TubeUniforms field is missing from kTubeFields");
+
+// The programs' own uniforms (tube_programs.h's uniforms_for, the `u` names).
+enum class OwnUniform : std::uint8_t {
+    uSceneMap, uSceneClamp, uPicSize, uDstSize, uDir, uSigma, uRadius, uOrigin, uSrcOffset, uSigSize, uMaskSize, count
+};
+inline constexpr std::array<std::string_view, static_cast<std::size_t>(OwnUniform::count)> kOwnUniformNames{
+    "uSceneMap", "uSceneClamp", "uPicSize", "uDstSize", "uDir", "uSigma",
+    "uRadius",   "uOrigin",     "uSrcOffset", "uSigSize", "uMaskSize"};
+
+// Every sampler and the texture unit it reads, fixed for the life of a program (the
+// spike's assignment). `ui` (the scene) and `src` share unit 0: no program has both.
+struct SamplerUnit {
+    std::string_view name;
+    int unit;
+};
+inline constexpr std::array<SamplerUnit, 9> kSamplerUnits{{{"ui", 0},
+                                                          {"src", 0},
+                                                          {"glowTex", 1},
+                                                          {"prev", 2},
+                                                          {"linesTex", 3},
+                                                          {"quarter", 4},
+                                                          {"signalTex", 5},
+                                                          {"glassTex", 6},
+                                                          {"maskTex", 7}}};
+inline constexpr int kTubeTextureUnits = 8;   // units 0..7, all of which TubeGlState restores
+
+// ---- One program of the table -------------------------------------------------------
+
+struct ProgramSlot {
+    GLuint id = 0;
+    tube::SceneDecode built_for = tube::SceneDecode::Shader;   // matters only for programs that read the scene
+    // Built but not yet drawn through its real pass: Mesa's real compile is still to
+    // come, so the guard's marker must name it (see Impl's bookkeeping below).
+    bool drawn = false;
+    struct Upload {
+        std::uint8_t field;   // index into kTubeFields
+        GLint location;
+    };
+    std::vector<Upload> uploads;
+    GLint tint = -1;
+    std::array<GLint, static_cast<std::size_t>(OwnUniform::count)> own{};
+
+    GLint loc(OwnUniform u) const { return own[static_cast<std::size_t>(u)]; }
+};
+
+// ---- Render targets ------------------------------------------------------------------
+
+struct Target {
+    GLuint tex = 0, fbo = 0;
+    int w = 0, h = 0, levels = 1;
+    GLenum fmt = 0;
+    bool made() const { return tex != 0; }
+};
+
+// ---- GL state: one save/restore for every return path -----------------------------------
+//
+// Constructed at the top of every public call that touches GL state; the destructor puts
+// back everything listed below, whatever path the call returns by. Impl methods that touch
+// GL state assume one is alive in their caller (nesting is fine: an inner one restores to
+// the outer's moment). Saved: draw and read framebuffer, viewport, scissor test and box,
+// blend enable/funcs/equations, clear colour, FRAMEBUFFER_SRGB (when the context has the
+// switch), the active unit and TEXTURE_2D on units 0..7, the program, the VAO, the array
+// buffer, the pixel pack/unpack buffers and the unpack alignment, row length and skips.
+// decode_scene() turns the scene texture's hardware decode on; the destructor turns it
+// back to SKIP_DECODE first, so anyone else reading the scene sees today's raw bytes.
+// glGet* of this state is answered from Mesa's client-side copy: no GPU sync.
+class TubeGlState {
+public:
+    explicit TubeGlState(bool have_srgb_switch);
+    ~TubeGlState();
+    TubeGlState(const TubeGlState&) = delete;
+    TubeGlState& operator=(const TubeGlState&) = delete;
+
+    void decode_scene(GLuint scene_tex);
+
+private:
+    bool srgb_switch_, framebuffer_srgb_ = false, scissor_ = false, blend_ = false;
+    GLint draw_fbo_ = 0, read_fbo_ = 0, viewport_[4]{}, scissor_box_[4]{};
+    GLint blend_src_rgb_ = 0, blend_dst_rgb_ = 0, blend_src_a_ = 0, blend_dst_a_ = 0, blend_eq_rgb_ = 0,
+          blend_eq_a_ = 0;
+    GLfloat clear_[4]{};
+    GLint active_unit_ = 0, tex2d_[kTubeTextureUnits]{};
+    GLint program_ = 0, vao_ = 0, array_buffer_ = 0, pack_buffer_ = 0, unpack_buffer_ = 0;
+    GLint unpack_alignment_ = 4, unpack_row_length_ = 0, unpack_skip_rows_ = 0, unpack_skip_pixels_ = 0;
+    GLuint decoded_scene_ = 0;
+};
+
+// ---- The renderer's state ----------------------------------------------------------------
+
+struct TubeRenderer::Impl {
+    explicit Impl(std::string guard_path);
+
+    // Capabilities (probed once per context).
+    Caps caps;
+    bool caps_probed = false;
+    using PfnBeginQuery = void (*)(GLenum, GLuint);
+    using PfnEndQuery = void (*)(GLenum);
+    using PfnGetQueryObjectui64 = void (*)(GLuint, GLenum, GLuint64*);
+    PfnBeginQuery begin_query = nullptr;          // GL_EXT_disjoint_timer_query, for Task 11
+    PfnEndQuery end_query = nullptr;
+    PfnGetQueryObjectui64 get_query_ui64 = nullptr;
+    void probe_caps();
+
+    // The guard (read once, at construction) and the build permission.
+    app::TubeBuildGuard guard;
+    bool builds_allowed = false;
+#ifdef MDB_TUBE_PREVIEW
+    std::string force_hang;   // MDB_TUBE_FORCE_HANG, read once (Task 14 Step 4)
+#endif
+
+    // The program cache: one slot per tube::Program, in enum order.
+    std::array<ProgramSlot, tube::kProgramCount> programs{};
+    ProgramSlot& slot(tube::Program p) { return programs[static_cast<std::size_t>(p)]; }
+    bool build(tube::Program p, tube::SceneDecode decode);   // compile, link, locations; false logs the info log
+    void free_program(tube::Program p);
+
+    // THE DRAWN-PROGRAM BOOKKEEPING (for Task 11). A slot's `drawn` is false from its build
+    // until its first draw through its real pass. The marker names the CURRENT plan's
+    // programs that are built-or-about-to-be but not drawn; it is written (or rewritten)
+    // whenever that set changes and removed when it is empty. Task 11's composite():
+    //   - calls mark_drawn(p) right after each program's first real draw (the glass bake
+    //     below already does it for the glass);
+    //   - calls settle_marker() as it returns (on every path - the passes it did draw are
+    //     marked; an undrawn one keeps the marker, correctly, because its compile is still
+    //     ahead). settle_marker() removes the marker once the plan has nothing undrawn.
+    // A built-but-undrawn program that leaves the plan stays built; the marker stops
+    // naming it, and names it again when a plan that draws it is prepared.
+    std::optional<tube::PassPlan> current_plan;
+    tube::SceneDecode current_decode = tube::SceneDecode::Shader;
+    std::string marker_text;   // what the marker on disk says; "" = no marker written by us
+    void mark_drawn(tube::Program p) { slot(p).drawn = true; }
+    void settle_marker();
+    std::string undrawn_of(const tube::PassPlan& plan) const;   // space-separated names
+    void write_marker(const std::string& names);
+
+    // The build-failure record: cleared by a different plan or retry_builds().
+    bool failed = false;
+    std::optional<tube::PassPlan> failed_plan;
+    tube::SceneDecode failed_decode = tube::SceneDecode::Shader;
+    void record_failure(const char* what);
+
+    // Render targets by TargetSizes (ensure_targets), formats by caps.
+    Target quarter, glow_tmp, glow_out, history[2], signal, lines, glass, mean;
+    int history_index = 0;    // the history written this frame; the other is `prev`
+    bool glass_valid = false; // the glass target holds a bake: bake when !glass_valid OR glass_changed
+    GLenum signal_format() const;   // RGBA16F with half-float targets, else SRGB8_ALPHA8
+    // Makes what the plan needs at these sizes, frees what it no longer needs. Called by
+    // Task 11's composite on still_changed (and whenever a target is missing). False: an
+    // FBO was incomplete; the failure is recorded (retried as a build failure).
+    bool ensure_targets(const tube::PassPlan& plan, const tube::TargetSizes& sizes);
+    bool make_target(Target& t, const char* name, int w, int h, GLenum fmt, int levels);
+    static void free_target(Target& t);
+    void free_targets();
+
+    // The mask (one period, NEAREST + REPEAT, RGBA8), from DriverFrame::mask on mask_changed.
+    GLuint mask_tex = 0;
+    int mask_w = 0, mask_h = 0;
+    void upload_mask(const tube::MaskTile& tile);
+
+    // COLOUR SPACE FOR TASK 11's PASSES: draw every pass into a target with FRAMEBUFFER_SRGB
+    // ENABLED (when caps.srgb_write_control; without the switch ES 3.0 always encodes into an
+    // sRGB attachment), so quarter / glow / history / mean - and signal / lines on the
+    // SRGB8_ALPHA8 fallback - store linear light encoded. It changes nothing for RGBA16F,
+    // the RGBA8 glass or the default framebuffer (not sRGB; output.frag encodes itself).
+    // Read the scene through TubeGlState::decode_scene() when the decode is Hardware.
+    //
+    // The glass bake (DriverFrame::glass_changed), into `glass` at the picture's size. The
+    // glass program's first draw: it is marked drawn here. False: no glass program or target.
+    bool bake_glass(const GlEnv& env, const tube::TubeUniforms& u);
+
+    // Every TubeUniforms field the program lists, and tint.
+    static void upload_tube_uniforms(const ProgramSlot& s, const tube::TubeUniforms& u);
+    // The renderer's VAO with a clip-space full-target quad in its VBO (attr 0 position,
+    // attr 1 texCoord, four floats a vertex: renderer.cpp's layout).
+    static void bind_quad(const GlEnv& env);
+
+    // The scene texture's storage as begin_scene() last specified it (0: never / forgotten).
+    GLuint scene_tex = 0;
+    int scene_w = 0, scene_h = 0;
+    GLenum scene_format = 0;
+
+    // Reserved for Task 11 (the mean probe's read-back and the GPU timers); release_gl()
+    // deletes whatever is here.
+    GLuint mean_read_fbo = 0, mean_pbo = 0;
+    GLsync mean_fence = nullptr;
+    std::vector<GLuint> queries;
+
+    void release();   // every GL object, ids zeroed, scene storage forgotten
+};
+
+}  // namespace ui

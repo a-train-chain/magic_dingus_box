@@ -161,6 +161,10 @@ set(UI_SOURCES
     src/ui/renderer_mb.cpp
     src/ui/renderer_crt.cpp
     src/ui/renderer_batch.cpp
+    # The Tube CRT engine's GL side (resources, builds under the guard; the passes).
+    # Nothing calls it until the engine is wired in.
+    src/ui/tube_renderer.cpp
+    src/ui/tube_renderer_passes.cpp
     src/ui/controller_wizard.cpp
     src/ui/controller_wizard_renderer.cpp
     src/ui/pairing_screen.cpp
