@@ -14,6 +14,7 @@
 #include "ui_batch.h"
 #include "pairing_screen_renderer.h"  // For PairedDevice
 #include "../tube/tube_frame_class.h"  // TubeStatus::cls
+#include "../tube/tube_programs.h"     // tube::YieldDecision
 #include "../video/picture_placement.h" // video::IRect (the tube's picture)
 
 namespace tube {
@@ -333,9 +334,12 @@ public:
     // The picture: the content rectangle (video::content_rects().content,
     // top-left-origin framebuffer px) and whether the output is CRT Native. Stores
     // two values; main.cpp sets it every iteration before tube_status().
-    void set_tube_picture(video::IRect content, bool crt_native) {
+    // `full_screen_film`: app::movie_full_screen, the fact content_rects was given; only
+    // an actual full-screen film can yield to Enhanced (tube::tube_yields_to_enhanced).
+    void set_tube_picture(video::IRect content, bool crt_native, bool full_screen_film) {
         tube_picture_ = content;
         tube_crt_native_ = crt_native;
+        tube_full_screen_film_ = full_screen_film;
     }
     // The loop's clock for this iteration, in seconds (the iteration's
     // steady_clock time point), so the composite's FrameDriver::frame() and
@@ -535,15 +539,12 @@ private:
     bool tube_frame_wanted(const app::AppState& state) const;
     // tube_frame_wanted() but for the yield: every other condition of a Tube frame.
     bool tube_engine_frame(const app::AppState& state) const;
-    // Whether the current setting yields the current picture (tube_picture_) to
-    // Enhanced. Cached on (setting, picture): both are stable frame to frame, so the
-    // pure decision runs once per change, not three times a frame.
+    // Whether the current setting yields the current picture (tube_picture_, an actual
+    // full-screen film) to Enhanced: tube::YieldDecision, the pure decision cached on
+    // (setting, picture, film).
     bool tube_yields_now(const app::AppState& state) const;
-    mutable tube::TubeSetting tube_yield_setting_{};
-    mutable video::IRect tube_yield_picture_{};
-    mutable bool tube_yield_crt_native_ = false;
-    mutable bool tube_yield_known_ = false;
-    mutable bool tube_yield_ = false;
+    mutable tube::YieldDecision tube_yield_;
+    bool tube_full_screen_film_ = false;
     bool tube_composite(const app::AppState& state);
     void release_tube_gl();
     bool last_scanlines_enabled_ = true;

@@ -405,18 +405,9 @@ bool Renderer::tube_frame_wanted(const app::AppState& state) const {
 }
 
 bool Renderer::tube_yields_now(const app::AppState& state) const {
-    const tube::TubeSetting& setting = state.display_settings.tube;
-    if (!tube_yield_known_ || setting != tube_yield_setting_ || tube_picture_.w != tube_yield_picture_.w ||
-        tube_picture_.h != tube_yield_picture_.h || tube_crt_native_ != tube_yield_crt_native_) {
-        const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
-                                    tube_crt_native_};
-        tube_yield_ = tube::tube_yields_to_enhanced(tube::resolve(setting), picture);
-        tube_yield_setting_ = setting;
-        tube_yield_picture_ = tube_picture_;
-        tube_yield_crt_native_ = tube_crt_native_;
-        tube_yield_known_ = true;
-    }
-    return tube_yield_;
+    const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
+                                tube_crt_native_};
+    return tube_yield_(state.display_settings.tube, picture, tube_full_screen_film_);
 }
 
 bool Renderer::tube_engine_frame(const app::AppState& state) const {

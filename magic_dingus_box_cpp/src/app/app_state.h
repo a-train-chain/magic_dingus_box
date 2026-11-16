@@ -1031,6 +1031,14 @@ inline bool tube_offered(const AppState& s) noexcept {
     return s.platform_profile.tube_crt_engine && s.tube_renderer_ready;
 }
 
+// Whether a film can be drawn FULL-SCREEN in this configuration at all: only the
+// Channel Guide menu style shows films full-screen (app::movie_full_screen requires it
+// first; in the List style every film plays in the 4:3 picture). The one predicate for
+// "films can be full-screen here".
+inline bool full_screen_films_possible(const AppState& s) noexcept {
+    return s.display_settings.menu_style == MenuStyle::ChannelGuide;
+}
+
 // Why Tube is not offered, for the status file and the web: "" when it is,
 // "needs_pi5" when the board gate is closed, otherwise "not_ready".
 inline std::string_view tube_not_offered_reason(const AppState& s) noexcept {

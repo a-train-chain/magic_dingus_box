@@ -17,6 +17,7 @@
 #include <optional>
 
 #include "app/app_state.h"
+#include "video/content_area.h"
 #include "tube/tube_programs.h"
 #include "tube/tube_setting.h"
 
@@ -28,16 +29,31 @@ inline tube::NotDrawn tube_not_drawn(const AppState& state) noexcept {
         .not_drawn;
 }
 
+// The picture a full-screen film gets at this output: video::content_rects with
+// full_screen_film true (the whole framebuffer), CRT Native from the display mode. The
+// main loop publishes it (state.tube_render.film_picture) from the framebuffer it gives
+// content_rects every frame.
+inline tube::Picture full_screen_film_picture(int fb_w, int fb_h, DisplayMode mode) noexcept {
+    const video::IRect r =
+        video::content_rects(mode == DisplayMode::MODERN_TV, true, false, fb_w, fb_h, fb_w, fb_h).content;
+    return tube::Picture{static_cast<double>(r.w), static_cast<double>(r.h), mode == DisplayMode::CRT_NATIVE};
+}
+
 // The engine a full-screen film gets with the saved setting at the current output: Tube,
 // or Enhanced when the look is too heavy for it (tube::tube_yields_to_enhanced, the same
-// decision the renderer makes per frame, for the film picture main.cpp reports: the whole
-// framebuffer). nullopt until the main loop has reported the output. Lets the controls warn
-// BEFORE a film plays.
+// decision the renderer makes per frame). Lets the controls warn BEFORE a film plays.
+// nullopt - "not applicable", no note anywhere - unless a film can be full-screen in this
+// configuration at all (full_screen_films_possible: the Channel Guide style), the engine
+// in effect is Tube, and the main loop has reported the output (film_picture).
 inline std::optional<CrtEngine> tube_film_engine(const AppState& state) noexcept {
+    if (!full_screen_films_possible(state)) return std::nullopt;
+    if (effective_crt_engine(state.display_settings.crt_engine, tube_offered(state)) != CrtEngine::Tube)
+        return std::nullopt;
     const tube::Picture& film = state.tube_render.film_picture;
     if (film.w <= 0.0 || film.h <= 0.0) return std::nullopt;
-    return tube::tube_yields_to_enhanced(tube::resolve(state.display_settings.tube), film) ? CrtEngine::Enhanced
-                                                                                          : CrtEngine::Tube;
+    return tube::tube_yields_to_enhanced(tube::resolve(state.display_settings.tube), film, true)
+               ? CrtEngine::Enhanced
+               : CrtEngine::Tube;
 }
 
 // The engine drawing the picture on screen right now: the effective engine, except that

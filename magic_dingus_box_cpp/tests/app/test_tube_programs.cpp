@@ -619,23 +619,27 @@ TEST_CASE("tube programs: a wide glow is blurred at half the quarter's size", "[
     REQUIRE(target_bytes(full, tf, true) - target_bytes(odd, th, true) == 2u * (360u * 270u - 180u * 135u) * 4u);
 }
 
-// Owner's decision (2026-11-15): on a full-screen film (a picture larger than the
-// reference), a look whose plan does not fit even after the ladder yields the film to
-// the Enhanced engine. At or below the reference nothing ever yields.
+// Owner's decision (2026-11-15): an ACTUAL full-screen film (a picture larger than the
+// reference) whose plan does not fit even after the ladder yields to the Enhanced engine.
+// Nothing else ever yields, however large.
 TEST_CASE("tube programs: a look too heavy for a full-screen film yields it to Enhanced", "[tube]") {
     const Picture film{1920.0, 1080.0, false};
-    CHECK_FALSE(tube_yields_to_enhanced(look_resolved(Look::pvm), film));       // fits without afterglow
-    CHECK_FALSE(tube_yields_to_enhanced(look_resolved(Look::monitor), film));   // fits as asked
+    CHECK_FALSE(tube_yields_to_enhanced(look_resolved(Look::pvm), film, true));       // fits without afterglow
+    CHECK_FALSE(tube_yields_to_enhanced(look_resolved(Look::monitor), film, true));   // fits as asked
     for (Look heavy : {Look::trinitron, Look::arcade, Look::tv, Look::everything}) {
         INFO(look_name(heavy));
         const PlannedPasses pp = plan_passes_and_drops(look_resolved(heavy), film);
-        CHECK(pp.yields_to_enhanced);
-        CHECK(tube_yields_to_enhanced(look_resolved(heavy), film));
-        CHECK_FALSE(pp.not_drawn.any());   // nothing is "not drawn": Enhanced draws the film
+        CHECK(pp.over_budget);
+        CHECK_FALSE(pp.not_drawn.any());   // kept as asked: nothing is "not drawn"
+        CHECK(tube_yields_to_enhanced(look_resolved(heavy), film, true));
+        // The same size when it is NOT a film (CRT Native into a 1080p framebuffer until the
+        // restart, a menu, a normal channel there): never yields; drawn as asked, late.
+        CHECK_FALSE(tube_yields_to_enhanced(look_resolved(heavy), film, false));
+        CHECK_FALSE(tube_yields_to_enhanced(look_resolved(heavy), Picture{1920.0, 1080.0, true}, false));
     }
-    // A film-sized picture where the setting fits only after dropping afterglow: Tube draws it.
+    // A film where the setting fits only after dropping afterglow: Tube draws it.
     const PlannedPasses pvm = plan_passes_and_drops(look_resolved(Look::pvm), film);
-    CHECK_FALSE(pvm.yields_to_enhanced);
+    CHECK_FALSE(pvm.over_budget);
     CHECK(pvm.not_drawn == NotDrawn{true, false});
 }
 
@@ -644,7 +648,8 @@ TEST_CASE("tube programs: nothing yields at or below the reference picture, what
                               Picture{1280.0, 720.0, true}, Picture{1440.0, 1060.0, false}})
         for (Look look : kLooks) {
             INFO(look_name(look) << " at " << pic.w << "x" << pic.h);
-            CHECK_FALSE(tube_yields_to_enhanced(look_resolved(look), pic));
+            CHECK_FALSE(tube_yields_to_enhanced(look_resolved(look), pic, true));
+            CHECK_FALSE(tube_yields_to_enhanced(look_resolved(look), pic, true, 1.0));   // even over budget
         }
     // A setting over the budget at 1440x1080 even after the ladder (no shipped price set
     // makes one: the heaviest, TV without both, predicts 22.04, so the budget is lowered to
@@ -654,10 +659,32 @@ TEST_CASE("tube programs: nothing yields at or below the reference picture, what
     const Resolved r = look_resolved(Look::tv);
     const PlannedPasses pp = plan_passes_and_drops(r, ref, 21.0);
     REQUIRE(plan_ms(pp.plan, r, ref) > 21.0);
+    CHECK(pp.over_budget);
     CHECK_FALSE(pp.not_drawn.any());
-    CHECK_FALSE(pp.yields_to_enhanced);
-    // A tighter budget on the film shows the yield follows the plan AS DRAWN.
+    CHECK_FALSE(tube_yields_to_enhanced(r, ref, true, 21.0));
+    // The yield follows the plan AS DRAWN on the film.
     const Picture film{1920.0, 1080.0, false};
-    CHECK(plan_passes_and_drops(look_resolved(Look::monitor), film, 20.0).yields_to_enhanced);
-    CHECK_FALSE(plan_passes_and_drops(look_resolved(Look::monitor), film, 25.0).yields_to_enhanced);
+    CHECK(tube_yields_to_enhanced(look_resolved(Look::monitor), film, true, 20.0));
+    CHECK_FALSE(tube_yields_to_enhanced(look_resolved(Look::monitor), film, true, 25.0));
+}
+
+TEST_CASE("tube programs: the renderer's yield decision is the pure one, evaluated once per change", "[tube]") {
+    YieldDecision decide;
+    TubeSetting tv;
+    select_look(tv, Look::tv);
+    const Picture film{1920.0, 1080.0, false}, normal{1440.0, 1080.0, false};
+    for (int frame = 0; frame < 5; ++frame) CHECK(decide(tv, film, true));
+    CHECK(decide.evaluations() == 1);
+    CHECK_FALSE(decide(tv, normal, false));   // a channel flip: one evaluation
+    CHECK_FALSE(decide(tv, film, false));     // the size alone, without the film fact: no
+    CHECK(decide(tv, film, true));
+    CHECK(decide.evaluations() == 4);
+    TubeSetting monitor;
+    select_look(monitor, Look::monitor);
+    CHECK_FALSE(decide(monitor, film, true));
+    CHECK(decide.evaluations() == 5);
+    for (const TubeSetting& s : {tv, monitor})
+        for (const Picture pic : {film, normal})
+            for (bool is_film : {false, true})
+                CHECK(decide(s, pic, is_film) == tube_yields_to_enhanced(resolve(s), pic, is_film));
 }

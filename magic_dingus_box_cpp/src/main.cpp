@@ -47,6 +47,7 @@
 #include "app/audio_router.h"
 #include "app/auto_tune.h"
 #include "app/off_air.h"
+#include "app/tube_not_drawn.h"   // app::full_screen_film_picture
 #include "app/bezel_catalog.h"
 #include "app/channel_schedule.h"
 #include "app/game_quiet_mode.h"
@@ -2209,7 +2210,8 @@ int main(int /* argc */, char* /* argv */[]) {
                 std::chrono::duration<double>(now.time_since_epoch()).count();
             ui_renderer.set_tube_picture(
                 frame_rects.content,
-                state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
+                state.display_settings.mode == app::DisplayMode::CRT_NATIVE,
+                movie_full_screen_now);
             ui_renderer.set_tube_clock(tube_clock);
             ui_renderer.skip_missed_tube_degauss(state);   // before peek(), so they agree
             tube_now = ui_renderer.tube_status(state, tube_clock);
@@ -2236,11 +2238,9 @@ int main(int /* argc */, char* /* argv */[]) {
             state.tube_render.unavailable = std::string(ui_renderer.tube_unavailable_reason());
             state.tube_render.picture = tube_now.picture;
             state.tube_render.yielding = tube_now.yielding;
-            // What a full-screen film would be drawn into: content_rects gives a film
-            // the whole framebuffer (fb_w x fb_h above).
-            state.tube_render.film_picture = tube::Picture{
-                static_cast<double>(fb_w), static_cast<double>(fb_h),
-                state.display_settings.mode == app::DisplayMode::CRT_NATIVE};
+            // What a full-screen film would be drawn into at this output.
+            state.tube_render.film_picture =
+                app::full_screen_film_picture(fb_w, fb_h, state.display_settings.mode);
         }
 
         // ── Redraw gate ──────────────────────────────────────────────────

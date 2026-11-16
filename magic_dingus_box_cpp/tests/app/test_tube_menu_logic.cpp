@@ -127,15 +127,32 @@ TEST_CASE("tube menu logic: a row whose effect is not drawn says so", "[tube]") 
 TEST_CASE("tube menu logic: which engine a full-screen film gets, and which draws the screen now", "[tube]") {
     app::AppState state;
     drawing_tube(state, tube::Look::tv, tube::Picture{1440.0, 1080.0, false});
+    state.display_settings.menu_style = app::MenuStyle::ChannelGuide;
     // Before the main loop has run, the film picture is unknown.
     CHECK_FALSE(app::tube_film_engine(state).has_value());
-    state.tube_render.film_picture = tube::Picture{1920.0, 1080.0, false};
+    state.tube_render.film_picture = app::full_screen_film_picture(1920, 1080, app::DisplayMode::MODERN_TV);
     CHECK(app::tube_film_engine(state) == CrtEngine::Enhanced);   // TV is too heavy for a film
     tube::select_look(state.display_settings.tube, tube::Look::pvm);
     CHECK(app::tube_film_engine(state) == CrtEngine::Tube);       // PVM fits without afterglow
-    state.tube_render.film_picture = tube::Picture{1280.0, 720.0, true};   // CRT Native: never yields
     tube::select_look(state.display_settings.tube, tube::Look::everything);
+    // CRT Native at 720p: a film is the 1280x720 framebuffer, never yields.
+    state.tube_render.film_picture = app::full_screen_film_picture(1280, 720, app::DisplayMode::CRT_NATIVE);
     CHECK(app::tube_film_engine(state) == CrtEngine::Tube);
+    state.tube_render.film_picture = app::full_screen_film_picture(1920, 1080, app::DisplayMode::MODERN_TV);
+    CHECK(app::tube_film_engine(state) == CrtEngine::Enhanced);
+    // Not applicable (no note anywhere): the List style shows no film full-screen ...
+    state.display_settings.menu_style = app::MenuStyle::List;
+    CHECK_FALSE(app::tube_film_engine(state).has_value());
+    state.display_settings.menu_style = app::MenuStyle::ChannelGuide;
+    // ... and with Classic or Enhanced in effect the tube draws nothing at all.
+    state.display_settings.set_crt_engine(CrtEngine::Enhanced);
+    CHECK_FALSE(app::tube_film_engine(state).has_value());
+    state.display_settings.set_crt_engine(CrtEngine::Classic);
+    CHECK_FALSE(app::tube_film_engine(state).has_value());
+    state.display_settings.set_crt_engine(CrtEngine::Tube);
+    state.tube_renderer_ready = false;   // not offered: a saved Tube draws as Enhanced
+    CHECK_FALSE(app::tube_film_engine(state).has_value());
+    state.tube_renderer_ready = true;
     // The engine drawing the picture on screen right now.
     CHECK(app::tube_engine_on_screen(state) == CrtEngine::Tube);
     state.tube_render.yielding = true;
@@ -146,8 +163,20 @@ TEST_CASE("tube menu logic: which engine a full-screen film gets, and which draw
     state.tube_render.unavailable = "build_failed";
     CHECK(app::tube_engine_on_screen(state) == CrtEngine::Enhanced);
     state.tube_render.unavailable.clear();
-    state.tube_renderer_ready = false;   // not offered: a saved Tube draws as Enhanced
+    state.tube_renderer_ready = false;
     CHECK(app::tube_engine_on_screen(state) == CrtEngine::Enhanced);
+}
+
+TEST_CASE("tube menu logic: the picture a full-screen film gets is the whole framebuffer", "[tube]") {
+    const tube::Picture modern = app::full_screen_film_picture(1920, 1080, app::DisplayMode::MODERN_TV);
+    CHECK(modern.w == 1920.0);
+    CHECK(modern.h == 1080.0);
+    CHECK_FALSE(modern.crt_native);
+    const tube::Picture modern720 = app::full_screen_film_picture(1280, 720, app::DisplayMode::MODERN_TV);
+    CHECK(modern720.w == 1280.0);
+    const tube::Picture native = app::full_screen_film_picture(1280, 720, app::DisplayMode::CRT_NATIVE);
+    CHECK(native.w == 1280.0);
+    CHECK(native.crt_native);
 }
 
 TEST_CASE("tube menu logic: the Look row says when films use Enhanced", "[tube]") {

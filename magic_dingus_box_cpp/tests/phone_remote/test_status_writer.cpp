@@ -378,6 +378,11 @@ TEST_CASE("status_writer: the tube block says which engine draws the screen and 
     REQUIRE(t["yielding"] == false);
     REQUIRE(t["effective_engine"].asString() == "tube");
     state.tube_render.film_picture = tube::Picture{1920.0, 1080.0, false};
+    // The List style shows no film full-screen: not applicable.
+    state.display_settings.menu_style = app::MenuStyle::List;
+    t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_film.json");
+    REQUIRE(t["film_engine"].isNull());
+    state.display_settings.menu_style = app::MenuStyle::ChannelGuide;
     t = written_tube(state, fs::temp_directory_path() / "mdb_status_tube_film.json");
     REQUIRE(t["film_engine"].asString() == "enhanced");
     // A film on screen, yielded: Enhanced draws it, and nothing is "not drawn".

@@ -427,12 +427,13 @@ inline NotDrawnRows not_drawn_rows(const NotDrawn& d) noexcept {
 }
 
 // A plan and what it left out.
-// `yields_to_enhanced`: a full-screen film whose plan does not fit even after the ladder;
-// the Tube engine does not draw it and the Enhanced engine does (see below).
+// `over_budget`: the plan does not fit even after the ladder (it is the plan as asked);
+// on an actual full-screen film that means the film yields to Enhanced
+// (tube_yields_to_enhanced, below).
 struct PlannedPasses {
     PassPlan plan;
     NotDrawn not_drawn;
-    bool yields_to_enhanced = false;
+    bool over_budget = false;
 };
 
 // THE ONE PLACE A LOOK GIVES WAY (owner's decision, 2026-11-15). The plan for a resolved
@@ -449,15 +450,8 @@ struct PlannedPasses {
 // draws with the dropped rows at 0 (apply_plan); the status, the TV menu and the web page
 // read `not_drawn` from here. `budget_ms` exists for tests; every caller uses the default.
 //
-// FILMS YIELD TO ENHANCED (owner's decision, 2026-11-15, on window 5's measured film:
-// Trinitron 30.7, Arcade 30.7, TV 32.7, Everything 32.9 ms, 20 fps; PVM without afterglow
-// 23.2 and Monitor 22.8 held 30 fps): on a picture LARGER than the reference (a
-// full-screen film) a plan that does not fit even after the ladder is not drawn by Tube at
-// all: `yields_to_enhanced` is true, the plan is the one as asked, nothing is "not drawn",
-// and the renderer hands the frame to the Enhanced engine the way it does for the Media
-// Browser (Renderer::tube_frame_wanted). A smooth film matters more than the exact tube
-// look. At or below the reference nothing yields: a too-heavy custom setting there draws
-// late with the pacing monitor's notice, as before.
+// When nothing fits, `over_budget` is true and the plan is the one as asked (see
+// tube_yields_to_enhanced below for what an actual full-screen film then does).
 inline PlannedPasses plan_passes_and_drops(const Resolved& resolved, const Picture& picture,
                                            double budget_ms = kRichBudgetMs) noexcept {
     const TubeUniforms still = tube_uniforms_for(resolved, picture);
@@ -487,7 +481,7 @@ inline PlannedPasses plan_passes_and_drops(const Resolved& resolved, const Pictu
         if (fits(p)) return {p, {asked.afterglow, true}};
     }
     PlannedPasses kept = as_asked;
-    kept.yields_to_enhanced = larger;
+    kept.over_budget = true;
     return kept;
 }
 
@@ -495,10 +489,48 @@ inline PassPlan plan_passes(const Resolved& resolved, const Picture& picture) no
     return plan_passes_and_drops(resolved, picture).plan;
 }
 
-// Whether Tube hands this picture to the Enhanced engine (plan_passes_and_drops above).
-inline bool tube_yields_to_enhanced(const Resolved& resolved, const Picture& picture) noexcept {
-    return plan_passes_and_drops(resolved, picture).yields_to_enhanced;
+// FILMS YIELD TO ENHANCED (owner's decision, 2026-11-15, on window 5's measured film:
+// Trinitron 30.7, Arcade 30.7, TV 32.7, Everything 32.9 ms, 20 fps; PVM without afterglow
+// 23.2 and Monitor 22.8 held 30 fps). Whether Tube hands this picture to the Enhanced
+// engine: only an ACTUAL full-screen film (`full_screen_film`: app::movie_full_screen, the
+// same fact video::content_rects is given) whose picture is larger than the reference and
+// whose plan does not fit even after the ladder. The renderer then hands the frame over
+// the way it does for the Media Browser (Renderer::tube_frame_wanted); nothing is "not
+// drawn". A smooth film matters more than the exact tube look. Any other picture never
+// yields, however large (CRT Native into a 1080p framebuffer until the restart that
+// applies the mode, menus, normal channels): it keeps the ladder, and if nothing fits it
+// draws as asked, late, with the pacing monitor's notice. `budget_ms` is for tests.
+inline bool tube_yields_to_enhanced(const Resolved& resolved, const Picture& picture, bool full_screen_film,
+                                    double budget_ms = kRichBudgetMs) noexcept {
+    if (!full_screen_film || picture.w * picture.h <= kReferencePicturePixels) return false;
+    return plan_passes_and_drops(resolved, picture, budget_ms).over_budget;
 }
+
+// The renderer's per-frame yield decision with its cache: the pure decision runs again only
+// when the setting, the picture or the film fact changed (all three are stable frame to
+// frame), never three times a frame. Allocation-free.
+class YieldDecision {
+public:
+    bool operator()(const TubeSetting& setting, const Picture& picture, bool full_screen_film) noexcept {
+        if (!known_ || setting != setting_ || picture.w != picture_.w || picture.h != picture_.h ||
+            picture.crt_native != picture_.crt_native || full_screen_film != film_) {
+            yields_ = tube_yields_to_enhanced(resolve(setting), picture, full_screen_film);
+            setting_ = setting;
+            picture_ = picture;
+            film_ = full_screen_film;
+            known_ = true;
+            ++evaluations_;
+        }
+        return yields_;
+    }
+    int evaluations() const noexcept { return evaluations_; }   // for tests
+
+private:
+    TubeSetting setting_{};
+    Picture picture_{0.0, 0.0, false};
+    bool film_ = false, known_ = false, yields_ = false;
+    int evaluations_ = 0;
+};
 
 // The still uniforms as the plan draws them: a row whose pass the plan dropped reads 0.
 // Every rich output program compiles OUT_GLOW, so a GLOW left above 0 after
