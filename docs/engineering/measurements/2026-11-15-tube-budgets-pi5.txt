@@ -1,0 +1,93 @@
+Tube renderer on the Pi 5: GPU prices per look after each optimisation, and what each trim buys
+================================================================================================
+Plan: docs/superpowers/plans/2026-11-15-tube-crt-renderer.md, Task 15 (budgets per look). Continues
+2026-11-15-tube-programs-pi5.txt (the first window: binary 4ad8223, before any optimisation).
+Box: magicpi5 (Raspberry Pi 5, 2 GB), V3D 7.1.10.2, Mesa 25.0.7, Modern TV 1920x1080 @ 60 Hz, picture 1440x1080,
+a 960x720 H.264 playlist video playing. Test-only preview builds run from /home/magic/tube-preview; the production
+kiosk stopped for each window and restored afterwards (binary hash and settings.json unchanged each time).
+"ms" is the kiosk's own GPU timers (MDB_TUBE_GPU_TIMING=1), a 10 s average; "frames" is frames drawn in those 10 s
+(300 = 30 fps; 200 = every third vblank = 20 fps).
+
+RESULT SO FAR
+- The practical ceiling for 30 fps is about 23.5 ms of tube GPU time per frame; the cliff to 20 fps is near 25 ms.
+  Timers OFF, full minutes: PVM (21.1 ms) 1793 presents / 16 late = 99.1 % on time; TV without glow (23.5 ms)
+  1780 / 25 late = 98.6 %.
+- Two changes that keep the picture: (1) values that depend only on uniforms are computed once a frame on the CPU
+  (commits b778afa..9e65ff9): 1.3-1.9 ms per look, no pixel over 1/255; (2) a wide glow is blurred on targets half the
+  quarter's size (5b11aa0): the blur 2.3-4.05 ms -> 0.3-0.7 ms, at most 1/255 on every shipped look.
+- Measured with both: PVM 19.0 ms and Monitor 17.0 ms. NOT yet measured with (2): Trinitron, TV, Arcade, Everything
+  (the third window was cut short when the owner started using the TV). Estimated from the tables below minus the
+  glow saving: Trinitron ~22.9, Arcade ~23.0, TV ~24.5, Everything ~24.7 ms.
+- So TV and Everything are still expected about 1 ms over the ceiling. The candidates, each priced below or by the
+  on-Pi tool: afterglow off (about -1.8 ms), chroma bleed off (about -1.3 ms), the cheap beam on the rich outputs
+  (about -1.3 ms by the tool; changes pixels by up to 9-33/255, so it is the owner's decision).
+
+1. Per look, three binaries (total ms -> frames per 10 s)
+   look         4ad8223 (first window)   1f8cdc4 (+CPU-derived values)   b5f67d2 (+half-size wide glow)
+   pvm          22.4 -> 291-294          21.10 -> 294                    18.98 -> 301
+   monitor      19.9 -> 298              18.42 -> 299                    16.95 -> 300
+   trinitron    27.2 -> 199-200          25.26 -> 201                    not measured
+   tv           29.0 -> 201              27.41 -> 201                    not measured
+   arcade       28.0 -> 200-201          26.32 -> 201                    not measured
+   everything   28.9 -> 201              27.60 -> 200                    not measured
+
+2. Window 2 (19:22-19:49 box time), binary 1f8cdc4 (sha256 4496942b...), raw lines
+   (first six lines: one look each. The later lines of this first matrix are INVALID and omitted: its helper sent
+   several ops faster than the kiosk acknowledged them.)
+pvm                          294 quarter 0.71 glow 2.30 signal 5.28 lines - output 10.05 history 2.48 probe 0.27 = 21.10 ms
+monitor                      299 quarter 0.66 glow 1.64 signal 5.24 lines - output 10.65 history - probe 0.23 = 18.42 ms
+trinitron                    201 quarter 0.72 glow 2.95 signal 3.95 lines 1.06 output 13.94 history 2.40 probe 0.25 = 25.26 ms
+tv                           201 quarter 0.73 glow 3.61 signal 5.31 lines 1.07 output 13.99 history 2.40 probe 0.30 = 27.41 ms
+arcade                       201 quarter 0.72 glow 4.05 signal 5.30 lines 1.06 output 12.56 history 2.39 probe 0.25 = 26.32 ms
+everything                   200 quarter 0.76 glow 3.62 signal 5.32 lines 1.07 output 14.10 history 2.47 probe 0.26 = 27.60 ms
+
+3. Window 2, what each trim buys (binary 1f8cdc4; each line is the look plus the rows named; the list at the end is
+   the kiosk's own "moved rows", confirming the setting that was measured)
+trinitron -afterglow           293 quarter 0.64 glow 2.94 signal 3.98 lines 1.02 output 14.63 history - probe 0.22 = 23.43 ms | ["afterglow"]
+trinitron -glow                296 quarter - glow - signal 3.92 lines 1.05 output 13.47 history 2.42 probe 0.23 = 21.08 ms | ["glow"]
+trinitron -afterglow -glow     301 quarter - glow - signal 3.90 lines 1.02 output 14.17 history - probe 0.23 = 19.33 ms | ["glow","afterglow"]
+trinitron -afterglow -chroma   292 quarter 0.64 glow 2.94 signal 4.09 lines 1.04 output 14.65 history - probe 0.22 = 23.59 ms | ["afterglow"]
+trinitron -afterglow glowSize10 295 quarter 0.64 glow 1.64 signal 3.98 lines 1.06 output 14.64 history - probe 0.23 = 22.19 ms | ["glowSize","afterglow"]
+tv -afterglow                  201 quarter 0.63 glow 3.60 signal 5.31 lines 1.01 output 14.79 history - probe 0.23 = 25.57 ms | ["afterglow"]
+tv -glow                       288 quarter 0.65 glow - signal 5.31 lines 1.04 output 13.57 history 2.66 probe 0.24 = 23.47 ms | ["glow"]
+tv -afterglow -glow            296 quarter 0.65 glow - signal 5.33 lines 1.08 output 14.34 history - probe 0.24 = 21.64 ms | ["glow","afterglow"]
+tv -afterglow -chroma          288 quarter 0.64 glow 3.60 signal 3.98 lines 1.03 output 14.77 history - probe 0.22 = 24.23 ms | ["afterglow","chromaBleed"]
+tv -afterglow glowSize10       285 quarter 0.65 glow 1.66 signal 5.33 lines 1.04 output 14.87 history - probe 0.26 = 23.82 ms | ["glowSize","afterglow"]
+arcade -afterglow              281 quarter 0.63 glow 4.04 signal 5.33 lines 1.03 output 13.00 history - probe 0.23 = 24.25 ms | ["afterglow"]
+arcade -glow                   296 quarter 0.63 glow - signal 5.31 lines 1.07 output 12.27 history 2.44 probe 0.22 = 21.94 ms | ["glow"]
+arcade -afterglow -glow        298 quarter 0.64 glow - signal 5.36 lines 1.10 output 12.75 history - probe 0.24 = 20.09 ms | ["glow","afterglow"]
+arcade -afterglow -chroma      294 quarter 0.64 glow 4.04 signal 3.87 lines 1.03 output 13.00 history - probe 0.22 = 22.80 ms | ["afterglow","chromaBleed"]
+arcade -afterglow glowSize10   297 quarter 0.64 glow 1.64 signal 5.27 lines 1.02 output 13.02 history - probe 0.25 = 21.84 ms | ["glowSize","afterglow"]
+everything -afterglow          201 quarter 0.65 glow 3.61 signal 5.25 lines 1.04 output 14.79 history - probe 0.24 = 25.57 ms | ["afterglow"]
+everything -glow               295 quarter 0.63 glow - signal 5.24 lines 1.00 output 13.53 history 2.37 probe 0.22 = 22.98 ms | ["glow"]
+everything -afterglow -glow    298 quarter 0.63 glow - signal 5.24 lines 1.01 output 14.34 history - probe 0.24 = 21.46 ms | ["glow","afterglow"]
+everything -afterglow -chroma  281 quarter 0.64 glow 3.60 signal 3.86 lines 1.02 output 14.79 history - probe 0.24 = 24.16 ms | ["afterglow","chromaBleed"]
+everything -afterglow glowSize10 295 quarter 0.63 glow 1.64 signal 5.23 lines 1.01 output 14.79 history - probe 0.22 = 23.52 ms | ["glowSize","afterglow"]
+
+4. Window 2, pacing with the GPU timers OFF (binary 1f8cdc4). 19:44:04 pvm; 19:46:13 tv with glow 0.
+[2026-11-15 19:43:29.769] [info] Tube pacing: class 30, 1762 presents (1762 with video), 75 late, 75 late with video
+[2026-11-15 19:44:48.139] [info] Tube pacing: class 30, 1779 presents (1771 with video), 13 late, 13 late with video
+[2026-11-15 19:45:48.172] [info] Tube pacing: class 30, 1793 presents (1793 with video), 16 late, 16 late with video
+[2026-11-15 19:46:48.188] [info] Tube pacing: class 30, 1783 presents (1783 with video), 17 late, 17 late with video
+[2026-11-15 19:47:48.221] [info] Tube pacing: class 30, 1780 presents (1780 with video), 25 late, 25 late with video
+
+5. Window 3 (20:05-20:10 box time), binary b5f67d2 (sha256 92f1887b...), timers on
+   pvm          301 quarter 0.66 glow 0.45 signal 5.26 lines - output 9.99 history 2.40 probe 0.22 = 18.98 ms
+   monitor      300 quarter 0.63 glow 0.31 signal 5.19 lines - output 10.59 history - probe 0.22 = 16.95 ms
+   The half-size path drew on hardware: "tube: target glow_tmp 180x135 SRGB8_ALPHA8", "tube: target glow_out 180x135".
+   At 20:06:48 a person entered the Media Browser on the test kiosk and at 20:07:27 started a film; the journal shows
+   "tube: scene texture back to RGBA8 1920x1080" and "tube: render targets released; made again (cleared) on the next
+   Tube frame" (the Media Browser release path on hardware), and the film played through the test build with no tube
+   error. The window was ended at 20:09:47 so the test unit's time limit could not cut the film off.
+
+6. Reading
+   - Glow was the expensive effect: off, it saved 3.9 ms on TV; its blur alone cost 3.6-4.05 ms at the size TV,
+     Everything and Arcade use against 1.64 ms at glow size 10. Hence change (2).
+   - Afterglow nets about 1.8 ms (the history pass 2.4 ms, less an output that is about 0.7 ms cheaper when it draws
+     into the history than to the screen). Replacing the copy pass by a framebuffer blit was measured with the on-Pi
+     tool at a net 0-0.3 ms and was not done.
+   - The output pass is 10.0-10.6 ms on the signal looks, 12.6 ms on Arcade and 13.9-14.8 ms on the raster looks; its
+     time follows its per-pixel instruction count (see the correction in 2026-11-15-tube-programs-pi5.txt).
+
+NOT COVERED: the four raster looks with the half-size glow; the cheap-beam build in the kiosk; ten-minute pacing runs;
+a game and return; a display-mode change; 50 and 120 Hz; CRT Native; a full-screen film; a Pi 4B.
