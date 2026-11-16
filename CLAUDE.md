@@ -1009,7 +1009,10 @@ series, which would have destroyed already-watched seasons too.
   `catalog.record_failure` increments it), goes to the back of its pool
   for as long as the count lasts, never out of it: node-us-119 never
   leased a port on three fallback runs that afternoon, and was picked
-  again each time its exclusion had lapsed. Exclusion 1800s, bounded 24h
+  again each time its exclusion had lapsed. A record inside the previous
+  one's 30-min exclusion is the same incident and does not count again:
+  a failed rotation PUT leaves the server as `attempted`, so the rotation
+  away and the escalation restart both record it. Exclusion 1800s, bounded 24h
   history/newest 256 endpoints, failed-round backoff 120/300/600s and at
   most one disruptive restart per 600s. API success alone is not Ready.
   Host WAN classification uses a certificate-verifying stdlib HTTPS child
