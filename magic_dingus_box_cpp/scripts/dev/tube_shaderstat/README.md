@@ -100,6 +100,11 @@ Prints, per program, the fragment shader's statistics from Mesa's shaderdb line:
   (largest difference, pixels over 1/255 and over 2/255, where the first ones over
   2/255 are). `--time N`: the two chains alone, alternated, minimum ms of N.
 
+- `--blit` (with `--time N`): an RGBA8 framebuffer object (a stand-in for the screen;
+  the tool has no default framebuffer) of the picture's size blitted, FRAMEBUFFER_SRGB
+  off, into an SRGB8_ALPHA8 texture: reports whether every byte arrived unchanged, and
+  the blit's time.
+
 Exit codes: 0 fine; 1 a GL/EGL failure, a compile or link error (the log is printed)
 or an incomplete framebuffer; 2 usage, an unreadable source or uniform file, or a bad
 line in one; 3 a comparison found a difference beyond 1/255.

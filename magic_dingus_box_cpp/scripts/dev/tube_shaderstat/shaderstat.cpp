@@ -783,10 +783,80 @@ int glow_chain(const std::string& vs, const std::vector<std::string>& f, const s
     return worst2 > 0 ? 3 : 0;
 }
 
+
+// ---- --blit: the afterglow hand-off as a framebuffer blit (a proxy) ---------------------
+//
+// An RGBA8 framebuffer object (standing in for the screen: the tool has no default
+// framebuffer) filled with procedural bytes is blitted, FRAMEBUFFER_SRGB off, into an
+// SRGB8_ALPHA8 texture of the same size, NEAREST, whole surface. Read back, every byte
+// must arrive unchanged (no decode, no encode). Then N blits, each bracketed by glFinish.
+int blit_mode(int w, int h, int frames, bool srgb_switch) {
+    std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            for (int c = 0; c < 4; ++c)
+                px[(static_cast<std::size_t>(y) * w + x) * 4 + c] =
+                    static_cast<std::uint8_t>(c == 3 ? 255 : std::lround(255.0f * pattern(x, y, w, h, c, 9)));
+    GLuint tex[2] = {}, fbo[2] = {};
+    glGenTextures(2, tex);
+    glGenFramebuffers(2, fbo);
+    const GLenum fmt[2] = {GL_RGBA8, GL_SRGB8_ALPHA8};
+    for (int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, fmt[i], w, h);
+        if (i == 0) {
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[i], 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) die(1, "blit framebuffer incomplete");
+    }
+    if (srgb_switch) glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+    const auto blit = [&] {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    };
+    blit();
+    glFinish();
+    check_gl("blitting");
+    std::vector<std::uint8_t> back(px.size());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[1]);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, back.data());
+    check_gl("reading the blit back");
+    long changed = 0;
+    int maxd = 0;
+    for (std::size_t i = 0; i < px.size(); ++i) {
+        const int d = std::abs(static_cast<int>(px[i]) - static_cast<int>(back[i]));
+        changed += d != 0;
+        maxd = std::max(maxd, d);
+    }
+    std::printf("blit RGBA8 -> SRGB8_ALPHA8 %dx%d, FRAMEBUFFER_SRGB off: %ld of %zu bytes changed (largest %d)\n", w, h,
+                changed, px.size(), maxd);
+    if (frames > 0) {
+        using Clock = std::chrono::steady_clock;
+        std::vector<double> ms;
+        for (int n = 0; n < frames; ++n) {
+            glFinish();
+            const auto t0 = Clock::now();
+            blit();
+            glFinish();
+            ms.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+        std::printf("blit time %d frames: median %.3f ms, min %.3f ms (wall clock, GPU shared: relative)\n", frames,
+                    ms[ms.size() / 2], ms.front());
+    }
+    return changed == 0 ? 0 : 3;
+}
+
 void usage() {
     std::fputs(
         "usage: shaderstat [--uniforms FILE] [--time N] [--float] VERT FRAG\n"
         "       shaderstat [--uniforms FILE]... [--float] --compare VERT A.frag B.frag\n"
+        "       shaderstat [--time N] --blit   (a 1440x1080 RGBA8 -> SRGB8_ALPHA8 blit: bytes and time)\n"
         "       shaderstat --uniforms FILE... [--sigma S] [--half] [--time N] --glowchain VERT QUARTER.frag OLD_BLUR.frag NEW_BLUR.frag OUTPUT.frag\n"
         "Run under: timeout 20 env V3D_DEBUG=shaderdb ./shaderstat ...\n",
         stderr);
@@ -799,7 +869,7 @@ int main(int argc, char** argv) {
     Setup s;
     std::vector<std::string> uniforms;
     int time_frames = 0;
-    bool compare = false, glowchain = false, half = false;
+    bool compare = false, glowchain = false, half = false, blit_only = false;
     float sigma_override = 0.0f;
     std::vector<std::string> files;
     for (int i = 1; i < argc; ++i) {
@@ -809,12 +879,13 @@ int main(int argc, char** argv) {
         else if (a == "--float") s.float_target = true;
         else if (a == "--compare") compare = true;
         else if (a == "--glowchain") glowchain = true;
+        else if (a == "--blit") blit_only = true;
         else if (a == "--half") half = true;
         else if (a == "--sigma" && i + 1 < argc) sigma_override = std::strtof(argv[++i], nullptr);
         else if (!a.empty() && a[0] == '-') usage();
         else files.push_back(a);
     }
-    if (files.size() != (glowchain ? 5u : compare ? 3u : 2u)) usage();
+    if (files.size() != (blit_only ? 0u : glowchain ? 5u : compare ? 3u : 2u)) usage();
     if (uniforms.size() > 1 && !compare && !glowchain) usage();
     if (!uniforms.empty()) read_inputs(uniforms[0], s.in);
 
@@ -830,6 +901,11 @@ int main(int argc, char** argv) {
     if (s.float_target && ext.find("GL_EXT_color_buffer_float") == std::string::npos)
         die(1, "--float needs GL_EXT_color_buffer_float");
 
+    if (blit_only) {
+        const int rc = blit_mode(s.in.pic_w, s.in.pic_h, time_frames, srgb_switch);
+        close_gpu(gpu);
+        return rc;
+    }
     const std::string vs = read_file(files[0]);
     quad_vao();
     if (glowchain) {
