@@ -283,7 +283,10 @@ void main()
 #endif
         // POWER: the shrinking raster concentrates the beam.
         if (power < 1.0)
-            col *= dPowerGain;                             // 1.0 + 2.5 * (1.0 - vOpen)
+            // 1.0 + 2.5 * (1.0 - max(smoothstep(...), 0.003)) is at most 3.4925 by its own
+            // floor; worked out on the CPU now, so the shader bounds it again whatever is
+            // uploaded (3.5: just above the largest real value, never below it).
+            col *= min(dPowerGain, 3.5);
         col *= glass.a;
     }
     col += glass.rgb / 32.0;

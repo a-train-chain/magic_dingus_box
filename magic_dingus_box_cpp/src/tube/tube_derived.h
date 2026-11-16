@@ -11,9 +11,10 @@
 // sweeps them).
 //
 // NOT HERE, measured: the glow blur's weights, the lines pass's and the quarter pass's
-// reciprocals. Moved here (the weights as a uniform array) they measured no faster or
-// slower on the Pi 5 (blur 1.83 -> 1.99 ms, lines 1.02 -> 1.06 ms): those passes are
-// bound by their texture reads, not their arithmetic. Those three files are unchanged.
+// reciprocals. Moved here (the weights as a uniform array) they measured SLOWER on the
+// Pi 5 (blur 1.83 -> 1.99 ms, lines 1.02 -> 1.06 ms; the quarter no different): those
+// passes are bound by their texture reads, not their arithmetic. Those three files
+// keep their own arithmetic.
 //
 // NOT HERE, measured: the bend (output.frag bend()). Its divisor worked out on the CPU,
 // as a reciprocal or as the divisor itself, moved sp by an ulp and with it a few dozen
@@ -157,7 +158,6 @@ inline TubeDerived tube_derived(const TubeUniforms& u, const DerivedSizes& s) no
     d.dOpenInvV = 1.0f / vOpen;
     d.dBreatheInv = 1.0f / (1.0f + u.breathe * 0.008f * u.ablLevel);
     d.dDegaussAmp = u.degauss * 0.02f;
-
 
     d.dLinesPerPx = 1.0f / (u.outH / u.lines);
     d.dInvRows = 1.0f / std::ceil(u.lines);

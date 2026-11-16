@@ -70,8 +70,11 @@ Prints, per program, the fragment shader's statistics from Mesa's shaderdb line:
     out_rich_raster_ag.hw.frag: 474 inst, 2 threads, 47 max-temps, 0:0 spills:fills | target SRGB8_ALPHA8 ...
 
 - **Statistics** are the primary evidence. V3D runs a fragment shader on 4 QPU threads
-  only when its live temporaries fit the smaller per-thread register file; at 2 threads
-  the same pixels take roughly twice the shader time. Without `V3D_DEBUG=shaderdb`
+  only when its live temporaries fit the smaller per-thread register file, else on 2.
+  Measured with this tool (2026-11-15): the thread count is NOT what decides the Tube
+  passes' time. A pixel-identical rewrite of the raster output at 4 threads (523
+  instructions) was about 6 % slower than the original at 2 threads (474); the time
+  follows the instruction count, SFU operations most. Without `V3D_DEBUG=shaderdb`
   there is no line. A second program with byte-identical source compiles nothing new
   (Mesa reuses the variant), so it prints no line either.
 - `--time N` draws N frames, each bracketed by `glFinish`, and prints the median, mean

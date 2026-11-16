@@ -5,10 +5,13 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "tube/tube_derived.h"
@@ -204,5 +207,29 @@ TEST_CASE("tube derived: the upload table names every field once", "[tube]") {
         REQUIRE(field.name[0] == 'd');
         for (const std::string& n : names) REQUIRE(n != field.name);
         names.emplace_back(field.name);
+    }
+}
+
+// The renderer resolves a d* name only through kDerivedFields; a name it does not know
+// is logged once and its uniform stays 0 (a wrong picture seen only on the box). Every
+// derived name a program lists is in the table, and every table entry is read by some
+// program (nothing computed and uploaded for no one).
+TEST_CASE("tube derived: uniforms_of and the upload table agree", "[tube]") {
+    const auto in_table = [](std::string_view name) {
+        for (const DerivedField& f : kDerivedFields)
+            if (name == f.name) return true;
+        return false;
+    };
+    std::vector<std::string_view> listed;
+    for (const auto& info : kPrograms)
+        for (std::string_view u : uniforms_of(info.id)) {
+            if (u.size() < 2 || u[0] != 'd' || !std::isupper(static_cast<unsigned char>(u[1]))) continue;   // dXxx
+            INFO(info.name << " lists " << u);
+            REQUIRE(in_table(u));
+            listed.push_back(u);
+        }
+    for (const DerivedField& f : kDerivedFields) {
+        INFO(f.name);
+        REQUIRE(std::find(listed.begin(), listed.end(), std::string_view(f.name)) != listed.end());
     }
 }

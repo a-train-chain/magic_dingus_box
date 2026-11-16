@@ -311,7 +311,7 @@ struct TubeRenderer::Impl {
     // is logged. A first bake's CPU submit time includes Mesa's first-draw compile of the
     // program (its line says so; the GPU time does not include it). The first bake after a
     // build logs at INFO, later ones at DEBUG.
-    bool bake_glass(const GlEnv& env, const tube::TubeUniforms& u);
+    bool bake_glass(const GlEnv& env, const tube::TubeUniforms& u, const tube::TubeDerived& d);
     // Task 11's composite calls this once a frame (cheap when nothing is pending): logs a
     // finished bake query's time, never waiting for one that is not.
     void poll_glass_timing();

@@ -368,15 +368,15 @@ bool TubeRenderer::Impl::draw_frame(const GlEnv& env, video::IRect pic, const tu
         prepared_ok = false;
         return false;
     }
-    if ((f.glass_changed || !glass_valid) && !bake_glass(env, f.u)) {
+    // The values the shaders would otherwise work out per pixel from uniforms alone, once
+    // for the frame (on the stack: no allocation), now that the mask and signal sizes are
+    // known, and before the glass bake so it gets the frame's values like every pass.
+    const tube::TubeDerived derived = tube::tube_derived(f.u, tube::DerivedSizes{std::max(mask_w, 1), std::max(mask_h, 1),
+                                                                                 std::max(signal.w, 1), std::max(signal.h, 1)});
+    if ((f.glass_changed || !glass_valid) && !bake_glass(env, f.u, derived)) {
         record_failure("the glass could not be baked (no program or target)");
         return false;
     }
-
-    // The values the shaders would otherwise work out per pixel from uniforms alone, once
-    // for the frame (on the stack: no allocation), now that the mask and signal sizes are known.
-    const tube::TubeDerived derived = tube::tube_derived(f.u, tube::DerivedSizes{std::max(mask_w, 1), std::max(mask_h, 1),
-                                                                                 std::max(signal.w, 1), std::max(signal.h, 1)});
     const auto use = [&](tube::Program p) -> const ProgramSlot& {
         const ProgramSlot& s = slot(p);
         glUseProgram(s.id);

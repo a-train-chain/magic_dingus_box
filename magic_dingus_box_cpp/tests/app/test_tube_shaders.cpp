@@ -274,6 +274,11 @@ TEST_CASE("tube shaders: crt.metal's flash-safety caps are in the GLSL", "[tube]
     REQUIRE(out.find("min(flicker, 1.0) * 0.025 * clamp(flickerWave, -1.0, 1.0)") != std::string::npos);
     REQUIRE(out.find("min(hum, 1.0) * 0.25") != std::string::npos);            // HUM: 25 % darker at most
     REQUIRE(out.find("min(jitter, 1.0) * 0.50 * mm") != std::string::npos);    // JITTER: +-0.25 mm a line
+    // POWER-OFF's brightening. Its factor 1 + 2.5 * (1 - max(smoothstep(...), 0.003)) is
+    // at most 3.4925 by construction, but it is worked out on the CPU (tube_derived.h
+    // dPowerGain), so the shader bounds it itself: 3.5 is just above the largest real
+    // value. Without it a bad upload could brighten the whole picture without limit.
+    REQUIRE(out.find("col *= min(dPowerGain, 3.5);") != std::string::npos);
     REQUIRE(assemble_fragment(Program::sig_sharp, SceneDecode::Hardware).find("min(jitter, 1.0) * 0.50 * mm") != std::string::npos);
 }
 TEST_CASE("tube shaders: each program declares the uniforms the renderer uploads", "[tube][tube_shaders]") {

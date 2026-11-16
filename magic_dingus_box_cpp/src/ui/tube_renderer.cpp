@@ -512,7 +512,7 @@ void TubeRenderer::Impl::bind_quad(const GlEnv& env) {
 // (live tuning), and each finish drained the queued frame before the bake. Mesa compiles a
 // program's real variant synchronously inside its first draw call, so the guard's marker
 // still covers that compile without a finish.
-bool TubeRenderer::Impl::bake_glass(const GlEnv& env, const tube::TubeUniforms& u) {
+bool TubeRenderer::Impl::bake_glass(const GlEnv& env, const tube::TubeUniforms& u, const tube::TubeDerived& d) {
     ProgramSlot& g = slot(tube::Program::glass);
     if (!g.id || !glass.made()) return false;
     const bool first_draw = !g.drawn;
@@ -521,7 +521,7 @@ bool TubeRenderer::Impl::bake_glass(const GlEnv& env, const tube::TubeUniforms& 
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     glUseProgram(g.id);
-    upload_tube_uniforms(g, u, tube::TubeDerived{});   // the glass reads no derived value
+    upload_tube_uniforms(g, u, d);
     bind_quad(env);
     // A query still in flight from an earlier bake is not reused (that would wait).
     const bool timed = caps.timer_query && !glass_query_pending;
