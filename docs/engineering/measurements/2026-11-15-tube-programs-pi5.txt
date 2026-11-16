@@ -16,8 +16,18 @@ RESULT
 - PVM and Monitor hold 30 fps (22.4 and 19.9 ms of GPU per frame). Trinitron, TV, Arcade and Everything do NOT:
   27-31 ms per frame, drawn at 20 fps. The rich budget (23.1 ms) is exceeded by the OUTPUT pass: 15.5-16.3 ms on the
   raster looks against 11.2 ms priced in the spike.
-- Why: three raster output programs compile in V3D's 2-thread mode (441-479 instructions, 43-47 max temporaries);
-  every other output compiles in 4-thread mode (412-495 instructions, at most 32 max temporaries). See sections 3-4.
+- Observed: three raster output programs compile in V3D's 2-thread mode (441-479 instructions, 43-47 max
+  temporaries); every other output compiles in 4-thread mode (412-495 instructions, at most 32 max temporaries).
+  See sections 3-4.
+- CORRECTION (2026-11-15, later the same day): the 2-thread mode is NOT why the raster looks miss the budget. A
+  pixel-identical rewrite that put all ten output programs in 4-thread mode measured SLOWER with the on-Pi tool
+  (magic_dingus_box_cpp/scripts/dev/tube_shaderstat, --time 150 minimum ms): out_rich_raster_ag 474 inst / 2
+  threads 15.77 ms -> 523 / 4 threads 16.75 ms (about 6 % slower); out_rich_raster 15.98 -> 17.30 ms. The output
+  pass's time follows its per-pixel instruction count (exp/sqrt/divide most of all). Moving the uniform-only work to
+  the CPU (src/tube/tube_derived.h) cut out_rich_raster_ag 474 -> 431 instructions, still 2 threads, 15.7 -> 14.2 ms
+  (-9.6 %). Figures and method: .superpowers/sdd/2026-11-15-tube-crt-renderer/perf-4thread-report.md. These are
+  off-screen tool timings beside the running kiosk, relative, not the kiosk's GPU timers; on those estimates the
+  four raster looks still miss 30 fps.
 
 1. SMOKE - engine switched to Tube while a video plays (journal, mdb-tube-preview)
 [2026-11-15 17:36:29.060] [info] tube: GL_RENDERER=V3D 7.1.10.2 GL_VERSION=OpenGL ES 3.1 Mesa 25.0.7-2+rpt4; sRGB write control true / sRGB decode true / half-float targets true / GPU timers true -> s
@@ -116,9 +126,16 @@ about 17:38:20 arcade; about 17:38:42 everything; about 17:42 pvm with the video
 
 4. Reading of section 3
    out_rich_raster, out_rich_raster_ag and out_rich_raster_only_ag are the only programs reported "2 threads" (43-47
-   max temporaries; every 4-thread output has 32 or fewer). V3D runs a fragment shader on 4 QPU threads when its live
-   temporaries fit; at 2 threads the same pixels take about twice the shader time. out_rich_raster_ag is the output of
-   Trinitron, TV and Everything, and out_rich_raster_only_ag of Arcade: the four looks that miss 30 fps.
+   max temporaries; every 4-thread output has 32 or fewer). out_rich_raster_ag is the output of Trinitron, TV and
+   Everything, and out_rich_raster_only_ag of Arcade: the four looks that miss 30 fps.
+   CORRECTION (2026-11-15, later the same day): this section first read the 2-thread mode as the cause ("at 2 threads
+   the same pixels take about twice the shader time"). Measured since, it is not: with the tool above, a
+   pixel-identical 4-thread rewrite of out_rich_raster_ag (474 -> 523 instructions) took 15.77 -> 16.75 ms, about 6 %
+   SLOWER, and 474/2t against 523/4t and 417/2t against 445/4t were each slower at 4 threads by roughly the extra
+   instructions. The output pass's time follows its per-pixel instruction count (exp/sqrt/divide), not the thread
+   count; the raster outputs cost more than out_rich_signal_ag (11.3 ms in section 6) for their two extra
+   beam-weighted line taps and their extra instructions. See perf-4thread-report.md (".superpowers/sdd/2026-11-15-
+   tube-crt-renderer/") "The finding" and "CPU-derived values".
 
 5. FORCED HANG - MDB_TUBE_FORCE_HANG=sig_sharp, Type=notify, WatchdogSec=10, Restart=on-failure (journal, mdb-tube-hang)
 [2026-11-15 17:43:06.065] [warning] tube: MDB_TUBE_FORCE_HANG=sig_sharp (preview build): that build will hang
