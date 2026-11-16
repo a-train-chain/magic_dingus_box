@@ -1067,29 +1067,39 @@ series, which would have destroyed already-watched seasons too.
   - Never run `scripts/tests` suites that write `/tmp/mdb_*` on a box:
     `test_gluetun_cascade.py` used to create/delete the real playback-pause
     marker (it now uses a private `PAUSE_MARKER`).
-  - **Gluetun self-hops under its `.env` selection.** After any container
-    start Gluetun selects "any Canada server", and its own healthcheck
-    restart picks another Canada server within ~45 s of a fault, before
-    the controller's 60 s loss window (magicpi5 2026-11-15). The
-    controller's own path (pinned PUT → two preferred → fallback) applies
-    once it has rotated; a container restart returns to the `.env`
-    selection, which is also why the restart escalation reverts country.
+  - **One restart authority: Gluetun's own health restart is OFF where
+    the controller owns recovery.** The compose `entrypoint` wrapper
+    exports `HEALTH_RESTART_VPN=off` exactly when provider = protonvpn,
+    type = wireguard and forwarding = on (the controller's `supported`
+    gate and the healthcheck's native branch; `compose_image_pins.bats`
+    runs the wrapper). Every other configuration keeps Gluetun's
+    self-restart. Takes effect when the container is next created (the
+    boot-time `compose up -d`, a reconfigure, `recreate_gluetun.sh`).
+    Consequence: Gluetun no longer self-hops under its `.env` selection
+    (before, it picked another server of the country within ~45 s of a
+    fault); a dead server waits for the controller's loss window. A
+    container restart still returns to the `.env` selection, which is why
+    the restart escalation reverts country.
   - Live proof uses `tests/vpn_fault/` (attended, magicpi5-only, opt-in;
     see its README): `check_network_fault.py` modes capability /
     port-loss / first-lease / fallback, plus a read-only `soak.py`. The
     fallback window is 600 s and any allowed US server counts as proof.
-    **Known Gluetun v3.41.3 race (magicpi5 2026-11-15, 4 of 4 fallback
-    runs): a settings PUT that lands while Gluetun is restart-looping on a
-    dead server (its own 6 s healthcheck cycle) wedges it.** The new
-    server's startup checks fail at once ("lookup …: operation was
-    canceled", 19 and 236 sub-second restarts), port forwarding never
-    starts, and the next PUT hangs ~2 min; only the escalation restart
-    recovers. So after a traffic-loss rotation the next server never
-    leases, whoever it is (node-us-119 and node-us-390 were wrongly blamed),
-    and the allowed fallback country did not engage in any of the four
-    runs: recovery ended in a container restart on the `.env` country. A rotation whose old
-    server still carries traffic (port-loss) is clean: port 7 s after the
-    PUT. Open: a rotation path that does not race it. A new policy timer must be added to
+    **Why Gluetun's self-restart is off (magicpi5 2026-11-15, 4 of 4
+    fallback runs before the fix):** a settings PUT is stop + start
+    (`state.SetSettings`). On a dead server Gluetun's ~6 s startup health
+    check is almost always in flight; the stop cancels it, Gluetun takes
+    the cancellation for a health failure and fires its own stop + start
+    (`restartVPN`), and the two restart sequences then cancel each other's
+    checks ("lookup …: operation was canceled", 19 and 236 sub-second
+    restarts). Port forwarding never started, the next PUT hung ~2 min,
+    and only the escalation restart recovered, on the `.env` country:
+    after a traffic-loss rotation no server ever leased (node-us-119 and
+    node-us-390 were wrongly blamed) and the fallback country never
+    engaged. A rotation whose old server still carries traffic (port-loss)
+    was always clean: port 7 s after the PUT. With the restart off, the
+    fallback test PASSED on the first run (18:58: `ca-44` → `ca-37` →
+    `us-391`, port 7 s after the switch, 0 cancelled checks, no container
+    restart). A new policy timer must be added to
     BOTH `policy.py`'s `timers` and `runtime.restore_policy`; kept raw it
     becomes a future timestamp after a reboot and the policy discards
     all of its state.
