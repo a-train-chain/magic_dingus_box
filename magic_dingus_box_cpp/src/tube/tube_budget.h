@@ -52,7 +52,9 @@ inline constexpr PassCosts kPassCosts{
     3.5,   // glow_blur: quarter + glow together measured 2.3-4.2; this is the upper end
     0.75,  // glow_blur_half: TOOL-measured, not kiosk-measured (shaderstat --glowchain, 2026-11-15:
            // the two blur passes on the eighth-size targets, 0.35-0.75 ms over the six looks'
-           // glow sizes, against 1.68-4.08 for the same chain at quarter size); the upper end
+           // glow sizes, against 1.68-4.08 for the same chain at quarter size); the upper end. The
+           // price is for the shipped looks' sizes: the largest size measured, GLOW SIZE 100 (sigma
+           // 10.99), took 1.22 ms, so a look pushed there costs more than this
     4.5,   // sig_sharp
     7.1,   // sig_sharp_chroma (provisional): NOT measured
     6.8,   // sig_guns: measured 3.8 at half width, stored divided by half_width_factor

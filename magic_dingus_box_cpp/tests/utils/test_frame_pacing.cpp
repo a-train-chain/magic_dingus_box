@@ -314,12 +314,14 @@ TEST_CASE("held frames at a target rate: 30 is exactly the rich hold", "[pacing]
     }
 }
 
-TEST_CASE("held frames at 60 fps: two vblanks at 100/120/144 Hz, nothing at 50/60", "[pacing]") {
+TEST_CASE("held frames at 60 fps: two vblanks from 90 Hz up, nothing at 50/60", "[pacing]") {
     using us = std::chrono::microseconds;
     CHECK(utils::held_vblanks_at(60, 50) == 1);
     CHECK(utils::held_vblanks_at(60, 60) == 1);
     CHECK(utils::held_vblanks_at(60, 0) == 1);     // unknown reads as 60
     CHECK(utils::held_vblanks_at(60, 75) == 1);
+    CHECK(utils::held_vblanks_at(60, 89) == 1);    // lround(1.48)
+    CHECK(utils::held_vblanks_at(60, 90) == 2);    // lround(1.5) rounds away from zero
     CHECK(utils::held_vblanks_at(60, 100) == 2);
     CHECK(utils::held_vblanks_at(60, 120) == 2);
     CHECK(utils::held_vblanks_at(60, 144) == 2);
@@ -338,6 +340,15 @@ TEST_CASE("held frames at 60 fps: two vblanks at 100/120/144 Hz, nothing at 50/6
     // The floor: two refreshes minus an eighth; never negative.
     CHECK(utils::held_frame_sleep_at(60, 120, us{1000}) == us{2 * 8333 - 1041 - 1000});
     CHECK(utils::held_frame_sleep_at(60, 120, us{16666}) == us{0});
+    // 90 Hz: period 11111 us, an eighth 1388 us: hold to 12499 us, cap two refreshes,
+    // floor 22222 - 1388 = 20834 us.
+    CHECK(utils::present_hold_at(60, 90, us{0}) == us{11111 + 1388});
+    CHECK(utils::present_hold_at(60, 90, us{5000}) == us{12499 - 5000});
+    CHECK(utils::present_hold_at(60, 90, us{13000}) == us{0});
+    CHECK(utils::present_hold_cap_at(60, 90) == us{2 * 11111});
+    CHECK(utils::capped_present_hold_at(60, 90, us{-1000000}) == us{2 * 11111});
+    CHECK(utils::held_frame_sleep_at(60, 90, us{1000}) == us{2 * 11111 - 1388 - 1000});
+    CHECK(utils::held_frame_sleep_at(60, 90, us{22222}) == us{0});
     // 100 Hz holds to 11.25 ms, 144 Hz to 7.812 ms.
     CHECK(utils::present_hold_at(60, 100, us{0}) == us{10000 + 1250});
     CHECK(utils::present_hold_at(60, 144, us{0}) == us{6944 + 868});
@@ -374,6 +385,12 @@ TEST_CASE("held frames at 60 fps, 120 Hz: a 5, 10 or 12 ms frame lands on the 2n
         for (const std::int64_t iv : simulate_held_at(60, 120, render, 50)) CHECK(iv == 2 * 8333);
     // Slower than two refreshes: the 3rd vblank (late), never earlier.
     for (const std::int64_t iv : simulate_held_at(60, 120, 20000, 50)) CHECK(iv == 3 * 8333);
+    // 90 Hz (the cap spans lround(1.5) = 2 vblanks): the same, on 11111 us refreshes.
+    for (const std::int64_t render : {5000, 10000, 12000})
+        for (const std::int64_t iv : simulate_held_at(60, 90, render, 50)) CHECK(iv == 2 * 11111);
+    // A 20 ms frame still fits two refreshes (22.2 ms); a 25 ms one lands on the third.
+    for (const std::int64_t iv : simulate_held_at(60, 90, 20000, 50)) CHECK(iv == 2 * 11111);
+    for (const std::int64_t iv : simulate_held_at(60, 90, 25000, 50)) CHECK(iv == 3 * 11111);
     // Rich at 120 Hz, unchanged: 5 to 30 ms all land on the 4th vblank.
     for (const std::int64_t render : {5000, 10000, 12000, 20000, 30000})
         for (const std::int64_t iv : simulate_held_at(30, 120, render, 50)) CHECK(iv == 4 * 8333);

@@ -275,6 +275,11 @@ bool TubeRenderer::Impl::build(tube::Program p, tube::SceneDecode decode) {
             if (const auto i = index_in(kOwnUniformNames, name)) {
                 known = true;
                 s.own[*i] = loc;
+                // The passes skip an unresolved own uniform without a word (a program's real
+                // variant may drop a name it does not read), so say it once here: blur's uDown
+                // unset would make the horizontal pass read the wrong region.
+                if (loc < 0)
+                    LOG_WARN("tube: program {} has no location for its own uniform {} (it will not be set)", info.name, name);
             }
         for (const SamplerUnit& su : kSamplerUnits)
             if (!known && name == su.name) {

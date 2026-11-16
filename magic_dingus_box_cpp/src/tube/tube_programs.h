@@ -281,8 +281,11 @@ inline PassPlan plan_for(const Needs& n, bool larger_than_reference, const LeanS
 // measured (shaderstat --glowchain, the final output with the old chain's glow against
 // the new one's, every look): from a sigma of 1.92 quarter px (GLOW SIZE 10) up, every
 // shipped look differs by at most 1/255 (0 pixels over 1/255) and GLOW at 100 by at most
-// 3/255 on a few dozen edge pixels; at 1.42 (GLOW SIZE 5) GLOW 100 reached 4/255 and at
-// 0.5 everything was visibly different. Every shipped look's glow is at or above 1.92.
+// 3/255 on at most 17 rim pixels; at 1.42 (GLOW SIZE 5) GLOW 100 reached 4/255 and at
+// 0.5 everything was visibly different. Every shipped look's glow is at or above 1.92 ONLY
+// for a 1440-wide picture (sigma grows with the picture's width): Monitor's is 1.28 at the
+// 960x720 Modern TV picture of a 720p output and 1.71 at a 1280x720 CRT Native one, so there
+// it stays at full size (a test pins both).
 inline constexpr float kGlowHalfSigma = 1.9f;   // quarter-resolution px
 constexpr bool glow_is_wide(float glow_sigma) noexcept { return glow_sigma >= kGlowHalfSigma; }
 

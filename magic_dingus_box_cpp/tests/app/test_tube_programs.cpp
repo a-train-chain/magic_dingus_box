@@ -283,6 +283,78 @@ TEST_CASE("tube programs: target sizes and memory", "[tube]") {
     }
 }
 
+// The glow's sigma is in quarter-resolution pixels and grows with the picture's width, so
+// the threshold falls on different sides of the looks at the real picture sizes: Modern TV
+// at 1080p draws a 1440x1080 picture (the test above), at 720p a 960x720 one
+// (video::content_rects: four_by_three_rect), and CRT Native fills the framebuffer.
+TEST_CASE("tube programs: the glow threshold at the CRT Native and 720p Modern TV pictures", "[tube]") {
+    struct Case {
+        Picture pic;
+        int wide_looks;   // pinned: how many of the six looks blur at half size
+        int quarter_w, quarter_h;
+    };
+    const Case cases[] = {
+        {{1920.0, 1080.0, true}, 6, 480, 270},    // CRT Native at 1080p
+        {{1280.0, 720.0, true}, 5, 320, 180},     // CRT Native at 720p
+        {{960.0, 720.0, false}, 5, 240, 180},     // Modern TV at 720p
+    };
+    for (const Case& c : cases) {
+        int wide = 0;
+        for (Look look : kLooks) {
+            TubeSetting s;
+            select_look(s, look);
+            const Resolved r = resolve(s);
+            const float sigma = glow_sigma_px(r, c.pic);
+            const PassPlan p = plan_passes(r, c.pic);
+            INFO(look_name(look) << " at " << c.pic.w << "x" << c.pic.h << " sigma " << sigma);
+            REQUIRE(p.glow);
+            REQUIRE(p.glow_half == (sigma >= kGlowHalfSigma));   // from the sigma, not hard-coded
+            const TargetSizes t = target_sizes(p, c.pic, tube_uniforms_for(r, c.pic));
+            REQUIRE(t.quarter_w == c.quarter_w);
+            REQUIRE(t.quarter_h == c.quarter_h);
+            REQUIRE(t.glow_w == (p.glow_half ? c.quarter_w / 2 : c.quarter_w));
+            REQUIRE(t.glow_h == (p.glow_half ? c.quarter_h / 2 : c.quarter_h));
+            if (p.glow_half) ++wide;
+        }
+        INFO(c.pic.w << "x" << c.pic.h);
+        CHECK(wide == c.wide_looks);   // a change to the threshold or the sizes shows here
+    }
+    // The pinned cases: Monitor's glow (GLOW SIZE 10) is the narrow one at both 720p sizes
+    // (1.28 and 1.71 quarter px) and stays at full size; PVM is only just wide at 960x720
+    // (1.95); at 1440 and 1080p Native every look is wide.
+    const auto sigma_of = [](Look look, const Picture& pic) {
+        TubeSetting s;
+        select_look(s, look);
+        return glow_sigma_px(resolve(s), pic);
+    };
+    CHECK(sigma_of(Look::monitor, Picture{960.0, 720.0, false}) < kGlowHalfSigma);
+    CHECK(sigma_of(Look::monitor, Picture{1280.0, 720.0, true}) < kGlowHalfSigma);
+    CHECK(sigma_of(Look::pvm, Picture{960.0, 720.0, false}) >= kGlowHalfSigma);
+    CHECK(sigma_of(Look::monitor, Picture{1440.0, 1080.0, false}) >= kGlowHalfSigma);
+    CHECK(sigma_of(Look::monitor, Picture{1920.0, 1080.0, true}) >= kGlowHalfSigma);
+}
+
+TEST_CASE("tube programs: an odd quarter's glow targets are the rounded-up half", "[tube]") {
+    // 1004x700: a quarter of 251x175, odd both ways; PVM's glow is wide there (2.04).
+    const Picture pic{1004.0, 700.0, false};
+    TubeSetting s;
+    select_look(s, Look::pvm);
+    const Resolved r = resolve(s);
+    REQUIRE(glow_sigma_px(r, pic) >= kGlowHalfSigma);
+    const PassPlan p = plan_passes(r, pic);
+    REQUIRE(p.glow);
+    REQUIRE(p.glow_half);
+    const TargetSizes t = target_sizes(p, pic, tube_uniforms_for(r, pic));
+    REQUIRE(t.quarter_w == 251);
+    REQUIRE(t.quarter_h == 175);
+    CHECK(t.glow_w == 126);   // ceil(251 / 2), blur.frag uDown's (size + 1) / 2
+    CHECK(t.glow_h == 88);    // ceil(175 / 2)
+    PassPlan without = p;
+    without.glow = false;
+    // The two glow targets are RGBA8 at the rounded-up half size, nothing more.
+    CHECK(target_bytes(p, t, true) - target_bytes(without, t, true) == 2u * 126u * 88u * 4u);
+}
+
 TEST_CASE("tube programs: a wide glow is blurred at half the quarter's size", "[tube]") {
     const Picture pic{1440.0, 1080.0, false};
     // The threshold (measured: see kGlowHalfSigma) against GLOW SIZE.

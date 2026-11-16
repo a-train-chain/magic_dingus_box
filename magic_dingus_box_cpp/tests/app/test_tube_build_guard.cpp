@@ -186,11 +186,17 @@ TEST_CASE("tube build guard: a re-open that fails keeps the marker this instance
     const int lowest_free = dup(0);
     REQUIRE(lowest_free >= 0);
     close(lowest_free);
+    // Puts the limit back on every way out of the test (a failed REQUIRE throws), so a
+    // failure here is one failure and not a run of confusing "cannot open" ones after it.
+    struct RestoreNofile {
+        rlimit saved;
+        ~RestoreNofile() { setrlimit(RLIMIT_NOFILE, &saved); }
+    } restore{saved};
     rlimit none_left = saved;
     none_left.rlim_cur = static_cast<rlim_t>(lowest_free);
     REQUIRE(setrlimit(RLIMIT_NOFILE, &none_left) == 0);
     REQUIRE_NOTHROW(g.begin("sig_rich out_rich"));
-    REQUIRE(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+    REQUIRE(setrlimit(RLIMIT_NOFILE, &saved) == 0);   // before the reads below need a descriptor
     REQUIRE(quiet.out.str().find("could not write") != std::string::npos);
     REQUIRE(read_all(path) == "sig_lean out_lean");      // untouched: the open never happened
     g.end();

@@ -40,12 +40,12 @@ TEST_CASE("tube redraw: a still tube asks for nothing; lean never holds at 50/60
 
 TEST_CASE("tube redraw: lean holds where the 60 fps cap spans two vblanks", "[tube]") {
     using tube::FrameClass;
-    for (const int hz : {0, 24, 30, 50, 59, 60, 75}) {
+    for (const int hz : {0, 24, 30, 50, 59, 60, 75, 80, 89}) {
         const auto r = app::tube_redraw(true, FrameClass::Lean60, true, hz);
         CHECK_FALSE(r.hold_present);
         CHECK(r.hold_fps == 0);
     }
-    for (const int hz : {100, 120, 144}) {
+    for (const int hz : {90, 100, 120, 144}) {
         const auto moving = app::tube_redraw(true, FrameClass::Lean60, true, hz);
         CHECK(moving.hold_present);
         CHECK(moving.hold_fps == 60);
@@ -99,6 +99,22 @@ TEST_CASE("tube redraw: a lean frame at 120 Hz lands on the 2nd vblank after the
     const std::int64_t two_vblanks = 2 * (1000000 / 120);   // 16.67 ms
     for (const std::int64_t render : {5000, 10000, 12000}) {
         const auto iv = run_loop(FrameClass::Lean60, 120, render, 60);
+        for (std::size_t i = 1; i < iv.size(); ++i) CHECK(iv[i] == two_vblanks);
+    }
+}
+
+TEST_CASE("tube redraw: a lean frame at 90 Hz lands on the 2nd vblank after the last flip",
+          "[tube]") {
+    using tube::FrameClass;
+    // lround(90 / 60) = lround(1.5) = 2: the cap spans two vblanks, so the lean hold applies.
+    // Period 11111 us: the hold waits 11111 + 1388 = 12499 us after the last flip at most,
+    // so a 5, 10 or 12 ms frame is flipped on the second vblank, 22222 us after the last.
+    REQUIRE(app::tube_redraw(true, FrameClass::Lean60, true, 90).hold_present);
+    REQUIRE(utils::held_vblanks_at(60, 90) == 2);
+    const std::int64_t two_vblanks = 2 * (1000000 / 90);
+    REQUIRE(two_vblanks == 22222);
+    for (const std::int64_t render : {5000, 10000, 12000}) {
+        const auto iv = run_loop(FrameClass::Lean60, 90, render, 60);
         for (std::size_t i = 1; i < iv.size(); ++i) CHECK(iv[i] == two_vblanks);
     }
 }
