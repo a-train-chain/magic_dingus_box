@@ -1,0 +1,93 @@
+Tube CRT engine - hardware window 6: the shipping-shaped binary (engine on, no preview option)
+=============================================================================================
+
+Box: the owner's Pi 5 (2 GB), Trixie, Mesa 25.0.7 / V3D 7.1.10.2, 1920x1080 at 60 Hz, Modern TV mode, Channel
+Guide menu style, bezel MDB-KV19 (picture 1440x1080). Media Browser stack present (Gluetun, qBittorrent, Radarr,
+Sonarr, Prowlarr, Byparr).
+Binary: built in the aarch64 container from tube-crt-switch-on at 8662836, sha256 8bf9e748c382..., run as the
+transient unit mdb-tube-preview with the production kiosk stopped. Nothing was installed under /opt; the box was
+restored afterwards (production kiosk active, NRestarts 0, binary 1e858f05771f6727, settings.json identical to
+the pre-window copy, screenshots directory as before, no failed units).
+Date and time: 2026-11-16, 09:03 - 09:46 box time. Input: a uinput virtual gamepad; state read from
+kiosk_status.json; pictures from the kiosk's own screenshot request.
+
+1. A BOX THAT NEVER PICKED TUBE (saved engine Enhanced)
+   - 0 `tube:` journal lines from start; status gate true, engine enhanced, film_engine null.
+   - Picture against the production binary, video paused, bezel strips that do not move:
+       noise floor, production vs production   left strip (cols 0-240) 62 px differ, max step 1
+       shipping vs shipping                    left strip 0 px
+       production vs shipping                  left strip 509 px, max step 1; right strip 1191 px, max step 7
+     The right strip holds the bezel's channel-number display, which showed a different channel in the two
+     captures. No difference above the noise floor's step was found in the static left strip.
+
+2. PICKING TUBE (TV look) FROM THE CONTROLS
+   - 6 programs built: glass 20.8 ms, the others 5.6-7.6 ms; first real draws <= 4 ms; build marker gone.
+   - status: not_drawn ["afterglow"], film_engine "enhanced", yielding false.
+
+3. FILMS HAND OVER TO ENHANCED (owner decision 2026-11-15)
+   - The film channel (DRAMA) with the TV look: yielding true, effective_engine enhanced, not_drawn []; the journal
+     has one "scene texture back to RGBA8" and one "render targets released".
+   - Two film<->normal flips: released 2, back to RGBA8 2, re-specified 2, glass targets made 2, programs
+     compiled 0, first real draws 0, errors 0, no marker.
+   - The guide opened over a film: Tube draws (yielding false, afterglow not drawn); closed: yields again.
+   - PVM on a film: Tube, not_drawn ["afterglow"]. Monitor on a film: Tube, not_drawn []. TV: yields.
+
+4. THE TV MENU
+   - Settings -> Display with Tube picked shows, in order: Mode, Menu Style, Guide Mode, Bezel, "CRT Engine: Tube",
+     "Look: TV · 30 fps · films: Enhanced", Reset to look ("nothing moved"), then the groups Picture (5 rows),
+     Scanlines (4), Mask (3), Light (3), Glass (5), Signal (4), Supply, Character, Sync, Colour purity, and Degauss.
+     The label fits its row. Screenshot kept with the session, not in the repo (it shows the owner's playlists).
+   - Degauss from the TV menu: degauss_requests 0 -> 1.
+
+5. A GAME AND BACK (NES, started from Settings -> Video Games, ended with SIGTERM to retroarch)
+   - On return: "GL objects released; everything is made again on the next frame", scene texture re-specified
+     SRGB8_ALPHA8 1920x1080, six programs compiled+linked in 1.5-17.2 ms (about 50 ms in all), targets re-made,
+     mask uploaded, glass bake 0.77 ms CPU / 3.25 ms GPU, first real draws 0.2-1.5 ms. No build marker left, the
+     unit did not restart (NRestarts 0), video resumed.
+   - One "Page flip failed (ret=-22)" on the first flip after the hand-back. The production binary logs the same
+     line on every game return (12 in the last three days); it is recovered by the existing SetCrtc path.
+
+6. PACING, TIMERS OFF, presents / late per one-minute report (class 30 = two refreshes per frame)
+   TV look, picture alone, earlier in the window        1779 / 7    1790 / 5
+   TV look, guide open over the video                   1786 / 14   1795 / 12
+   TV look, Settings open on the Display page           1794 / 10   1793 / 15
+   TV look, Settings open on the game library page      1788 / 9    1796 / 9
+   TV look, a gamepad hot-plugged while running         1787 / 12   1796 / 10
+   Arcade look, picture alone, TEN MINUTES              1783/14 1798/5 1798/5 1795/5 1796/10 1799/4 1789/9 1793/15
+                                                        1797/7 1795/12 1797/8     (0.2-0.8% late; too_heavy false)
+   GPU time with the guide open (timers on, TV look): quarter 0.64 glow 0.62 signal 5.23 lines 1.00 output 14.84
+   probe 0.22 = 22.54 ms closed, 22.55 ms open - the guide adds nothing to the engine's own passes.
+
+7. THE Pi 4B GATE, rehearsed on this Pi 5 (MDB_PLATFORM_POLICY_OVERRIDE=pi4, with MDB_TUBE_VALIDATE=1 also set)
+   - status: platform_policy_override "pi4", gate false, reason "needs_pi5", saved engine "tube" kept,
+     effective_engine "enhanced", look null, handled_seq null.
+   - 0 `tube:` journal lines; MDB_TUBE_VALIDATE logged nothing; an engine op and a look op sent through the
+     request file were never handled; no build marker. The picture was drawn by Enhanced.
+   This rehearses the POLICY only. It is not a Pi 4B: no Pi 4B has run this binary.
+
+8. WHAT WENT WRONG IN THIS WINDOW, AND WHY
+   a. Late stretches come from the box being busy, not from menus.
+      09:11:14 - the kiosk's service resume started Radarr, Sonarr, Prowlarr and Byparr again (Byparr's scope:
+      35.9 s CPU, 794 MB memory peak, 770 MB swap peak). The TV look then ran 1686 / 209 and 1633 / 210 late for
+      two reports, and too_heavy latched (the "This CRT look is too heavy for smooth video" notice) - against a
+      shipped look. After the game ended the containers started again: 956 / 194 in the next half minute.
+      A third stretch, about 09:32:15-09:32:55 (1744 / 108), has no cause identified; too_heavy latched again.
+      I first blamed the Settings menu and then the guide; the clean runs in section 6 show neither is the cause.
+      Changed afterwards (tube-crt-renderer a681cf5, reviewed): too_heavy now needs more than half the presents late over
+      30 s, or more than 5% late in each of ten consecutive minutes. A look that really is too heavy measured 77%
+      late (TV on a full-screen film, window 5). NOT yet re-run on hardware with that change.
+   b. NOT a Tube defect, found here: on main, one "Page flip wait timed out" leaves the kiosk failing nearly
+      every later page flip until it restarts.
+      09:16:06.726 "Page flip wait timed out" (85 s after the game ended, during the container restart), then
+      "Page flip failed (ret=-16, Device or resource busy)" on nearly every frame - "98 failures in last 100
+      frames" - until the test kiosk was restarted at 09:21. Every number taken between 09:16:06 and 09:21 was
+      discarded. The production journal has the same pattern: about 162,000 printed ret=-16 lines (one failure in
+      ten is printed) from 2026-11-14 23:00 to 2026-11-15 09:00 and again 16:00-17:00, with exactly one wait
+      timeout. Cause as read from platform/frame_presenter.cpp: the timed-out wait leaves a flip pending, the
+      next flip is EBUSY and falls back to SetCrtc, and the late flip event then satisfies the NEXT flip's wait,
+      so the loop stays one event behind. Proposed to the owner as its own task; not fixed in these branches.
+
+NOT COVERED: a real Pi 4B; 50, 90, 100, 120 and 144 Hz displays; CRT Native and a display-mode change with Tube
+picked; a degauss pressed while a film is handed to Enhanced; an OTA install and rollback on either board; a
+hardware re-run of the changed too-heavy rule; the shipping binary installed under /opt (it has only run from a
+home directory as a transient unit).
