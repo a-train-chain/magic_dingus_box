@@ -143,7 +143,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
         ui_test::fake_reset();
         app::AppState state{};
         state.platform_profile.tube_crt_engine = true;
-        REQUIRE_FALSE(state.tube_renderer_ready);
+        state.tube_renderer_ready = false;   // the production default (a preview build opens it)
         SettingsMenuManager sm{&state};
         sm.enter_submenu(MenuSection::DISPLAY);
         CHECK(labels(sm) == kTodaysLabels);
@@ -154,7 +154,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
             ui_test::fake_reset();
             app::AppState state{};
             state.platform_profile.tube_crt_engine = pi5;
-            REQUIRE_FALSE(state.tube_renderer_ready);
+            state.tube_renderer_ready = false;   // the production default (a preview build opens it)
             state.display_settings.mode = app::DisplayMode::MODERN_TV;
             SettingsMenuManager sm{&state};
             sm.enter_submenu(MenuSection::DISPLAY);
@@ -171,7 +171,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
                 ui_test::fake_reset();
                 app::AppState state{};
                 state.platform_profile.tube_crt_engine = pi5;
-                REQUIRE_FALSE(state.tube_renderer_ready);
+                state.tube_renderer_ready = false;   // the production default (a preview build opens it)
                 state.display_settings.set_crt_engine(saved[i]);
                 SettingsMenuManager sm{&state};
                 sm.enter_submenu(MenuSection::DISPLAY);
@@ -206,7 +206,7 @@ TEST_CASE("Tube menu: the engine cycles through Tube when offered and the rows f
     const auto at = std::find(all.begin(), all.end(), "CRT Engine: Tube");
     REQUIRE(at != all.end());
     CHECK(std::vector<std::string>(at + 1, all.end()) == std::vector<std::string>{
-        "Look: PVM", "Reset to look", "Picture", "Scanlines", "Mask", "Light", "Glass", "Signal",
+        "Look: PVM · 30 fps", "Reset to look", "Picture", "Scanlines", "Mask", "Light", "Glass", "Signal",
         "Supply", "Character", "Sync", "Colour purity", "Degauss", "Back"});
     CHECK(row(sm, "Picture")->section == MenuSection::TUBE_GROUP);
     CHECK(row(sm, "Picture")->sublabel == "5 rows");
@@ -238,7 +238,7 @@ TEST_CASE("Tube menu: a Pi 4B is offered Classic and Enhanced only", "[settings_
 TEST_CASE("Tube menu: a Pi 5 with the renderer not ready offers nothing new", "[settings_menu][tube]") {
     ui_test::fake_reset(); app::AppState state{};
     state.platform_profile.tube_crt_engine = true;
-    REQUIRE_FALSE(state.tube_renderer_ready);
+    state.tube_renderer_ready = false;   // the production default (a preview build opens it)
     check_not_offered_cycle(state);
 }
 
@@ -306,7 +306,7 @@ TEST_CASE("Tube menu: a group opens its rows and Back returns to it", "[settings
     CHECK(sm.submenu_title() == "Supply");
     CHECK(labels(sm) == std::vector<std::string>{
         "FLICKER: 0", "HUM BAR: 0", "BRIGHTNESS LIMIT: 20", "BREATHING: 15", "Back"});
-    CHECK(row(sm, "HUM BAR")->sublabel == "soft at low · pronounced at 100");
+    CHECK(row(sm, "HUM BAR")->sublabel == "soft at low · pronounced at 100 · 30 fps");   // hum forces 30 fps
     CHECK(row(sm, "HUM BAR")->section == MenuSection::TUBE_VALUE);
     CHECK(row(sm, "Back")->section == MenuSection::TUBE_GROUP_BACK);
     press(sm, "Back");
@@ -611,4 +611,93 @@ TEST_CASE("Tube menu: only the Display page and a group show Tube state", "[sett
     press(sm, "Supply");
     REQUIRE(sm.get_current_submenu() == MenuSection::TUBE_GROUP);
     CHECK(sm.page_shows_tube_state());
+}
+
+TEST_CASE("Tube menu: a row whose effect is not drawn at this size says so", "[settings_menu][tube]") {
+    ui_test::fake_reset(); app::AppState state{}; offer_tube(state);
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    tube::select_look(state.display_settings.tube, tube::Look::tv);
+    state.tube_render.drawing = true;
+    state.tube_render.picture = tube::Picture{1440.0, 1080.0, false};
+    SettingsMenuManager sm{&state}; sm.enter_submenu(MenuSection::DISPLAY);
+    press(sm, "Light");
+    REQUIRE(sm.get_current_submenu() == MenuSection::TUBE_GROUP);
+    const std::string tag = " \xC2\xB7 not drawn";
+    const auto ends_with_tag = [&](const char* prefix) {
+        const MenuItem* item = row(sm, prefix);
+        REQUIRE(item);
+        return item->sublabel.size() >= tag.size() &&
+               item->sublabel.compare(item->sublabel.size() - tag.size(), tag.size(), tag) == 0;
+    };
+    CHECK(ends_with_tag("AFTERGLOW"));
+    CHECK_FALSE(ends_with_tag("GLOW:"));
+    CHECK_FALSE(ends_with_tag("GLOW SIZE"));
+    // A picture where TV fits only without both drops the glow too; GLOW SIZE then sizes nothing.
+    state.tube_render.picture = tube::Picture{1440.0, 1110.0, false};
+    press(sm, "Back");
+    press(sm, "Light");
+    CHECK(ends_with_tag("AFTERGLOW"));
+    CHECK(ends_with_tag("GLOW:"));
+    CHECK(ends_with_tag("GLOW SIZE"));
+    // The renderer not drawing: no note.
+    state.tube_render.drawing = false;
+    press(sm, "Back");
+    press(sm, "Light");
+    CHECK_FALSE(ends_with_tag("AFTERGLOW"));
+}
+
+TEST_CASE("Tube menu: the open group's notes follow the renderer without a rebuild from outside",
+          "[settings_menu][tube]") {
+    ui_test::fake_reset(); app::AppState state{}; offer_tube(state);
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    tube::select_look(state.display_settings.tube, tube::Look::tv);
+    state.tube_render.drawing = false;   // not drawing yet: no note
+    state.tube_render.picture = tube::Picture{1440.0, 1080.0, false};
+    SettingsMenuManager sm{&state}; sm.open();
+    sm.enter_submenu(MenuSection::DISPLAY);
+    press(sm, "Light");
+    const auto afterglow_sub = [&] { return row(sm, "AFTERGLOW")->sublabel; };
+    REQUIRE(afterglow_sub().find("not drawn") == std::string::npos);
+    const uint64_t before = sm.redraw_signature();
+    sm.update();   // nothing changed: nothing rebuilt
+    CHECK(sm.redraw_signature() == before);
+    state.tube_render.drawing = true;   // the renderer starts drawing: TV cannot afford afterglow
+    sm.update();
+    CHECK(afterglow_sub().find("not drawn") != std::string::npos);
+    CHECK(sm.redraw_signature() != before);
+    state.tube_render.picture = tube::Picture{960.0, 720.0, false};   // a smaller picture affords it
+    sm.update();
+    CHECK(afterglow_sub().find("not drawn") == std::string::npos);
+}
+
+TEST_CASE("Tube menu: the Display page follows the films answer and the tube's state", "[settings_menu][tube]") {
+    ui_test::fake_reset(); app::AppState state{}; offer_tube(state);
+    state.display_settings.set_crt_engine(app::CrtEngine::Tube);
+    state.display_settings.menu_style = app::MenuStyle::ChannelGuide;
+    tube::select_look(state.display_settings.tube, tube::Look::tv);
+    SettingsMenuManager sm{&state}; sm.open();
+    sm.enter_submenu(MenuSection::DISPLAY);
+    CHECK(row(sm, "Look: ")->label.find("films") == std::string::npos);   // film picture not known yet
+    const uint64_t before = sm.redraw_signature();
+    sm.update();
+    CHECK(sm.redraw_signature() == before);   // nothing changed: no rebuild
+    state.tube_render.film_picture = tube::Picture{1920.0, 1080.0, false};   // the loop reports the output
+    sm.update();
+    CHECK(row(sm, "Look: ")->label.find("films: Enhanced") != std::string::npos);
+    state.display_settings.menu_style = app::MenuStyle::List;   // changed elsewhere: no full-screen films
+    sm.update();
+    CHECK(row(sm, "Look: ")->label.find("films") == std::string::npos);
+    // Degauss: pressable while the tube draws; while a film is handed to Enhanced it is
+    // shown greyed (no action), like the web page's button.
+    REQUIRE(row(sm, "Degauss")->action);
+    state.tube_render.yielding = true;
+    sm.update();
+    const MenuItem* degauss = row(sm, "Degauss");
+    REQUIRE(degauss);
+    CHECK_FALSE(degauss->action);
+    CHECK(degauss->section == MenuSection::INFO);
+    CHECK(degauss->sublabel == app::kTubeDegaussOffSublabel);
+    state.tube_render.yielding = false;
+    sm.update();
+    REQUIRE(row(sm, "Degauss")->action);
 }

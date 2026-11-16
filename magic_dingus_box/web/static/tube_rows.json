@@ -9,50 +9,50 @@
     {"key": "tube", "word": "Tube"}
   ],
   "rows": [
-    {"key": "brightness", "label": "BRIGHTNESS", "hint": ["the picture's overall light", "50 is neutral · half to 1.5x"], "step": 5, "crt_native_neutral": false},
-    {"key": "contrast", "label": "CONTRAST", "hint": ["how hard the tones are pushed", "50 is neutral · tubes run higher"], "step": 5, "crt_native_neutral": false},
-    {"key": "saturation", "label": "SATURATION", "hint": ["how strong the colour is", "0 mono · 50 neutral · 100 twice"], "step": 5, "crt_native_neutral": false},
-    {"key": "white", "label": "COLOUR TEMP", "hint": ["the colour of white", "0 warm · 50 neutral · 100 cool"], "step": 5, "crt_native_neutral": false},
-    {"key": "sharpness", "label": "SHARPNESS", "hint": ["how fine the picture is drawn", "0 soft · 50 neutral · 100 crisp"], "step": 5, "crt_native_neutral": false},
-    {"key": "scanlines", "label": "SCANLINES", "hint": ["the dark gap between lines", "the beam swells into it"], "step": 5, "crt_native_neutral": true},
-    {"key": "lineSize", "label": "SCANLINE SIZE", "hint": ["how tall one beam line is", "in the TV's own pixels"], "step": 10, "crt_native_neutral": false},
-    {"key": "beam", "label": "BEAM SWELL", "hint": ["a bright line's beam grows wider", "bright marks fill their own gaps"], "step": 5, "crt_native_neutral": false},
-    {"key": "raster", "label": "TRUE RASTER", "hint": ["0 keeps every pixel row · sharp", "100 is a true raster · authentic"], "step": 5, "crt_native_neutral": true},
-    {"key": "maskStrength", "label": "MASK STRENGTH", "hint": ["how dark the mask's gaps are", "brightness is compensated"], "step": 5, "crt_native_neutral": true},
-    {"key": "maskSize", "label": "MASK SIZE", "hint": ["how wide one colour triad is", "in the TV's own pixels"], "step": 10, "crt_native_neutral": true},
-    {"key": "glow", "label": "GLOW", "hint": ["light scattered in the glass", "a soft halo on bright marks"], "step": 5, "crt_native_neutral": false},
-    {"key": "glowSize", "label": "GLOW SIZE", "hint": ["how far the light scatters", "wider softens what is around it"], "step": 5, "crt_native_neutral": false},
-    {"key": "afterglow", "label": "AFTERGLOW", "hint": ["the phosphor lingers", "red and green, blue fades first"], "step": 5, "crt_native_neutral": false},
-    {"key": "curvature", "label": "CURVATURE", "hint": ["how far the picture bends", "with the glass of the tube"], "step": 5, "crt_native_neutral": true},
-    {"key": "vignette", "label": "VIGNETTE", "hint": ["the edges and corners darken", "the middle keeps its light"], "step": 5, "crt_native_neutral": false},
-    {"key": "rim", "label": "RIM", "hint": ["the dark lip around the picture", "where the tube meets its surround"], "step": 5, "crt_native_neutral": true},
-    {"key": "glassBlack", "label": "GLASS BLACK", "hint": ["the black of lit glass", "at 100 still barely off black"], "step": 5, "crt_native_neutral": true},
-    {"key": "reflection", "label": "REFLECTION", "hint": ["a soft reflection of the room", "a faint highlight on the glass"], "step": 5, "crt_native_neutral": true},
-    {"key": "convergence", "label": "CONVERGENCE", "hint": ["the three guns misaligned", "grows toward the edges"], "step": 5, "crt_native_neutral": false},
-    {"key": "chromaBleed", "label": "CHROMA BLEED", "hint": ["colour smearing sideways", "a composite signal's blur"], "step": 5, "crt_native_neutral": false},
-    {"key": "noise", "label": "NOISE", "hint": ["fine RF grain", "moves on its own"], "step": 5, "crt_native_neutral": false},
-    {"key": "jitter", "label": "JITTER", "hint": ["the picture's slight shake", "moves on its own"], "step": 5, "crt_native_neutral": false},
-    {"key": "flicker", "label": "FLICKER", "hint": ["the light's shimmer", "moves on its own"], "step": 5, "crt_native_neutral": false},
-    {"key": "hum", "label": "HUM BAR", "hint": ["soft at low · pronounced at 100", "moves · rolls up every 16.7 s"], "step": 5, "crt_native_neutral": false},
-    {"key": "abl", "label": "BRIGHTNESS LIMIT", "hint": ["bright screens dim slightly", "as a tube's supply sags"], "step": 5, "crt_native_neutral": false},
-    {"key": "breathing", "label": "BREATHING", "hint": ["the picture swells when bright", "on the same sag · ≤ 1 %"], "step": 5, "crt_native_neutral": false},
-    {"key": "rollBand", "label": "ROLLING BAND", "hint": ["a soft dark band rolls down", "0 off · depth up to 44 %"], "step": 5, "crt_native_neutral": false},
-    {"key": "rollSpeed", "label": "BAND SPEED", "hint": ["how fast the band rolls down", "0: 30 s · 100: 6 s per pass"], "step": 5, "crt_native_neutral": false},
-    {"key": "rollWidth", "label": "BAND WIDTH", "hint": ["the full width of the soft band", "0: 4 % · 100: 31 % of picture width"], "step": 5, "crt_native_neutral": false},
-    {"key": "rollTint", "label": "BAND TINT", "hint": ["the colour inside the band", "0 warm · 50 neutral · 100 cool"], "step": 5, "crt_native_neutral": false},
-    {"key": "tracking", "label": "TRACKING SLIP", "hint": ["a narrow strip slips sideways", "0 off · up to 1.8 % of picture width"], "step": 5, "crt_native_neutral": false},
-    {"key": "trackingRate", "label": "SLIP RATE", "hint": ["how often a tracking slip occurs", "0: every 60 s · 100: every 4 s"], "step": 5, "crt_native_neutral": false},
-    {"key": "colorDrift", "label": "COLOUR DRIFT", "hint": ["slow red and blue fringing", "0 off · up to 0.4 % of picture width"], "step": 5, "crt_native_neutral": false},
-    {"key": "driftSpeed", "label": "DRIFT SPEED", "hint": ["how fast the colours drift", "0: 24 s · 100: 6 s per cycle"], "step": 5, "crt_native_neutral": false},
-    {"key": "trackingWidth", "label": "TEAR WIDTH", "hint": ["height of the displaced strip", "0: 1 % · 100: 16 % of picture width"], "step": 5, "crt_native_neutral": false},
-    {"key": "trackingRecovery", "label": "TEAR RECOVERY", "hint": ["time for a slip to settle", "0: 0.12 s · 100: 1.12 s"], "step": 5, "crt_native_neutral": false},
-    {"key": "flagging", "label": "TOP EDGE BEND", "hint": ["the top of the picture sways", "0 off · up to 2 % of picture width"], "step": 5, "crt_native_neutral": false},
-    {"key": "flagHeight", "label": "BEND HEIGHT", "hint": ["how far down the bend reaches", "0: 5 % · 100: 35 %"], "step": 5, "crt_native_neutral": false},
-    {"key": "flagSpeed", "label": "BEND SPEED", "hint": ["how fast the top edge sways", "0: 12 s · 100: 2 s"], "step": 5, "crt_native_neutral": false},
-    {"key": "purity", "label": "COLOUR PATCH", "hint": ["uneven colour near the edge", "0 off · strong at 100"], "step": 5, "crt_native_neutral": false},
-    {"key": "puritySize", "label": "PATCH SIZE", "hint": ["radius of the soft colour patch", "0: 5 % · 100: 36 % of picture width"], "step": 5, "crt_native_neutral": false},
-    {"key": "purityHue", "label": "PATCH COLOUR", "hint": ["tint of the discoloured area", "0–100: full colour wheel"], "step": 5, "crt_native_neutral": false},
-    {"key": "purityPosition", "label": "PATCH POSITION", "hint": ["move the patch around the edge", "starts top left · clockwise"], "step": 5, "crt_native_neutral": false}
+    {"key": "brightness", "label": "BRIGHTNESS", "hint": ["the picture's overall light", "50 is neutral · half to 1.5x"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "contrast", "label": "CONTRAST", "hint": ["how hard the tones are pushed", "50 is neutral · tubes run higher"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "saturation", "label": "SATURATION", "hint": ["how strong the colour is", "0 mono · 50 neutral · 100 twice"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "white", "label": "COLOUR TEMP", "hint": ["the colour of white", "0 warm · 50 neutral · 100 cool"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "sharpness", "label": "SHARPNESS", "hint": ["how fine the picture is drawn", "0 soft · 50 neutral · 100 crisp"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "scanlines", "label": "SCANLINES", "hint": ["the dark gap between lines", "the beam swells into it"], "step": 5, "crt_native_neutral": true, "forces_30fps": false},
+    {"key": "lineSize", "label": "SCANLINE SIZE", "hint": ["how tall one beam line is", "in the TV's own pixels"], "step": 10, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "beam", "label": "BEAM SWELL", "hint": ["a bright line's beam grows wider", "bright marks fill their own gaps"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "raster", "label": "TRUE RASTER", "hint": ["0 keeps every pixel row · sharp", "100 is a true raster · authentic"], "step": 5, "crt_native_neutral": true, "forces_30fps": true},
+    {"key": "maskStrength", "label": "MASK STRENGTH", "hint": ["how dark the mask's gaps are", "brightness is compensated"], "step": 5, "crt_native_neutral": true, "forces_30fps": false},
+    {"key": "maskSize", "label": "MASK SIZE", "hint": ["how wide one colour triad is", "in the TV's own pixels"], "step": 10, "crt_native_neutral": true, "forces_30fps": false},
+    {"key": "glow", "label": "GLOW", "hint": ["light scattered in the glass", "a soft halo on bright marks"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "glowSize", "label": "GLOW SIZE", "hint": ["how far the light scatters", "wider softens what is around it"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "afterglow", "label": "AFTERGLOW", "hint": ["the phosphor lingers", "red and green, blue fades first"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "curvature", "label": "CURVATURE", "hint": ["how far the picture bends", "with the glass of the tube"], "step": 5, "crt_native_neutral": true, "forces_30fps": false},
+    {"key": "vignette", "label": "VIGNETTE", "hint": ["the edges and corners darken", "the middle keeps its light"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "rim", "label": "RIM", "hint": ["the dark lip around the picture", "where the tube meets its surround"], "step": 5, "crt_native_neutral": true, "forces_30fps": false},
+    {"key": "glassBlack", "label": "GLASS BLACK", "hint": ["the black of lit glass", "at 100 still barely off black"], "step": 5, "crt_native_neutral": true, "forces_30fps": false},
+    {"key": "reflection", "label": "REFLECTION", "hint": ["a soft reflection of the room", "a faint highlight on the glass"], "step": 5, "crt_native_neutral": true, "forces_30fps": false},
+    {"key": "convergence", "label": "CONVERGENCE", "hint": ["the three guns misaligned", "grows toward the edges"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "chromaBleed", "label": "CHROMA BLEED", "hint": ["colour smearing sideways", "a composite signal's blur"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "noise", "label": "NOISE", "hint": ["fine RF grain", "moves on its own"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "jitter", "label": "JITTER", "hint": ["the picture's slight shake", "moves on its own"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "flicker", "label": "FLICKER", "hint": ["the light's shimmer", "moves on its own"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "hum", "label": "HUM BAR", "hint": ["soft at low · pronounced at 100", "moves · rolls up every 16.7 s"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "abl", "label": "BRIGHTNESS LIMIT", "hint": ["bright screens dim slightly", "as a tube's supply sags"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "breathing", "label": "BREATHING", "hint": ["the picture swells when bright", "on the same sag · ≤ 1 %"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "rollBand", "label": "ROLLING BAND", "hint": ["a soft dark band rolls down", "0 off · depth up to 44 %"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "rollSpeed", "label": "BAND SPEED", "hint": ["how fast the band rolls down", "0: 30 s · 100: 6 s per pass"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "rollWidth", "label": "BAND WIDTH", "hint": ["the full width of the soft band", "0: 4 % · 100: 31 % of picture width"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "rollTint", "label": "BAND TINT", "hint": ["the colour inside the band", "0 warm · 50 neutral · 100 cool"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "tracking", "label": "TRACKING SLIP", "hint": ["a narrow strip slips sideways", "0 off · up to 1.8 % of picture width"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "trackingRate", "label": "SLIP RATE", "hint": ["how often a tracking slip occurs", "0: every 60 s · 100: every 4 s"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "colorDrift", "label": "COLOUR DRIFT", "hint": ["slow red and blue fringing", "0 off · up to 0.4 % of picture width"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "driftSpeed", "label": "DRIFT SPEED", "hint": ["how fast the colours drift", "0: 24 s · 100: 6 s per cycle"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "trackingWidth", "label": "TEAR WIDTH", "hint": ["height of the displaced strip", "0: 1 % · 100: 16 % of picture width"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "trackingRecovery", "label": "TEAR RECOVERY", "hint": ["time for a slip to settle", "0: 0.12 s · 100: 1.12 s"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "flagging", "label": "TOP EDGE BEND", "hint": ["the top of the picture sways", "0 off · up to 2 % of picture width"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "flagHeight", "label": "BEND HEIGHT", "hint": ["how far down the bend reaches", "0: 5 % · 100: 35 %"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "flagSpeed", "label": "BEND SPEED", "hint": ["how fast the top edge sways", "0: 12 s · 100: 2 s"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "purity", "label": "COLOUR PATCH", "hint": ["uneven colour near the edge", "0 off · strong at 100"], "step": 5, "crt_native_neutral": false, "forces_30fps": true},
+    {"key": "puritySize", "label": "PATCH SIZE", "hint": ["radius of the soft colour patch", "0: 5 % · 100: 36 % of picture width"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "purityHue", "label": "PATCH COLOUR", "hint": ["tint of the discoloured area", "0–100: full colour wheel"], "step": 5, "crt_native_neutral": false, "forces_30fps": false},
+    {"key": "purityPosition", "label": "PATCH POSITION", "hint": ["move the patch around the edge", "starts top left · clockwise"], "step": 5, "crt_native_neutral": false, "forces_30fps": false}
   ],
   "mask": {
     "label": "MASK",
@@ -78,7 +78,7 @@
     {"key": "purity", "label": "COLOUR PURITY", "title": "Colour purity", "rows": ["purity", "puritySize", "purityHue", "purityPosition"]}
   ],
   "looks": [
-    {"key": "pvm", "word": "PVM", "hint": ["the broadcast monitor", "nothing moves · default"], "mask": "grille",
+    {"key": "pvm", "word": "PVM", "hint": ["the broadcast monitor", "nothing moves · default"], "mask": "grille", "fps": 30,
       "values": {
         "brightness": 55,
         "contrast": 60,
@@ -126,7 +126,7 @@
         "purityPosition": 0
       }
     },
-    {"key": "monitor", "word": "Monitor", "hint": ["a crisp PC monitor", "nothing moves"], "mask": "magentaGreen",
+    {"key": "monitor", "word": "Monitor", "hint": ["a crisp PC monitor", "nothing moves"], "mask": "magentaGreen", "fps": 30,
       "values": {
         "brightness": 52,
         "contrast": 55,
@@ -174,7 +174,7 @@
         "purityPosition": 0
       }
     },
-    {"key": "trinitron", "word": "Trinitron", "hint": ["a consumer Trinitron", "moves a little"], "mask": "grille",
+    {"key": "trinitron", "word": "Trinitron", "hint": ["a consumer Trinitron", "moves a little"], "mask": "grille", "fps": 30,
       "values": {
         "brightness": 55,
         "contrast": 58,
@@ -222,7 +222,7 @@
         "purityPosition": 0
       }
     },
-    {"key": "tv", "word": "TV", "hint": ["a 1990s set, slot mask", "some of it moves"], "mask": "slot",
+    {"key": "tv", "word": "TV", "hint": ["a 1990s set, slot mask", "some of it moves"], "mask": "slot", "fps": 30,
       "values": {
         "brightness": 58,
         "contrast": 55,
@@ -270,7 +270,7 @@
         "purityPosition": 0
       }
     },
-    {"key": "arcade", "word": "Arcade", "hint": ["a cabinet tube, dots", "some of it moves"], "mask": "dots",
+    {"key": "arcade", "word": "Arcade", "hint": ["a cabinet tube, dots", "some of it moves"], "mask": "dots", "fps": 30,
       "values": {
         "brightness": 60,
         "contrast": 58,
@@ -318,7 +318,7 @@
         "purityPosition": 0
       }
     },
-    {"key": "everything", "word": "Everything", "hint": ["every effect a tube shows", "all of it moves"], "mask": "slot",
+    {"key": "everything", "word": "Everything", "hint": ["every effect a tube shows", "all of it moves"], "mask": "slot", "fps": 30,
       "values": {
         "brightness": 58,
         "contrast": 58,

@@ -241,6 +241,67 @@ function tubeNotice(available, answered, status) {
     return { text: '', retry: false };
 }
 
+/** "30 fps" for a row that forces the 30 fps class when moved off neutral, else "". */
+function tubeRateTag(row) {
+    return row && row.forces_30fps ? '30 fps' : '';
+}
+
+/** Whether a row's rate tag shows: it forces 30 fps AND the box does not ignore the
+    row (a real tube draws those itself in CRT Native, so they never force a rate there). */
+function tubeRateTagShown(row, native) {
+    return tubeRateTag(row) !== '' && !(native && !!row.crt_native_neutral);
+}
+
+/** The note under the look picker when full-screen films get the Enhanced look: the
+    kiosk decides (`film_engine`, tube::tube_yields_to_enhanced); '' for "tube" or a
+    kiosk from before the field. Plain text. */
+function tubeFilmNote(kiosk) {
+    return kiosk && kiosk.film_engine === 'enhanced'
+        ? 'Full-screen films use the Enhanced look with this setting (it is too heavy for a film).'
+        : '';
+}
+
+/** The note on a row whose effect the box is not drawing. */
+const TUBE_NOT_DRAWN_NOTE = 'Not drawn at this picture size';
+
+/** Whether the box is not drawing a row's effect: the kiosk lists, in its status's
+    `not_drawn`, every row a dropped effect silences (it decides that,
+    tube::plan_passes_and_drops / tube::not_drawn_rows; the page only reads it), and the
+    page marks exactly the keys listed. A key that is not a row is never asked about; a
+    kiosk from before the field publishes none, so nothing is marked. The row stays
+    editable; its value is kept and drawn again once the look can afford it. */
+function tubeRowNotDrawn(kiosk, key) {
+    const list = kiosk && Array.isArray(kiosk.not_drawn) ? kiosk.not_drawn : [];
+    return list.includes(key);
+}
+
+/** A look's picker text: its word, plus its Modern TV rate. In CRT Native the rate
+    may not apply, so it is left out (the live header rate stays). */
+function tubeLookOptionText(look, native) {
+    return !native && Number.isInteger(look.fps) ? `${look.word} \u00b7 ${look.fps} fps` : look.word;
+}
+
+/**
+ * The frame-rate line in the header: "<n> fps", then the warning when the look is
+ * too heavy for smooth video, or the unavailable notice (nothing else is true then), or,
+ * while a full-screen film the look is too heavy for is on screen (`yielding`), that
+ * Enhanced is drawing it - no Tube frame rate is claimed then.
+ * Plain text (the page sets it as textContent); '' when the kiosk reports no rate.
+ */
+function tubeRateText(kiosk) {
+    if (!kiosk) return '';
+    if (kiosk.unavailable === 'build_hung') {
+        return 'Tube could not start on this box, so it is showing the Enhanced look. Restart the box to try again.';
+    }
+    if (kiosk.unavailable) {
+        return 'Tube could not draw this look, so the box is showing the Enhanced look. Try a different look.';
+    }
+    if (kiosk.yielding === true) return 'A full-screen film is playing: drawn with the Enhanced look.';
+    if (!Number.isInteger(kiosk.frame_rate)) return '';
+    const rate = `${kiosk.frame_rate} fps`;
+    return kiosk.too_heavy ? `${rate}. This look is too heavy for smooth video on this TV` : rate;
+}
+
 // ===== DOM (thin) =====
 
 const CRT_LOOK_POLL_MS = 1000;
@@ -414,7 +475,7 @@ function buildCrtLook(st) {
     const engineOptions = rows.engines.map(e =>
         `<option value="${escapeHtml(e.key)}">${escapeHtml(e.word)}</option>`).join('');
     const lookOptions = rows.looks.map(l =>
-        `<option value="${escapeHtml(l.key)}">${escapeHtml(l.word)}</option>`).join('');
+        `<option value="${escapeHtml(l.key)}">${escapeHtml(tubeLookOptionText(l, false))}</option>`).join('');
     const maskOptions = rows.mask.choices.map(c =>
         `<option value="${escapeHtml(c.key)}">${escapeHtml(c.word)}</option>`).join('');
 
@@ -432,7 +493,7 @@ function buildCrtLook(st) {
         const hint = isMask ? '' : crtLookHintHtml(row.hint);
         return `<div data-tube-line="${escapeHtml(key)}" style="padding: 0.6rem 0; border-top: 1px solid var(--bg-mid);">
                     <div style="display: flex; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.3rem;">
-                        <strong>${escapeHtml(row.label)}</strong>
+                        <strong>${escapeHtml(row.label)}${tubeRateTag(row) ? ` <span class="settings-description" data-tube-rate="${escapeHtml(key)}" style="font-weight: normal; font-size: 0.8rem;">${escapeHtml(tubeRateTag(row))}</span>` : ''}${isMask ? '' : ` <span class="settings-description" data-tube-notdrawn="${escapeHtml(key)}" style="display: none; font-weight: normal; font-size: 0.8rem;">${escapeHtml(TUBE_NOT_DRAWN_NOTE)}</span>`}</strong>
                         <span data-tube-moved="${escapeHtml(key)}" style="color: var(--accent); font-size: 0.8rem;">moved</span>
                     </div>
                     ${control}
@@ -454,10 +515,12 @@ function buildCrtLook(st) {
                 <label class="settings-description" for="crtLookEngine" style="display: block; margin-bottom: 0.35rem;">CRT Engine</label>
                 <select id="crtLookEngine" style="${sel} width: 100%;">${engineOptions}</select>
                 <p ${desc} id="crtLookEngineNote">The sliders apply when CRT Engine is Tube.</p>
+                <p ${desc} id="crtLookRate" role="status"></p>
 
                 <label class="settings-description" for="crtLookLook" style="display: block; margin: 0.9rem 0 0.35rem;">Look</label>
                 <select id="crtLookLook" style="${sel} width: 100%;">${lookOptions}</select>
                 <p ${desc} id="crtLookLookHint"></p>
+                <p ${desc} id="crtLookFilmNote" style="display: none;"></p>
 
                 <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.9rem;">
                     <button class="btn-secondary small" id="crtLookReset">Reset to look</button>
@@ -472,18 +535,22 @@ function buildCrtLook(st) {
     const els = {
         engine: document.getElementById('crtLookEngine'),
         engineNote: document.getElementById('crtLookEngineNote'),
+        rate: document.getElementById('crtLookRate'),
         look: document.getElementById('crtLookLook'),
         lookHint: document.getElementById('crtLookLookHint'),
+        filmNote: document.getElementById('crtLookFilmNote'),
         reset: document.getElementById('crtLookReset'),
         degauss: document.getElementById('crtLookDegauss'),
         mask: body.querySelector('[data-tube-mask]'),
-        ranges: {}, nums: {}, moved: {}, hints: {}, na: {},
+        ranges: {}, nums: {}, moved: {}, hints: {}, na: {}, rates: {}, notDrawn: {},
     };
     body.querySelectorAll('[data-tube-row]').forEach(el => { els.ranges[el.dataset.tubeRow] = el; });
     body.querySelectorAll('[data-tube-num]').forEach(el => { els.nums[el.dataset.tubeNum] = el; });
     body.querySelectorAll('[data-tube-moved]').forEach(el => { els.moved[el.dataset.tubeMoved] = el; });
     body.querySelectorAll('[data-tube-hint]').forEach(el => { els.hints[el.dataset.tubeHint] = el; });
+    body.querySelectorAll('[data-tube-rate]').forEach(el => { els.rates[el.dataset.tubeRate] = el; });
     body.querySelectorAll('[data-tube-na]').forEach(el => { els.na[el.dataset.tubeNa] = el; });
+    body.querySelectorAll('[data-tube-notdrawn]').forEach(el => { els.notDrawn[el.dataset.tubeNotdrawn] = el; });
 
     els.engine.addEventListener('change', () => crtLookSend({ op: 'engine', engine: els.engine.value }));
     els.look.addEventListener('change', () => crtLookSend({ op: 'look', look: els.look.value }));
@@ -538,10 +605,21 @@ function renderCrtLook() {
     els.engine.value = shown.engine;
     els.engine.disabled = waiting;
     els.engineNote.style.display = shown.engine === 'tube' ? 'none' : '';
+    const rateText = tubeRateText(kiosk);
+    if (els.rate.textContent !== rateText) els.rate.textContent = rateText;  // role=status: no re-announce
+    Array.from(els.look.options).forEach(opt => {
+        const l = rows.looks.find(x => x.key === opt.value);
+        if (l) opt.textContent = tubeLookOptionText(l, native);
+    });
     els.look.value = shown.look;
     els.look.disabled = waiting;
     const look = rows.looks.find(l => l.key === shown.look);
     els.lookHint.innerHTML = look ? crtLookHintHtml(look.hint) : '';
+    const filmText = tubeFilmNote(kiosk);
+    if (els.filmNote.textContent !== filmText) {
+        els.filmNote.textContent = filmText;
+        els.filmNote.style.display = filmText ? '' : 'none';
+    }
     els.reset.disabled = waiting;
     els.degauss.disabled = waiting || kiosk.effective_engine !== 'tube';
 
@@ -561,6 +639,9 @@ function renderCrtLook() {
         range.disabled = waiting || na;
         if (na && st.held === range) st.held = null;
         els.na[key].style.display = na ? '' : 'none';
+        if (els.rates[key]) els.rates[key].style.display = tubeRateTagShown(rowByKey[key], native) ? '' : 'none';
+        const notDrawn = tubeRowNotDrawn(kiosk, key) ? '' : 'none';
+        if (els.notDrawn[key] && els.notDrawn[key].style.display !== notDrawn) els.notDrawn[key].style.display = notDrawn;
         els.moved[key].style.visibility = moved.includes(key) ? 'visible' : 'hidden';
         if (st.held === range) return;  // never repaint a slider the pointer is holding
         const value = shown.values[key];

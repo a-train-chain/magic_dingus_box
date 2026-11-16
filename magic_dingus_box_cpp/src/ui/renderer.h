@@ -8,12 +8,21 @@
 #include <thread>
 #include <vector>
 #include <memory>
+#include <string_view>
 #include <unordered_map>
 #include "theme.h"               // For Color type
 #include "ui_batch.h"
 #include "pairing_screen_renderer.h"  // For PairedDevice
+#include "../tube/tube_frame_class.h"  // TubeStatus::cls
+#include "../tube/tube_programs.h"     // tube::YieldDecision
+#include "../video/picture_placement.h" // video::IRect (the tube's picture)
+
+namespace tube {
+class FrameDriver;
+}
 
 namespace ui {
+class TubeRenderer;
 class Theme;
 class FontManager;
 class ControllerWizard;
@@ -302,6 +311,66 @@ public:
     // frame shows the opposite field (ui::crt_render_field).
     void set_crt_field_override(int64_t field) { crt_field_override_ = field; }
 
+    // ----- The Tube CRT engine (ui/tube_renderer.h, tube/tube_driver.h) -----
+    //
+    // INERT unless app::kTubeRendererReady (a TEST-ONLY preview build until the
+    // plan's last task): only then does initialize() make the TubeRenderer and its
+    // FrameDriver, and main.cpp calls the methods below only then. Without
+    // them every method here is a no-op, tube_status() reports "not drawing" and
+    // begin_scene_fbo / end_scene_fbo_and_composite take exactly today's path.
+    //
+    // A Tube frame: the effective engine is Tube (app::effective_crt_engine with
+    // app::tube_offered), the Media Browser does not own the screen, the guard did
+    // not trip ("build_hung"), and the look does not YIELD this picture to Enhanced
+    // (tube::tube_yields_to_enhanced: a full-screen film it cannot afford even after
+    // dropping afterglow and glow; owner's decision 2026-11-15). A yielded picture is
+    // handed over exactly like a Media Browser frame - the tube stops drawing, its
+    // targets go, its programs stay, no warm-up on the way back - and the Enhanced
+    // composite draws it under its own gates (1 and 4), as if the engine were Enhanced. It draws through the scene FBO even with
+    // every Enhanced slider at 0 (Enhanced's gates 1 and 4 do not apply), and
+    // when TubeRenderer::composite() cannot draw the frame, the Enhanced composite
+    // draws it, as for any other engine.
+    //
+    // The picture: the content rectangle (video::content_rects().content,
+    // top-left-origin framebuffer px) and whether the output is CRT Native. Stores
+    // two values; main.cpp sets it every iteration before tube_status().
+    // `full_screen_film`: app::movie_full_screen, the fact content_rects was given; only
+    // an actual full-screen film can yield to Enhanced (tube::tube_yields_to_enhanced).
+    void set_tube_picture(video::IRect content, bool crt_native, bool full_screen_film) {
+        tube_picture_ = content;
+        tube_crt_native_ = crt_native;
+        tube_full_screen_film_ = full_screen_film;
+    }
+    // The loop's clock for this iteration, in seconds (the iteration's
+    // steady_clock time point), so the composite's FrameDriver::frame() and
+    // mean_due() read the same clock tube_status()'s peek() did.
+    void set_tube_clock(double now_seconds) { tube_now_ = now_seconds; }
+    // After a stretch in which the tube did not draw with the engine still Tube
+    // (the Media Browser had the screen; the web's op log is applied meanwhile),
+    // the first iteration that would draw it re-baselines the degauss counter
+    // (FrameDriver::skip_degauss_to): a press made while nothing showed it is
+    // dropped, not fired unprompted later. main.cpp calls it every iteration,
+    // BEFORE tube_status(), so peek() agrees with the frame. A no-op otherwise.
+    // (A game is not such a stretch: the loop does not run during it, so a press
+    // made then is applied after the return and degausses then, like any press.)
+    void skip_missed_tube_degauss(const app::AppState& state);
+    struct TubeStatus {
+        bool drawing = false;
+        tube::FrameClass cls = tube::FrameClass::Lean60;
+        bool moving = false;
+        tube::Picture picture{0.0, 0.0, false};   // what the tube draws into (app::tube_not_drawn)
+        bool yielding = false;   // not drawing because this picture is yielded to Enhanced
+    };
+    // Whether the tube draws this iteration (a Tube frame as above, and
+    // TubeRenderer::available()), and its frame class and motion from
+    // FrameDriver::peek() - const: advances nothing. Not drawing: the defaults.
+    TubeStatus tube_status(const app::AppState& state, double now_seconds) const;
+    // "" | "build_hung" | "build_failed" (TubeRenderer::unavailable_reason()).
+    std::string_view tube_unavailable_reason() const;
+    // Right after READY=1 (the watchdog runs from there): no program is built
+    // before it. Preview builds also read MDB_TUBE_VALIDATE here (once).
+    void allow_tube_builds();
+
     // Marquee wood-grain frame — the "TV cabinet" outer 30px border.
     // Used ONLY when the kiosk is on Marquee (Media Browser) screens. Other
     // surfaces (main playlist, settings, RetroArch handoff) keep their
@@ -438,6 +507,46 @@ private:
     uint32_t scene_fbo_width_ = 0;
     uint32_t scene_fbo_height_ = 0;
     bool scene_fbo_active_ = false;
+
+    // The Tube engine (see set_tube_picture). Both null unless
+    // app::kTubeRendererReady; every tube path below starts with `if (!tube_)`.
+    //   tube_scene_: the last begin_scene_fbo() began a Tube scene (called
+    //     TubeRenderer::begin_scene); read by this frame's composite and, at the
+    //     next begin_scene_fbo(), to notice the tube stopped (end_tube_scene).
+    //   tube_engine_was_tube_: the engine was Tube on the last Tube scene and no
+    //     drawn frame since had another engine (Media Browser frames do not
+    //     count) - the first Tube scene after another engine starts the driver.
+    //   tube_degauss_resync_: the tube stopped drawing with the engine still Tube
+    //     (the Media Browser); the next iteration that would draw it skips any
+    //     degauss asked for meanwhile (skip_missed_tube_degauss). Cleared there,
+    //     and by start().
+    //   tube_driver_ is declared BEFORE tube_ so it is destroyed AFTER it: the
+    //     TubeRenderer's mean sink holds a raw pointer to the driver.
+    std::unique_ptr<tube::FrameDriver> tube_driver_;
+    std::unique_ptr<TubeRenderer> tube_;
+    video::IRect tube_picture_{};
+    bool tube_crt_native_ = false;
+    double tube_now_ = 0.0;
+    bool tube_scene_ = false;
+    bool tube_engine_was_tube_ = false;
+    bool tube_degauss_resync_ = false;
+    // Preview builds, MDB_TUBE_VALIDATE=1: the validation passes still owed, ONE
+    // per Tube frame so the loop pings the watchdog between them - Shader decode,
+    // then Hardware decode when the context has it. None: nothing owed (always in production).
+    enum class TubeValidate { None, Shader, Hardware };
+    TubeValidate tube_validate_next_ = TubeValidate::None;
+    bool tube_gl_live_ = false;            // the tube touched GL since its last release_gl()
+    bool tube_frame_wanted(const app::AppState& state) const;
+    // tube_frame_wanted() but for the yield: every other condition of a Tube frame.
+    bool tube_engine_frame(const app::AppState& state) const;
+    // Whether the current setting yields the current picture (tube_picture_, an actual
+    // full-screen film) to Enhanced: tube::YieldDecision, the pure decision cached on
+    // (setting, picture, film).
+    bool tube_yields_now(const app::AppState& state) const;
+    mutable tube::YieldDecision tube_yield_;
+    bool tube_full_screen_film_ = false;
+    bool tube_composite(const app::AppState& state);
+    void release_tube_gl();
     bool last_scanlines_enabled_ = true;
 
     // Actual HDMI default-framebuffer size, set by set_framebuffer_size().

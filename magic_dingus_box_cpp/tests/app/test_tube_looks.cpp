@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <array>
+#include "tube/tube_frame_class.h"
 #include "tube/tube_looks.h"
+#include "tube/tube_setting.h"
 using namespace tube;
 
 namespace {
@@ -62,4 +64,19 @@ TEST_CASE("tube looks: whole-pixel sizes", "[tube]") {
     REQUIRE(whole_px(4, 720.0) == 3);
     REQUIRE(whole_px(3, 720.0) == 2);
     REQUIRE(whole_px(2, 480.0) == 2);   // never under two
+}
+
+TEST_CASE("tube looks: the classes Task 1b decided", "[tube]") {
+    constexpr bool kPvmLean = false;  // from Task 1b's table: pvm_lean (not established without the probe; Task 15's soak decides)
+    for (auto look : kLooks) {
+        TubeSetting s;
+        select_look(s, look);
+        const bool lean = kPvmLean && (look == Look::pvm || look == Look::monitor);
+        INFO(look_name(look));
+        REQUIRE((setting_frame_class(resolve(s), false) == FrameClass::Lean60) == lean);
+    }
+    const auto& pvm = look_values(Look::pvm).effects;
+    REQUIRE(pvm[index_of(Effect::sharpness)] == (kPvmLean ? 50 : 63));
+    REQUIRE(pvm[index_of(Effect::glow)] == (kPvmLean ? 0 : 8));
+    REQUIRE(pvm[index_of(Effect::abl)] == 20);
 }

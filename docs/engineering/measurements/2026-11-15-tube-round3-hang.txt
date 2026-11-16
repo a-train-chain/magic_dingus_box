@@ -1,0 +1,6 @@
+HUNG at suspect everything sharpness=50 (kiosk_status.json ts 20s old)
+  last program line: [2026-11-15 14:47:57.088] [info] tube spike: program lean [OUT_SCENE OUT_LEAN_TESTS SCENE_HW_DECODE OUT_BEND OUT_SCANLINES OUT_BEAM_CHEAP OUT_TONE OUT_MOTION OUT_MASK] (fullscreen.vert + v2_output.frag) compiled in 7.5 ms + linked in 13.1 ms (gamma mode 0)
+  building.txt: build signal|fullscreen.vert v2_signal.frag [SIG_TONE SIG_CHROMA SIG_CONV SIG_JITTER SCENE_HW_DECODE]
+  nothing was killed. After a restart (the spike then refuses the define set in building.txt):
+    this configuration again: sh run_matrix.sh matrix_hang.tsv 25 12 1
+    the next one:             sh run_matrix.sh matrix_hang.tsv 25 12 2

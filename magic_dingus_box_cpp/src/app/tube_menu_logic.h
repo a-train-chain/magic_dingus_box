@@ -18,6 +18,8 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "app/tube_not_drawn.h"
+#include "tube/tube_frame_class.h"
 #include "tube/tube_groups.h"
 #include "tube/tube_inputs.h"
 #include "tube/tube_rows.h"
@@ -63,13 +65,92 @@ inline tube::Look next_look(tube::Look look) noexcept {
     return tube::kLooks[i < n ? (i + 1) % n : 0];
 }
 
-// "Look: TV", or "Look: TV (2 moved)" when rows are moved off it.
-inline std::string tube_look_label(const tube::TubeSetting& setting) {
-    std::string label = "Look: " + std::string(tube::look_choice(setting.look).label);
-    const std::size_t moved = tube::moved_keys(setting).size();
-    if (moved > 0) label += " (" + std::to_string(moved) + " moved)";
-    return label;
+// Characters (UTF-8 code points) in `s`: the body font is monospaced, so this is width.
+inline std::size_t utf8_length(std::string_view s) noexcept {
+    std::size_t n = 0;
+    for (const char c : s)
+        if ((static_cast<unsigned char>(c) & 0xC0u) != 0x80u) ++n;
+    return n;
 }
+
+// THE LOOK LABEL'S ROW BUDGET, in characters. The label of the SELECTED row is drawn at
+// theme font_medium_size (18 px) in the body font, DejaVu Sans Mono: 1233/2048 em advance,
+// scaled by stb_truetype to an 18 px ascent+descent of 2384 units = 9.31 px a character.
+// renderer_settings.cpp: the menu is half the UI canvas wide and the text starts 35 px in,
+// so a label has (canvas_w / 2 - 35) px before the screen edge, and nothing truncates it:
+//   Modern TV, a 960 px canvas (the 4:3 content viewport): 445 px / 9.31 = 47.8 -> 47
+//   CRT Native, a 640 px canvas: 285 px / 9.31 = 30.6 -> 30
+inline constexpr std::size_t kLookLabelMaxCharsModernTv = 47;
+inline constexpr std::size_t kLookLabelMaxCharsCrtNative = 30;
+inline constexpr std::size_t look_label_max_chars(bool crt_native) noexcept {
+    return crt_native ? kLookLabelMaxCharsCrtNative : kLookLabelMaxCharsModernTv;
+}
+
+// "Look: TV · 30 fps", "Look: TV (2 moved) · 30 fps", "Look: TV · 30 fps · films:
+// Enhanced". The rate is the frame class of the setting as it stands; `crt_native` is the
+// display mode (the rows a real tube draws itself count as neutral there, so the rate can
+// differ). `film_engine` (app::tube_film_engine): when full-screen films get Enhanced.
+// ALWAYS FITS look_label_max_chars(crt_native): the first of these that fits is used -
+//   1. everything: "Look: <look> (<n> moved) · <r> fps · films: Enhanced"
+//   2. "(<n> moved)" shortened to "(+<n>)"
+//   3. the moved count dropped
+//   4. the films note abbreviated to " · films: Enh."
+//   5. the rate dropped
+//   6. the films note dropped ("Look: Everything", 16, fits both budgets)
+// The rate and the films note stay longest: they say what the box does; the moved count is
+// on the Reset row's sublabel too.
+inline std::string tube_look_label(const tube::TubeSetting& setting, bool crt_native,
+                                   std::optional<CrtEngine> film_engine = std::nullopt) {
+    const std::string base = "Look: " + std::string(tube::look_choice(setting.look).label);
+    const std::size_t moved = tube::moved_keys(setting).size();
+    const int fps = tube::frames_per_second(tube::setting_frame_class(tube::resolve(setting), crt_native));
+    const std::string rate = " \xC2\xB7 " + std::to_string(fps) + " fps";
+    const bool films = film_engine == CrtEngine::Enhanced;
+    const std::string moved_long = moved > 0 ? " (" + std::to_string(moved) + " moved)" : "";
+    const std::string moved_short = moved > 0 ? " (+" + std::to_string(moved) + ")" : "";
+    const std::string films_long = films ? " \xC2\xB7 films: Enhanced" : "";
+    const std::string films_short = films ? " \xC2\xB7 films: Enh." : "";
+    const std::size_t budget = look_label_max_chars(crt_native);
+    for (const std::string& label : {base + moved_long + rate + films_long, base + moved_short + rate + films_long,
+                                     base + rate + films_long, base + rate + films_short, base + films_short}) {
+        if (utf8_length(label) <= budget) return label;
+    }
+    return base;
+}
+
+// "30 fps" for a row that forces the 30 fps class when moved off neutral, else "".
+inline std::string_view tube_rate_tag(tube::Effect effect) noexcept {
+    return tube::forces_30fps(effect) ? "30 fps" : "";
+}
+
+// Whether a row's effect is one the box is not drawing (app::tube_not_drawn): exactly the
+// rows tube::not_drawn_rows lists (the status publishes the same list for the web page).
+inline bool tube_row_not_drawn(tube::Effect effect, const tube::NotDrawn& not_drawn) noexcept {
+    return tube::not_drawn_rows(not_drawn).contains(effect);
+}
+
+// The note such a row wears. Shortened from "not drawn at this size": with it, GLOW's
+// sublabel ran to 62 characters against 47 for the longest elsewhere in the menu. The
+// web page, which has the room, says "Not drawn at this picture size".
+inline constexpr std::string_view kTubeNotDrawnTag = "not drawn";
+
+// A value row's sublabel: the row's hint, " · 30 fps" when the row forces the 30 fps
+// class, then " · not drawn" when its effect is not being drawn.
+inline std::string tube_value_sublabel(tube::Effect effect, const tube::NotDrawn& not_drawn) {
+    std::string out(tube::row_info(effect).hint1);
+    const std::string_view rate_tag = tube_rate_tag(effect);
+    if (!rate_tag.empty()) out += " \xC2\xB7 " + std::string(rate_tag);
+    if (tube_row_not_drawn(effect, not_drawn)) out += " \xC2\xB7 " + std::string(kTubeNotDrawnTag);
+    return out;
+}
+
+// Whether a Degauss press counts: only while the tube draws the picture on screen
+// (app::tube_engine_on_screen is Tube) - the web page greys its button on the same answer
+// (`effective_engine`). Otherwise the TV shows the row greyed with kTubeDegaussOffSublabel.
+inline bool tube_degauss_live(const AppState& state) noexcept {
+    return tube_engine_on_screen(state) == CrtEngine::Tube;
+}
+inline constexpr std::string_view kTubeDegaussOffSublabel = "the tube is not drawing now";
 
 // The six look words, in kLooks order, joined by " · ".
 inline std::string tube_look_sublabel() {

@@ -89,6 +89,12 @@ TEST_CASE("tube inputs: a real CRT keeps its own scanlines, mask and glass", "[t
     REQUIRE(u.glassBlack == 0.0f); REQUIRE(u.reflection == 0.0f);
     REQUIRE(u.chromaBleed > 0.0f);                    // signal rows still work
 }
+TEST_CASE("tube inputs: CRT Native has no inset and no corners", "[tube]") {
+    auto u = tube_uniforms_for(resolve(TubeSetting{}), Picture{1280.0, 720.0, true});
+    REQUIRE(u.cornerPx == 0.0f); REQUIRE(u.marginPx == 0.0f); REQUIRE(u.flatFit == 1.0f);
+    auto m = tube_uniforms_for(resolve(TubeSetting{}), Picture{1440.0, 1080.0, false});
+    REQUIRE(m.cornerPx > 0.0f); REQUIRE(m.flatFit < 1.0f);         // Modern TV keeps the tube's opening
+}
 TEST_CASE("tube inputs: the flat picture fits inside its margin", "[tube]") {
     TubeSetting s; auto u = tube_uniforms_for(resolve(s), k1080);
     REQUIRE(u.flatFit > 0.9f); REQUIRE(u.flatFit < 1.0f);

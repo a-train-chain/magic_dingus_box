@@ -47,6 +47,16 @@ _ROW = re.compile(
     r"/\*\s*(\w+)\s*\*/\s*\{\s*\{\s*\{([^}]*)\}\s*\}\s*,\s*(?:Crt)?Mask::(\w+)")
 
 
+def parse_always_rich(text):
+    """The Effect names in tube_budget.h's kAlwaysRich (the rows that always need a
+    rich pass), read as text. Empty set when the array is not found."""
+    m = re.search(r"\bkAlwaysRich\s*\{(.*?)\}", text, re.S)
+    if not m:
+        return set()
+    body = re.sub(r"//[^\n]*", "", m.group(1))  # a commented-out entry is not an entry
+    return set(re.findall(r"Effect::(\w+)", body))
+
+
 def parse_looks(text):
     """{look name: ([values...], mask word)} from the look table's rows."""
     looks = {}

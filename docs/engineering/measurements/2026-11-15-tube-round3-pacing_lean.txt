@@ -1,0 +1,6 @@
+enhanced (today)	gpu off | pacing frames 8890 intervals 8890 mean 16.90 ms max 233.37 late 113 (1.27%) over 25.0 ms held 0 (15 lines)
+B	gpu off | pacing frames 8989 intervals 8989 mean 16.71 ms max 33.59 late 25 (0.28%) over 25.0 ms held 0 (15 lines)
+B+bend+cheap beam	gpu off | pacing frames 8960 intervals 8960 mean 16.77 ms max 250.00 late 42 (0.47%) over 25.0 ms held 0 (15 lines)
+PVM-lean cheap	gpu off | pacing frames 8310 intervals 8310 mean 18.08 ms max 49.85 late 705 (8.48%) over 25.0 ms held 0 (15 lines)
+PVM-lean exact	gpu off | pacing frames 8237 intervals 8237 mean 18.25 ms max 250.03 late 755 (9.17%) over 25.0 ms held 0 (15 lines)
+FULL cheap	gpu off | pacing frames 3821 intervals 3821 mean 39.38 ms max 100.06 late 3820 (99.97%) over 25.0 ms held 0 (15 lines)

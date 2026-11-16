@@ -567,3 +567,123 @@ def test_a_device_change_stops_the_slow_recheck():
         return {armed, afterChange, asked, left: live().length};
     """)
     assert result == {"armed": 1, "afterChange": 0, "asked": 3, "left": 0}
+
+
+def test_rate_tag_marks_only_forcing_rows():
+    result = run_js("""
+        return [tubeRateTag({forces_30fps: true}), tubeRateTag({forces_30fps: false}), tubeRateTag(undefined)];
+    """)
+    assert result == ["30 fps", "", ""]
+
+
+def test_header_text_shows_the_rate_and_the_warnings():
+    result = run_js("""
+        return [
+            tubeRateText({frame_rate: 60}),
+            tubeRateText({frame_rate: 30, too_heavy: true}),
+            tubeRateText({frame_rate: 30, unavailable: 'build_hung'}),
+            tubeRateText({}),
+            tubeRateText({frame_rate: 30, unavailable: 'build_failed'}),
+        ];
+    """)
+    assert result == [
+        "60 fps",
+        "30 fps. This look is too heavy for smooth video on this TV",
+        "Tube could not start on this box, so it is showing the Enhanced look. Restart the box to try again.",
+        "",
+        "Tube could not draw this look, so the box is showing the Enhanced look. Try a different look.",
+    ]
+
+
+def test_rate_tag_hides_on_rows_a_real_crt_ignores():
+    result = run_js("""
+        const neutral = ROWS.rows.find(r => r.forces_30fps && r.crt_native_neutral);
+        const kept = ROWS.rows.find(r => r.forces_30fps && !r.crt_native_neutral);
+        const plain = ROWS.rows.find(r => !r.forces_30fps);
+        return {
+            neutral: neutral && [tubeRateTagShown(neutral, false), tubeRateTagShown(neutral, true)],
+            kept: kept && [tubeRateTagShown(kept, false), tubeRateTagShown(kept, true)],
+            plain: [tubeRateTagShown(plain, false), tubeRateTagShown(plain, true)],
+        };
+    """)
+    assert result["neutral"] == [True, False]
+    assert result["kept"] == [True, True]
+    assert result["plain"] == [False, False]
+
+
+def test_look_picker_drops_the_rate_in_crt_native():
+    result = run_js("""
+        const tv = ROWS.looks.find(l => l.key === 'tv');
+        return [tubeLookOptionText(tv, false), tubeLookOptionText(tv, true)];
+    """)
+    assert result == ["TV \u00b7 30 fps", "TV"]
+
+
+def test_a_row_the_box_is_not_drawing_is_marked_exactly_as_the_status_lists_it():
+    result = run_js("""
+        const k = {not_drawn: ['afterglow']};
+        const both = {not_drawn: ['afterglow', 'glow', 'glowSize']};
+        const odd = {not_drawn: ['notARow', 'afterglow', 42, null]};
+        return {
+            afterglow: [tubeRowNotDrawn(k, 'afterglow'), tubeRowNotDrawn(both, 'afterglow')],
+            glow: [tubeRowNotDrawn(k, 'glow'), tubeRowNotDrawn(both, 'glow')],
+            glowSize: [tubeRowNotDrawn(k, 'glowSize'), tubeRowNotDrawn(both, 'glowSize'),
+                       tubeRowNotDrawn({not_drawn: ['glow']}, 'glowSize')],
+            hum: tubeRowNotDrawn(both, 'hum'),
+            unknown_key: [tubeRowNotDrawn(odd, 'afterglow'), tubeRowNotDrawn(odd, 'hum'),
+                          ROWS.rows.filter(r => tubeRowNotDrawn(odd, r.key)).map(r => r.key)],
+            older_kiosk: [tubeRowNotDrawn({}, 'afterglow'), tubeRowNotDrawn({not_drawn: null}, 'glow'),
+                          tubeRowNotDrawn(null, 'glow')],
+            note: TUBE_NOT_DRAWN_NOTE,
+        };
+    """)
+    assert result["afterglow"] == [True, True]
+    assert result["glow"] == [False, True]
+    # The kiosk names GLOW SIZE itself; the page has no rule of its own.
+    assert result["glowSize"] == [False, True, False]
+    assert result["hum"] is False
+    assert result["unknown_key"] == [True, False, ["afterglow"]]  # an unknown key is ignored
+    assert result["older_kiosk"] == [False, False, False]  # absent reads as empty
+    assert result["note"] == "Not drawn at this picture size"
+
+
+def test_the_not_drawn_note_is_built_hidden_and_toggled_without_disabling_the_slider():
+    src = DISPLAY_JS.read_text()
+    # Built once per row, hidden, next to the label; the text is the constant (escaped).
+    assert 'data-tube-notdrawn="${escapeHtml(key)}"' in src
+    assert "escapeHtml(TUBE_NOT_DRAWN_NOTE)" in src
+    # Shown from the status, display changed only when it differs; never touches .disabled.
+    render = src[src.index("function renderCrtLook"):]
+    line = next(l for l in render.splitlines() if "tubeRowNotDrawn(kiosk, key)" in l)
+    assert "disabled" not in line
+    assert "els.notDrawn[key].style.display !==" in render
+
+
+def test_the_film_note_shows_only_when_films_use_enhanced():
+    result = run_js("""
+        return [tubeFilmNote({film_engine: 'enhanced'}), tubeFilmNote({film_engine: 'tube'}),
+                tubeFilmNote({}), tubeFilmNote({film_engine: null}), tubeFilmNote(null)];
+    """)
+    assert result == [
+        "Full-screen films use the Enhanced look with this setting (it is too heavy for a film).",
+        "", "", "", "",
+    ]
+
+
+def test_the_header_line_says_a_yielded_film_is_drawn_with_enhanced():
+    result = run_js("""
+        return [tubeRateText({frame_rate: 30, yielding: true}),
+                tubeRateText({frame_rate: 30, yielding: false}),
+                tubeRateText({frame_rate: 30}),
+                tubeRateText({frame_rate: 30, yielding: true, unavailable: 'build_hung'})];
+    """)
+    assert result[0] == "A full-screen film is playing: drawn with the Enhanced look."
+    assert result[1] == "30 fps" and result[2] == "30 fps"
+    assert result[3].startswith("Tube could not start on this box")
+
+
+def test_the_film_note_element_is_built_and_assigned_only_on_change():
+    src = DISPLAY_JS.read_text()
+    assert 'id="crtLookFilmNote"' in src
+    render = src[src.index("function renderCrtLook"):]
+    assert "els.filmNote.textContent !== filmText" in render

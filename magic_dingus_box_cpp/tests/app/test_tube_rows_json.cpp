@@ -10,6 +10,7 @@
 #include <string>
 
 #include "app/tube_rows_json.h"
+#include "tube/tube_frame_class.h"
 
 namespace fs = std::filesystem;
 const fs::path kRowFile = fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
@@ -38,4 +39,27 @@ TEST_CASE("tube rows json: it parses and holds every row", "[tube][tube_rows_jso
     REQUIRE(root["looks"][3]["mask"].asString() == "slot");
     REQUIRE(root["mask"]["choices"][4]["word"].asString() == "OFF");
     REQUIRE(root["engines"][2]["key"].asString() == "tube");
+}
+
+TEST_CASE("tube rows json: the 30 fps rows and each look's rate", "[tube][tube_rows_json]") {
+    Json::Value root; std::istringstream in(app::tube_rows_json()); in >> root;
+    for (const auto& r : root["rows"])
+        REQUIRE(r["forces_30fps"].asBool() == tube::forces_30fps(*tube::parse_effect(r["key"].asString())));
+    for (const auto& l : root["looks"]) {
+        tube::TubeSetting s; tube::select_look(s, *tube::parse_look(l["key"].asString()));
+        REQUIRE(l["fps"].asInt() == tube::frames_per_second(tube::setting_frame_class(tube::resolve(s), false)));
+    }
+    REQUIRE(root["looks"][3]["fps"].asInt() == 30);                  // tv is rich whatever Task 1b decided
+}
+
+// Today's measured facts, pinned so a change to the lean set is a visible diff here.
+// tube_budget.h (kLeanSet, kAlwaysRich) is what decides them.
+TEST_CASE("tube rows json: with the shipped lean set 14 rows force 30 fps and every look is 30 fps",
+          "[tube][tube_rows_json]") {
+    Json::Value root; std::istringstream in(app::tube_rows_json()); in >> root;
+    int forcing = 0;
+    for (const auto& r : root["rows"]) forcing += r["forces_30fps"].asBool() ? 1 : 0;
+    REQUIRE(forcing == 14);   // the seven kAlwaysRich + noise, flicker, hum, rollBand, purity, abl, breathing
+    REQUIRE(root["looks"].size() == 6);
+    for (const auto& l : root["looks"]) REQUIRE(l["fps"].asInt() == 30);
 }

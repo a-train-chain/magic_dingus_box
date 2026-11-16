@@ -15,6 +15,7 @@
 #include <cstddef>
 
 #include "guide_nav.h"
+#include "tube/tube_inputs.h"   // tube::Picture (TubeRenderStatus)
 #include "tube/tube_setting.h"
 
 namespace app {
@@ -79,7 +80,38 @@ constexpr std::optional<CrtEngine> parse_crt_engine(std::string_view word) noexc
 // is offered nowhere (no menu option, no Tube rows, no Degauss, no web tab) on any
 // board. Plan 3 (the renderer) sets it to true. Read through tube_offered(), never
 // directly; AppState::tube_renderer_ready copies it so tests can open the gate.
+// TEST-ONLY: a preview build (CMake -DMDB_TUBE_PREVIEW=ON, which defines
+// MDB_TUBE_PREVIEW for every target) turns it on to try the renderer on a box;
+// it logs "TUBE PREVIEW BUILD" at start and CI refuses to ship one. The plan's
+// last task sets it true for good and removes the preview build.
+#ifdef MDB_TUBE_PREVIEW
+inline constexpr bool kTubeRendererReady = true;
+#else
 inline constexpr bool kTubeRendererReady = false;
+#endif
+
+// What the Tube renderer is doing, refilled by the main loop every iteration
+// (only when kTubeRendererReady; the defaults otherwise). `drawing`: the tube
+// draws the picture; `frame_rate`: 60 (lean) or 30 (rich); `too_heavy`: video
+// presents ran late - more than half over 30 s, or more than 5% in each of 10
+// consecutive minutes (app::TubePacingMonitor, latched until the setting or the
+// frame class changes); `unavailable`: "" | "build_hung" | "build_failed";
+// `picture`: the picture the tube draws into (meaningful while `drawing`), which
+// app::tube_not_drawn() plans against - the renderer's own plan for it;
+// `yielding`: the tube is not drawing because the look yields this picture (a
+// full-screen film) to the Enhanced engine (tube::tube_yields_to_enhanced);
+// `film_picture`: the picture a full-screen film would have at the current output
+// (the whole framebuffer, the same size video::content_rects gives a film; 0x0 until
+// the main loop has run), for app::tube_film_engine().
+struct TubeRenderStatus {
+    bool drawing = false;
+    int frame_rate = 60;
+    bool too_heavy = false;
+    std::string unavailable;
+    tube::Picture picture{0.0, 0.0, false};
+    bool yielding = false;
+    tube::Picture film_picture{0.0, 0.0, false};
+};
 
 // The op log's progress and the Degauss presses. In memory only.
 struct TubeLiveState {
@@ -932,6 +964,7 @@ public:
     // gate above; production never changes the flag from kTubeRendererReady.
     TubeLiveState tube_live;
     bool tube_renderer_ready = kTubeRendererReady;
+    TubeRenderStatus tube_render;
 
     // Available bezels (loaded from bezels.json)
     std::vector<BezelInfo> available_bezels;
@@ -997,6 +1030,14 @@ public:
 // tab, applying live ops) takes this, never the profile field directly.
 inline bool tube_offered(const AppState& s) noexcept {
     return s.platform_profile.tube_crt_engine && s.tube_renderer_ready;
+}
+
+// Whether a film can be drawn FULL-SCREEN in this configuration at all: only the
+// Channel Guide menu style shows films full-screen (app::movie_full_screen requires it
+// first; in the List style every film plays in the 4:3 picture). The one predicate for
+// "films can be full-screen here".
+inline bool full_screen_films_possible(const AppState& s) noexcept {
+    return s.display_settings.menu_style == MenuStyle::ChannelGuide;
 }
 
 // Why Tube is not offered, for the status file and the web: "" when it is,

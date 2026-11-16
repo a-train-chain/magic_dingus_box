@@ -55,6 +55,25 @@ option(BUILD_TESTS "Build unit test targets" ON)
 # toast.cpp from the build even when the flag was set.
 option(ENABLE_MEDIA_BROWSER "Build experimental Media Browser feature" OFF)
 
+# TEST-ONLY: a Tube CRT renderer preview build (removed by the plan's last task).
+# ON turns app::kTubeRendererReady on, so a Pi 5 offers and draws the Tube engine;
+# the binary logs "TUBE PREVIEW BUILD" at start and CI (test-local.yml kiosk-build,
+# release.yml) refuses one. Defined here, before any target, so every translation
+# unit (kiosk and tests alike) sees the same constant.
+option(MDB_TUBE_PREVIEW "TEST-ONLY Tube renderer preview build - never ship" OFF)
+if(MDB_TUBE_PREVIEW)
+    add_compile_definitions(MDB_TUBE_PREVIEW=1)
+    message(WARNING "MDB_TUBE_PREVIEW=ON: a TEST-ONLY Tube preview build - never ship it")
+endif()
+
+# The Tube renderer's GLSL files, embedded at configure time into
+# ${CMAKE_BINARY_DIR}/generated/tube/tube_shader_sources.h (on the kiosk's and
+# test_app_unit's include paths). Each file is a configure dependency.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTubeShaders.cmake)
+set(TUBE_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
+embed_tube_shaders(${CMAKE_CURRENT_SOURCE_DIR}/src/tube/shaders
+    ${TUBE_GENERATED_DIR}/tube/tube_shader_sources.h)
+
 if(BUILD_KIOSK)
     # DRM/KMS, GBM, EGL, OpenGL ES
     pkg_check_modules(DRM REQUIRED libdrm)
@@ -153,6 +172,10 @@ set(UI_SOURCES
     src/ui/renderer_mb.cpp
     src/ui/renderer_crt.cpp
     src/ui/renderer_batch.cpp
+    # The Tube CRT engine's GL side (resources, builds under the guard; the passes).
+    # Nothing calls it until the engine is wired in.
+    src/ui/tube_renderer.cpp
+    src/ui/tube_renderer_passes.cpp
     src/ui/controller_wizard.cpp
     src/ui/controller_wizard_renderer.cpp
     src/ui/pairing_screen.cpp
@@ -191,6 +214,9 @@ set(APP_SOURCES
     # Its poller on the main loop (stat, read on change, debounced save);
     # also in test_app_unit.
     src/app/tube_live.cpp
+    # The shader-build marker (a kiosk killed in the driver's compiler falls back
+    # to the old engine); also in test_app_unit.
+    src/app/tube_build_guard.cpp
     src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
     src/app/playback_stall_watchdog.cpp
@@ -408,6 +434,8 @@ if(BUILD_KIOSK)
         ${CURL_INCLUDE_DIRS}
         ${SQLITE3_INCLUDE_DIRS}
         src/
+        # tube/tube_shader_sources.h (cmake/EmbedTubeShaders.cmake)
+        ${TUBE_GENERATED_DIR}
     )
 
     # Link libraries
@@ -920,6 +948,7 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/tube_ops.cpp
         # Its main-loop poller against real temp files and an injected clock.
         src/app/tube_live.cpp
+        src/app/tube_build_guard.cpp
         src/app/mb_filter_persistence.cpp
         src/utils/config.cpp
         src/utils/services_env.cpp
@@ -936,7 +965,9 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         src/app/bezel_catalog.cpp
         src/utils/stb_image_impl.cpp
     )
-    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
+    # ${TUBE_GENERATED_DIR}: tube/tube_shader_sources.h, for test_tube_shaders.cpp.
+    target_include_directories(test_app_unit PRIVATE src ${TUBE_GENERATED_DIR}
+        ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES}
         ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only

@@ -85,6 +85,13 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
 // header — see the note there.
 SettingsMenuManager::~SettingsMenuManager() = default;
 
+namespace {
+// SettingsMenuManager::display_film_engine_'s encoding of app::tube_film_engine.
+int film_engine_code(std::optional<app::CrtEngine> engine) noexcept {
+    return engine ? static_cast<int>(*engine) : -1;
+}
+}  // namespace
+
 void SettingsMenuManager::update() {
     if (!active_ && !is_opening_ && !is_closing_) return;
 
@@ -111,6 +118,25 @@ void SettingsMenuManager::update() {
         }
 
         was_scanning_ = is_scanning;
+    }
+
+    // An open Tube group shows which effects the box is not drawing. A web edit already
+    // rebuilds the page (main.cpp, page_shows_tube_state); the renderer's own changes (the
+    // picture, drawing starting or stopping) are caught here: one allocation-free
+    // plan_passes_and_drops() a frame, only while a group is open, and a rebuild only when
+    // the answer differs from the one the rows were built with.
+    if (current_submenu_ == MenuSection::TUBE_GROUP && app_state_ &&
+        app::tube_not_drawn(*app_state_) != tube_page_not_drawn_) {
+        rebuild_current_submenu();
+    }
+    // The Display page's Look row (" · films: Enhanced") and Degauss row follow the same
+    // way: rebuilt only when an answer differs from the one the page was built with (the
+    // display mode or menu style changed, a film is handed over); both are allocation-free.
+    // Only while the page shows Tube rows (never in a build without the Tube renderer).
+    if (current_submenu_ == MenuSection::DISPLAY && display_shows_tube_rows_ && app_state_ &&
+        (film_engine_code(app::tube_film_engine(*app_state_)) != display_film_engine_ ||
+         app::tube_degauss_live(*app_state_) != display_degauss_live_)) {
+        rebuild_current_submenu();
     }
 
     // Track connection state edges (across all submenus, not just WIFI/WIFI_NETWORKS).
@@ -269,9 +295,15 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                            app::SettingsPersistence::save_settings(*app_state_);
                        });
 
-    if (app::display_crt_rows(settings.crt_engine, tube_offered).tube) {
+    display_shows_tube_rows_ = app::display_crt_rows(settings.crt_engine, tube_offered).tube;
+    if (display_shows_tube_rows_) {
+        // What the Tube rows are built saying (update() compares).
+        display_film_engine_ = film_engine_code(app::tube_film_engine(*app_state_));
+        display_degauss_live_ = app::tube_degauss_live(*app_state_);
         auto& tube_setting = settings.tube;
-        items.emplace_back(app::tube_look_label(tube_setting), MenuSection::CYCLE_TUBE_LOOK,
+        const bool crt_native = settings.mode == app::DisplayMode::CRT_NATIVE;
+        items.emplace_back(app::tube_look_label(tube_setting, crt_native, app::tube_film_engine(*app_state_)),
+                           MenuSection::CYCLE_TUBE_LOOK,
                            app::tube_look_sublabel(), [this, &tube_setting]() {
                                tube::select_look(tube_setting, app::next_look(tube_setting.look));
                                rebuild_current_submenu();
@@ -291,8 +323,12 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
         }
         // A live request, never saved and never toasted: the renderer (Plan 3)
         // consumes the increase; until then nothing is drawn.
-        items.emplace_back("Degauss", MenuSection::TUBE_DEGAUSS, "demagnetize the tube",
-                           [this]() { ++app_state_->tube_live.degauss_requests; });
+        if (app::tube_degauss_live(*app_state_)) {
+            items.emplace_back("Degauss", MenuSection::TUBE_DEGAUSS, "demagnetize the tube",
+                               [this]() { ++app_state_->tube_live.degauss_requests; });
+        } else {   // Enhanced draws the screen (a film handed over, a build that failed): greyed
+            items.emplace_back("Degauss", MenuSection::INFO, std::string(app::kTubeDegaussOffSublabel));
+        }
         items.emplace_back("Back", MenuSection::BACK);
         return items;
     }
@@ -848,6 +884,8 @@ std::vector<MenuItem> SettingsMenuManager::build_tube_group_submenu() {
         const tube::Group& group = tube::kGroups[tube_group_index_];
         const tube::Resolved resolved = tube::resolve(app_state_->display_settings.tube);
         const bool crt_native = app_state_->display_settings.mode == app::DisplayMode::CRT_NATIVE;
+        const tube::NotDrawn not_drawn = app::tube_not_drawn(*app_state_);
+        tube_page_not_drawn_ = not_drawn;
         const auto not_applicable = [&items](std::string_view label) {
             items.emplace_back(app::tube_na_label(label), MenuSection::INFO,
                                std::string(app::kTubeNaSublabel));
@@ -870,7 +908,7 @@ std::vector<MenuItem> SettingsMenuManager::build_tube_group_submenu() {
             }
             const bool editing = tube_edit_.active && !tube_edit_.mask && tube_edit_.effect == effect;
             items.emplace_back(app::tube_value_label(effect, resolved.effects[tube::index_of(effect)], editing),
-                               MenuSection::TUBE_VALUE, std::string(info.hint1),
+                               MenuSection::TUBE_VALUE, app::tube_value_sublabel(effect, not_drawn),
                                [this, effect]() { begin_tube_edit(effect); });
         }
     }

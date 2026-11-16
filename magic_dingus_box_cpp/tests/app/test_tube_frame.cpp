@@ -48,13 +48,65 @@ TEST_CASE("tube frame: phases stay smooth after 30 days", "[tube]") {
 TEST_CASE("tube frame: the rolling band", "[tube]") {
     TubeSetting s; set_row(s, Effect::rollBand, 100);        // pvm: rollSpeed 35, rollWidth 35, rollTint 50
     auto r = resolve(s); auto u = tube_uniforms_for(r, Picture{1440.0, 1080.0, false});
-    tube_character_frame(u, r, 10.8, 0.0, true);
+    CharacterPhases p; p.roll = 0.5;                         // half a pass
+    tube_character_frame(u, r, p, 0.0, true);
     REQUIRE(u.rollAmount == Approx(2.0));
-    REQUIRE(u.rollPosition == Approx(0.5));                  // 10.8 s of a 21.6 s pass
+    REQUIRE(u.rollPosition == Approx(0.5));                  // the band sits where its phase says
+    REQUIRE(roll_period(r) == Approx(21.6));                 // pvm: a pass every 21.6 s
     REQUIRE(u.rollHalfWidth == Approx(13.1 * (1440.0 / 196.608) / 1080.0));
     REQUIRE(u.rollTint == Approx(0.0));
-    tube_character_frame(u, r, 10.8, 0.0, false);
+    tube_character_frame(u, r, p, 0.0, false);
     REQUIRE(u.rollAmount == 0.0f);                           // disabled zeroes everything
+}
+TEST_CASE("tube frame: a speed step does not move the band", "[tube]") {
+    TubeSetting s; set_row(s, Effect::rollBand, 100);          // pvm: rollSpeed 35 -> 21.6 s
+    auto r = resolve(s); auto u = tube_uniforms_for(r, Picture{1440.0, 1080.0, false});
+    CharacterPhases p;
+    for (int i = 0; i < 108; ++i) advance_character_phases(p, r, 0.1);
+    REQUIRE(p.roll == Approx(0.5).margin(1e-9));
+    tube_character_frame(u, r, p, 0.0, true); const float before = u.rollPosition;
+    set_row(s, Effect::rollSpeed, 100); r = resolve(s);         // 6 s a pass
+    tube_character_frame(u, r, p, 0.0, true);
+    REQUIRE(u.rollPosition == before);                          // the step moved nothing
+    advance_character_phases(p, r, 0.1);
+    REQUIRE(p.roll == Approx(0.5 + 0.1 / 6.0).margin(1e-9));    // only the rate changed
+}
+TEST_CASE("tube frame: drift and flagging follow their accumulated phase", "[tube]") {
+    auto r = resolve(TubeSetting{});
+    r.effects[index_of(Effect::colorDrift)] = 100; r.effects[index_of(Effect::flagging)] = 100;
+    auto u = tube_uniforms_for(r, Picture{1440.0, 1080.0, false});
+    CharacterPhases p; p.drift = 0.25; p.flag = 0.0;
+    tube_character_frame(u, r, p, 0.0, true);
+    REQUIRE(u.driftOffset == Approx(0.25 * u.pxPerMm * 3.0));   // sin(pi/2) at character_strength(1, 3) = 3
+    REQUIRE(u.flagOffset == Approx(0.0).margin(1e-6));
+}
+TEST_CASE("tube frame: a long gap advances by at most 0.1 s", "[tube]") {
+    auto r = resolve(TubeSetting{}); CharacterPhases p;
+    advance_character_phases(p, r, 5.0);                          // a game, the Media Browser
+    REQUIRE(p.roll == Approx(0.1 / roll_period(r)));
+    advance_character_phases(p, r, -1.0);                         // a clock that went backwards
+    REQUIRE(p.roll == Approx(0.1 / roll_period(r)));
+}
+TEST_CASE("tube frame: accumulated phases stay in one cycle after a month of frames", "[tube]") {
+    auto r = resolve(TubeSetting{}); CharacterPhases p;
+    p.roll = 0.999999; p.drift = 0.999999; p.flag = 0.999999;
+    for (int i = 0; i < 1000; ++i) advance_character_phases(p, r, 1.0 / 60.0);
+    for (double x : {p.roll, p.drift, p.flag}) { REQUIRE(x >= 0.0); REQUIRE(x < 1.0); }
+}
+TEST_CASE("tube frame: each speed row sets its own period", "[tube]") {
+    auto r = resolve(TubeSetting{});
+    r.effects[index_of(Effect::rollSpeed)] = 0; r.effects[index_of(Effect::driftSpeed)] = 0;
+    r.effects[index_of(Effect::flagSpeed)] = 0;
+    CHECK(roll_period(r) == Approx(30.0)); CHECK(drift_period(r) == Approx(24.0)); CHECK(flag_period(r) == Approx(12.0));
+    r.effects[index_of(Effect::rollSpeed)] = 100; r.effects[index_of(Effect::driftSpeed)] = 100;
+    r.effects[index_of(Effect::flagSpeed)] = 100;
+    CHECK(roll_period(r) == Approx(6.0)); CHECK(drift_period(r) == Approx(6.0)); CHECK(flag_period(r) == Approx(2.0));
+    CharacterPhases p;
+    advance_character_phases(p, r, 0.05);
+    CHECK(p.roll == Approx(0.05 / 6.0)); CHECK(p.drift == Approx(0.05 / 6.0)); CHECK(p.flag == Approx(0.05 / 2.0));
+    const CharacterPhases held = p;
+    advance_character_phases(p, r, std::nan(""));                 // a broken clock moves nothing
+    CHECK(p.roll == held.roll); CHECK(p.drift == held.drift); CHECK(p.flag == held.flag);
 }
 TEST_CASE("tube frame: tracking sleeps between slips", "[tube]") {
     TubeSetting s; auto off = resolve(s);                    // pvm: tracking 0
@@ -68,7 +120,7 @@ TEST_CASE("tube frame: tracking sleeps between slips", "[tube]") {
 TEST_CASE("tube frame: the colour patch starts top left", "[tube]") {
     TubeSetting s; set_row(s, Effect::purity, 100); set_row(s, Effect::purityPosition, 0);
     auto r = resolve(s); auto u = tube_uniforms_for(r, Picture{1440.0, 1080.0, false});
-    tube_character_frame(u, r, 0.0, 0.0, true);
+    tube_character_frame(u, r, CharacterPhases{}, 0.0, true);
     REQUIRE(u.purityX == Approx(0.5 - 0.5 * std::sqrt(0.5)));
     REQUIRE(u.purityY == Approx(0.5 - 0.5 * std::sqrt(0.5)));
 }
@@ -208,24 +260,29 @@ TEST_CASE("tube frame: signal motion preserves controls, limits and cheap paths"
 TEST_CASE("tube frame: optional character is bounded, deterministic, disabled and off by default", "[tube]") {
     auto r = resolve(TubeSetting{});
     auto u = tube_uniforms_for(r, kFrame1080);
-    tube_character_frame(u, r, 2.0, 0.08, true);
+    CharacterPhases p;
+    for (int i = 0; i < 20; ++i) advance_character_phases(p, r, 0.1);   // two seconds in
+    tube_character_frame(u, r, p, 0.08, true);
     CHECK(u.rollAmount == 0.0f); CHECK(u.trackingOffset == 0.0f); CHECK(u.driftOffset == 0.0f);
     r = with_row(with_row(with_row(r, Effect::rollBand, 100), Effect::tracking, 100), Effect::colorDrift, 100);
-    tube_character_frame(u, r, 2.0, 0.08, false);
+    tube_character_frame(u, r, p, 0.08, false);
     CHECK(u.rollAmount == 0.0f); CHECK(u.trackingOffset == 0.0f); CHECK(u.driftOffset == 0.0f);
-    tube_character_frame(u, r, 2.0, 0.08, true);
+    tube_character_frame(u, r, p, 0.08, true);
     CHECK(u.rollAmount == 2.0f); CHECK(u.trackingOffset > 0.0f); CHECK(u.driftOffset != 0.0f);
     const auto position = u.rollPosition;
-    tube_character_frame(u, r, 2.1, 0.08, true);
+    advance_character_phases(p, r, 0.1);
+    tube_character_frame(u, r, p, 0.08, true);
     CHECK(u.rollPosition > position);  // screen y increases downward
+    p = CharacterPhases{};
     for (int i = 0; i < 1000; ++i) {
-        tube_character_frame(u, r, i * 0.1, i * 0.01, true);
+        tube_character_frame(u, r, p, i * 0.01, true);
+        advance_character_phases(p, r, 0.1);
         CHECK(std::abs(u.trackingOffset) <= 3.60001f * u.pxPerMm);
         CHECK(std::abs(u.driftOffset) <= 0.75001f * u.pxPerMm);
     }
     CHECK(tracking_moving(r, 0.58));  // clean final frame after the offset settles
     CHECK_FALSE(tracking_moving(r, 1.0));
-    tube_character_frame(u, r, 3.0, 1.0, true);
+    tube_character_frame(u, r, p, 1.0, true);
     CHECK(u.trackingOffset == 0.0f);
 }
 
@@ -236,17 +293,19 @@ TEST_CASE("tube frame: worn character controls keep gentle lows and independent 
     auto r = resolve(TubeSetting{});
     auto u = tube_uniforms_for(r, kFrame1080);
     r = with_row(with_row(r, Effect::flagging, 100), Effect::purity, 100);
-    tube_character_frame(u, r, 2, .08, true);
+    CharacterPhases p;
+    for (int i = 0; i < 20; ++i) advance_character_phases(p, r, 0.1);   // two seconds in
+    tube_character_frame(u, r, p, .08, true);
     CHECK(u.flagOffset != 0); CHECK(u.flagExtent > 0); CHECK(u.purityAmount == 1);
     const auto x = u.purityX, y = u.purityY;
     r = with_row(r, Effect::purityPosition, 50);
-    tube_character_frame(u, r, 2, .08, true);
+    tube_character_frame(u, r, p, .08, true);
     CHECK(u.purityX != x); CHECK(u.purityY != y);
     r = with_row(r, Effect::trackingRecovery, 100);
     CHECK(tracking_duration(r) == Approx(1.12));
     r = with_row(r, Effect::tracking, 100);
     CHECK(tracking_moving(r, 1.14)); CHECK_FALSE(tracking_moving(r, 1.18));
-    tube_character_frame(u, r, 2, .08, false);
+    tube_character_frame(u, r, p, .08, false);
     CHECK(u.flagOffset == 0); CHECK(u.purityAmount == 0); CHECK(u.trackingOffset == 0);
 }
 
@@ -280,6 +339,9 @@ FrameState warming_frame() {
     state.degauss = 0.3f;
     state.spot = 0.2f;
     state.warmupGain = 0.5f;
+    state.phases.roll = 0.3;
+    state.phases.drift = 0.6;
+    state.phases.flag = 0.15;
     return state;
 }
 
@@ -329,9 +391,26 @@ TEST_CASE("tube frame: tube_frame is Sound Factory's frame, step for step", "[tu
     want.sharpness *= 0.8f + 0.2f * state.warmupGain;
     want.degauss = state.degauss;
     tube_signal_motion(want, state.seconds, state.motion_amount, state.rising_light);
-    tube_character_frame(want, r, state.seconds, state.tracking_elapsed, true);
+    tube_character_frame(want, r, state.phases, state.tracking_elapsed, true);
     want.spot = state.spot;
     CHECK(same_uniforms(tube_frame(still, r, state), want));
+}
+
+TEST_CASE("tube frame: tube_frame draws the character at the renderer's phases, not the clock's", "[tube]") {
+    const auto r = with_row(with_row(with_row(look_resolved(Look::everything), Effect::rollBand, 60),
+                                     Effect::colorDrift, 60), Effect::flagging, 40);
+    const auto still = tube_uniforms_for(r, kFrame1080);
+    FrameState state = warming_frame();
+    const auto at = tube_frame(still, r, state);
+    CHECK(at.rollPosition == Approx(state.phases.roll));
+    FrameState later = state;
+    later.seconds += 3.0;                     // the clock alone moves no band, drift or bend
+    const auto clock_only = tube_frame(still, r, later);
+    CHECK(clock_only.rollPosition == at.rollPosition);
+    CHECK(clock_only.driftOffset == at.driftOffset);
+    CHECK(clock_only.flagOffset == at.flagOffset);
+    later.phases.roll = 0.7;
+    CHECK(tube_frame(still, r, later).rollPosition == Approx(0.7));
 }
 
 TEST_CASE("tube frame: tube_frame writes what only the renderer knows", "[tube]") {
@@ -409,18 +488,23 @@ TEST_CASE("tube frame: the noise seed is fract(frame * 0.618) * 913", "[tube]") 
     CHECK(u.noiseSeed == Approx((x - std::floor(x)) * 913.0).margin(1e-4));
 }
 
-TEST_CASE("tube frame: the character keeps moving, one frame at a time, after a month", "[tube]") {
+TEST_CASE("tube frame: the character keeps moving, one frame at a time, across its wrap", "[tube]") {
     auto r = resolve(TubeSetting{});
     r = with_row(with_row(with_row(r, Effect::rollBand, 70), Effect::colorDrift, 70), Effect::flagging, 70);
-    const double t0 = 30.0 * 86400.0, dt = 1.0 / 60.0;
+    const double dt = 1.0 / 60.0;
+    // A month of frames ends just short of every phase's wrap: the frame after crosses it.
+    CharacterPhases pa;
+    pa.roll = pa.drift = pa.flag = 1.0 - 0.25 * dt / roll_period(r);
+    CharacterPhases pb = pa;
+    advance_character_phases(pb, r, dt);
+    REQUIRE(pb.roll < pa.roll);   // the roll did wrap between the two frames
     auto a = tube_uniforms_for(r, kFrame1080), b = a;
-    tube_character_frame(a, r, t0, 0.0, true);
-    tube_character_frame(b, r, t0 + dt, dt, true);
+    tube_character_frame(a, r, pa, 0.0, true);
+    tube_character_frame(b, r, pb, dt, true);
 
-    const double roll_period = 30.0 - 24.0 * r.effects[index_of(Effect::rollSpeed)] / 100.0;
     double advance = static_cast<double>(b.rollPosition) - a.rollPosition;
     if (advance < 0.0) advance += 1.0;
-    CHECK(advance == Approx(dt / roll_period).margin(1e-6));
+    CHECK(advance == Approx(dt / roll_period(r)).margin(1e-6));
 
     // Loose: no faster than the shortest period each row can reach, at its largest swing.
     const double px_per_mm = a.pxPerMm;
