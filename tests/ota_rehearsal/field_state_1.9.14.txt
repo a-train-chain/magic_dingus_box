@@ -16,7 +16,8 @@
 # and add what git cannot see: packages, user config, OLD-script reruns.
 #
 # Directives: unit <name> | old-unit <tree path> | dropin <abs path> |
-#             file <abs path> | package <deb> | pulse-client-conf | run <tree path>
+#             file <abs path> | package <deb> | pulse-client-conf | run <tree path> |
+#             run-mb <tree path> (run only on a Media Browser box: services/.env present)
 # Every path the strip touches is journaled and, after the final deploy, put
 # back from the pre-rehearsal snapshot if deploy_cpp.sh did not rewrite it.
 

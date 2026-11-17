@@ -466,7 +466,8 @@ step_artifacts() {
     done
     if ! dry; then
         local built; built="$(cat "${OTA_WORK}/release/.built_from" 2>/dev/null || true)"
-        [[ "$built" == "$NEW_SHA" ]] || die "artifacts in ${OTA_WORK} were built from ${built:-?}, not ${NEW_SHA}"
+        # run.sh records "<sha> <version>" (673852f: a stamped NEW version is part of what was built)
+        [[ "$built" == "${NEW_SHA} ${NEW_VER}" ]] || die "artifacts in ${OTA_WORK} were built from ${built:-?}, not ${NEW_SHA} ${NEW_VER}"
         for f in "magic-dingus-box-${NEW_VER}.tar.gz" "magic_dingus_box_cpp-arm64-${NEW_VER}.tar.gz"; do
             if python3 "$HELPERS" check-tarball "${REL_DIR}/${f}"; then
                 vpass "${f}: no AppleDouble ._ files, no LFS pointers"
@@ -585,6 +586,16 @@ while read -r directive arg; do
         run)
             if [ -f "$INSTALL/$arg" ]; then
                 echo "  strip: running the OLD tree's $arg"
+                sudo -n bash "$INSTALL/$arg" 2>&1 | sed 's/^/    | /'
+            else echo "  strip: WARNING $arg not in the OLD tree"; fi ;;
+        run-mb)
+            # A Media Browser step: on a box without services/.env (Movies never set
+            # up, or a bench box with its key parked) a field box has nothing to do
+            # here, and the OLD scripts exit non-zero for "not set up".
+            if ! sudo -n test -f "$INSTALL/services/.env"; then
+                echo "  strip: skipped $arg (no services/.env: the Media Browser is not set up on this box)"
+            elif [ -f "$INSTALL/$arg" ]; then
+                echo "  strip: running the OLD tree's $arg (Media Browser box)"
                 sudo -n bash "$INSTALL/$arg" 2>&1 | sed 's/^/    | /'
             else echo "  strip: WARNING $arg not in the OLD tree"; fi ;;
         *) echo "  strip: unknown directive $directive"; exit 1 ;;
@@ -829,12 +840,21 @@ verify_web() {  # verify_web <phase> <version>
 }
 
 verify_box_sh() {  # verify_box_sh <phase>
+    # --with-services only on a Media Browser box: without services/.env the
+    # service smoke test can only fail (nothing is provisioned), and verify_box.sh
+    # itself reports the missing .env as an expected WARN.
     local rc=0
-    rsh "verify_box.sh --with-services (${1})" 'sudo -n bash "$INSTALL/magic_dingus_box_cpp/scripts/verify_box.sh" --with-services' \
+    rsh "verify_box.sh [--with-services on a Media Browser box] (${1})" '
+if sudo -n test -f "$INSTALL/services/.env"; then
+    sudo -n bash "$INSTALL/magic_dingus_box_cpp/scripts/verify_box.sh" --with-services
+else
+    echo "(no services/.env: the Media Browser is not set up on this box, so verify_box.sh runs without --with-services)"
+    sudo -n bash "$INSTALL/magic_dingus_box_cpp/scripts/verify_box.sh"
+fi' \
         > "${LOGDIR}/verify_box_${1}.txt" 2>&1 || rc=$?
     tail -4 "${LOGDIR}/verify_box_${1}.txt" | sed 's/^/    /'
-    [[ $rc == 0 ]] && vpass "$1: verify_box.sh --with-services: SHIPPABLE" \
-                   || vfail "$1: verify_box.sh --with-services exited ${rc} (${LOGDIR}/verify_box_${1}.txt)"
+    [[ $rc == 0 ]] && vpass "$1: verify_box.sh: SHIPPABLE" \
+                   || vfail "$1: verify_box.sh exited ${rc} (${LOGDIR}/verify_box_${1}.txt)"
 }
 
 verify_data() {  # verify_data <label>
@@ -868,8 +888,12 @@ step_rollback() {
     vpass "rolled back to ${OLD_VER} (VERSION + web admin agree)"
     sleep 10
     step "9b. verify the rolled-back ${OLD_VER}"
-    verify_units old no
-    verify_audio old legacy
+    # PulseAudio became its own unit in 2026-10: v1.11.0 ships it, v1.9.14 does
+    # not, so judge the OLD tree by what OLD itself ships (as step 8 does for NEW).
+    local old_audio=no
+    git -C "$REPO" cat-file -e "${OLD_SHA}:magic_dingus_box_cpp/systemd/magic-dingus-audio.service" 2>/dev/null && old_audio=yes
+    verify_units old "$old_audio"
+    if [[ $old_audio == yes ]]; then verify_audio old unit; else verify_audio old legacy; fi
     verify_web old "$OLD_VER"
     verify_data old
     local m; m="$(rcap "OTA marker" '[ -e "$MARKER" ] && echo present || echo absent' absent)"

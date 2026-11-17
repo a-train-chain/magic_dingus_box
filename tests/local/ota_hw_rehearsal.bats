@@ -270,6 +270,44 @@ run magic_dingus_box_cpp/scripts/setup_memory_tuning.sh"
     [ "$output" = "$expected" ]
 }
 
+@test "field-plan keeps run-mb (Media Browser boxes only) after the run steps, in file order" {
+    cat > "$T/fs.txt" <<'EOF'
+run-mb magic_dingus_box_cpp/scripts/recreate_gluetun.sh
+run magic_dingus_box_cpp/scripts/ensure_gluetun_auth.sh
+run magic_dingus_box_cpp/scripts/setup_memory_tuning.sh
+EOF
+    run python3 "$H" field-plan --file "$T/fs.txt"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    expected="run magic_dingus_box_cpp/scripts/ensure_gluetun_auth.sh
+run magic_dingus_box_cpp/scripts/setup_memory_tuning.sh
+run-mb magic_dingus_box_cpp/scripts/recreate_gluetun.sh"
+    [ "$output" = "$expected" ]
+    echo 'run-mb' > "$T/e.txt"
+    run python3 "$H" field-plan --file "$T/e.txt"
+    [ "$status" -ne 0 ]
+}
+
+@test "the strip skips a run-mb step when services/.env is absent" {
+    grep -q '^        run-mb)$' "$OTA_DIR/hw_rehearsal.sh"
+    grep -A4 '^        run-mb)$' "$OTA_DIR/hw_rehearsal.sh" | grep -q 'sudo -n test -f "$INSTALL/services/.env"'
+    grep -q '^run-mb magic_dingus_box_cpp/scripts/recreate_gluetun.sh$' "$OTA_DIR/field_state_1.11.0.txt"
+}
+
+@test "verify_box runs --with-services only on a Media Browser box" {
+    body="$(sed -n '/^verify_box_sh() {/,/^}/p' "$OTA_DIR/hw_rehearsal.sh")"
+    grep -q 'if sudo -n test -f "$INSTALL/services/.env"; then' <<<"$body"
+    grep -q 'verify_box.sh" --with-services$' <<<"$body"
+    grep -q 'verify_box.sh"$' <<<"$body"
+}
+
+@test "the rolled-back OLD is judged by whether OLD ships the audio unit" {
+    body="$(sed -n '/^step_rollback() {/,/^}/p' "$OTA_DIR/hw_rehearsal.sh")"
+    grep -q 'cat-file -e "${OLD_SHA}:magic_dingus_box_cpp/systemd/magic-dingus-audio.service"' <<<"$body"
+    grep -q 'verify_units old "$old_audio"' <<<"$body"
+    ! grep -q '^    verify_audio old legacy$' <<<"$body"
+}
+
 @test "field-plan rejects unknown directives and malformed paths" {
     echo 'remove-everything /' > "$T/a.txt"
     run python3 "$H" field-plan --file "$T/a.txt"

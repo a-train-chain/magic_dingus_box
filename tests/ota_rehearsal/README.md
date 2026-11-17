@@ -65,7 +65,7 @@ list strips the native VPN controller's state and key, re-runs v1.11.0's
 v1.11.0's compose (so its own health restart is back on, as on a field box);
 the VPN reconnects within a minute or two. A bench box that is not the
 owner's daily Pi 5 (e.g. a freshly flashed Pi 4B) is the right target: the
-rehearsal downgrades and restores the whole installation.
+rehearsal downgrades and restores the whole installation. A `run-mb <tree path>` line runs only on a Media Browser box (`services/.env` present); on a box without Movies, or a bench box whose key is parked, the strip prints that it skipped the step — the v1.11.0 list uses it for `recreate_gluetun.sh`, which exits 1 for "not set up".
 
 `PI_HOST` is never defaulted: two boxes are usually reachable. Logs, the
 snapshot copy and every command that ran land in
@@ -123,7 +123,7 @@ fingerprint), Docker is running on the Mac.
    `NRestarts=0` for kiosk/web/audio; exactly one `pulseaudio`, inside
    `magic-dingus-audio.service`'s cgroup; when a TV reports audio (valid
    ELD) the default sink is not `auto_null`; the web admin serves;
-   `verify_box.sh --with-services` SHIPPABLE; app-data manifest and content
+   `verify_box.sh` SHIPPABLE (`--with-services` on a Media Browser box); app-data manifest and content
    fingerprint identical to the snapshot; OTA marker gone.
 9. **Rollback through the NEW web admin** (`POST /admin/update/rollback`;
    the connection may drop — `VERSION` is polled), then verify OLD is
@@ -138,7 +138,7 @@ fingerprint), Docker is running on the Mac.
     the strip touched that deploy did not rewrite go back from the snapshot
     tar (removed packages are reinstalled); (c) system-state listing,
     app-data manifest and content fingerprint vs the snapshot,
-    `verify_box.sh --with-services`; (d) the on-box snapshot (it holds
+    `verify_box.sh` (`--with-services` on a Media Browser box); (d) the on-box snapshot (it holds
     `.env` and the VPN key) and `~/fakegh` are deleted. The Mac copy is kept
     and its path printed.
 
