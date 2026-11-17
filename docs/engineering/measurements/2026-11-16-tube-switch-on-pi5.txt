@@ -150,6 +150,60 @@ kiosk_status.json; pictures from the kiosk's own screenshot request.
       The 916-present minute is the worst post-game minute measured today; the test kiosk had 193 MB in swap
       at the time. Not attributed to any change; asked of the #34 session.
 
-NOT COVERED: a real Pi 4B (none was on the network: a sweep found only this Pi 5); 50, 90, 100, 120 and 144 Hz
-displays; an OTA install and rollback on real hardware of either board; the shipping binary installed under /opt
-(it has only run from a home directory as a transient unit).
+11. THE Pi 4B, the same evening (20:26-), the owner's bench board
+   Raspberry Pi 4 Model B Rev 1.5, 2 GB, Trixie, at 10.0.0.76, TV on HDMI-A-1. The owner flashed an older image:
+   hostname "magicpi", VERSION 1.10.0, first boot had never run, and services/.env held a WireGuard key (the
+   owner: "an old key"; it no longer connects - gluetun "startup check ... failed: dialing", 32 tries in 5 min).
+   The Media Browser stack was stopped for the tests and .env moved to a root-only backup for the rehearsal.
+   a. THE FIELD UPDATE PATH: the box's own web admin, as the Content Manager does (check, CSRF, install), from
+      the real v1.11.0 GitHub release: 20:28:43-20:32:24, complete; kiosk NRestarts 0; settings.json,
+      media_info.json, paired_remotes.json, .env, 59 media files and 14 GB of ROMs identical to the snapshot;
+      no playlist file changed.
+   b. THE SWITCH-ON BINARY (b90ce02, container build sha256 7321d5e8f4817491... - byte-identical to the binary
+      that passed the joint check on the Pi 5), deployed with deploy_cpp.sh (its deploy guard: 0 deletions)
+      and pisim.sh push:
+      - status: gate false, reason "needs_pi5", engine and effective engine "enhanced" (the not-offered branch);
+      - 0 log lines mentioning the tube from the kiosk's start, also after an engine op and a look op written
+        to the request file (never handled), and also with MDB_TUBE_VALIDATE=1 set for a whole run;
+      - no build marker in /dev/shm; kiosk RSS 142 MB;
+      - web admin: GET /admin/display/tube -> {"available": false, "reason": "needs_pi5"}; POST of an engine op
+        -> TUBE_UNAVAILABLE, and no request file written;
+      - the TV menu (List style): Display shows "CRT Engine: Enhanced" with the sublabel "Classic / Enhanced",
+        and pressing it cycles Classic <-> Enhanced only; Enhanced's own rows follow; no Look, groups or Degauss.
+   c. THE WATCHDOG FIX (#34) ON THE Pi 4B: Master Shuffle playing (a local video), 2 GiB of zeros written to
+      the SD card unpaced (dd bs=1M conv=fsync, 123 s, Dirty 112-155 MB). Two "Playback stalled ... restarting
+      playback" (at 91.6 s and 127.5 s), both recovered; the same kiosk process before and after, NRestarts 0;
+      no render-loop stall line, no "pipeline ... took", no wedge, no page-flip line. On the old binary this
+      write killed the Pi 5's kiosk through the watchdog.
+
+   d. THE HARDWARE OTA REHEARSAL (gate G6) ON THE Pi 4B, OLD v1.11.0 -> NEW = this branch stamped 1.12.0 in a
+      local-only commit (48cfc6f, never pushed), tests/ota_rehearsal/hw_rehearsal.sh, run 20261116-205958.
+      Three tooling bugs stopped the first two runs before anything was judged; fixed in PR #38 (the build
+      marker format; recreating Gluetun on a box without Movies; verify_box --with-services without Movies).
+      Run 3, the box without Movies (services/.env parked): 33 PASS, 3 FAIL.
+      - Downgrade to v1.11.0 from real GitHub, field-state strip, install of 1.12.0 THROUGH THE 1.11.0 WEB
+        ADMIN against an on-box fake GitHub, rollback through the 1.12.0 web admin: all completed; VERSION,
+        units, NRestarts 0 for kiosk/web/audio, web serving, content (media, ROMs, saves, playlists) identical
+        at every phase, OTA marker cleared.
+      - FAIL "a stale magic-dingus-audio.service is still active on 1.11.0": a v1.9.14 assumption in the
+        tooling (v1.11.0 ships that unit). Fixed in PR #38.
+      - FAIL appdata differs pre -> new and pre -> old: data/media_info.json. REAL, narrow: the install is
+        carried out by v1.11.0's update.sh, whose rsync exclude list predates the per-video store (2026-11),
+        so --delete removed the box's media_info.json; 1.12.0's web admin then back-filled 58 of 59 videos
+        (one probe failed: "back-fill could not probe media/Together Again [...].mp4"). A field box on 1.11.0
+        has no store yet, so the first update loses nothing; a box that updates, ROLLS BACK and updates again
+        loses its per-video entries, including any crop choices (lengths and shapes are re-probed; crop is
+        not). The OLD updater's backup (~/.magic_dingus_box_backup) still held the file. Not fixed here.
+        After rollback a media_info_reload_request marker (touched by 1.12.0, not read by 1.11.0) remained,
+        and the final deploy guard refused to delete it, stopping the restore.
+      - Restore (`--restore-only`, after putting media_info.json back from the snapshot and removing the
+        marker): syslisting, app data and content identical to the snapshot, no failed units, NRestarts 0,
+        verify_box.sh SHIPPABLE. The box ends on this branch's binary (7321d5e8...), installed under /opt.
+   e. Left on the Pi 4B: services/.env parked in /root/mdb-bench/services.env.backup (the old key does not
+      connect); all six containers stopped (Docker keeps the old key in the containers' own config, so the
+      cascade watcher re-started Gluetun and four dependents during a deploy at 20:38:30 even without .env);
+      settings.json now saves "crt_engine": "enhanced" explicitly (the TV menu check cycled the row; the
+      engine drawn is unchanged).
+
+NOT COVERED: 50, 90, 100, 120 and 144 Hz displays; the OTA rehearsal on a Media Browser box (needs a working
+WireGuard config on the Pi 4B, or the Pi 5); the OTA rehearsal on the Pi 5.
