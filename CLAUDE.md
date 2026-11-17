@@ -402,7 +402,8 @@ This guarantees correct compositing without X11/compositor overhead.
       2.57 GB upload took 236 s instead of 463 s.
   - What a kiosk read waits behind is how much write the card already has
     queued, so **any new bulk writer to the SD card must pace itself the
-    same way**. A package import's extraction does not yet.
+    same way**: `upload_io.WriteBackPacer`, as a package import's extraction
+    does.
   - The kiosk unit's `IOWeight=1000` does nothing on the Pi kernel (no
     `io.weight`, no `io.cost`, no BFQ groups; kept as harmless, and the
     unit's comment now says so). Putting the kiosk in the

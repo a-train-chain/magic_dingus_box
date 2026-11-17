@@ -114,7 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used to be written to the SD card twice, as fast as the card would take
   them, so the TV froze, jumped ahead or restarted its channel. Each upload
   is now written once, in small steps, and the upload itself finishes
-  about twice as fast.
+  about twice as fast. Importing a playlist package no longer makes the
+  TV stutter either.
 - **No more TV restarts while a big upload is copying.** Saving
   settings, keeping watch history and typing from the phone no longer
   wait on a busy SD card, which could make the TV app stop and restart

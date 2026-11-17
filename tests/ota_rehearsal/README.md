@@ -54,7 +54,18 @@ PI_HOST=magic@192.168.1.50 tests/ota_rehearsal/hw_rehearsal.sh --dry-run
 
 # the real thing (prints hostname + model first; --yes is required)
 PI_HOST=magic@192.168.1.50 tests/ota_rehearsal/hw_rehearsal.sh --old v1.9.14 --new HEAD --yes
+
+# from v1.11.0, what field boxes run before 1.12.0 (release gate G6)
+PI_HOST=magic@192.168.1.50 tests/ota_rehearsal/hw_rehearsal.sh --old v1.11.0 --new HEAD --yes
 ```
+
+Both OLD baselines have a reviewed `field_state_<X.Y.Z>.txt`. The v1.11.0
+list strips the native VPN controller's state and key, re-runs v1.11.0's
+`ensure_gluetun_auth.sh` and memory-tuning hook, and recreates Gluetun from
+v1.11.0's compose (so its own health restart is back on, as on a field box);
+the VPN reconnects within a minute or two. A bench box that is not the
+owner's daily Pi 5 (e.g. a freshly flashed Pi 4B) is the right target: the
+rehearsal downgrades and restores the whole installation.
 
 `PI_HOST` is never defaulted: two boxes are usually reachable. Logs, the
 snapshot copy and every command that ran land in

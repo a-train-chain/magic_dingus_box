@@ -110,8 +110,32 @@ The checklist run earlier that evening (main, same file, same box) took
 547 s and logged one stall reload, with visible jumps.
 
 Not covered on hardware: the transcode phase (unchanged code; the checklist
-run found playback on time throughout it), Pi 4B, and package imports. A
-package import's ZIP extraction still writes unpaced; its spool is paced.
+run found playback on time throughout it) and Pi 4B. Package imports: next
+section.
+
+## Package import extraction (2026-11-16)
+
+A playlist package import spools the ZIP (paced since the change above),
+then extracts each video and ROM into place. The extraction is a copy of a
+cold file, the same pattern as main's old upload copy (c2), and it was
+unpaced. It now uses the same `WriteBackPacer` (1 MiB slices + cache drop,
+idle class from the route's `@background_io`).
+
+Measured on magicpi5 with the kiosk binary of 2026-11-15 playing a Channel
+Guide channel: a 1 GiB stored package (one video) imported through
+`POST /admin/playlists/import-package` from the Mac over Wi-Fi, with the
+same read probe running. 260 s for the request; peak `Dirty` 1.7 MB.
+
+| phase | length | max wait | reads > 0.5 s | reads > 1 s | starved |
+|---|---|---|---|---|---|
+| spool (paced) | 149 s | 0.57 s | 1 | 0 | 2.6 s |
+| extraction, 1 GiB at 9.3 MiB/s (paced) | 110 s | 0.99 s (one read) | 1 | 0 | 1.0 s |
+| for comparison, c2: main's unpaced 1 GiB copy at 9.8 MiB/s | 132 s | 3.73 s | 33 | 21 | 42.8 s |
+
+The kiosk journal logged no stall, reload, watchdog or page-flip line
+(the same process throughout, NRestarts 0). An unpaced import was not run on
+the box: the box's kiosk does not yet have the watchdog fix, and c2 is
+the same write pattern on the same card.
 
 ## Follow-ups
 
