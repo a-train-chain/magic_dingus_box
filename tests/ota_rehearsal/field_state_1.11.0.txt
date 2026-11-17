@@ -51,8 +51,10 @@ run magic_dingus_box_cpp/scripts/setup_memory_tuning.sh
 # --- Gluetun as v1.11.0 created it -----------------------------------------------
 # Main's compose turns Gluetun's own health restart off through an entrypoint
 # wrapper (#28); a field box's container has no wrapper. Recreate it from
-# v1.11.0's compose (the VPN reconnects within a minute or two).
-run magic_dingus_box_cpp/scripts/recreate_gluetun.sh
+# v1.11.0's compose (the VPN reconnects within a minute or two). `run-mb`: only
+# on a Media Browser box (services/.env present) - v1.11.0's script exits 1 for
+# "not set up", and a box without Movies has no Gluetun to recreate.
+run-mb magic_dingus_box_cpp/scripts/recreate_gluetun.sh
 
 # --- Not stripped, on purpose ------------------------------------------------------
 # - bluez: part of the Raspberry Pi OS base image (no apt history entry on the

@@ -588,6 +588,16 @@ while read -r directive arg; do
                 echo "  strip: running the OLD tree's $arg"
                 sudo -n bash "$INSTALL/$arg" 2>&1 | sed 's/^/    | /'
             else echo "  strip: WARNING $arg not in the OLD tree"; fi ;;
+        run-mb)
+            # A Media Browser step: on a box without services/.env (Movies never set
+            # up, or a bench box with its key parked) a field box has nothing to do
+            # here, and the OLD scripts exit non-zero for "not set up".
+            if ! sudo -n test -f "$INSTALL/services/.env"; then
+                echo "  strip: skipped $arg (no services/.env: the Media Browser is not set up on this box)"
+            elif [ -f "$INSTALL/$arg" ]; then
+                echo "  strip: running the OLD tree's $arg (Media Browser box)"
+                sudo -n bash "$INSTALL/$arg" 2>&1 | sed 's/^/    | /'
+            else echo "  strip: WARNING $arg not in the OLD tree"; fi ;;
         *) echo "  strip: unknown directive $directive"; exit 1 ;;
     esac
 done < "$plan"

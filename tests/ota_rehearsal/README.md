@@ -65,7 +65,7 @@ list strips the native VPN controller's state and key, re-runs v1.11.0's
 v1.11.0's compose (so its own health restart is back on, as on a field box);
 the VPN reconnects within a minute or two. A bench box that is not the
 owner's daily Pi 5 (e.g. a freshly flashed Pi 4B) is the right target: the
-rehearsal downgrades and restores the whole installation.
+rehearsal downgrades and restores the whole installation. A `run-mb <tree path>` line runs only on a Media Browser box (`services/.env` present); on a box without Movies, or a bench box whose key is parked, the strip prints that it skipped the step — the v1.11.0 list uses it for `recreate_gluetun.sh`, which exits 1 for "not set up".
 
 `PI_HOST` is never defaulted: two boxes are usually reachable. Logs, the
 snapshot copy and every command that ran land in

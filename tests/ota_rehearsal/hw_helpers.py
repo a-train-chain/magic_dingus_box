@@ -80,9 +80,9 @@ SYS_TREES = ["/usr/local/bin", "/etc/udev/rules.d"]
 SYS_FILES = ["/etc/hosts"]
 
 LFS_MAGIC = b"version https://git-lfs.github.com/spec/v1"
-FIELD_DIRECTIVES = ("unit", "dropin", "old-unit", "file", "package", "pulse-client-conf", "run")
+FIELD_DIRECTIVES = ("unit", "dropin", "old-unit", "file", "package", "pulse-client-conf", "run", "run-mb")
 FIELD_ORDER = {d: i for i, d in enumerate(
-    ("old-unit", "unit", "dropin", "file", "package", "pulse-client-conf", "run"))}
+    ("old-unit", "unit", "dropin", "file", "package", "pulse-client-conf", "run", "run-mb"))}
 
 
 def die(msg, code=2):
