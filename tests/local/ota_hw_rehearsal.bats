@@ -294,6 +294,13 @@ run-mb magic_dingus_box_cpp/scripts/recreate_gluetun.sh"
     grep -q '^run-mb magic_dingus_box_cpp/scripts/recreate_gluetun.sh$' "$OTA_DIR/field_state_1.11.0.txt"
 }
 
+@test "verify_box runs --with-services only on a Media Browser box" {
+    body="$(sed -n '/^verify_box_sh() {/,/^}/p' "$OTA_DIR/hw_rehearsal.sh")"
+    grep -q 'if sudo -n test -f "$INSTALL/services/.env"; then' <<<"$body"
+    grep -q 'verify_box.sh" --with-services$' <<<"$body"
+    grep -q 'verify_box.sh"$' <<<"$body"
+}
+
 @test "field-plan rejects unknown directives and malformed paths" {
     echo 'remove-everything /' > "$T/a.txt"
     run python3 "$H" field-plan --file "$T/a.txt"

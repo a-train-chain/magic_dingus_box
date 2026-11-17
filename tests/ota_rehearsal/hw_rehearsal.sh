@@ -840,12 +840,21 @@ verify_web() {  # verify_web <phase> <version>
 }
 
 verify_box_sh() {  # verify_box_sh <phase>
+    # --with-services only on a Media Browser box: without services/.env the
+    # service smoke test can only fail (nothing is provisioned), and verify_box.sh
+    # itself reports the missing .env as an expected WARN.
     local rc=0
-    rsh "verify_box.sh --with-services (${1})" 'sudo -n bash "$INSTALL/magic_dingus_box_cpp/scripts/verify_box.sh" --with-services' \
+    rsh "verify_box.sh [--with-services on a Media Browser box] (${1})" '
+if sudo -n test -f "$INSTALL/services/.env"; then
+    sudo -n bash "$INSTALL/magic_dingus_box_cpp/scripts/verify_box.sh" --with-services
+else
+    echo "(no services/.env: the Media Browser is not set up on this box, so verify_box.sh runs without --with-services)"
+    sudo -n bash "$INSTALL/magic_dingus_box_cpp/scripts/verify_box.sh"
+fi' \
         > "${LOGDIR}/verify_box_${1}.txt" 2>&1 || rc=$?
     tail -4 "${LOGDIR}/verify_box_${1}.txt" | sed 's/^/    /'
-    [[ $rc == 0 ]] && vpass "$1: verify_box.sh --with-services: SHIPPABLE" \
-                   || vfail "$1: verify_box.sh --with-services exited ${rc} (${LOGDIR}/verify_box_${1}.txt)"
+    [[ $rc == 0 ]] && vpass "$1: verify_box.sh: SHIPPABLE" \
+                   || vfail "$1: verify_box.sh exited ${rc} (${LOGDIR}/verify_box_${1}.txt)"
 }
 
 verify_data() {  # verify_data <label>

@@ -123,7 +123,7 @@ fingerprint), Docker is running on the Mac.
    `NRestarts=0` for kiosk/web/audio; exactly one `pulseaudio`, inside
    `magic-dingus-audio.service`'s cgroup; when a TV reports audio (valid
    ELD) the default sink is not `auto_null`; the web admin serves;
-   `verify_box.sh --with-services` SHIPPABLE; app-data manifest and content
+   `verify_box.sh` SHIPPABLE (`--with-services` on a Media Browser box); app-data manifest and content
    fingerprint identical to the snapshot; OTA marker gone.
 9. **Rollback through the NEW web admin** (`POST /admin/update/rollback`;
    the connection may drop — `VERSION` is polled), then verify OLD is
@@ -138,7 +138,7 @@ fingerprint), Docker is running on the Mac.
     the strip touched that deploy did not rewrite go back from the snapshot
     tar (removed packages are reinstalled); (c) system-state listing,
     app-data manifest and content fingerprint vs the snapshot,
-    `verify_box.sh --with-services`; (d) the on-box snapshot (it holds
+    `verify_box.sh` (`--with-services` on a Media Browser box); (d) the on-box snapshot (it holds
     `.env` and the VPN key) and `~/fakegh` are deleted. The Mac copy is kept
     and its path printed.
 
