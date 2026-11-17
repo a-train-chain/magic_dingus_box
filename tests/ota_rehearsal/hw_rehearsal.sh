@@ -466,7 +466,8 @@ step_artifacts() {
     done
     if ! dry; then
         local built; built="$(cat "${OTA_WORK}/release/.built_from" 2>/dev/null || true)"
-        [[ "$built" == "$NEW_SHA" ]] || die "artifacts in ${OTA_WORK} were built from ${built:-?}, not ${NEW_SHA}"
+        # run.sh records "<sha> <version>" (673852f: a stamped NEW version is part of what was built)
+        [[ "$built" == "${NEW_SHA} ${NEW_VER}" ]] || die "artifacts in ${OTA_WORK} were built from ${built:-?}, not ${NEW_SHA} ${NEW_VER}"
         for f in "magic-dingus-box-${NEW_VER}.tar.gz" "magic_dingus_box_cpp-arm64-${NEW_VER}.tar.gz"; do
             if python3 "$HELPERS" check-tarball "${REL_DIR}/${f}"; then
                 vpass "${f}: no AppleDouble ._ files, no LFS pointers"
