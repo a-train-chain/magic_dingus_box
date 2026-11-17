@@ -67,7 +67,6 @@ public:
     bool has_error() const override { return player_.has_error(); }
     double player_position() const override { return player_.get_position(); }
     std::string pipeline_state() const override { return player_.describe_state(); }
-    bool pipeline_busy() const override { return player_.pipeline_busy(); }
 
     std::chrono::steady_clock::time_point now() const override {
         return std::chrono::steady_clock::now();

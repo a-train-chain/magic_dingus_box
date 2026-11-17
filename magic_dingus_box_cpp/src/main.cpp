@@ -84,7 +84,6 @@
 #include "utils/frame_pacing.h"
 #include "utils/path_resolver.h"
 #include "utils/services_env.h"
-#include "utils/stall_report.h"
 #include "utils/wifi_manager.h"
 #include "utils/logger.h"
 #include "ui/virtual_keyboard.h"
@@ -1152,24 +1151,7 @@ int main(int /* argc */, char* /* argv */[]) {
         return aspect;
     };
 
-    // An iteration of 1 s or more is logged with its major page faults
-    // (utils/stall_report.h): what held the loop, before it grows into a
-    // watchdog kill. A game session runs inside one iteration with the
-    // watchdog disarmed — not a stall.
-    utils::LoopStallReport loop_stall_report;
-    // GStreamer state changes run on GstPlayer's control thread, so a wedged
-    // one (a decoder deadlock, a dead card) no longer stops this loop — and
-    // the watchdog no longer restarts the kiosk for it. Past
-    // video::kWedgedAfter (30 s) on one command, stop pinging: that restart
-    // is still the last resort.
-    bool pipeline_wedge_logged = false;
-
     while (running && !g_shutdown_requested) {
-        if (auto stall = loop_stall_report.tick(
-                std::chrono::steady_clock::now(), utils::thread_major_faults(),
-                state.is_loading_game || post_game_gate.settling())) {
-            std::cerr << *stall << std::endl;
-        }
         // DRM master could not be re-acquired after a game: the screen is
         // gone for good, but the loop would keep pinging the watchdog and
         // hold a black screen forever. Leave with a failure status instead
@@ -1179,17 +1161,8 @@ int main(int /* argc */, char* /* argv */[]) {
             running = false;
             break;
         }
-        const bool pipeline_wedged = player.pipeline_wedged();
-        if (pipeline_wedged && !pipeline_wedge_logged) {
-            std::cerr << "Pipeline control thread wedged (" << player.describe_state()
-                      << ") — no more watchdog pings; systemd will restart the kiosk"
-                      << std::endl;
-            pipeline_wedge_logged = true;
-        } else if (!pipeline_wedged) {
-            pipeline_wedge_logged = false;
-        }
 #ifdef HAVE_SYSTEMD
-        if (!pipeline_wedged) sd_notify(0, "WATCHDOG=1");
+        sd_notify(0, "WATCHDOG=1");
 #endif
 
         // ── Invariant: kiosk overlays don't exist inside the Media Browser ─

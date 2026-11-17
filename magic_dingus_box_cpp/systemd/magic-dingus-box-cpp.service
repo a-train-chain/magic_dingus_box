@@ -125,18 +125,8 @@ EnvironmentFile=-/opt/magic_dingus_box/services/.env
 #     allocation of default-weight (100) cgroups when under contention.
 #     Docker containers default to ~100, so under simultaneous load
 #     the kiosk wins by a 10:1 ratio.
-#   - IOWeight=1000 (cgroup v2) asks for the same for block I/O, but on
-#     the Pi kernel (kernel8.img, both boards) it DOES NOTHING: the SD
-#     card's scheduler is mq-deadline, and the kernel has no io.cost and
-#     no BFQ group scheduling, so no cgroup has an io.weight file to set
-#     (measured on magicpi5, 2026-11-15). Kept because it is harmless and
-#     takes effect on a kernel that has either; it is NOT what keeps the
-#     movie's reads ahead of background writes. What does: writers pace
-#     themselves (web/upload_io.py), and the render loop never waits on
-#     the card — GStreamer state changes run on GstPlayer's control thread
-#     (src/video/pipeline_control.h). Realtime I/O class for the kiosk and
-#     the BFQ scheduler were measured and fix neither (docs/superpowers/
-#     validation/2026-11-15-upload-sd-contention.md).
+#   - IOWeight=1000 (cgroup v2) same idea for block I/O — keeps disk
+#     reads for the movie file ahead of background torrent / DB writes.
 Nice=-10
 CPUWeight=1000
 IOWeight=1000

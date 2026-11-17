@@ -95,17 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Page flip failed" lines, until it was restarted (about 110,000 an hour
   for ten hours on one box). It now waits for the late frame and is back
   to normal within a few frames, with one line in the log.
-- **The TV no longer restarts when the SD card is very busy.** While
-  something writes a lot to the card (an update, a big copy), a video can
-  pause to wait for it. The box then reloads the channel, and that reload
-  used to wait on the card long enough for the TV app to be stopped and
-  restarted. The video now waits on its own, the menus and guide keep
-  working, and the channel comes back once the card catches up.
 - **Videos keep playing smoothly while you upload a big file.** Uploads
   used to be written to the SD card twice, as fast as the card would take
   them, so the TV froze, jumped ahead or restarted its channel. Each upload
   is now written once, in small steps, and the upload itself finishes
-  about twice as fast.
+  about twice as fast. Importing a playlist package no longer makes the
+  TV stutter either.
 - **No more TV restarts while a big upload is copying.** Saving
   settings, keeping watch history and typing from the phone no longer
   wait on a busy SD card, which could make the TV app stop and restart
