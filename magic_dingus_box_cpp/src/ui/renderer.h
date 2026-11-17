@@ -313,11 +313,14 @@ public:
 
     // ----- The Tube CRT engine (ui/tube_renderer.h, tube/tube_driver.h) -----
     //
-    // INERT unless app::kTubeRendererReady (a TEST-ONLY preview build until the
-    // plan's last task): only then does initialize() make the TubeRenderer and its
-    // FrameDriver, and main.cpp calls the methods below only then. Without
-    // them every method here is a no-op, tube_status() reports "not drawing" and
-    // begin_scene_fbo / end_scene_fbo_and_composite take exactly today's path.
+    // enable_tube() makes the TubeRenderer and its FrameDriver. main() calls it
+    // once, after the platform profile is known and before the main loop, ONLY
+    // when app::tube_offered(state) (a Pi 5, not under the pi4 policy override);
+    // the gate cannot change while the kiosk runs. Without it every method here is
+    // a no-op, tube_status() reports "not drawing" and begin_scene_fbo /
+    // end_scene_fbo_and_composite take the Classic/Enhanced path. With it, nothing
+    // is built or drawn unless the effective engine is Tube.
+    void enable_tube();
     //
     // A Tube frame: the effective engine is Tube (app::effective_crt_engine with
     // app::tube_offered), the Media Browser does not own the screen, the guard did
@@ -368,7 +371,7 @@ public:
     // "" | "build_hung" | "build_failed" (TubeRenderer::unavailable_reason()).
     std::string_view tube_unavailable_reason() const;
     // Right after READY=1 (the watchdog runs from there): no program is built
-    // before it. Preview builds also read MDB_TUBE_VALIDATE here (once).
+    // before it. Also reads the developer switch MDB_TUBE_VALIDATE here (once).
     void allow_tube_builds();
 
     // Marquee wood-grain frame — the "TV cabinet" outer 30px border.
@@ -508,8 +511,9 @@ private:
     uint32_t scene_fbo_height_ = 0;
     bool scene_fbo_active_ = false;
 
-    // The Tube engine (see set_tube_picture). Both null unless
-    // app::kTubeRendererReady; every tube path below starts with `if (!tube_)`.
+    // The Tube engine (see set_tube_picture). Both null unless enable_tube() made
+    // them (never on a box that is not offered the engine); every tube path below
+    // starts with `if (!tube_)`.
     //   tube_scene_: the last begin_scene_fbo() began a Tube scene (called
     //     TubeRenderer::begin_scene); read by this frame's composite and, at the
     //     next begin_scene_fbo(), to notice the tube stopped (end_tube_scene).
@@ -530,9 +534,10 @@ private:
     bool tube_scene_ = false;
     bool tube_engine_was_tube_ = false;
     bool tube_degauss_resync_ = false;
-    // Preview builds, MDB_TUBE_VALIDATE=1: the validation passes still owed, ONE
-    // per Tube frame so the loop pings the watchdog between them - Shader decode,
-    // then Hardware decode when the context has it. None: nothing owed (always in production).
+    // MDB_TUBE_VALIDATE=1 (developer switch, never on a customer's box): the
+    // validation passes still owed, ONE per Tube frame so the loop pings the
+    // watchdog between them - Shader decode, then Hardware decode when the context
+    // has it. None: nothing owed (always, without the switch).
     enum class TubeValidate { None, Shader, Hardware };
     TubeValidate tube_validate_next_ = TubeValidate::None;
     bool tube_gl_live_ = false;            // the tube touched GL since its last release_gl()

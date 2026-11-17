@@ -12,6 +12,7 @@
 #include "app/app_state.h"
 #include "app/tube_menu_logic.h"
 #include "tube/tube_rows.h"
+#include "platform/platform_profile.h"
 #include "tube/tube_setting.h"
 #include "ui/settings_menu.h"
 #include "ui_test_doubles.h"
@@ -143,7 +144,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
         ui_test::fake_reset();
         app::AppState state{};
         state.platform_profile.tube_crt_engine = true;
-        state.tube_renderer_ready = false;   // the production default (a preview build opens it)
+        state.tube_renderer_ready = false;   // the seam closed (every build sets it true since the switch-on)
         SettingsMenuManager sm{&state};
         sm.enter_submenu(MenuSection::DISPLAY);
         CHECK(labels(sm) == kTodaysLabels);
@@ -154,7 +155,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
             ui_test::fake_reset();
             app::AppState state{};
             state.platform_profile.tube_crt_engine = pi5;
-            state.tube_renderer_ready = false;   // the production default (a preview build opens it)
+            state.tube_renderer_ready = false;   // the seam closed (every build sets it true since the switch-on)
             state.display_settings.mode = app::DisplayMode::MODERN_TV;
             SettingsMenuManager sm{&state};
             sm.enter_submenu(MenuSection::DISPLAY);
@@ -171,7 +172,7 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
                 ui_test::fake_reset();
                 app::AppState state{};
                 state.platform_profile.tube_crt_engine = pi5;
-                state.tube_renderer_ready = false;   // the production default (a preview build opens it)
+                state.tube_renderer_ready = false;   // the seam closed (every build sets it true since the switch-on)
                 state.display_settings.set_crt_engine(saved[i]);
                 SettingsMenuManager sm{&state};
                 sm.enter_submenu(MenuSection::DISPLAY);
@@ -238,8 +239,42 @@ TEST_CASE("Tube menu: a Pi 4B is offered Classic and Enhanced only", "[settings_
 TEST_CASE("Tube menu: a Pi 5 with the renderer not ready offers nothing new", "[settings_menu][tube]") {
     ui_test::fake_reset(); app::AppState state{};
     state.platform_profile.tube_crt_engine = true;
-    state.tube_renderer_ready = false;   // the production default (a preview build opens it)
+    state.tube_renderer_ready = false;   // the seam closed (every build sets it true since the switch-on)
     check_not_offered_cycle(state);
+}
+
+TEST_CASE("Tube menu: switched on, a default AppState is offered Tube on a Pi 5 only",
+          "[settings_menu][tube]") {
+    using platform::PiModel;
+    SECTION("a Pi 5: Tube is in the cycle, the engine stays Classic until picked") {
+        ui_test::fake_reset(); app::AppState state{};
+        state.platform_profile = platform::profile_for(PiModel::Pi5);
+        SettingsMenuManager sm{&state}; sm.enter_submenu(MenuSection::DISPLAY);
+        REQUIRE(row(sm, "CRT Engine: Classic"));
+        CHECK(row(sm, "CRT Engine: ")->sublabel == "Classic / Enhanced / Tube");
+        CHECK_FALSE(row(sm, "Look: "));
+        CHECK(labels(sm) == kTodaysLabels);   // nothing else on the page changes
+        CHECK(ui_test::fake_settings_saves() == 0);
+    }
+    SECTION("a Pi 4B") {
+        ui_test::fake_reset(); app::AppState state{};
+        state.platform_profile = platform::profile_for(PiModel::Pi4);
+        SettingsMenuManager sm{&state}; sm.enter_submenu(MenuSection::DISPLAY);
+        CHECK(labels(sm) == kTodaysLabels);
+        CHECK(sublabels(sm) == kTodaysSublabels);
+    }
+    SECTION("a Pi 4B walks Classic and Enhanced only") {
+        ui_test::fake_reset(); app::AppState state{};
+        state.platform_profile = platform::profile_for(PiModel::Pi4);
+        check_not_offered_cycle(state);
+    }
+    SECTION("a Pi 5 rehearsing Pi 4B policies (MDB_PLATFORM_POLICY_OVERRIDE=pi4)") {
+        ui_test::fake_reset(); app::AppState state{};
+        state.platform_profile =
+            platform::apply_policy_override(platform::profile_for(PiModel::Pi5), "pi4");
+        REQUIRE(state.platform_profile.model == PiModel::Pi5);
+        check_not_offered_cycle(state);
+    }
 }
 
 TEST_CASE("Tube menu: picking a look clears what was moved; Reset keeps the look", "[settings_menu][tube]") {

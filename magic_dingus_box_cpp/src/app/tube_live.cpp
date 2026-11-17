@@ -58,7 +58,7 @@ TubeRequestPoller::TubeRequestPoller(std::string path) : path_(std::move(path)) 
 
 bool TubeRequestPoller::poll(AppState& state, Clock::time_point now) {
     // The gate cannot change while the kiosk runs: a box that does not offer
-    // Tube (every Pi 4B; every box until the renderer ships) does no work here.
+    // Tube (every Pi 4B; a Pi 5 under the pi4 policy override) does no work here.
     // Nothing is ever armed then (only applied ops arm a save).
     if (!tube_offered(state)) return false;
     bool changed = false;

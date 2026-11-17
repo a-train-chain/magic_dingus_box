@@ -8,25 +8,39 @@
 // ever counts as a present that is not late; one after a gap counts nothing.
 //
 // TOO HEAVY (latched until reset()) needs video playing throughout - a gap over 250 ms,
-// a negative interval or a present without video breaks the streak and clears all
-// evidence - and either:
-//  (a) FAST: the last 30 s of video presents, spanning at least 30 s, were more than
-//      HALF late; or
-//  (b) SUSTAINED: each of the last 10 consecutive full minutes of the streak (60 s
-//      buckets counted from its start) had more than 5% of its presents late; a minute
-//      at or under 5% resets the count.
-// Why not "5% over 30 s" (the first rule): on a Pi 5 at 1080p (2026-11-16) a SHIPPED
-// look ran 12-13% late for two minutes while the Media Browser's containers started
-// again after a game, 20% for half a minute after a game ended, and 6% for ~40 s once
-// for no known reason, against 0.3-0.8% in quiet minutes - a busy box, not a heavy look.
-// A look that really is too heavy is late on nearly every frame (77% measured: the TV
-// look on a full-screen film at 20 fps), so (a) still catches it in 30 s, and (b) a look
-// that is only somewhat over budget, all the time.
+// a negative interval, a stall (below) or a present without video breaks the streak and
+// clears all evidence - and, on the streak's full minutes (60 s buckets counted from its
+// start, a minute closed by the first present of the next), either:
+//  (a) FAST: each of the last 3 consecutive minutes had MORE THAN HALF of its presents
+//      late; a minute at or under half resets this count; or
+//  (b) SUSTAINED: each of the last 10 consecutive minutes had more than 5% of its
+//      presents late; a minute at or under 5% resets this count (and (a)'s).
+// Three generations of the rule, each replaced by what a Pi 5 at 1080p measured
+// (2026-11-16):
+//  1. "5% late over 30 s" fired on a busy box: a SHIPPED look ran 12-13% late for two
+//     minutes while the Media Browser's containers started again after a game, 20% for
+//     half a minute after a game ended, against 0.3-0.8% in quiet minutes.
+//  2. "half late over 30 s" fired while containers restarted - PVM at 40% then 20% for
+//     a minute each, and even Monitor, the LIGHTEST look (17 of 23 ms), at 38% for one
+//     minute of unexplained box load (Docker logged an exec error on one container;
+//     nothing restarted), with no flip over 100 ms to call a stall: more than half its
+//     frames were late for some 30 s inside that minute.
+//  3. Hence persistence: no measured busy-box minute reached half late and no burst
+//     lasted over three minutes, while a look that really is too heavy is late on
+//     nearly every frame, every minute it is shown (77%: the TV look on a full-screen
+//     film at 20 fps). (a) catches that in three minutes, (b) a look that is only
+//     somewhat over budget, all the time.
+// A STALL - an interval over 100 ms (and at most 250 ms) - counts in the report as a
+// late present but clears the streak, and the next video present starts a new one: on
+// the same Pi 5 (2026-11-16) the PVM look (19 of 23 ms) latched rule 2 while the Media
+// Browser's containers restarted - page flips waited 48-514 ms, 475 of 1173 presents
+// late in one minute. A look that is really too heavy presents every 50 ms (20 fps), at
+// worst 66-83 ms (the heaviest measured, Everything on a film, is 33 ms of GPU); an
+// interval over 100 ms is the flip itself waiting, not the look's drawing.
 #pragma once
 
 #include <chrono>
 #include <cstdint>
-#include <deque>
 #include <optional>
 #include <utility>
 
@@ -82,31 +96,33 @@ public:
         }
         ++report_.presents;
         if (late) ++report_.late;
-        if (!video_playing) {
+        const bool stall = had_previous && interval > kStall;
+        if (!video_playing || stall) {
+            if (video_playing) {  // a stall: in the report, but evidence about the box, not the look
+                ++report_.video_presents;
+                ++report_.video_late;
+            }
             clear_streak();
             return;
         }
         ++report_.video_presents;
         if (late) ++report_.video_late;
         if (!streak_start_) streak_start_ = done;
-        video_window_.emplace_back(done, late);
-        if (late) ++video_late_;
-        while (!video_window_.empty() && done - video_window_.front().first > kFastWindow) {
-            if (video_window_.front().second) --video_late_;
-            video_window_.pop_front();
-        }
-        // Rule (b): a present in a later minute closes the current one. (No minute of a
-        // streak is ever empty - a 250 ms gap breaks it - but one would count as quiet.)
+        // A present in a later minute closes the current one. (No minute of a streak is
+        // ever empty - a 250 ms gap breaks it - but one would count as quiet.)
         const auto minute = (done - *streak_start_) / kMinute;
         if (minute != minute_) {
-            const bool bad = minute == minute_ + 1 && minute_late_ * 20 > minute_presents_;
-            sustained_minutes_ = bad ? sustained_minutes_ + 1 : 0;
+            const bool next = minute == minute_ + 1;
+            const bool half = next && minute_late_ * 2 > minute_presents_;      // rule (a)
+            const bool some = next && minute_late_ * 20 > minute_presents_;     // rule (b)
+            fast_minutes_ = half ? fast_minutes_ + 1 : 0;
+            sustained_minutes_ = some ? sustained_minutes_ + 1 : 0;
             minute_ = minute;
             minute_presents_ = minute_late_ = 0;
         }
         ++minute_presents_;
         if (late) ++minute_late_;
-        if (!heavy_ && (fast_too_heavy() || sustained_minutes_ >= kSustainedMinutes))
+        if (!heavy_ && (fast_minutes_ >= kFastMinutes || sustained_minutes_ >= kSustainedMinutes))
             heavy_ = toast_pending_ = true;
     }
 
@@ -133,19 +149,11 @@ public:
     bool too_heavy() const { return heavy_; }
 
 private:
-    bool fast_too_heavy() const {
-        if (!streak_start_ || video_window_.empty()) return false;
-        if (video_window_.back().first - *streak_start_ < kFastWindow) return false;
-        return video_late_ * 2 > video_window_.size();
-    }
-
     void clear_streak() {
-        video_window_.clear();
-        video_late_ = 0;
         streak_start_.reset();
         minute_ = 0;
         minute_presents_ = minute_late_ = 0;
-        sustained_minutes_ = 0;
+        fast_minutes_ = sustained_minutes_ = 0;
     }
 
 public:
@@ -162,15 +170,15 @@ public:
     }
 
 private:
-    static constexpr std::chrono::seconds kFastWindow{30};  // rule (a): more than half late
-    static constexpr std::chrono::seconds kMinute{60};      // rule (b): more than 5% late
-    static constexpr int kSustainedMinutes = 10;            //   in each of this many minutes
+    static constexpr std::chrono::milliseconds kStall{100};  // longer: the box stalled, not the look
+    static constexpr std::chrono::seconds kMinute{60};      // the rules' buckets
+    static constexpr int kFastMinutes = 3;                  // rule (a): more than half late in each
+    static constexpr int kSustainedMinutes = 10;            // rule (b): more than 5% late in each
     Report report_;
     std::optional<Clock::time_point> last_present_, window_start_, streak_start_;
-    std::deque<std::pair<Clock::time_point, bool>> video_window_;
-    std::size_t video_late_ = 0;
-    std::int64_t minute_ = 0;            // rule (b): the streak's current minute
+    std::int64_t minute_ = 0;            // the streak's current minute
     std::size_t minute_presents_ = 0, minute_late_ = 0;
+    int fast_minutes_ = 0;               // consecutive full minutes more than half late
     int sustained_minutes_ = 0;          // consecutive full minutes more than 5% late
     bool toast_pending_ = false, heavy_ = false, first_report_pending_ = true;
 };

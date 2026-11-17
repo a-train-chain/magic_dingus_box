@@ -206,9 +206,6 @@ struct TubeRenderer::Impl {
     // The guard (read once, at construction) and the build permission.
     app::TubeBuildGuard guard;
     bool builds_allowed = false;
-#ifdef MDB_TUBE_PREVIEW
-    std::string force_hang;   // MDB_TUBE_FORCE_HANG, read once (Task 14 Step 4)
-#endif
 
     // The program cache: one slot per tube::Program, in enum order.
     std::array<ProgramSlot, tube::kProgramCount> programs{};

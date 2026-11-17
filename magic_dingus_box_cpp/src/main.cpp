@@ -184,9 +184,6 @@ int main(int /* argc */, char* /* argv */[]) {
     logging::init(log_path);
 
     LOG_INFO("Magic Dingus Box C++ Kiosk Engine (Async PageFlip)");
-#ifdef MDB_TUBE_PREVIEW
-    LOG_WARN("TUBE PREVIEW BUILD — test only, never ship");
-#endif
     LOG_DEBUG("Log file: {}", log_path.empty() ? "console only" : log_path);
 
     // Initialize random number generator for Master Shuffle
@@ -568,6 +565,12 @@ int main(int /* argc */, char* /* argv */[]) {
         // Match the encoder accumulator to this board's pulse rate, or the
         // UI advances every other click (Pi 5) / skips items (Pi 4).
         input.set_rotary_events_per_detent(profile.rotary_events_per_detent);
+        // The Tube engine exists only where it is offered (app::tube_offered:
+        // the Pi 5 board gate, closed on a Pi 4B and under the pi4 policy
+        // override). The gate cannot change while the kiosk runs, so this is
+        // decided once: a box that is not offered it constructs none of it
+        // (no TubeRenderer, no /dev/shm stat, no tube log line).
+        if (app::tube_offered(state)) ui_renderer.enable_tube();
     }
 
     // Phone-remote status writer — writes kiosk_status.json at 5 Hz so the
@@ -917,9 +920,8 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
     // The Tube engine may build shader programs only from here: the watchdog
     // runs from READY=1, so a compile that hangs is caught in ~10 s instead of
-    // leaving a blank TV until the start timeout. Compiled out of production
-    // (app::kTubeRendererReady false).
-    if constexpr (app::kTubeRendererReady) ui_renderer.allow_tube_builds();
+    // leaving a blank TV until the start timeout.
+    if (app::tube_offered(state)) ui_renderer.allow_tube_builds();
 
     // Graceful-stop signals — see handle_shutdown_signal at the top of
     // this file.
@@ -1059,9 +1061,7 @@ int main(int /* argc */, char* /* argv */[]) {
     bool redraw_dropped_frame = false;
 
     // The Tube engine's pacing (app/tube_pacing.h): late presents counted while
-    // the tube draws, reset when its setting or frame class changes. Used only
-    // when app::kTubeRendererReady (TEST-ONLY preview builds until the plan's last
-    // task); in production it is constructed here and never called.
+    // the tube draws, reset when its setting or frame class changes.
     app::TubePacingMonitor tube_pacing;
     tube::TubeSetting tube_pacing_setting{};
     tube::FrameClass tube_pacing_class = tube::FrameClass::Lean60;
@@ -2233,16 +2233,19 @@ int main(int /* argc */, char* /* argv */[]) {
             fb_w, fb_h, ui_canvas.w, ui_canvas.h);
 
         // ── The Tube engine: what it asks of this iteration ──────────────
-        // Compiled out of production (app::kTubeRendererReady false): there
-        // tube_now stays "not drawing" and tube_redraw_now asks for nothing,
-        // so the gate, the swap and the sleeps below are exactly as before.
+        // While the tube is not drawing (another engine; or not offered, where
+        // the block does not run at all) tube_now stays "not drawing" and
+        // tube_redraw_now asks for nothing, so the gate, the swap and the sleeps
+        // below are as without it.
         // The clock is this iteration's `now` (steady_clock) in seconds: the
         // same value reaches peek() here and frame()/mean_due() in the
         // composite (Renderer::set_tube_clock).
         ui::Renderer::TubeStatus tube_now;
         app::TubeRedraw tube_redraw_now;
         bool tube_frame_held = false;   // this iteration's flip was held (TubeRedraw::hold_present)
-        if constexpr (app::kTubeRendererReady) {
+        // Not offered (a Pi 4B; the pi4 override): none of this runs and every
+        // tube_* value above keeps its "not drawing" default.
+        if (app::tube_offered(state)) {
             const double tube_clock =
                 std::chrono::duration<double>(now.time_since_epoch()).count();
             ui_renderer.set_tube_picture(
@@ -2350,8 +2353,7 @@ int main(int /* argc */, char* /* argv */[]) {
                        state.display_settings.interlacing_intensity > 0.0f);
             // A drawing tube replaces the Enhanced time effects: lean motion
             // at field rate, rich motion continuous (the flip is held below),
-            // and a still tube rests like any static menu. Compiled out of
-            // production.
+            // and a still tube rests like any static menu.
             if constexpr (app::kTubeRendererReady) {
                 if (tube_now.drawing) {
                     act.crt_time_effects = tube_redraw_now.field_rate_motion;
@@ -3251,7 +3253,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // FRESH here: the iteration's `now` would make every held frame flip
             // late. Bounded to that many refreshes whatever the clock says
             // (utils::capped_present_hold_at). Only while the tube draws
-            // (hold_present is false otherwise, and always in production).
+            // (hold_present is false otherwise).
             if constexpr (app::kTubeRendererReady) {
                 if (tube_redraw_now.hold_present) {
                     const int hz = mode_info.vrefresh > 0 ? static_cast<int>(mode_info.vrefresh) : 60;
@@ -3401,8 +3403,8 @@ int main(int /* argc */, char* /* argv */[]) {
                       iteration_elapsed)
                 : utils::frame_cap_sleep(pacing, iteration_elapsed);
         // A held Tube frame already waited before its flip: only the floor on
-        // the whole iteration remains (utils::held_frame_sleep_at). Never in
-        // production (tube_frame_held is set only in the compiled-out hold).
+        // the whole iteration remains (utils::held_frame_sleep_at). Only after a
+        // held Tube frame (tube_frame_held is set only by the hold above).
         if constexpr (app::kTubeRendererReady) {
             if (tube_frame_held) {
                 pace_sleep = utils::held_frame_sleep_at(tube_redraw_now.hold_fps,
