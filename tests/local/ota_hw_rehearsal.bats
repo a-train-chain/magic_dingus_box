@@ -301,6 +301,13 @@ run-mb magic_dingus_box_cpp/scripts/recreate_gluetun.sh"
     grep -q 'verify_box.sh"$' <<<"$body"
 }
 
+@test "the rolled-back OLD is judged by whether OLD ships the audio unit" {
+    body="$(sed -n '/^step_rollback() {/,/^}/p' "$OTA_DIR/hw_rehearsal.sh")"
+    grep -q 'cat-file -e "${OLD_SHA}:magic_dingus_box_cpp/systemd/magic-dingus-audio.service"' <<<"$body"
+    grep -q 'verify_units old "$old_audio"' <<<"$body"
+    ! grep -q '^    verify_audio old legacy$' <<<"$body"
+}
+
 @test "field-plan rejects unknown directives and malformed paths" {
     echo 'remove-everything /' > "$T/a.txt"
     run python3 "$H" field-plan --file "$T/a.txt"

@@ -888,8 +888,12 @@ step_rollback() {
     vpass "rolled back to ${OLD_VER} (VERSION + web admin agree)"
     sleep 10
     step "9b. verify the rolled-back ${OLD_VER}"
-    verify_units old no
-    verify_audio old legacy
+    # PulseAudio became its own unit in 2026-10: v1.11.0 ships it, v1.9.14 does
+    # not, so judge the OLD tree by what OLD itself ships (as step 8 does for NEW).
+    local old_audio=no
+    git -C "$REPO" cat-file -e "${OLD_SHA}:magic_dingus_box_cpp/systemd/magic-dingus-audio.service" 2>/dev/null && old_audio=yes
+    verify_units old "$old_audio"
+    if [[ $old_audio == yes ]]; then verify_audio old unit; else verify_audio old legacy; fi
     verify_web old "$OLD_VER"
     verify_data old
     local m; m="$(rcap "OTA marker" '[ -e "$MARKER" ] && echo present || echo absent' absent)"
