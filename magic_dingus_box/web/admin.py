@@ -35,11 +35,13 @@ from flask import Flask
 try:  # noqa: E402
     from detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
     import media_backfill
+    import media_info_recovery
     import vpn_settings
     from upload_io import PacedUploadRequest
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .detached_jobs import DetachedJobs, default_state_dir as _default_job_state_dir
     from . import media_backfill
+    from . import media_info_recovery
     from . import vpn_settings
     from .upload_io import PacedUploadRequest
 
@@ -500,6 +502,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # (the test suite does; its tests call run_backfill directly).
     if os.environ.get("MAGIC_MEDIA_BACKFILL", "1") != "0":
         media_backfill.start_backfill_thread(
+            data_dir, poke=lambda: _poke_kiosk_reload("media_info"))
+
+    # Put back media_info.json entries an updater older than the store
+    # deleted (v1.11.0 and older have no exclude for it; their backup, taken
+    # just before, still holds it). Once per process, in a daemon thread;
+    # each backup copy is merged at most once and never over newer values
+    # (media_info_recovery). MAGIC_MEDIA_INFO_RECOVERY=0 turns it off (the
+    # test suite does; test_media_info_recovery.py drives it directly).
+    if os.environ.get("MAGIC_MEDIA_INFO_RECOVERY", "1") != "0":
+        media_info_recovery.start_recovery_thread(
             data_dir, poke=lambda: _poke_kiosk_reload("media_info"))
 
     ctx._poke_kiosk_reload = _poke_kiosk_reload

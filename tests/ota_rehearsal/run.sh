@@ -24,6 +24,9 @@
 #   new_path  from v1.10.0, the NEW update.sh: source-only 1.10.1 (build.new +
 #             verify + promote), rollback, simulated power cut + `recover`,
 #             interrupted-install-then-install
+#   media_info  media_info.json (Crop choices) through OLD->NEW, NEW rollback,
+#             OLD->NEW again (whose --delete removes it): the NEW web admin
+#             merges the OLD backup's copy back, once
 #
 # Env:
 #   OTA_WORK        work dir (default: $TMPDIR/mdb-ota-rehearsal); logs land in $OTA_WORK/logs
@@ -239,7 +242,7 @@ main() {
         all)
             cmd_artifacts; cmd_image
             local rc=0
-            for s in old_web old_cli new_path; do cmd_scenario "$s" || rc=1; done
+            for s in old_web old_cli new_path media_info; do cmd_scenario "$s" || rc=1; done
             exit $rc ;;
         *) sed -n '2,40p' "$0"; exit 1 ;;
     esac
