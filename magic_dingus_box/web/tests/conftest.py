@@ -30,6 +30,10 @@ def _isolated_job_state_dir(tmp_path, monkeypatch):
     # test's back. test_media_backfill.py drives run_backfill directly and
     # turns this back on where it checks create_app starts it.
     monkeypatch.setenv("MAGIC_MEDIA_BACKFILL", "0")
+    # Likewise the media_info.json recovery from the update backup, which
+    # would read the developer's real ~/.magic_dingus_box_backup.
+    # test_media_info_recovery.py drives it directly.
+    monkeypatch.setenv("MAGIC_MEDIA_INFO_RECOVERY", "0")
 
 
 @pytest.fixture

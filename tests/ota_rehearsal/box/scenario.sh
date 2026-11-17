@@ -1,6 +1,6 @@
 #!/bin/bash
 # OTA rehearsal driver — runs INSIDE the box container, as root.
-#   scenario.sh old_cli | old_web | new_path
+#   scenario.sh old_cli | old_web | new_path | media_info
 # Mounted: /w (artifacts, ro), /harness (this dir, ro), /out (logs).
 # Every check prints PASS/FAIL/NOTE and is appended to /out/results.txt;
 # the exit status is non-zero if any FAIL was recorded.
@@ -617,6 +617,87 @@ scenario_old_web() {
     eq "web admin back on ${OLD_VER}" "$(wait_web_version "$OLD_VER" 40)" "$OLD_VER"
 }
 
+# media_info.json (per-video Crop/length/shape, 2026-11) through
+# update -> rollback -> update again. The OLD updater (<= v1.11.0) has no
+# exclude for the store: its second install deletes it, after backing it up.
+# The NEW web admin must merge the backup's copy back (media_info_recovery):
+# crop choices restored, a video deleted while on OLD not resurrected, and
+# the same copy never merged twice.
+MI=$DATA/media_info.json
+mi_get() {  # mi_get <python expr on d> — read the live store
+    python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($1)" "$MI" 2>/dev/null
+}
+scenario_media_info() {
+    setup_system; provision_box; start_web
+    local HOMEV="media/uploads/My Home Video.mp4" CLIP="media/Sacred_Steel/clip01.mp4"
+    local GONE="media/uploads/Deleted Later.mp4"
+    step "OLD updater installs ${NEW_VER}"
+    run_updater mi_install1 "$SCRIPTS/update.sh" install "$NEW_VER" "$(src_url "$NEW_VER")" \
+        && pass "${OLD_VER} -> ${NEW_VER} ok" || fail "${OLD_VER} -> ${NEW_VER} failed"
+    eq "VERSION" "$(ver)" "$NEW_VER"
+    eq "NEW web admin up" "$(wait_web_version "$NEW_VER" 40)" "$NEW_VER"
+
+    step "on ${NEW_VER}: the owner sets Crop choices (POST /admin/media/picture) and a film's fill"
+    runuser -u magic -- bash -c "head -c 2048 /dev/urandom > '$DATA/$GONE'"
+    local tok code
+    tok=$(curl -fsS http://127.0.0.1:5000/admin/csrf-token | jq -r .data.token)
+    for k in "$HOMEV" "$CLIP" "$GONE"; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -H "X-CSRF-Token: $tok" -d "$(jq -cn --arg p "data/$k" '{path: $p, crop: false}')" \
+            http://127.0.0.1:5000/admin/media/picture)
+        eq "crop off saved for $k" "$code" "200"
+    done
+    # A channel film's Fill — written by the kiosk on a real box; the same
+    # lock + merge through the NEW tree's web module here.
+    runuser -u magic -- env PYTHONPATH="$INSTALL/magic_dingus_box/web" python3 -c \
+        "import media_info; media_info.update('$DATA', 'movie:603', crop=True)"
+    eq "store holds 4 entries" "$(mi_get 'len(d["videos"])')" "4"
+    local sha_set; sha_set=$(sha "$MI")
+
+    step "${NEW_VER}'s updater rolls back to ${OLD_VER} (the Content Manager's Rollback button)"
+    run_updater mi_rollback "$SCRIPTS/update.sh" rollback \
+        && pass "rollback ok" || fail "rollback failed"
+    eq "VERSION" "$(ver)" "$OLD_VER"
+    eq "the rollback kept media_info.json byte-identical" "$(sha "$MI")" "$sha_set"
+    eq "OLD web admin up" "$(wait_web_version "$OLD_VER" 40)" "$OLD_VER"
+
+    step "on ${OLD_VER}: the owner deletes a video (the OLD web admin knows nothing of the store)"
+    rm -f "$DATA/$GONE"
+    check "video gone" test ! -e "$DATA/$GONE"
+
+    step "${OLD_VER}'s updater installs ${NEW_VER} again — its rsync --delete removes the store"
+    run_updater mi_install2 "$SCRIPTS/update.sh" install "$NEW_VER" "$(src_url "$NEW_VER")" \
+        && pass "${OLD_VER} -> ${NEW_VER} again ok" || fail "${OLD_VER} -> ${NEW_VER} again failed"
+    eq "VERSION" "$(ver)" "$NEW_VER"
+    local bk=$BACKUP/magic_dingus_box_cpp/data/media_info.json
+    eq "${OLD_VER}'s backup took the store before deleting it" "$(sha "$bk")" "$sha_set"
+    eq "NEW web admin up" "$(wait_web_version "$NEW_VER" 40)" "$NEW_VER"
+
+    step "the NEW web admin merges the backup's copy back"
+    local rec=""
+    for _ in $(seq 1 60); do
+        rec=$(mi_get 'd.get("ota_backup_merged",{}).get("sha256","")'); [[ -n "$rec" ]] && break; sleep 0.5
+    done
+    eq "recovery recorded the backup copy it merged" "$rec" "$sha_set"
+    eq "Crop choice restored: $HOMEV" "$(mi_get "d['videos']['$HOMEV'].get('crop')")" "False"
+    eq "Crop choice restored: $CLIP" "$(mi_get "d['videos']['$CLIP'].get('crop')")" "False"
+    eq "film fill restored: movie:603" "$(mi_get "d['videos']['movie:603'].get('crop')")" "True"
+    eq "no entry resurrected for the video deleted on ${OLD_VER}" "$(mi_get "'$GONE' in d['videos']")" "False"
+    has "web admin logged the recovery" 'restored the Crop/length/shape of 3 video' <(cat /out/web_*.log)
+    check "the kiosk was poked to re-read" test -e "$DATA/media_info_reload_request"
+    check "store still parses for the NEW web module" runuser -u magic -- env PYTHONPATH="$INSTALL/magic_dingus_box/web" \
+        python3 -c "import media_info,sys; sys.exit(0 if media_info.load('$DATA')['$HOMEV'] == {'crop': False} else 1)"
+
+    step "a later web-admin start does not merge the same copy again"
+    runuser -u magic -- env PYTHONPATH="$INSTALL/magic_dingus_box/web" python3 -c \
+        "import media_info; media_info.update('$DATA', '$CLIP', crop=None)"   # owner: back to cropped
+    local sha_after; sha_after=$(sha "$MI")
+    systemctl restart magic-dingus-web.service; wait_web_version "$NEW_VER" 40 >/dev/null
+    sleep 3
+    eq "store unchanged by the second start" "$(sha "$MI")" "$sha_after"
+    eq "owner's later choice kept (no crop field on $CLIP)" "$(mi_get "'crop' in d['videos'].get('$CLIP', {})")" "False"
+}
+
 # NEW update.sh, from a box already on NEW_VER.
 observe() {  # observe <file> — background sampler of marker / build.new / kiosk state
     local k
@@ -750,6 +831,7 @@ case "$SCEN" in
     old_cli) scenario_old_cli ;;
     old_web) scenario_old_web ;;
     new_path) scenario_new_path ;;
+    media_info) scenario_media_info ;;
     *) echo "unknown scenario $SCEN"; exit 2 ;;
 esac
 

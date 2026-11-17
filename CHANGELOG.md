@@ -97,6 +97,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1 AM; manually chosen programmes finish whole.
 
 ### Fixed
+- **Crop settings survive going back to an older version and updating
+  again.** Updating from v1.11.0 or earlier — which a box does after a
+  rollback — erased every video's Crop setting, because those versions'
+  updater did not know the file existed. The Content Manager now puts the
+  settings back from the copy that update saved, without undoing anything
+  changed since and without bringing back videos that were deleted.
 - **One slow moment no longer costs the picture for the rest of the day.**
   When the box was briefly overloaded — most often right after a game or
   movie ended on a Media Browser box — one late frame left the TV app
