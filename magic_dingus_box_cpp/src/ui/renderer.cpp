@@ -339,19 +339,8 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
                      "halation will be disabled" << std::endl;
     }
 
-    // The Tube engine: TEST-ONLY preview builds only (app::kTubeRendererReady).
-    // A production build makes nothing here, so no tube code runs anywhere: every
-    // tube path starts with `if (!tube_)`. Constructing the TubeRenderer touches no
-    // GL; it reads the build guard's marker once (one stat, before the main loop).
-    if (app::kTubeRendererReady) {
-        tube_ = std::make_unique<TubeRenderer>();
-        tube_driver_ = std::make_unique<tube::FrameDriver>();
-        tube::FrameDriver* driver = tube_driver_.get();
-        tube_->set_mean_sink([driver](double light) { driver->on_mean(light); });
-        if (tube_->unavailable_reason() == "build_hung")
-            LOG_ERROR("tube: the last kiosk died building {} — Tube draws as Enhanced until reboot",
-                      tube_->hung_program());
-    }
+    // The Tube engine is NOT made here: main() calls enable_tube() once the
+    // platform profile is known, and only where the engine is offered.
 
     // Load title font (Zen Dots) for title and heading
     if (!title_font_manager_->load_font(title_font_path, theme_->font_title_size)) {

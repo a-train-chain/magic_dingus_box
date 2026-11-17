@@ -1,0 +1,209 @@
+Tube CRT engine - hardware window 6: the shipping-shaped binary (engine on, no preview option)
+=============================================================================================
+
+Box: the owner's Pi 5 (2 GB), Trixie, Mesa 25.0.7 / V3D 7.1.10.2, 1920x1080 at 60 Hz, Modern TV mode, Channel
+Guide menu style, bezel MDB-KV19 (picture 1440x1080). Media Browser stack present (Gluetun, qBittorrent, Radarr,
+Sonarr, Prowlarr, Byparr).
+Binary: built in the aarch64 container from tube-crt-switch-on at 8662836, sha256 8bf9e748c382..., run as the
+transient unit mdb-tube-preview with the production kiosk stopped. Nothing was installed under /opt; the box was
+restored afterwards (production kiosk active, NRestarts 0, binary 1e858f05771f6727, settings.json identical to
+the pre-window copy, screenshots directory as before, no failed units).
+Date and time: 2026-11-16, 09:03 - 09:46 box time. Input: a uinput virtual gamepad; state read from
+kiosk_status.json; pictures from the kiosk's own screenshot request.
+
+1. A BOX THAT NEVER PICKED TUBE (saved engine Enhanced)
+   - 0 `tube:` journal lines from start; status gate true, engine enhanced, film_engine null.
+   - Picture against the production binary, video paused, bezel strips that do not move:
+       noise floor, production vs production   left strip (cols 0-240) 62 px differ, max step 1
+       shipping vs shipping                    left strip 0 px
+       production vs shipping                  left strip 509 px, max step 1; right strip 1191 px, max step 7
+     The right strip holds the bezel's channel-number display, which showed a different channel in the two
+     captures. No difference above the noise floor's step was found in the static left strip.
+
+2. PICKING TUBE (TV look) FROM THE CONTROLS
+   - 6 programs built: glass 20.8 ms, the others 5.6-7.6 ms; first real draws <= 4 ms; build marker gone.
+   - status: not_drawn ["afterglow"], film_engine "enhanced", yielding false.
+
+3. FILMS HAND OVER TO ENHANCED (owner decision 2026-11-15)
+   - The film channel (DRAMA) with the TV look: yielding true, effective_engine enhanced, not_drawn []; the journal
+     has one "scene texture back to RGBA8" and one "render targets released".
+   - Two film<->normal flips: released 2, back to RGBA8 2, re-specified 2, glass targets made 2, programs
+     compiled 0, first real draws 0, errors 0, no marker.
+   - The guide opened over a film: Tube draws (yielding false, afterglow not drawn); closed: yields again.
+   - PVM on a film: Tube, not_drawn ["afterglow"]. Monitor on a film: Tube, not_drawn []. TV: yields.
+
+4. THE TV MENU
+   - Settings -> Display with Tube picked shows, in order: Mode, Menu Style, Guide Mode, Bezel, "CRT Engine: Tube",
+     "Look: TV · 30 fps · films: Enhanced", Reset to look ("nothing moved"), then the groups Picture (5 rows),
+     Scanlines (4), Mask (3), Light (3), Glass (5), Signal (4), Supply, Character, Sync, Colour purity, and Degauss.
+     The label fits its row. Screenshot kept with the session, not in the repo (it shows the owner's playlists).
+   - Degauss from the TV menu: degauss_requests 0 -> 1.
+
+5. A GAME AND BACK (NES, started from Settings -> Video Games, ended with SIGTERM to retroarch)
+   - On return: "GL objects released; everything is made again on the next frame", scene texture re-specified
+     SRGB8_ALPHA8 1920x1080, six programs compiled+linked in 1.5-17.2 ms (about 50 ms in all), targets re-made,
+     mask uploaded, glass bake 0.77 ms CPU / 3.25 ms GPU, first real draws 0.2-1.5 ms. No build marker left, the
+     unit did not restart (NRestarts 0), video resumed.
+   - One "Page flip failed (ret=-22)" on the first flip after the hand-back. The production binary logs the same
+     line on every game return (12 in the last three days); it is recovered by the existing SetCrtc path.
+
+6. PACING, TIMERS OFF, presents / late per one-minute report (class 30 = two refreshes per frame)
+   TV look, picture alone, earlier in the window        1779 / 7    1790 / 5
+   TV look, guide open over the video                   1786 / 14   1795 / 12
+   TV look, Settings open on the Display page           1794 / 10   1793 / 15
+   TV look, Settings open on the game library page      1788 / 9    1796 / 9
+   TV look, a gamepad hot-plugged while running         1787 / 12   1796 / 10
+   Arcade look, picture alone, TEN MINUTES              1783/14 1798/5 1798/5 1795/5 1796/10 1799/4 1789/9 1793/15
+                                                        1797/7 1795/12 1797/8     (0.2-0.8% late; too_heavy false)
+   GPU time with the guide open (timers on, TV look): quarter 0.64 glow 0.62 signal 5.23 lines 1.00 output 14.84
+   probe 0.22 = 22.54 ms closed, 22.55 ms open - the guide adds nothing to the engine's own passes.
+
+7. THE Pi 4B GATE, rehearsed on this Pi 5 (MDB_PLATFORM_POLICY_OVERRIDE=pi4, with MDB_TUBE_VALIDATE=1 also set)
+   - status: platform_policy_override "pi4", gate false, reason "needs_pi5", saved engine "tube" kept,
+     effective_engine "enhanced", look null, handled_seq null.
+   - 0 `tube:` journal lines; MDB_TUBE_VALIDATE logged nothing; an engine op and a look op sent through the
+     request file were never handled; no build marker. The picture was drawn by Enhanced.
+   This rehearses the POLICY only. It is not a Pi 4B: no Pi 4B has run this binary.
+
+8. WHAT WENT WRONG IN THIS WINDOW, AND WHY
+   a. Late stretches come from the box being busy, not from menus.
+      09:11:14 - the kiosk's service resume started Radarr, Sonarr, Prowlarr and Byparr again (Byparr's scope:
+      35.9 s CPU, 794 MB memory peak, 770 MB swap peak). The TV look then ran 1686 / 209 and 1633 / 210 late for
+      two reports, and too_heavy latched (the "This CRT look is too heavy for smooth video" notice) - against a
+      shipped look. After the game ended the containers started again: 956 / 194 in the next half minute.
+      A third stretch, about 09:32:15-09:32:55 (1744 / 108), has no cause identified; too_heavy latched again.
+      I first blamed the Settings menu and then the guide; the clean runs in section 6 show neither is the cause.
+      Changed afterwards (tube-crt-renderer a681cf5, reviewed): too_heavy now needs more than half the presents late over
+      30 s, or more than 5% late in each of ten consecutive minutes. A look that really is too heavy measured 77%
+      late (TV on a full-screen film, window 5). Re-run on hardware in window 7 (section 9a).
+   b. NOT a Tube defect, found here: on main, one "Page flip wait timed out" leaves the kiosk failing nearly
+      every later page flip until it restarts.
+      09:16:06.726 "Page flip wait timed out" (85 s after the game ended, during the container restart), then
+      "Page flip failed (ret=-16, Device or resource busy)" on nearly every frame - "98 failures in last 100
+      frames" - until the test kiosk was restarted at 09:21. Every number taken between 09:16:06 and 09:21 was
+      discarded. The production journal has the same pattern: about 162,000 printed ret=-16 lines (one failure in
+      ten is printed) from 2026-11-14 23:00 to 2026-11-15 09:00 and again 16:00-17:00, with exactly one wait
+      timeout. Cause as read from platform/frame_presenter.cpp: the timed-out wait leaves a flip pending, the
+      next flip is EBUSY and falls back to SetCrtc, and the late flip event then satisfies the NEXT flip's wait,
+      so the loop stays one event behind. Proposed to the owner as its own task; not fixed in these branches.
+
+9. WINDOW 7, the same day 11:41-11:56, binary from 0b01e60 (sha256 ee23f4c5030e..., the too-heavy rule of a681cf5)
+   The box was restored afterwards as before (production kiosk active, NRestarts 0, binary 1e858f05771f6727,
+   settings.json identical, output back at 1920x1080@60, no failed units).
+   a. THE CHANGED TOO-HEAVY RULE. TV look; an NES game started 11:42:30 and ended 11:42:53; the kiosk's resume
+      started the four containers at 11:42:56. Presents / late per minute after that:
+        1659 / 231 (13.9%)   1795 / 8   1798 / 5   1799 / 3   1799 / 3
+      too_heavy stayed false and no notice was shown (the first rule needed only 5% over 30 s). No flip-wait
+      timeout and no ret=-16 line in this window.
+   b. A DISPLAY-MODE CHANGE with Tube picked (Settings -> Display -> Mode: Modern TV -> CRT Native, 11:48:35):
+      "Display mode -> CRT_NATIVE; output resolution 1920x1080 -> 1280x720 deferred to next restart"; the picture
+      became the whole 1920x1080 frame at once: one new program (out_rich_signal, 77.3 ms compile+link, first
+      real draw 0.3 ms), targets re-made (glass 1920x1080, signal 960x1080, quarter 480x270), mask 1x1; status
+      crt_native true, not_drawn ["afterglow","glow","glowSize"]; the Bezel row left the Display page and the
+      label read "Look: TV · 30 fps". Pacing in that state: 1799 / 4, 1797 / 7. No error, no marker left.
+   c. CRT NATIVE AFTER THE RESTART (1280x720@60, logical canvas 640x480): scene texture 1280x720, targets glass
+      1280x720, history 1280x720 x2, signal 640x720, quarter 320x180, glow 160x90, mask 1x1; status crt_native
+      true, not_drawn [] (afterglow drawn), frame_rate 30, film_engine "tube". The picture is drawn with the
+      signal rows (chroma bleed, convergence) and without scanlines, mask or curvature, as designed. Pacing: the
+      first minute after start-up 1682 / 131; the next three minutes logged no late present with video.
+   Not done: a degauss pressed while a film is handed to Enhanced (no film was yielded in this window).
+
+10. WINDOW 8, the same day 12:55-14:26, with the page-flip fix (#33) and then the watchdog fix (#34) in the build
+   The box was restored afterwards as before (production kiosk PID 568422, NRestarts 0, binary 1e858f05771f6727,
+   settings.json identical). Builds, all from the aarch64 container, none installed under /opt:
+     A  #33 alone at 8b14d9a (engine off)                               sha256 2b0af2cfae69...
+     B  switch-on + #33 (local merge fb02727)                           sha256 928b1c0c9f88...
+     C  switch-on + #33 + #34 + the stall rule (local merge 973380d)    sha256 82d7068296f0...
+     D  as C with the per-minute rule = the code of 85ae838             sha256 7321d5e8f481...
+   a. THE PAGE-FLIP FIX, build A, saved engine Enhanced: three NES game launches and exits; after each exactly one
+      "Page flip recovered after 27 ms (28 once): 1 flip error(s), 1 shown by SetCrtc instead (last errno 22)";
+      0 ret=-16 lines, no restart.
+      A timed-out wait could not be forced: the validation run and 40 s of GPU load from a second GL program
+      (33% of presents late on builds with and without the fix) produced none. It then happened by itself (10c).
+   b. A DEGAUSS PRESSED WHILE A FILM IS HANDED TO ENHANCED, build B: degauss_requests 0 -> 1 with yielding true;
+      back on a normal channel 1.4 s later the capture shows a normal picture (no degauss), counter unchanged.
+   c. TEN-MINUTE SOAKS, build B, late presents per minute of ~1795 (class 30):
+        pvm         [13:13-13:15 the four containers restarted: 1738/125, 1173/475, 1429/280; twelve
+                    "Page flip recovered after 48-514 ms: N flip wait(s) timed out" (17 waits), 0 ret=-16]
+                    then 1 3 2 1 3 7
+        monitor     1 1 1 0 0 0 1 0, then [13:30-13:31, cause not found - Docker logged an exec error on one
+                    container, nothing restarted, no flip waited over 100 ms: 1728/102, 1449/557], then 9
+        trinitron   9 9 11 14 14 13 10 16 12 14
+        tv          6 7 10 12 16 10 7 10 9 3
+        everything  6 3 3 7 12 3 12 6 7 8 4
+        pvm again, build C (14:05-14:16):  9 3 5 5 6 7 2 1 1 2
+      0 ret=-16 lines in all of it. The seventeen timed-out flip waits each recovered; on the old presenter the
+      first would have started the permanent failure loop of section 8b.
+      too_heavy latched twice more in this run, both false: PVM during the container restart (more than half
+      late for 30 s) and Monitor in the unexplained minute (the same, with no interval over 100 ms). That is why
+      the rule changed twice more: a present interval over 100 ms is a stall and clears the evidence (80b6ad7),
+      and the fast rule is now three consecutive full minutes each more than half late (a7c1a15); the slow rule
+      (ten consecutive minutes each over 5%) stands.
+   d. JOINT CHECK, build D, TV look, 14:16-14:25:
+      - no line matching "Render loop: an iteration took", "Slow on the render loop", "pipeline .* took" or
+        "wedged" (nor in the PVM soak on build C);
+      - ten channel changes at 3.5 s spacing over eight playlists (seven film channels: each handed to Enhanced);
+      - an NES game and back: one "Page flip recovered after 27 ms ... errno 22", video resumed, no restart;
+      - the containers restarted at 14:20:01: 1588/387, then 916/669 (the loop at about 15 fps for that minute),
+        two flip waits timed out and recovered (96 and 113 ms), then 1793/14, 1793/16, 1794/13;
+        too_heavy stayed false throughout (the per-minute rule), 0 ret=-16.
+      The 916-present minute is the worst post-game minute measured today; the test kiosk had 193 MB in swap
+      at the time. Not attributed to any change; asked of the #34 session.
+
+11. THE Pi 4B, the same evening (20:26-), the owner's bench board
+   Raspberry Pi 4 Model B Rev 1.5, 2 GB, Trixie, at 10.0.0.76, TV on HDMI-A-1. The owner flashed an older image:
+   hostname "magicpi", VERSION 1.10.0, first boot had never run, and services/.env held a WireGuard key (the
+   owner: "an old key"; it no longer connects - gluetun "startup check ... failed: dialing", 32 tries in 5 min).
+   The Media Browser stack was stopped for the tests and .env moved to a root-only backup for the rehearsal.
+   a. THE FIELD UPDATE PATH: the box's own web admin, as the Content Manager does (check, CSRF, install), from
+      the real v1.11.0 GitHub release: 20:28:43-20:32:24, complete; kiosk NRestarts 0; settings.json,
+      media_info.json, paired_remotes.json, .env, 59 media files and 14 GB of ROMs identical to the snapshot;
+      no playlist file changed.
+   b. THE SWITCH-ON BINARY (b90ce02, container build sha256 7321d5e8f4817491... - byte-identical to the binary
+      that passed the joint check on the Pi 5), deployed with deploy_cpp.sh (its deploy guard: 0 deletions)
+      and pisim.sh push:
+      - status: gate false, reason "needs_pi5", engine and effective engine "enhanced" (the not-offered branch);
+      - 0 log lines mentioning the tube from the kiosk's start, also after an engine op and a look op written
+        to the request file (never handled), and also with MDB_TUBE_VALIDATE=1 set for a whole run;
+      - no build marker in /dev/shm; kiosk RSS 142 MB;
+      - web admin: GET /admin/display/tube -> {"available": false, "reason": "needs_pi5"}; POST of an engine op
+        -> TUBE_UNAVAILABLE, and no request file written;
+      - the TV menu (List style): Display shows "CRT Engine: Enhanced" with the sublabel "Classic / Enhanced",
+        and pressing it cycles Classic <-> Enhanced only; Enhanced's own rows follow; no Look, groups or Degauss.
+   c. THE WATCHDOG FIX (#34) ON THE Pi 4B: Master Shuffle playing (a local video), 2 GiB of zeros written to
+      the SD card unpaced (dd bs=1M conv=fsync, 123 s, Dirty 112-155 MB). Two "Playback stalled ... restarting
+      playback" (at 91.6 s and 127.5 s), both recovered; the same kiosk process before and after, NRestarts 0;
+      no render-loop stall line, no "pipeline ... took", no wedge, no page-flip line. On the old binary this
+      write killed the Pi 5's kiosk through the watchdog.
+
+   d. THE HARDWARE OTA REHEARSAL (gate G6) ON THE Pi 4B, OLD v1.11.0 -> NEW = this branch stamped 1.12.0 in a
+      local-only commit (48cfc6f, never pushed), tests/ota_rehearsal/hw_rehearsal.sh, run 20261116-205958.
+      Three tooling bugs stopped the first two runs before anything was judged; fixed in PR #38 (the build
+      marker format; recreating Gluetun on a box without Movies; verify_box --with-services without Movies).
+      Run 3, the box without Movies (services/.env parked): 33 PASS, 3 FAIL.
+      - Downgrade to v1.11.0 from real GitHub, field-state strip, install of 1.12.0 THROUGH THE 1.11.0 WEB
+        ADMIN against an on-box fake GitHub, rollback through the 1.12.0 web admin: all completed; VERSION,
+        units, NRestarts 0 for kiosk/web/audio, web serving, content (media, ROMs, saves, playlists) identical
+        at every phase, OTA marker cleared.
+      - FAIL "a stale magic-dingus-audio.service is still active on 1.11.0": a v1.9.14 assumption in the
+        tooling (v1.11.0 ships that unit). Fixed in PR #38.
+      - FAIL appdata differs pre -> new and pre -> old: data/media_info.json. REAL, narrow: the install is
+        carried out by v1.11.0's update.sh, whose rsync exclude list predates the per-video store (2026-11),
+        so --delete removed the box's media_info.json; 1.12.0's web admin then back-filled 58 of 59 videos
+        (one probe failed: "back-fill could not probe media/Together Again [...].mp4"). A field box on 1.11.0
+        has no store yet, so the first update loses nothing; a box that updates, ROLLS BACK and updates again
+        loses its per-video entries, including any crop choices (lengths and shapes are re-probed; crop is
+        not). The OLD updater's backup (~/.magic_dingus_box_backup) still held the file. Not fixed here.
+        After rollback a media_info_reload_request marker (touched by 1.12.0, not read by 1.11.0) remained,
+        and the final deploy guard refused to delete it, stopping the restore.
+      - Restore (`--restore-only`, after putting media_info.json back from the snapshot and removing the
+        marker): syslisting, app data and content identical to the snapshot, no failed units, NRestarts 0,
+        verify_box.sh SHIPPABLE. The box ends on this branch's binary (7321d5e8...), installed under /opt.
+   e. Left on the Pi 4B: services/.env parked in /root/mdb-bench/services.env.backup (the old key does not
+      connect); all six containers stopped (Docker keeps the old key in the containers' own config, so the
+      cascade watcher re-started Gluetun and four dependents during a deploy at 20:38:30 even without .env);
+      settings.json now saves "crt_engine": "enhanced" explicitly (the TV menu check cycled the row; the
+      engine drawn is unchanged).
+
+NOT COVERED: 50, 90, 100, 120 and 144 Hz displays; the OTA rehearsal on a Media Browser box (needs a working
+WireGuard config on the Pi 4B, or the Pi 5); the OTA rehearsal on the Pi 5.

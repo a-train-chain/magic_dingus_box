@@ -748,16 +748,29 @@ or a Rich30 mix of every costly row. While the Tube engine draws, the kiosk
 counts presents that miss their class's cadence (an interval over half a
 refresh past one refresh for Lean60, past `round(refresh/30)` refreshes for
 Rich30) and logs the count per minute in the journal next to the UI
-draw-call line. If a video plays throughout and either more than half of
-the frames over 30 s miss, or more than 5% miss in each of 10 consecutive
-minutes, it shows one toast ("This CRT look is too heavy for smooth video")
-and sets `too_heavy` in the status the web page reads, until the setting or
-the frame class changes. It does not change the owner's settings. (The
-first rule, more than 5% over 30 s, fired against shipped looks on a busy
-box: Pi 5, 1080p, 2026-11-16, 12-13% late for two minutes while the Media
-Browser's containers restarted after a game and 20% for half a minute
-after a game, against 0.3-0.8% in quiet minutes; a look really too heavy
-is late on nearly every frame — TV on a full-screen film, 77%.)
+draw-call line. If a video plays throughout and, counted in 60 s buckets
+from the start of the streak, either more than half of the frames miss in
+each of 3 consecutive minutes, or more than 5% miss in each of 10
+consecutive minutes, it shows one toast ("This CRT look is too heavy for
+smooth video") and sets `too_heavy` in the status the web page reads, until
+the setting or the frame class changes. It does not change the owner's
+settings. Only persistence tells a busy box from a heavy look (Pi 5, 1080p,
+2026-11-16). The first rule, more than 5% over 30 s, fired against shipped
+looks on a busy box: 12-13% late for two minutes while the Media Browser's
+containers restarted after a game and 20% for half a minute after a game,
+against 0.3-0.8% in quiet minutes. The second, more than half over 30 s,
+fired on PVM while the containers restarted (40% then 20% late a minute)
+and on Monitor, the lightest look, during about a minute of unexplained box
+load (Docker logged an exec error on one container; nothing restarted):
+38% late in one minute with no flip over 100 ms. No measured busy-box
+minute reached half late and none lasted over three minutes, while a look
+really too heavy is late on nearly every frame, every minute — TV on a
+full-screen film, 77%. A present
+more than 100 ms after the last (a stall) is counted late in the journal
+but starts the evidence over: on the same box the PVM look (19 of 23 ms)
+tripped the old half-late-over-30-s rule while the containers restarted and page flips
+waited 48–514 ms, while a look really too heavy presents every 50 ms, at
+worst 66–83 ms.
 
 ## Acceptance
 
@@ -842,6 +855,15 @@ Both boards: the Mac suites pass (all 9 with Media Browser ON, 8 OFF),
    acceptance: it flips `app::kTubeRendererReady`, and it is the first time
    anything is deployed to a box's `/opt`. Until then no task changes what
    any box shows. The owner retunes the six looks on his TV after it.
+
+   *Status, 2026-11-15:* the switch-on change exists — branch
+   `tube-crt-switch-on`, a draft pull request stacked on the renderer's —
+   and is held as a draft until the remaining hardware acceptance (the
+   film hand-over to Enhanced as built, a game and return, a display-mode
+   change, 50/90/120 Hz, CRT Native, long pacing runs, a Pi 4B) has run.
+   It flips the constant, removes the `MDB_TUBE_PREVIEW` option and the
+   forced-hang hook, and keeps `MDB_TUBE_VALIDATE=1` as a developer switch
+   in the normal build. Nothing in it is deployed to a box.
 
 ## Testing
 

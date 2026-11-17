@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
-#include <thread>
 
 #include "../utils/logger.h"
 
@@ -168,10 +167,6 @@ TubeRenderer::Impl::Impl(std::string guard_path) : guard(std::move(guard_path)) 
     if (const char* v = std::getenv("MDB_TUBE_GPU_TIMING")) gpu_timing = std::string_view(v) == "1";
     if (gpu_timing)
         LOG_INFO("tube: MDB_TUBE_GPU_TIMING=1 - per-pass GPU timers on (debug; they cost frames: never in production)");
-#ifdef MDB_TUBE_PREVIEW
-    if (const char* v = std::getenv("MDB_TUBE_FORCE_HANG")) force_hang = v;
-    if (!force_hang.empty()) LOG_WARN("tube: MDB_TUBE_FORCE_HANG={} (preview build): that build will hang", force_hang);
-#endif
 }
 
 // Spike log_gl_info: glGetStringi over GL_NUM_EXTENSIONS (ES 3.0's way; exact names, no
@@ -773,12 +768,6 @@ bool TubeRenderer::prepare(const tube::PassPlan& plan, tube::SceneDecode decode)
 
     for (const tube::Program p : wanted) {
         if (m.slot(p).id) continue;
-#ifdef MDB_TUBE_PREVIEW
-        if (!m.force_hang.empty() && m.force_hang == tube::program_info(p).name) {
-            LOG_WARN("tube: MDB_TUBE_FORCE_HANG - hanging before building {} (preview test)", m.force_hang);
-            for (;;) std::this_thread::sleep_for(std::chrono::hours(1));
-        }
-#endif
         if (!m.build(p, decode)) {
             m.record_failure("a program failed to compile or link");
             return false;

@@ -43,6 +43,7 @@
 #include "app/app_state.h"
 #include "app/audio_router.h"
 #include "app/settings_persistence.h"
+#include "platform/platform_profile.h"
 #include "tube/tube_setting.h"
 
 namespace fs = std::filesystem;
@@ -713,6 +714,34 @@ TEST_CASE("settings: a valid crt_engine wins over an old flag that disagrees wit
     REQUIRE(SettingsPersistence::load_settings(s));
     CHECK(s.display_settings.crt_engine == app::CrtEngine::Classic);
     CHECK_FALSE(s.display_settings.enhanced_crt_enabled);   // the flag follows the engine
+}
+
+TEST_CASE("settings: with Tube offered, every settings file draws the engine it drew before",
+          "[settings][tube]") {
+    // The switch-on offers Tube on a Pi 5 and never selects it: a box with no
+    // saved engine, a saved Classic or a saved Enhanced (in either spelling) loads
+    // and draws exactly what it did before. Only an explicit "tube" draws Tube.
+    struct Case { const char* body; app::CrtEngine draws; };
+    const Case cases[] = {
+        {nullptr, app::CrtEngine::Classic},                                   // no settings file
+        {R"({"display": {"mode": "modern_tv"}})", app::CrtEngine::Classic},   // no engine key at all
+        {R"({"display": {"enhanced_crt_enabled": false}})", app::CrtEngine::Classic},
+        {R"({"display": {"enhanced_crt_enabled": true}})", app::CrtEngine::Enhanced},
+        {R"({"display": {"crt_engine": "classic", "enhanced_crt_enabled": false}})", app::CrtEngine::Classic},
+        {R"({"display": {"crt_engine": "enhanced", "enhanced_crt_enabled": true}})", app::CrtEngine::Enhanced},
+        {R"({"display": {"crt_engine": "plasma", "enhanced_crt_enabled": true}})", app::CrtEngine::Enhanced},
+        {R"({"display": {"crt_engine": "tube", "enhanced_crt_enabled": true}})", app::CrtEngine::Tube},
+    };
+    LogCapture log;   // "plasma" is warned about (and dropped)
+    for (const Case& c : cases) {
+        SettingsSandbox sb;
+        if (c.body) sb.write(c.body);
+        AppState s;
+        s.platform_profile = platform::profile_for(platform::PiModel::Pi5);
+        REQUIRE(app::tube_offered(s));
+        REQUIRE(SettingsPersistence::load_settings(s));
+        CHECK(app::effective_crt_engine(s.display_settings.crt_engine, app::tube_offered(s)) == c.draws);
+    }
 }
 
 TEST_CASE("settings: an older kiosk after a rollback still sees Tube as enhanced",

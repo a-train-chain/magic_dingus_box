@@ -104,7 +104,8 @@ jobs:
                 echo "FATAL: GPIO compiled out (libgpiod-dev missing?)"; exit 1
               fi
               #   TUBE PREVIEW BUILD - a TEST-ONLY Tube renderer preview build
-              #     (-DMDB_TUBE_PREVIEW=ON) logs it at start; it must never ship.
+              #     (-DMDB_TUBE_PREVIEW=ON, an option removed when the engine was
+              #     switched on) logged it at start; an old one must never ship.
               if strings magic_dingus_box_cpp | grep -q "TUBE PREVIEW BUILD"; then echo "FATAL: a Tube preview build"; exit 1; fi
               echo "Binary assertions passed: aarch64, sd_notify, Media Browser, GPIO, tube shaders, not a preview build"
             '

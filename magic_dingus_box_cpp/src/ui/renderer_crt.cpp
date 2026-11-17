@@ -262,9 +262,10 @@ void Renderer::ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height) {
 }
 
 bool Renderer::begin_scene_fbo(const app::AppState& state) {
-    // The Tube engine (renderer.h, set_tube_picture). Without it (production: tube_
-    // is null) this block is skipped and tube_frame stays false, so every gate
-    // below is exactly as before.
+    // The Tube engine (renderer.h, set_tube_picture). On a box that is not offered
+    // the engine (a Pi 4B; a Pi 5 under MDB_PLATFORM_POLICY_OVERRIDE=pi4) tube_ is
+    // null: this block is skipped and tube_frame stays false, so every gate below
+    // is exactly the Classic/Enhanced path.
     bool tube_frame = false;
     if (tube_) {
         tube_frame = tube_frame_wanted(state);
@@ -447,6 +448,20 @@ Renderer::TubeStatus Renderer::tube_status(const app::AppState& state, double no
     return status;
 }
 
+void Renderer::enable_tube() {
+    if (tube_) return;
+    // Constructing the TubeRenderer touches no GL; it reads the build guard's
+    // marker once (one stat, before the main loop). Nothing is built until the
+    // effective engine is Tube, and only after READY=1 (allow_tube_builds()).
+    tube_ = std::make_unique<TubeRenderer>();
+    tube_driver_ = std::make_unique<tube::FrameDriver>();
+    tube::FrameDriver* driver = tube_driver_.get();
+    tube_->set_mean_sink([driver](double light) { driver->on_mean(light); });
+    if (tube_->unavailable_reason() == "build_hung")
+        LOG_ERROR("tube: the last kiosk died building {} — Tube draws as Enhanced until reboot",
+                  tube_->hung_program());
+}
+
 std::string_view Renderer::tube_unavailable_reason() const {
     return tube_ ? tube_->unavailable_reason() : std::string_view();
 }
@@ -454,16 +469,16 @@ std::string_view Renderer::tube_unavailable_reason() const {
 void Renderer::allow_tube_builds() {
     if (!tube_) return;
     tube_->allow_builds();
-#ifdef MDB_TUBE_PREVIEW
-    // Task 14: the first Tube frames build and draw every program of the table,
-    // one decode path per frame (Shader, then Hardware where the context has it).
+    // DEVELOPER switch, never set on a customer's box: MDB_TUBE_VALIDATE=1 (read
+    // once, here) makes the first Tube frames build and draw every program of the
+    // table, one decode path per frame (Shader, then Hardware where the context has
+    // it) - the hardware validation run a new program needs. ~0.5 s per pass.
     const char* validate = std::getenv("MDB_TUBE_VALIDATE");
     if (validate != nullptr && std::string_view(validate) == "1") {
         tube_validate_next_ = TubeValidate::Shader;
-        LOG_WARN("tube: MDB_TUBE_VALIDATE=1 (preview build): the first Tube frames validate every program, one "
+        LOG_WARN("tube: MDB_TUBE_VALIDATE=1 (developer switch): the first Tube frames validate every program, one "
                  "decode path per frame");
     }
-#endif
 }
 
 void Renderer::release_tube_gl() {
@@ -480,6 +495,7 @@ void Renderer::release_tube_gl() {
 // caller draws this frame's Enhanced composite. composite() is called on EVERY
 // Tube frame - it calls prepare(), which is what clears a failure.
 bool Renderer::tube_composite(const app::AppState& state) {
+    if (!tube_ || !tube_driver_) return false;   // no tube on this box: the Enhanced composite draws
     flush_ui_batch();
     TubeRenderer::GlEnv env;
     env.scene_tex = scene_color_tex_;
@@ -490,8 +506,8 @@ bool Renderer::tube_composite(const app::AppState& state) {
     env.vao = vao_;
     env.vbo = vbo_;
     env.ui_program = shader_program_;
-#ifdef MDB_TUBE_PREVIEW
-    // ONE pass per Tube frame (each rebuilds all 19 programs: seconds on a cold
+    // MDB_TUBE_VALIDATE=1 only (developer switch). ONE pass per Tube frame (each rebuilds all 19 programs: about half a second
+    // a pass on a Pi 5 - 648 ms Shader, 409 ms Hardware, 5-48 ms per program measured; more on a cold
     // shader cache), so the main loop returns and pings the watchdog between them.
     // Shader decode first, so the programs left built are this context's own
     // decode's. A validation frame draws nothing else: false -> this frame's
@@ -510,7 +526,6 @@ bool Renderer::tube_composite(const app::AppState& state) {
         tube_driver_->gpu_lost();   // validation deleted the mask: the next frame carries it
         return false;
     }
-#endif
     const tube::Picture picture{static_cast<double>(tube_picture_.w), static_cast<double>(tube_picture_.h),
                                 tube_crt_native_};
     const tube::DriverFrame frame =

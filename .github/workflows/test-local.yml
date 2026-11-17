@@ -182,7 +182,8 @@ jobs:
           if strings "$B" | grep -q "compiled without HAVE_GPIOD"; then
             echo "FATAL: GPIO compiled out (libgpiod-dev?)"; exit 1
           fi
-          # A TEST-ONLY Tube preview build (-DMDB_TUBE_PREVIEW=ON) must never ship.
+          # A TEST-ONLY Tube preview build must never ship. The -DMDB_TUBE_PREVIEW option
+          # is gone since the engine was switched on; this refuses an old preview binary.
           if strings "$B" | grep -q "TUBE PREVIEW BUILD"; then echo "FATAL: a Tube preview build"; exit 1; fi
 
   # The Tube renderer's fixed program table, every program assembled exactly as

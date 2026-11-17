@@ -156,7 +156,7 @@ public:
     // the picture, 0..1. The caller passes it to FrameDriver::on_mean(). Called from inside
     // composite(), on the render thread.
     void set_mean_sink(std::function<void(double)> sink);
-    // PREVIEW / HARDWARE VALIDATION (Task 14): every program of the table built afresh
+    // HARDWARE VALIDATION (Task 14; the developer switch MDB_TUBE_VALIDATE=1): every program of the table built afresh
     // with `decode` and drawn once through its real pass, plan by plan
     // (tube::validation_plans()), into the REAL default framebuffer and targets with
     // synthetic frames, each plan under the guard like any build. Logs

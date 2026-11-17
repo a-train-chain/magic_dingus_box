@@ -52,8 +52,8 @@ Json::Value tube_status_json(const AppState& state) {
     const bool offered = tube_offered(state);
     const CrtEngine saved = state.display_settings.crt_engine;
     // The engine drawing the picture on screen now (Enhanced while the tube yields a film
-    // or cannot draw); the saved one is "engine". Not offered (every production build):
-    // exactly the old computation, nothing of the tube's is read.
+    // or cannot draw); the saved one is "engine". Not offered (a Pi 4B; a Pi 5 under the
+    // pi4 policy override): exactly the old computation, nothing of the tube's is read.
     const CrtEngine effective = offered ? tube_engine_on_screen(state) : effective_crt_engine(saved, offered);
 
     Json::Value t(Json::objectValue);
