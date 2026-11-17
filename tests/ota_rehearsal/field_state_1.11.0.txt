@@ -1,0 +1,65 @@
+# Field-state strip for rehearsing an OTA FROM v1.11.0 (hw_rehearsal.sh step 5).
+#
+# v1.11.0 is what field boxes run (the release before 1.12.0). After the
+# downgrade, the bench box runs the v1.11.0 tree but still carries the SYSTEM
+# state that later deploys installed outside the tree — state a real v1.11.0
+# box never had. This list removes it, so the rehearsal updates a box that
+# looks like the customer's. Directives and the git-derived entries
+# (unit / old-unit / dropin) are documented in field_state_1.9.14.txt; as
+# there, the explicit lines below are the reviewed source of truth.
+#
+# Reviewed 2026-11-16 against v1.11.0..main (f8ab2a9 + #34): 366 commits.
+# Git derivation finds no new units and no new drop-in paths; three units
+# changed (listed below).
+
+# --- Native VPN recovery (#17, #24, #27, #28) --------------------------------
+# The controller's units, as v1.11.0 shipped them (OTA never reinstalls unit
+# files on a pre-converge path; listed for review, also git-derived).
+old-unit magic_dingus_box_cpp/systemd/gluetun-cascade-restart.service
+old-unit magic_dingus_box_cpp/systemd/magic-dingus-services.service
+old-unit magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service
+
+# Its durable state (Paths.state). A v1.11.0 box has none of it; the NEW
+# install must create it (provision/activate), not inherit the bench's.
+file /var/lib/magic-dingus/vpn_recovery/auth-loaded.json
+file /var/lib/magic-dingus/vpn_recovery/catalog.json
+file /var/lib/magic-dingus/vpn_recovery/controller.json
+file /var/lib/magic-dingus/vpn_recovery/intent.json
+file /var/lib/magic-dingus/vpn_recovery/intent.lock
+file /var/lib/magic-dingus/vpn_recovery/load-pending.json
+file /var/lib/magic-dingus/vpn_recovery/loaded.json
+file /var/lib/magic-dingus/vpn_recovery/operation.json
+file /var/lib/magic-dingus/vpn_recovery/status.json
+
+# Owner fallback-country policy (only set on test benches) and the catalog's
+# last attested copy — both written only by the new controller.
+file /opt/magic_dingus_box/config/vpn_recovery.json
+file /opt/magic_dingus_box/services/config/gluetun/servers.json.known-good
+
+# The controller's per-box control-server key. v1.11.0's auth file has only
+# the public read-only role: remove the key, then let v1.11.0's own writer
+# put its config.toml back (it rewrites whenever the content differs).
+file /opt/magic_dingus_box/services/config/gluetun/auth/recovery.key
+file /opt/magic_dingus_box/services/config/gluetun/auth/.install.lock
+run magic_dingus_box_cpp/scripts/ensure_gluetun_auth.sh
+
+# --- v1.11.0's own memory-tuning hook ------------------------------------------
+# So the files it owns carry v1.11.0's content: no Bluetooth step (1h), and its
+# converge leaves the units above as v1.11.0's.
+run magic_dingus_box_cpp/scripts/setup_memory_tuning.sh
+
+# --- Gluetun as v1.11.0 created it -----------------------------------------------
+# Main's compose turns Gluetun's own health restart off through an entrypoint
+# wrapper (#28); a field box's container has no wrapper. Recreate it from
+# v1.11.0's compose (the VPN reconnects within a minute or two).
+run magic_dingus_box_cpp/scripts/recreate_gluetun.sh
+
+# --- Not stripped, on purpose ------------------------------------------------------
+# - bluez: part of the Raspberry Pi OS base image (no apt history entry on the
+#   owner's box), so field boxes have it too; install_deps.sh only names it.
+# - The kiosk user's `bluetooth` group and an enabled bluetooth.service
+#   (setup_bluetooth.sh, newer than v1.11.0): there is no directive for a group,
+#   and a field box may already have both from the base image. NEW's
+#   setup_bluetooth.sh is idempotent either way.
+# - /var/lib/magic-dingus/vpn_events.log and system_units: v1.11.0 already
+#   writes them.

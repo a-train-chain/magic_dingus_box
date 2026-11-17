@@ -250,5 +250,41 @@ class OwnershipTests(unittest.TestCase):
             close.assert_called_once_with(99)
 
 
+class HostGuardTests(unittest.TestCase):
+    """Live faults run only on the box the operator names (magicpi5 unless
+    --box names another, e.g. a bench Pi 4B). No wildcard, no inference."""
+
+    def test_default_box_is_magicpi5_only(self):
+        self.assertTrue(fault.host_allowed('magicpi5', None))
+        self.assertFalse(fault.host_allowed('magicpi4', None))
+        self.assertFalse(fault.host_allowed('magicpi5-1a2b', None))
+
+    def test_named_box_must_match_exactly(self):
+        self.assertTrue(fault.host_allowed('magicpi4', 'magicpi4'))
+        # Naming another box never also allows the default one.
+        self.assertFalse(fault.host_allowed('magicpi5', 'magicpi4'))
+        self.assertFalse(fault.host_allowed('magicpi4b', 'magicpi4'))
+        self.assertFalse(fault.host_allowed('MAGICPI4', 'magicpi4'))
+
+    def test_box_name_is_a_plain_hostname(self):
+        for bad in ('', '*', 'magicpi*', '.', 'a b', 'magic.local', '-x', 'x' * 64, 'magicpi4\n'):
+            with self.subTest(bad=bad):
+                self.assertFalse(fault.host_allowed(bad, bad))
+
+    def test_main_refuses_a_live_mode_on_the_wrong_box(self):
+        argv = ['check_network_fault.py', '--opt-in-network-fault', '--mode', 'port-loss',
+                '--gateway', '10.2.0.1', '--box', 'magicpi4']
+        with patch.object(fault.sys, 'argv', argv), \
+             patch.object(fault.os, 'geteuid', return_value=0), \
+             patch.object(fault.sys, 'platform', 'linux'), \
+             patch.object(fault, 'dependencies'), \
+             patch.object(fault.socket, 'gethostname', return_value='magicpi5'), \
+             patch.object(fault, 'LiveFault') as live:
+            with self.assertRaises(SystemExit) as caught:
+                fault.main()
+        self.assertIn('host identity mismatch', str(caught.exception))
+        live.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

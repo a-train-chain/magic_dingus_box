@@ -20,9 +20,11 @@ fault-helper tests") and in `tests/run_offline.sh --suite vpn-fault`.
 
 ## Safety rails in `check_network_fault.py`
 
-- **Who and where:** Linux root only. Live modes also refuse any host not
-  named `magicpi5` (the owner's box). `--opt-in-network-fault` and an
-  explicit `--mode` are both required.
+- **Who and where:** Linux root only. Live modes run only on the box the
+  operator names: the machine's hostname must equal `--box` exactly
+  (default `magicpi5`, the owner's box; no wildcards, and naming another box
+  never also allows `magicpi5`). `--opt-in-network-fault` and an explicit
+  `--mode` are both required.
 - **What it touches:** only rules and routes it owns (tagged table 20001)
   inside the namespace of the exact Gluetun process it pinned, plus a
   root-private manifest under `/run/mdb-vpn-network-<id>/`. It never
@@ -97,6 +99,28 @@ ssh magic@10.0.0.227 'sudo python3 /run/mdb-vpn-attended/check_network_fault.py 
   removed before the controller showed the behaviour. It is not proof of a
   bug. Read `reason` and the evidence directory named in the result
   (`/run/mdb-vpn-network-*`, kept until reboot).
+
+## On another box (the Pi 4B bench unit)
+
+Release row 17.1 needs the same proof on a Pi 4B. The helper runs there only
+when named: add `--box <its hostname>` to every live command (the `ssh`
+target is that box, not `magicpi5`). Before the first run, check that:
+
+- it runs current main, and Gluetun was created from main's compose file
+  (Gluetun logs "Restart VPN on healthcheck failure: no"; otherwise run
+  `scripts/recreate_gluetun.sh` once);
+- it has **its own** ProtonVPN WireGuard config, made with port forwarding
+  (NAT-PMP) on. Never copy `services/.env` from another box: two boxes on one
+  key knock each other off the VPN, and `verify_box.sh` fails a box holding a
+  source box's key;
+- for `fallback`, `config/vpn_recovery.json` allows the fallback country
+  (`{"fallback_countries": ["United States"]}`) and the controller's round is
+  closed (see Prerequisites);
+- the owner has said go.
+
+The Pi 4B is the performance envelope, so also note the controller's CPU
+(`soak.py`) and whether recovery times stay within the Pi 5's (port-loss
+~90–100 s; fallback ~2.5 min to Ready).
 
 ## Results so far
 
