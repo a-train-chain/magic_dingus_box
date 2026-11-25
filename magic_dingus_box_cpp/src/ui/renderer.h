@@ -694,6 +694,17 @@ private:
     // view's revision changes (a new layout), not every frame.
     const GuideView* channel_guide_ = nullptr;
     void render_channel_guide(const GuideView& view, float alpha, bool window_dark);
+    void render_channel_ident(const app::AppState& state, float opacity);
+    struct ChannelIdentLine {
+        std::string text;
+        float x, baseline;
+        int size;
+        bool station;
+    };
+    // Fit and right-align once per tune/viewport, including long movie titles.
+    std::vector<ChannelIdentLine> channel_ident_lines_;
+    std::chrono::steady_clock::time_point channel_ident_start_{};
+    uint32_t channel_ident_width_ = 0, channel_ident_height_ = 0;
     class GuidePainter;
     // A letter-spaced label (the mockup's eyebrow, NEXT, PICTURE, CROP, ...)
     // as measured once per layout: each code point, and its x from the

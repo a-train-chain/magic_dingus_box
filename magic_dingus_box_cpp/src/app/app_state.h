@@ -418,6 +418,21 @@ public:
     //   scheduled slot ends (at most its length after the failure) — the
     //   channel is not re-tuned before then.
     int tuned_channel = -1;
+    // Transient on-screen channel identification. Count from the first
+    // confirmed fullscreen picture, so decoder startup consumes no reading time.
+    struct ChannelIdent {
+        bool requested = false;
+        std::optional<std::chrono::steady_clock::time_point> started;
+        float opacity(std::chrono::steady_clock::time_point now, bool playing) {
+            if (!requested || !playing) return 0.0f;
+            if (!started) started = now;
+            const float age = std::chrono::duration<float>(now - *started).count();
+            if (age <= 3.0f) return 1.0f;
+            if (age < 3.6f) return (3.6f - age) / 0.6f;
+            *this = {};
+            return 0.0f;
+        }
+    } channel_ident;
     std::vector<int> guide_gave_up;
     double guide_wait_until_utc = 0;
     // Channel Guide input state, written by app::guide_input / guide_frame

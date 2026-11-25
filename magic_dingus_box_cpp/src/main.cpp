@@ -1580,7 +1580,8 @@ int main(int /* argc */, char* /* argv */[]) {
                 app::guide_tune_taken(state, row, playlist_playback.pending_tune() == row);
             }
             if (cmd.tune >= 0) {
-                playlist_playback.tune(cmd.tune, /*keep_overlay=*/false);
+                playlist_playback.tune(cmd.tune, /*keep_overlay=*/false,
+                                       app::PlaylistPlayback::TuneOrigin::Viewer);
                 app::guide_tune_taken(state, cmd.tune,
                                       playlist_playback.pending_tune() == cmd.tune);
             }

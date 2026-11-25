@@ -460,6 +460,7 @@ void PlaylistPlayback::reanchor_airing(std::optional<ChannelAiring>& held) {
 }
 
 void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
+    state_.channel_ident = {};
     channels_ = channels;
     // Reload can renumber a tune during its cooperative settle. Its target
     // is the channel chosen at the press, independent of the new row order.
@@ -547,7 +548,7 @@ void PlaylistPlayback::play_on_demand(int channel, const OnAir& oa) {
     // A rejected re-entrant press must not replace the pending selection.
     if (switch_pending() || state_.is_switching_playlist || state_.showing_intro_video ||
         transport_.now() < timeout_settle_until_) return;
-    tune(channel, false);
+    tune(channel, false, TuneOrigin::Viewer);
     if (switch_pending()) {
         pending_.selected = selected;
         state_.off_air_return_id.clear();
@@ -555,7 +556,7 @@ void PlaylistPlayback::play_on_demand(int channel, const OnAir& oa) {
     }
 }
 
-void PlaylistPlayback::tune(int channel, bool keep_overlay) {
+void PlaylistPlayback::tune(int channel, bool keep_overlay, TuneOrigin origin) {
     const Channel* ch = channel_at(channel);  // nullptr in List style
     if (!ch || ch->items.empty()) return;     // nothing to join
     // SELECT's gates (see on_select): no tune over the intro, behind a
@@ -565,6 +566,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     if (switch_pending() || transport_.now() < timeout_settle_until_) return;
     if (state_.is_switching_playlist) return;
 
+    state_.channel_ident = {};
     // SELECT's mid-playback switch, with the channel as its target.
     state_.is_switching_playlist = true;
     switch_start_generation_ = transport_.stream_generation();
@@ -589,6 +591,7 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     pending_.tune = true;
     pending_.identity = channel_identity(channel);
     pending_.keep_overlay = keep_overlay;
+    pending_.origin = origin;
 }
 
 void PlaylistPlayback::on_channel_step(int delta) {
@@ -606,7 +609,7 @@ void PlaylistPlayback::on_channel_step(int delta) {
             // it stands THEN — `tune(c, ui_visible_when_playing)` froze it as
             // it stood at the press, and a guide opened during the ~200 ms
             // wait closed again at the load.
-            tune(c, /*keep_overlay=*/true);
+            tune(c, /*keep_overlay=*/true, TuneOrigin::Viewer);
             return;
         }
     }
@@ -625,7 +628,7 @@ void PlaylistPlayback::land_on_channel(int channel) {
     }
 }
 
-void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
+bool PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     warn_if_still_playing();
     // On air NOW, not at the press: the wait must not put playback behind.
     const Channel* ch = channel_at(channel);
@@ -633,14 +636,14 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
     const auto oa = ch ? join_point(*ch, now, offset(now), offset) : std::nullopt;
     if (!oa) {
-        if (park_off_air(channel)) return;
+        if (park_off_air(channel)) return false;
         // The list was rebuilt during the wait and the channel lost its
         // schedule (or the style went back to List).
         std::cerr << "Tune to channel " << channel << " failed: nothing scheduled"
                   << std::endl;
         if (ch) land_on_channel(channel);  // not past a list that shrank
         app::stop_to_menu(state_);
-        return;
+        return false;
     }
     // Each channel gets its own failure run: failures on the channel being
     // left must not use up this one's budget.
@@ -649,7 +652,7 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     }
     // A load that returns OK starts the channel's start bound
     // (kChannelStartTimeout, tick_pipeline_error).
-    load_on_air(channel, *oa, keep_overlay);
+    return load_on_air(channel, *oa, keep_overlay);
 }
 
 double PlaylistPlayback::played_position(double player_pos) {
@@ -803,6 +806,7 @@ void PlaylistPlayback::rejoin_schedule(bool programme_ended) {
 }
 
 bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand) {
+    state_.channel_ident = {};
     state_.on_demand = on_demand;
     timezone_reload_pending_ = false;  // this load uses the current zone rules
     land_on_channel(channel);
@@ -937,14 +941,17 @@ void PlaylistPlayback::advance_pending_switch() {
     const PendingSwitch done = pending_;
     pending_ = PendingSwitch{};
     if (done.tune) {
+        bool loaded;
         if (done.selected) {
             if (done.target != state_.tuned_channel) error_policy_ = video::PlaybackErrorPolicy{};
             const auto& a = done.selected->airing;
-            load_on_air(done.target, OnAir{a.index, 0, a.starts_at, a.ends_at, 0},
-                        done.keep_overlay, /*on_demand=*/true);
+            loaded = load_on_air(done.target, OnAir{a.index, 0, a.starts_at, a.ends_at, 0},
+                                 done.keep_overlay, /*on_demand=*/true);
         } else {
-            finish_tune(done.target, done.keep_overlay);
+            loaded = finish_tune(done.target, done.keep_overlay);
         }
+        state_.channel_ident.requested = loaded && done.origin == TuneOrigin::Viewer &&
+                                         !state_.ui_visible_when_playing;
     } else {
         finish_switch(done.target);
     }
