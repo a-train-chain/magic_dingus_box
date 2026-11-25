@@ -938,7 +938,7 @@ void MediaBrowserHost::render(int fb_w, int fb_h) {
         (current_mb_screen_ != media_browser::ui::Screen::Playback) ||
         state_.display_settings.mb_playback_show_frame;
     if (show_frame) {
-        ui_renderer_.load_marquee_frame("marquee_frame.png");
+        ui_renderer_.load_marquee_frame(state_.display_settings.marquee_frame().file);
         ui_renderer_.render_marquee_frame();
     }
 }

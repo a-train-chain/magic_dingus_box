@@ -312,32 +312,18 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
         // picture 251px right and put the bezel's control panel inside the
         // playfield. The opening is centred to within 3px of the screen
         // anyway (left margin 251, right 254), so centring IS the alignment.
-        out << "custom_viewport_x = \"0\"\n";
-        out << "custom_viewport_y = \"0\"\n";
-        // FILL THE HEIGHT, KEEP THE SHAPE. Height is always the full 1080 so
-        // the picture touches top and bottom on every core; width is whatever
-        // that core's true aspect demands, so geometry is never stretched.
-        //
-        // For everything without a border to crop this is 1440x1080 — exact
-        // 4:3, no rounding. Only N64 titles carrying a measured overscan crop
-        // come out wider, because removing a lopsided border leaves a shape
-        // that is no longer 4:3; forcing that back into a 4:3 box is what
-        // squeezed the picture by up to 7% on F-Zero X and GoldenEye.
-        //
-        // Running wider than the bezel's opening (measured x 251..1665) is
-        // fine and deliberate. The bezel is an OVERLAY drawn on top of the
-        // video, so the excess tucks under the frame rather than spilling
-        // onto the artwork — which is exactly what a real CRT did, overscanning
-        // past the visible edge of the tube. Sizing the picture to stop at the
-        // cutout instead would leave a visible sliver of background between
-        // picture and frame.
-        const int vp_h = 1080;
-        int vp_w = static_cast<int>(std::lround(vp_h * options.content_aspect));
-        // Never wider than the panel: past that RetroArch would letterbox to
-        // fit and we would lose the fill-the-height guarantee entirely.
-        vp_w = std::min(vp_w, 1920);
-        out << "custom_viewport_width = \"" << vp_w << "\"\n";
-        out << "custom_viewport_height = \"" << vp_h << "\"\n";
+        video::IRect vp{0, 0, std::min(1920, static_cast<int>(
+            std::lround(1080 * options.content_aspect))), 1080};
+        vp.x = (1920 - vp.w) / 2;
+        if (options.bezel_picture) {
+            // Preserve the core's post-overscan aspect, including wide N64 titles.
+            vp = video::place_picture(options.content_aspect, {240, 0, 1440, 1080},
+                                      4.0 / 3.0, *options.bezel_picture, false).viewport;
+        }
+        out << "custom_viewport_x = \"" << vp.x - (1920 - vp.w) / 2 << "\"\n";
+        out << "custom_viewport_y = \"" << vp.y - (1080 - vp.h) / 2 << "\"\n";
+        out << "custom_viewport_width = \"" << vp.w << "\"\n";
+        out << "custom_viewport_height = \"" << vp.h << "\"\n";
         // 23 = ASPECT_RATIO_CUSTOM — the only index that makes RetroArch use
         // the viewport above. This said 22 with a comment claiming that meant
         // "custom viewport"; 22 is ASPECT_RATIO_CORE ("Core provided"), which

@@ -563,11 +563,15 @@ the first Pi 5 golden image:
      kernel-owned GPIO 24 fails the whole request and takes all four
      buttons, the encoder switch and every LED down with it — observed
      live the same day.
-- **Pre-clone hygiene (2026-08-03)**: `prepare_for_cloning.sh` now
-  ABORTS if stray operator backups sit in /home/magic (secret
-  tripwire — delete them or move them to /mnt/ssd, which the SD-only
-  dd never captures), strips the watch-history DB and the operator's
-  Wi-Fi profile from the image, and vacuums journal + audit logs.
+- **Pre-clone hygiene.** Before stopping services, `prepare_for_cloning.sh`
+  lists known operator backups and validation artifacts under `/home/magic`
+  and `/root` and refuses to clone until they are moved off the SD card.
+  These include OTA rollback state, `mdb-bench/services.env.backup`,
+  Bluetooth source and validation snapshots, hardware validation reports
+  and save backups, and known bench scripts and OTA test logs. Confirm
+  `mountpoint /mnt/ssd` succeeds before using the movie drive for storage.
+  Clone preparation also strips the watch-history DB and the operator's
+  Wi-Fi profile from the image and vacuums journal and audit logs.
   `first_boot.sh` wipes RetroArch saves/states on new units (pristine
   policy, decided 2026-08-03 — data/media playlist content still
   ships) and resets the personal mb_* browse filters to defaults.

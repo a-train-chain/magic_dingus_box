@@ -48,11 +48,12 @@ public:
     // TOP-LEFT origin, shown at target_aspect (4:3 by default). crop covers the
     // target; otherwise the whole frame fits inside opening_fb (the
     // bezel's window, or target_fb without one). Black inside the target
-    // where the picture does not reach; nothing is drawn outside it. The
+    // where the picture does not reach. A solid rim extends only the edge
+    // samples into the narrow shadow bordering the picture. The
     // render inset and aspect-preserve settings are ignored until
     // clear_picture().
     void set_picture(IRect target_fb, bool crop, IRect opening_fb,
-                     double target_aspect = 4.0 / 3.0);
+                     double target_aspect = 4.0 / 3.0, bool solid_rim = false);
 
     // Leave picture mode: back to the Media Browser paths below
     // (aspect-preserve and its render inset), unchanged.
@@ -130,6 +131,7 @@ private:
     // OpenGL resources
     GLuint texture_ids_[3]; // Support up to 3 planes (Y, U, V)
     GLuint program_id_;
+    GLint sample_bounds_location_ = -1;
     GLint saturation_location_ = -1;
     float saturation_ = 1.0f;
     GLuint vao_id_;
@@ -151,6 +153,7 @@ private:
     // Picture mode (set_picture / clear_picture).
     bool picture_mode_ = false;
     bool picture_crop_ = true;
+    bool picture_solid_rim_ = false;
     double picture_target_aspect_ = 4.0 / 3.0;
     IRect picture_target_{0, 0, 0, 0};
     IRect picture_opening_{0, 0, 0, 0};

@@ -26,6 +26,17 @@
 
 namespace video {
 
+// All four Marquee PNGs share this opening in their native 1280x720 art.
+inline IRect marquee_opening(int fb_w, int fb_h) {
+    return scale_image_rect({40, 40, 1200, 640}, 1280, 720, fb_w, fb_h);
+}
+
+inline bool framed_guide_movie(bool full_screen_movie, bool modern_tv,
+                               bool show_frame, double source_aspect) {
+    return full_screen_movie && modern_tv && show_frame && std::isfinite(source_aspect)
+        && source_aspect > 4.0 / 3.0 && !is_four_by_three(source_aspect);
+}
+
 struct ContentRects {
     IRect content;
     IRect logical_content;

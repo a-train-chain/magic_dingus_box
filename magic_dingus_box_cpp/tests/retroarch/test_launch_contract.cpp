@@ -1090,3 +1090,21 @@ TEST_CASE("renderer_for_core routes N64 cores to GL, others to Vulkan",
     REQUIRE(retroarch::renderer_for_core("snes9x2010_libretro") == Renderer::Vulkan);
     REQUIRE(retroarch::renderer_for_core("fbneo_libretro") == Renderer::Vulkan);
 }
+
+TEST_CASE("solid bezel games fit the centered picture opening at their actual aspect",
+          "[retroarch][video]") {
+    retroarch::LaunchOptions opts;
+    opts.display_mode = app::DisplayMode::MODERN_TV;
+    opts.bezel_file = "mdb_1974.png";
+    opts.bezel_picture = video::IRect{276, 27, 1368, 1026};
+    for (double aspect : {4.0 / 3.0, 1.426}) {
+        opts.content_aspect = aspect;
+        std::ostringstream output;
+        retroarch::write_video_config(output, opts);
+        require_line(output.str(), "custom_viewport_width = \"1368\"");
+        require_line(output.str(), "custom_viewport_height = \"" +
+                     std::to_string(static_cast<int>(std::lround(1368 / aspect))) + "\"");
+        require_line(output.str(), "custom_viewport_x = \"0\"");
+        require_line(output.str(), "custom_viewport_y = \"0\"");
+    }
+}

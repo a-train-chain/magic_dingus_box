@@ -2057,6 +2057,7 @@ int main(int /* argc */, char* /* argv */[]) {
         // prerolls) and returns to the last playlist row only when the new
         // video has no control. picture_crop mirrors the store for the
         // renderer. All in memory: no file I/O here.
+        const video::IRect marquee = video::marquee_opening(mode.width, mode.height);
         {
             const std::string& media_key = controller.current_media_key();
             app::PictureFacts picture;
@@ -2074,6 +2075,14 @@ int main(int /* argc */, char* /* argv */[]) {
                 } else {
                     picture.aspect = gst_renderer.source_display_aspect();
                 }
+            }
+            // The guide's Fill control describes the full-screen result, even
+            // while the film is in the small, always-fit preview window.
+            if (video::framed_guide_movie(picture.is_movie && app::full_screen_films_possible(state),
+                                          state.display_settings.mode == app::DisplayMode::MODERN_TV,
+                                          state.display_settings.mb_playback_show_frame,
+                                          picture.aspect.value_or(0.0))) {
+                picture.output_aspect = marquee.w / double(marquee.h);
             }
             picture.video_active = state.video_active;
             picture.overlay_visible = state.ui_visible_when_playing;
@@ -2425,6 +2434,8 @@ int main(int /* argc */, char* /* argv */[]) {
             sig.add(static_cast<uint64_t>(state.display_settings.mode));
             app::add_tube_redraw_signature(sig, state);
             sig.add(static_cast<uint64_t>(state.display_settings.bezel_index));
+            sig.add(state.display_settings.marquee_frame_index);
+            sig.add(state.display_settings.mb_playback_show_frame);
             // An open, static Settings menu: page, cursor, row labels.
             if (settings_shown) {
                 sig.add(settings_menu.redraw_signature());
@@ -2569,6 +2580,9 @@ int main(int /* argc */, char* /* argv */[]) {
         // The content rects (`frame_rects`, with use_letterbox,
         // movie_full_screen_now, fb_w and fb_h) are computed once per
         // iteration before the redraw gate, above.
+        const bool guide_movie_frame = video::framed_guide_movie(
+            movie_full_screen_now, use_letterbox, state.display_settings.mb_playback_show_frame,
+            movie_full_screen_now ? playing_display_aspect() : 0.0);
         const bool letterbox_active = frame_rects.letterbox_active;
         const video::IRect content = frame_rects.content;
         const video::IRect logical_content = frame_rects.logical_content;
@@ -2588,7 +2602,8 @@ int main(int /* argc */, char* /* argv */[]) {
         const bool bezel_allowed = true;
 #endif
         const app::BezelInfo* drawn_bezel = nullptr;
-        if (bezel_allowed && letterbox_active &&
+        const bool preview_marquee = settings_menu.previewing_marquee_frame();
+        if (bezel_allowed && !preview_marquee && letterbox_active &&
             state.display_settings.bezel_index >= 0 &&
             state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
             const app::BezelInfo& bezel =
@@ -2655,9 +2670,10 @@ int main(int /* argc */, char* /* argv */[]) {
                     playing_display_aspect());
                 // Full-screen Modern TV films use the output's display shape;
                 // guide windows and CRT Native retain their 4:3 display shape.
+                video::IRect picture_target = guide_movie_frame ? marquee : content;
                 const double target_aspect = movie_full_screen_now && use_letterbox
-                    ? content.w / double(content.h) : 4.0 / 3.0;
-                video::IRect picture_target = content;
+                    ? picture_target.w / double(picture_target.h) : 4.0 / 3.0;
+                if (guide_movie_frame) opening = marquee;
                 if (guide_frame_view != nullptr) {
                     const ui::GuideRect w = ui::guide_rect_to_fb(
                         guide_frame_view->window, logical_content.w, logical_content.h,
@@ -2665,7 +2681,12 @@ int main(int /* argc */, char* /* argv */[]) {
                     picture_target = video::IRect{w.x, w.y, w.w, w.h};
                     opening = picture_target;
                 }
-                gst_renderer.set_picture(picture_target, crop, opening, target_aspect);
+                const bool solid_rim = drawn_bezel && drawn_bezel->solid_rim &&
+                                       guide_frame_view == nullptr && opening.w > 0 && opening.h > 0;
+                if (solid_rim) {
+                    picture_target = opening;
+                }
+                gst_renderer.set_picture(picture_target, crop, opening, target_aspect, solid_rim);
             } else {
                 gst_renderer.clear_picture();
             }
@@ -2720,20 +2741,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 // setting in MovieSettings → Library → Wood frame
                 // during playback). Inset the video INSIDE the frame
                 // so the cabinet art doesn't crop the movie.
-                // The frame art is a 1280x720 PNG drawn as a full-screen
-                // quad in LOGICAL space, so its 40px border stretches
-                // with the framebuffer: at 1080p the inner edge lands at
-                // 60 physical px. set_render_inset() takes FRAMEBUFFER
-                // pixels, so the inset must scale to match or the
-                // cabinet art overlaps and crops ~20px off every side of
-                // the movie. Identity at 720p (40 -> 40).
-                const int inset_px = config::display::to_physical_px(
-                    40, static_cast<int>(mode.height),
-                    config::display::logical_canvas(false).h);
-                gst_renderer.set_render_inset(
-                    inset_px, inset_px,
-                    static_cast<int>(mode.width)  - 2 * inset_px,
-                    static_cast<int>(mode.height) - 2 * inset_px);
+                gst_renderer.set_render_inset(marquee.x, marquee.y, marquee.w, marquee.h);
                 glViewport(0, 0, mode.width, mode.height);
                 glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
@@ -2812,6 +2820,10 @@ int main(int /* argc */, char* /* argv */[]) {
             // Reset viewport to fullscreen for bezel overlay
             glViewport(0, 0, mode.width, mode.height);
             ui_renderer.render_bezel();
+        } else if (guide_movie_frame || preview_marquee) {
+            glViewport(0, 0, mode.width, mode.height);
+            ui_renderer.load_marquee_frame(state.display_settings.marquee_frame().file);
+            ui_renderer.render_marquee_frame();
         }
         
 #ifdef MEDIA_BROWSER_ENABLED

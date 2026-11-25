@@ -68,14 +68,13 @@ const std::vector<std::string> kTodaysSublabels{
     "Warm tone + gamma", "Vignette + RGB convergence", "Subpixel R/G/B stripes",
     "Phosphor halation", "Alternate-line darken", "Brightness wobble", ""};
 
-// The same page in Modern TV mode before Tube, taken from the code as it was
-// before this branch (6455cbf): the Bezel row sits above the CRT rows.
+// The Modern TV menu includes the 4:3 bezel and widescreen Marquee choices.
 const std::vector<std::string> kTodaysModernTvLabels{
-    "Mode: Modern TV", "Menu Style: List", "Bezel: None", "CRT Engine: Classic",
+    "Mode: Modern TV", "Menu Style: List", "Bezel: None", "Marquee border: Simple Walnut", "CRT Engine: Classic",
     "Scanlines: Low (10%)", "Color Warmth: OFF", "Phosphor Glow: OFF", "RGB Mask: OFF",
     "Screen Bloom: OFF", "Interlacing: OFF", "Flicker: OFF", "Back"};
 const std::vector<std::string> kTodaysModernTvSublabels{
-    "Cycle modes", "List / Channel guide", "Overlay frame", "Classic / Enhanced",
+    "Cycle modes", "List / Channel guide", "Overlay frame", "Widescreen movie frame", "Classic / Enhanced",
     "Horizontal CRT lines", "Warm tone + gamma", "Vignette + RGB convergence",
     "Subpixel R/G/B stripes", "Phosphor halation", "Alternate-line darken",
     "Brightness wobble", ""};
