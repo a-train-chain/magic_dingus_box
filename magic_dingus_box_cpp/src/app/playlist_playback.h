@@ -210,7 +210,7 @@ public:
     // (kChannelPlaysS).
     // Dropped (like SELECT) in List style, for a channel with no schedule,
     // during the intro, and while a switch is pending or in flight.
-    enum class TuneOrigin { Automatic, Viewer };
+    enum class TuneOrigin { Automatic, Viewer, Dial };
     void tune(int channel, bool keep_overlay, TuneOrigin origin = TuneOrigin::Automatic);
     // Select a whole programme, including tomorrow's lineup. Captures media
     // identity now; settle/reloads may remap it or cancel, never replace it.

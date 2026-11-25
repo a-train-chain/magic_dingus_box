@@ -8,9 +8,9 @@ TEST_CASE("Tuner hiss follows the snow envelope and the master volume") {
     using namespace app::tuner_snow;
     constexpr int length = duration.count() * sample_rate / 1000;
     std::array<int16_t, length> full{}, half{}, muted{};
-    write_audio(full.data(), length, 0, 42, 100);
-    write_audio(half.data(), length, 0, 42, 50);
-    write_audio(muted.data(), length, 0, 42, 0);
+    ReceiverNoise(42).write(full.data(), length, 0, 100);
+    ReceiverNoise(42).write(half.data(), length, 0, 50);
+    ReceiverNoise(42).write(muted.data(), length, 0, 0);
     double energy = 0.0;
     int peak = 0, half_error = 0;
     for (int i = 0; i < length; ++i) {
@@ -29,6 +29,19 @@ TEST_CASE("Tuner hiss follows the snow envelope and the master volume") {
     CHECK(std::all_of(muted.begin(), muted.end(), [](auto v) { return v == 0; }));
     CHECK(strength(0.150f) == 0.0f);
     CHECK(strength(0.125f) < strength(0.095f));
+}
+
+TEST_CASE("Overlapping dial presses continue the same hiss and extend its fade") {
+    using namespace app::tuner_snow;
+    constexpr int field = sample_rate / 20;
+    std::array<int16_t, field * 2> reference{}, burst{};
+    ReceiverNoise(42).write(reference.data(), reference.size(), 0, 100);
+    ReceiverNoise noise(42);
+    noise.write(burst.data(), field, 0, 100);
+    noise.write(burst.data() + field, field, 0, 100); // new press after 50 ms
+    CHECK(std::equal(burst.begin(), burst.begin() + field + 1000, reference.begin()));
+    noise.write(burst.data(), field, sample_rate * 150 / 1000, 100);
+    CHECK(std::all_of(burst.begin(), burst.begin() + field, [](auto v) { return v == 0; }));
 }
 
 TEST_CASE("Cable TV selects the low-cost Enhanced mix and preserves movie and bezel controls") {

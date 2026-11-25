@@ -28,9 +28,15 @@ static const char* fragment_shader_rgba = R"(
     precision mediump float;
     out vec4 FragColor;
     in vec2 TexCoord;
+    uniform float saturation;
     uniform sampler2D textureY; // Used as main texture for RGBA
     void main() {
-        FragColor = texture(textureY, TexCoord);
+        vec4 color = texture(textureY, TexCoord);
+        if (saturation < 1.0) {
+            float y = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+            color.rgb = mix(vec3(y), color.rgb, saturation);
+        }
+        FragColor = color;
     }
 )";
 
@@ -41,14 +47,15 @@ static const char* fragment_shader_i420 = R"(
     precision mediump float;
     out vec4 FragColor;
     in vec2 TexCoord;
+    uniform float saturation;
     uniform sampler2D textureY;
     uniform sampler2D textureU;
     uniform sampler2D textureV;
     
     void main() {
         float y = texture(textureY, TexCoord).r;
-        float u = texture(textureU, TexCoord).r - 0.5;
-        float v = texture(textureV, TexCoord).r - 0.5;
+        float u = (texture(textureU, TexCoord).r - 0.5) * saturation;
+        float v = (texture(textureV, TexCoord).r - 0.5) * saturation;
         
         float r = y + 1.402 * v;
         float g = y - 0.344136 * u - 0.714136 * v;
@@ -65,12 +72,13 @@ static const char* fragment_shader_nv12 = R"(
     precision mediump float;
     out vec4 FragColor;
     in vec2 TexCoord;
+    uniform float saturation;
     uniform sampler2D textureY;
     uniform sampler2D textureU; // Actually UV plane
     
     void main() {
         float y = texture(textureY, TexCoord).r;
-        vec2 uv = texture(textureU, TexCoord).rg - 0.5; // NV12 has UV interleaved
+        vec2 uv = (texture(textureU, TexCoord).rg - 0.5) * saturation; // NV12 has UV interleaved
         
         float u = uv.x;
         float v = uv.y;
@@ -286,6 +294,9 @@ void GstRenderer::update_shader(int format) {
     
     // Set uniforms
     glUseProgram(program_id_);
+    saturation_location_ = glGetUniformLocation(program_id_, "saturation");
+    saturation_ = 1.0f;
+    glUniform1f(saturation_location_, saturation_);
     glUniform1i(glGetUniformLocation(program_id_, "textureY"), 0);
     if (format == 1) {
         glUniform1i(glGetUniformLocation(program_id_, "textureU"), 1);
@@ -730,6 +741,13 @@ void GstRenderer::render_quad(float tear, int channel) {
     glDisable(GL_DEPTH_TEST);
     
     glUseProgram(program_id_);
+    // Chroma catches up over the two horizontal-lock phases. The UI is
+    // composed separately, so the station number keeps its normal green.
+    const float saturation = tear > 0.0f ? 0.64f : (tear < 0.0f ? 0.86f : 1.0f);
+    if (saturation != saturation_) {
+        saturation_ = saturation;
+        glUniform1f(saturation_location_, saturation);
+    }
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture_ids_[0]);

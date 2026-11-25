@@ -130,6 +130,8 @@ private:
     // OpenGL resources
     GLuint texture_ids_[3]; // Support up to 3 planes (Y, U, V)
     GLuint program_id_;
+    GLint saturation_location_ = -1;
+    float saturation_ = 1.0f;
     GLuint vao_id_;
     GLuint vbo_id_;
     

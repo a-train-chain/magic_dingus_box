@@ -34,23 +34,20 @@ void TunerAudio::update(Start start, int volume) {
 
 namespace {
 
-GstBuffer* remaining_snow(TunerAudio::Clock::time_point start, unsigned seed, int volume) {
+using Samples = std::chrono::duration<int64_t, std::ratio<1, app::tuner_snow::sample_rate>>;
+
+GstBuffer* snow_chunk(app::tuner_snow::ReceiverNoise& noise, Samples offset,
+                      int count, int first, int volume) {
     using namespace app::tuner_snow;
-    constexpr int total = duration.count() * sample_rate / 1000;
-    const double age = std::chrono::duration<double>(TunerAudio::Clock::now() - start).count();
-    if (age >= std::chrono::duration<double>(duration).count()) return nullptr;
-    const int first = std::clamp(static_cast<int>(age * sample_rate), 0, total);
-    const int count = total - first;
-    if (!count) return nullptr;
     GstBuffer* buffer = gst_buffer_new_allocate(nullptr, count * sizeof(int16_t), nullptr);
     GstMapInfo map{};
     if (!buffer || !gst_buffer_map(buffer, &map, GST_MAP_WRITE)) {
         if (buffer) gst_buffer_unref(buffer);
         return nullptr;
     }
-    write_audio(reinterpret_cast<int16_t*>(map.data), count, first, seed, volume);
+    noise.write(reinterpret_cast<int16_t*>(map.data), count, first, volume);
     gst_buffer_unmap(buffer, &map);
-    GST_BUFFER_PTS(buffer) = 0;
+    GST_BUFFER_PTS(buffer) = gst_util_uint64_scale(offset.count(), GST_SECOND, sample_rate);
     GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale(count, GST_SECOND, sample_rate);
     return buffer;
 }
@@ -79,21 +76,42 @@ void TunerAudio::run() {
         if (quitting_) break;
         handled = revision_;
         if (!requested_) continue;
-        const auto start = *requested_;
-        const int gain = volume_;
-        const auto end = start + duration;
+        auto end = *requested_ + duration;
+        ReceiverNoise noise(handled);
         lock.unlock();
         const auto state = gst_element_set_state(pipe.get(), GST_STATE_PLAYING);
-        GstBuffer* buffer = state == GST_STATE_CHANGE_FAILURE ? nullptr : remaining_snow(start, handled, gain);
+        const auto opened = Clock::now();
+        Samples sent{0};
         lock.lock();
-        if (buffer) {
-            if (quitting_ || handled != revision_) {
-                gst_buffer_unref(buffer);
-            } else {
-                // The appsrc queue accepts one finite buffer without blocking.
-                gst_app_src_push_buffer(GST_APP_SRC(src.get()), buffer); // takes ownership
-                changed_.wait_until(lock, end, [&] { return quitting_ || handled != revision_; });
+        while (state != GST_STATE_CHANGE_FAILURE && !quitting_ && requested_ && *requested_ <= end) {
+            handled = revision_;
+            end = *requested_ + duration;
+            const auto now = Clock::now();
+            if (now >= end) break;
+            // A few short buffers cover scheduler jitter, but leave the tail
+            // editable when another detent arrives. Only the worker waits.
+            constexpr auto ahead = std::chrono::milliseconds(30);
+            const auto queued_until = opened + std::chrono::duration_cast<Clock::duration>(sent);
+            const auto available = std::chrono::duration_cast<Samples>(end - queued_until);
+            if (available.count() < 1 || queued_until >= now + ahead) {
+                const auto wake = available.count() < 1 ? end : queued_until - ahead;
+                changed_.wait_until(lock, wake, [&] { return quitting_ || handled != revision_; });
+                continue;
             }
+            sent = std::max(sent, std::chrono::duration_cast<Samples>(now - opened));
+            const auto position = opened + std::chrono::duration_cast<Clock::duration>(sent);
+            const int count = static_cast<int>(std::min<Samples>(
+                Samples{sample_rate / 100}, std::chrono::duration_cast<Samples>(end - position)).count());
+            if (count <= 0) break;
+            const int first = static_cast<int>(std::chrono::duration_cast<Samples>(position - *requested_).count());
+            const int gain = volume_;
+            lock.unlock();
+            GstBuffer* buffer = snow_chunk(noise, sent, count, first, gain);
+            const bool pushed = buffer &&
+                gst_app_src_push_buffer(GST_APP_SRC(src.get()), buffer) == GST_FLOW_OK;
+            lock.lock();
+            if (!pushed) break;
+            sent += Samples{count};
         }
         lock.unlock();
         // Flush queued samples on lock/cancel and release the audio device

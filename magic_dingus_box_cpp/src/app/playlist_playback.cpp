@@ -3,6 +3,7 @@
 #include "auto_advance.h"
 #include "playback_reset.h"
 #include "playlist_reload.h"
+#include "tuner_snow.h"
 
 #include <algorithm>
 #include <cmath>
@@ -559,12 +560,15 @@ void PlaylistPlayback::play_on_demand(int channel, const OnAir& oa) {
 void PlaylistPlayback::tune(int channel, bool keep_overlay, TuneOrigin origin) {
     const Channel* ch = channel_at(channel);  // nullptr in List style
     if (!ch || ch->items.empty()) return;     // nothing to join
-    // SELECT's gates (see on_select): no tune over the intro, behind a
-    // pending switch or the stuck-switch timeout's settle, or over a switch
-    // still in flight.
-    if (state_.showing_intro_video) return;
-    if (switch_pending() || transport_.now() < timeout_settle_until_) return;
-    if (state_.is_switching_playlist) return;
+    const auto now = transport_.now();
+    if (state_.showing_intro_video || state_.is_loading_game || now < timeout_settle_until_) return;
+    const bool turning_dial = origin == TuneOrigin::Dial && !state_.ui_visible_when_playing;
+    const bool continuing = turning_dial && state_.channel_ident.active();
+    const bool reuse_stop = switch_pending();
+    if (reuse_stop && !(continuing && pending_.origin == TuneOrigin::Dial &&
+                        !pending_switch_obsolete_reason())) return;
+    if (!reuse_stop && state_.is_switching_playlist &&
+        !(continuing && state_.channel_ident.loaded)) return;
 
     state_.channel_ident = {};
     // SELECT's mid-playback switch, with the channel as its target.
@@ -583,16 +587,22 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay, TuneOrigin origin) {
     state_.last_advanced_item_index = -1;
     state_.last_advanced_duration = 0.0;
 
-    transport_.stop();
+    if (reuse_stop) {
+        // The decoder is already stopping. Keep its release deadline and
+        // give the last dial position time to settle before loading it.
+        pending_.next_check = std::max(pending_.next_check, now + tuner_snow::duration);
+    } else {
+        transport_.stop();
+        pending_.next_check = transport_.now() + kSwitchSettle;
+    }
     pending_.phase = SwitchPhase::Settling;
     pending_.target = channel;
-    pending_.next_check = transport_.now() + kSwitchSettle;
     pending_.repolls = 0;
     pending_.tune = true;
     pending_.identity = channel_identity(channel);
     pending_.keep_overlay = keep_overlay;
     pending_.origin = origin;
-    if (origin == TuneOrigin::Viewer && !state_.ui_visible_when_playing) {
+    if (origin != TuneOrigin::Automatic && !state_.ui_visible_when_playing) {
         state_.channel_ident.channel = channel;
         state_.channel_ident.tuned_at = transport_.now();
     }
@@ -602,7 +612,7 @@ void PlaylistPlayback::on_channel_step(int delta) {
     if (!guide_style() || delta == 0 || channels_->empty()) return;
     const int n = static_cast<int>(channels_->size());
     const int step = delta > 0 ? 1 : -1;
-    const int from = state_.tuned_channel;
+    const int from = pending_tune().value_or(state_.tuned_channel);
     // From nothing tuned, up starts at 00 and down at the last channel.
     int c = (from >= 0 && from < n) ? from : (step > 0 ? -1 : n);
     for (int i = 0; i < n; ++i) {
@@ -613,7 +623,7 @@ void PlaylistPlayback::on_channel_step(int delta) {
             // it stands THEN — `tune(c, ui_visible_when_playing)` froze it as
             // it stood at the press, and a guide opened during the ~200 ms
             // wait closed again at the load.
-            tune(c, /*keep_overlay=*/true, TuneOrigin::Viewer);
+            tune(c, /*keep_overlay=*/true, TuneOrigin::Dial);
             return;
         }
     }
@@ -960,7 +970,7 @@ void PlaylistPlayback::advance_pending_switch() {
         } else {
             loaded = finish_tune(done.target, done.keep_overlay, reuse_tune_stop);
         }
-        if (loaded && done.origin == TuneOrigin::Viewer && !state_.ui_visible_when_playing) {
+        if (loaded && done.origin != TuneOrigin::Automatic && !state_.ui_visible_when_playing) {
             // load_on_air clears the previous ident on every load. Carry the
             // accepted dial turn across this load, including its snow clock.
             state_.channel_ident.channel = done.target;

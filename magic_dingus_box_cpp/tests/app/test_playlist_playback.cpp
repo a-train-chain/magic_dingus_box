@@ -1312,6 +1312,29 @@ TEST_CASE("NEXT and PREV change channel live and leave the guide as it is",
         CHECK(id.loaded);
         CHECK_FALSE(id.started);
     }
+    SECTION("fast taps advance from the displayed channel, wrapping and reversing before a single load") {
+        using namespace std::chrono_literals;
+        g.pb.on_next();
+        REQUIRE(g.s.channel_ident.channel == 2);
+        run_frames(g.pb, g.t, 60ms);
+        g.pb.on_next();
+        REQUIRE(g.s.channel_ident.channel == 0);
+        run_frames(g.pb, g.t, 60ms);
+        g.pb.on_prev();
+        REQUIRE(g.s.channel_ident.channel == 2);
+        CHECK(g.pb.pending_tune() == 2);
+        run_frames(g.pb, g.t, 100ms);  // past the first press's release deadline
+        CHECK(g.t.calls == std::vector<std::string>{"stop"});
+        run_frames(g.pb, g.t, 100ms);
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0"});
+        CHECK(g.s.channel_ident.loaded);
+        REQUIRE(g.s.is_switching_playlist);
+        g.pb.on_prev(); // the load began, but its first picture has not locked
+        CHECK(g.pb.pending_tune() == 1);
+        CHECK(g.s.channel_ident.channel == 1);
+        CHECK_FALSE(g.s.channel_ident.loaded);
+        CHECK(g.t.calls.back() == "stop");
+    }
     SECTION("00 keeps its number during a slow tune and tears only the incoming picture") {
         g.pb.on_prev();
         run_frames(g.pb, g.t, kSettled);
@@ -1412,7 +1435,8 @@ TEST_CASE("pending_tune names the channel a tune is loading until its load runs"
     g.t.wall = kW0 + 10;
     CHECK_FALSE(g.pb.pending_tune().has_value());
 
-    SECTION("channel up") {
+    SECTION("channel up with the guide open") {
+        g.s.ui_visible_when_playing = true;
         g.pb.on_next();
         REQUIRE(g.pb.pending_tune().has_value());
         CHECK(*g.pb.pending_tune() == 2);
