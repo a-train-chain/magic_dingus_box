@@ -107,3 +107,16 @@ TEST_CASE("content rects: every reachable combination matches main.cpp's inline 
         }
     }
 }
+
+TEST_CASE("Widescreen guide movies share the Marquee playback opening", "[content_area]") {
+    CHECK(video::marquee_opening(1280, 720) == video::IRect{40, 40, 1200, 640});
+    CHECK(video::marquee_opening(1920, 1080) == video::IRect{60, 60, 1800, 960});
+    for (double aspect : {1.66, 16.0 / 9.0, 2.39}) {
+        CHECK(video::framed_guide_movie(true, true, true, aspect));
+        CHECK_FALSE(video::framed_guide_movie(false, true, true, aspect));
+        CHECK_FALSE(video::framed_guide_movie(true, false, true, aspect));
+        CHECK_FALSE(video::framed_guide_movie(true, true, false, aspect));
+    }
+    for (double aspect : {0.0, 0.75, 4.0 / 3.0, 1.35})
+        CHECK_FALSE(video::framed_guide_movie(true, true, true, aspect));
+}

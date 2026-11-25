@@ -269,6 +269,13 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                      rebuild_current_submenu();
                      app::SettingsPersistence::save_settings(*app_state_); 
                  });
+        items.emplace_back(std::string("Marquee border: ") + settings.marquee_frame().name,
+                           MenuSection::CYCLE_MARQUEE_FRAME, "Widescreen movie frame",
+                           [&]() {
+                               settings.next_marquee_frame();
+                               rebuild_current_submenu();
+                               app::SettingsPersistence::save_settings(*app_state_);
+                           });
     }
     
     // CRT effect settings (show for both modes, but mostly useful for CRT Native).

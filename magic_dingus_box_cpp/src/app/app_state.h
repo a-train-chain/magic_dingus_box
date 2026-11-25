@@ -15,6 +15,7 @@
 #include <cstddef>
 
 #include "guide_nav.h"
+#include "marquee_frame.h"
 #include "tube/tube_inputs.h"   // tube::Picture (TubeRenderStatus)
 #include "tube/tube_setting.h"
 
@@ -702,6 +703,15 @@ public:
         // Quality preference / Auto-grab on add. Persisted in
         // config/settings.json as display.mb_playback_show_frame.
         bool mb_playback_show_frame = true;
+        std::size_t marquee_frame_index = 0;
+
+        const MarqueeFrame& marquee_frame() const {
+            return kMarqueeFrames[marquee_frame_index];
+        }
+
+        void next_marquee_frame() {
+            marquee_frame_index = (marquee_frame_index + 1) % kMarqueeFrames.size();
+        }
 
         // Media Browser CRT-overlay intensities — independent from the
         // kiosk's main-menu values above. Each one mirrors the

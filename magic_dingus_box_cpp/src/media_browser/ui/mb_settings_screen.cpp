@@ -249,6 +249,7 @@ void MbSettingsScreen::build_rows() {
     add(RowKind::SectionHeader,        "Library", kSectionHeaderH);
     add(RowKind::QualityProfile,       "Quality preference");
     add(RowKind::AutoGrabOnAdd,        "Auto-grab on add");
+    add(RowKind::MarqueeFrame,         "Marquee border");
     add(RowKind::PlaybackShowFrame,    "Wood frame during playback");
     add(RowKind::StoragePath,          "Storage path");
     add(RowKind::RefreshLibrary,       "Refresh library");
@@ -686,6 +687,11 @@ Screen MbSettingsScreen::handle_input(
                 prefs_.auto_grab_on_add = !prefs_.auto_grab_on_add;
                 continue;
             }
+            if (rows_[cursor_].kind == RowKind::MarqueeFrame) {
+                state_.display_settings.next_marquee_frame();
+                ::app::SettingsPersistence::save_settings(state_);
+                continue;
+            }
             if (rows_[cursor_].kind == RowKind::PlaybackShowFrame) {
                 // Toggle THE persisted display setting (lives in
                 // state.display_settings.mb_playback_show_frame so the
@@ -1107,6 +1113,13 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                value_x_right - static_cast<float>(tw),
                                label_y, value_sz, val_color,
                                focused ? 1.0f : 0.9f);
+                break;
+            }
+
+            case RowKind::MarqueeFrame: {
+                const std::string name = state_.display_settings.marquee_frame().name;
+                r.mb_draw_text(name, value_x_right - r.mb_text_width(name, value_sz),
+                               label_y, value_sz, th.fg, focused ? 1.0f : 0.9f);
                 break;
             }
 

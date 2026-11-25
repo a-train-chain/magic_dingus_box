@@ -14,6 +14,7 @@
     "glow_intensity" : 0.0,
     "guide_mode" : "live",
     "interlacing_intensity" : 0.0,
+    "marquee_frame" : "simple_walnut",
     "mb_bloom_intensity" : 0.0,
     "mb_flicker_intensity" : 0.0,
     "mb_glow_intensity" : 0.0,
