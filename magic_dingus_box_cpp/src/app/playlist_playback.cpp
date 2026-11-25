@@ -592,6 +592,10 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay, TuneOrigin origin) {
     pending_.identity = channel_identity(channel);
     pending_.keep_overlay = keep_overlay;
     pending_.origin = origin;
+    if (origin == TuneOrigin::Viewer && !state_.ui_visible_when_playing) {
+        state_.channel_ident.channel = channel;
+        state_.channel_ident.tuned_at = transport_.now();
+    }
 }
 
 void PlaylistPlayback::on_channel_step(int delta) {
@@ -922,6 +926,7 @@ void PlaylistPlayback::advance_pending_switch() {
         std::cerr << "Playlist switch to row " << pending_.target
                   << " abandoned before its load (" << why << ")" << std::endl;
         pending_ = PendingSwitch{};
+        state_.channel_ident = {};
         return;
     }
 
@@ -941,6 +946,7 @@ void PlaylistPlayback::advance_pending_switch() {
     const PendingSwitch done = pending_;
     pending_ = PendingSwitch{};
     if (done.tune) {
+        const auto tuning = state_.channel_ident;
         bool loaded;
         if (done.selected) {
             if (done.target != state_.tuned_channel) error_policy_ = video::PlaybackErrorPolicy{};
@@ -950,8 +956,15 @@ void PlaylistPlayback::advance_pending_switch() {
         } else {
             loaded = finish_tune(done.target, done.keep_overlay);
         }
-        state_.channel_ident.requested = loaded && done.origin == TuneOrigin::Viewer &&
-                                         !state_.ui_visible_when_playing;
+        if (loaded && done.origin == TuneOrigin::Viewer && !state_.ui_visible_when_playing) {
+            // load_on_air clears the previous ident on every load. Carry the
+            // accepted dial turn across this load, including its snow clock.
+            state_.channel_ident.channel = done.target;
+            state_.channel_ident.tuned_at = tuning.active() ? tuning.tuned_at : transport_.now();
+            state_.channel_ident.loaded = true;
+        } else {
+            state_.channel_ident = {};
+        }
     } else {
         finish_switch(done.target);
     }

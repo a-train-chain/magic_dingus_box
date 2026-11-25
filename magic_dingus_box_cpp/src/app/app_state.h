@@ -421,11 +421,22 @@ public:
     // Transient on-screen channel identification. Count from the first
     // confirmed fullscreen picture, so decoder startup consumes no reading time.
     struct ChannelIdent {
-        bool requested = false;
-        std::optional<std::chrono::steady_clock::time_point> started;
-        float opacity(std::chrono::steady_clock::time_point now, bool playing) {
-            if (!requested || !playing) return 0.0f;
-            if (!started) started = now;
+        using Clock = std::chrono::steady_clock;
+        int channel = -1;
+        Clock::time_point tuned_at{};
+        bool loaded = false;
+        std::optional<Clock::time_point> started;  // first destination picture drawn
+        bool active() const { return channel >= 0; }
+        float tear(Clock::time_point now) const {
+            if (!loaded) return 0.0f;
+            const float age = started ? std::chrono::duration<float>(now - *started).count() : 0.0f;
+            if (age < 0.042f) return 0.030f;
+            if (age < 0.085f) return -0.012f;
+            return 0.0f;
+        }
+        float opacity(Clock::time_point now) {
+            if (!active()) return 0.0f;
+            if (!started) return 1.0f;  // the receiver already knows the dial position
             const float age = std::chrono::duration<float>(now - *started).count();
             if (age <= 3.0f) return 1.0f;
             if (age < 3.6f) return (3.6f - age) / 0.6f;

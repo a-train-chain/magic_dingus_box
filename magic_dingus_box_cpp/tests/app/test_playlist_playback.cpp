@@ -1261,7 +1261,7 @@ TEST_CASE("a tune joins the on-air item after the settle, at the offset when the
     CHECK(g.s.current_item_index == 1);
     CHECK(g.s.last_channel_id == "path:/p/cartoons.yaml");
     CHECK_FALSE(g.s.master_shuffle_active);
-    CHECK_FALSE(g.s.channel_ident.requested);  // an automatic tune stays quiet
+    CHECK_FALSE(g.s.channel_ident.active());  // an automatic tune stays quiet
     CHECK_FALSE(g.s.ui_visible_when_playing);  // a tune closes the guide
     CHECK(g.s.is_switching_playlist);          // released when the stream plays
     CHECK_FALSE(g.pb.switch_pending());
@@ -1283,45 +1283,61 @@ TEST_CASE("NEXT and PREV change channel live and leave the guide as it is",
         CHECK(g.t.last_offset() == Approx(10.2).margin(0.05));
         CHECK(g.s.tuned_channel == 2);
         CHECK(g.s.ui_visible_when_playing);
-        CHECK_FALSE(g.s.channel_ident.requested);
+        CHECK_FALSE(g.s.channel_ident.active());
     }
-    SECTION("guide hidden: channel up keeps it hidden") {
+    SECTION("guide hidden: dial moves at the press and stays there through lock") {
         g.pb.on_next();
+        auto& id = g.s.channel_ident;
+        CHECK(id.channel == 2);
+        const auto press = id.tuned_at;
+        CHECK_FALSE(id.loaded);
+        CHECK(id.opacity(g.t.now()) == 1.0f);
+        CHECK(id.tear(g.t.now()) == 0.0f);
         run_frames(g.pb, g.t, kSettled);
         CHECK(g.s.tuned_channel == 2);
         CHECK_FALSE(g.s.ui_visible_when_playing);
-        REQUIRE(g.s.channel_ident.requested);
+        CHECK(id.loaded);
+        CHECK(id.channel == 2);
+        CHECK(id.tuned_at == press);
         g.playing();
-        CHECK(g.s.channel_ident.opacity(g.t.now(), true) == 1.0f);
         g.pb.on_prev();
-        CHECK_FALSE(g.s.channel_ident.requested);  // old station disappears at the press
+        CHECK(id.channel == 1);
+        CHECK_FALSE(id.loaded);
         run_frames(g.pb, g.t, kSettled);
-        CHECK(g.s.tuned_channel == 1);
-        CHECK(g.s.channel_ident.requested);
-        CHECK_FALSE(g.s.channel_ident.started);    // fresh reading time for 01
+        CHECK(id.channel == 1);
+        CHECK(id.loaded);
+        CHECK_FALSE(id.started);
     }
-    SECTION("channel down from 01 is the 00 mix") {
+    SECTION("00 keeps its number during a slow tune and tears only the incoming picture") {
         g.pb.on_prev();
         run_frames(g.pb, g.t, kSettled);
-        CHECK(g.s.tuned_channel == 0);
+        REQUIRE(g.s.tuned_channel == 0);
         REQUIRE(g.s.current_playlist_index != 0);
-        REQUIRE(g.s.channel_ident.requested);
-        CHECK(g.s.channel_ident.opacity(g.t.now(), false) == 0.0f);
-        g.t.advance(std::chrono::seconds(5));  // decoder still coming up
-        CHECK(g.s.channel_ident.opacity(g.t.now(), true) == 1.0f);
-        g.t.advance(std::chrono::milliseconds(3300));
-        const float fading = g.s.channel_ident.opacity(g.t.now(), true);
+        auto& id = g.s.channel_ident;
+        REQUIRE(id.channel == 0);
+        g.t.advance(std::chrono::seconds(5));
+        CHECK(id.opacity(g.t.now()) == 1.0f);
+        CHECK_FALSE(id.started);
+        CHECK(id.tear(g.t.now()) > 0.0f);
+        id.started = g.t.now();  // first uploaded destination frame
+        CHECK(id.tear(g.t.now()) > 0.0f);
+        g.t.advance(std::chrono::milliseconds(52));
+        CHECK(id.tear(g.t.now()) < 0.0f);
+        g.t.advance(std::chrono::milliseconds(50));
+        CHECK(id.tear(g.t.now()) == 0.0f);
+        g.t.advance(std::chrono::milliseconds(3200));
+        const float fading = id.opacity(g.t.now());
         CHECK(fading > 0.0f);
         CHECK(fading < 1.0f);
         g.t.advance(std::chrono::seconds(1));
-        CHECK(g.s.channel_ident.opacity(g.t.now(), true) == 0.0f);
-        CHECK_FALSE(g.s.channel_ident.requested);
+        CHECK(id.opacity(g.t.now()) == 0.0f);
+        CHECK_FALSE(id.active());
     }
     SECTION("a failed channel load never announces a programme") {
         g.t.load_ok = false;
         g.pb.on_next();
         run_frames(g.pb, g.t, kSettled);
-        CHECK_FALSE(g.s.channel_ident.requested);
+        CHECK_FALSE(g.s.channel_ident.active());
     }
 }
 
@@ -1379,7 +1395,7 @@ TEST_CASE("a guide opened while a channel change waits stays open after the load
     CHECK(g.t.last() == "load_at Movies 0");
     CHECK(g.s.tuned_channel == 2);
     CHECK(g.s.ui_visible_when_playing);
-    CHECK_FALSE(g.s.channel_ident.requested);
+    CHECK_FALSE(g.s.channel_ident.active());
 }
 
 TEST_CASE("pending_tune names the channel a tune is loading until its load runs",

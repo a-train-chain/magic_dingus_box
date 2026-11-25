@@ -4,6 +4,7 @@
 #include "frame_layout.h"
 #include <gst/video/video.h>
 #include <array>
+#include <algorithm>
 #include <vector>
 #include <cstring>
 
@@ -323,7 +324,7 @@ uint64_t GstRenderer::get_update_flags() const {
     return 0;
 }
 
-void GstRenderer::render() {
+bool GstRenderer::render(float tear, int channel) {
     if (!gl_initialized_) init_gl_resources();
 
     // Pull sample (non-blocking) — unless the pipeline's control thread has
@@ -338,14 +339,10 @@ void GstRenderer::render() {
     // still hold the PREVIOUS video's last frame, and painting them here
     // is what flashed the intro before movies. Repeat frames of the SAME
     // stream must still draw (24/30fps content on a 60Hz loop).
+    const bool uploaded = sample && upload_frame(sample);
+    if (sample) gst_sample_unref(sample);
     const bool draw_allowed = stream_gate_.on_render_tick(
-        player_ != nullptr ? player_->stream_generation() : 0,
-        sample != nullptr);
-
-    if (sample) {
-        upload_frame(sample);
-        gst_sample_unref(sample);
-    }
+        player_ != nullptr ? player_->stream_generation() : 0, uploaded);
 
     if (!draw_allowed) {
         // Paint black instead of the stale quad. An explicit clear is
@@ -368,7 +365,7 @@ void GstRenderer::render() {
             glClear(GL_COLOR_BUFFER_BIT);
         }
         ++suppressed_ticks_;
-        return;
+        return false;
     }
 
     if (suppressed_ticks_ > 0) {
@@ -378,12 +375,14 @@ void GstRenderer::render() {
         suppressed_ticks_ = 0;
     }
 
-    render_quad();
+    if (!program_id_) return false;
+    render_quad(tear, channel);
+    return true;
 }
 
-void GstRenderer::upload_frame(GstSample* sample) {
+bool GstRenderer::upload_frame(GstSample* sample) {
     GstBuffer* buffer = gst_sample_get_buffer(sample);
-    if (!buffer) return;
+    if (!buffer) return false;
 
     GstCaps* caps = gst_sample_get_caps(sample);
     GstStructure* s = gst_caps_get_structure(caps, 0);
@@ -395,7 +394,7 @@ void GstRenderer::upload_frame(GstSample* sample) {
     // below is a segfault. Skip the frame instead.
     if (!format_str) {
         LOG_WARN("GstRenderer: caps missing 'format' field; skipping frame");
-        return;
+        return false;
     }
 
     LOG_DEBUG("GstRenderer: Processing frame format={}", format_str);
@@ -434,7 +433,7 @@ void GstRenderer::upload_frame(GstSample* sample) {
         // and RGBA, so this is unreachable in practice. The old fallback
         // "treated it as RGBA", which uploads garbage; skip the frame.
         LOG_WARN("GstRenderer: unsupported format {}; skipping frame", format_str);
-        return;
+        return false;
     }
 
     // Real plane layout. Raw video caps carry NO stride field — the old
@@ -447,14 +446,14 @@ void GstRenderer::upload_frame(GstSample* sample) {
     GstVideoInfo info;
     if (!gst_video_info_from_caps(&info, caps)) {
         LOG_WARN("GstRenderer: could not parse video caps; skipping frame");
-        return;
+        return false;
     }
     w = static_cast<int>(GST_VIDEO_INFO_WIDTH(&info));
     h = static_cast<int>(GST_VIDEO_INFO_HEIGHT(&info));
     GstVideoFrame vframe;
     if (!gst_video_frame_map(&vframe, &info, buffer, GST_MAP_READ)) {
         LOG_WARN("GstRenderer: gst_video_frame_map failed; skipping frame");
-        return;
+        return false;
     }
 
     const RawFormat raw_format = format == 0 ? RawFormat::RGBA
@@ -477,7 +476,7 @@ void GstRenderer::upload_frame(GstSample* sample) {
                  "(planes={}, strides={}/{}/{}); skipping frame",
                  format_str, w, h, n_planes, strides[0], strides[1], strides[2]);
         gst_video_frame_unmap(&vframe);
-        return;
+        return false;
     }
 
     // Update shader if format changed
@@ -532,6 +531,7 @@ void GstRenderer::upload_frame(GstSample* sample) {
     }
 
     gst_video_frame_unmap(&vframe);
+    return true;
 }
 
 void GstRenderer::set_quad_tex(const TexRect& tex) {
@@ -705,8 +705,7 @@ void GstRenderer::apply_media_browser_viewport() {
                vp_w, vp_h);
 }
 
-void GstRenderer::render_quad() {
-    if (program_id_ == 0) return;
+void GstRenderer::render_quad(float tear, int channel) {
 
     if (picture_mode_) {
         apply_picture_placement();
@@ -747,6 +746,20 @@ void GstRenderer::render_quad() {
 
     glBindVertexArray(vao_id_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (tear != 0.0f) {
+        // Repaint a strip of this very frame with horizontal sync displaced.
+        // Scissoring bounds it to the picture even for cropped/letterboxed films.
+        GLint vp[4];
+        glGetIntegerv(GL_VIEWPORT, vp);
+        const int dx = static_cast<int>(vp[2] * tear);
+        const int y = vp[1] + vp[3] * (24 + channel % 7 * 7) / 100;
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(vp[0], y, vp[2], std::max(1, vp[3] / 12));
+        glViewport(vp[0] + dx, vp[1], vp[2], vp[3]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glViewport(vp[0], vp[1], vp[2], vp[3]);
+        glDisable(GL_SCISSOR_TEST);
+    }
 }
 
 } // namespace video

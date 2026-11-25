@@ -644,7 +644,7 @@ private:
     // mb_draw_poster_or_tint AND the QR texture cache below, so it lives
     // outside the MEDIA_BROWSER_ENABLED gate.
     void draw_textured_quad(uint32_t tex_id, float x, float y, float w, float h,
-                            float alpha_multiplier);
+                            float alpha_multiplier, video::TexRect uv = {0, 0, 1, 1});
 
     // Uniform-location cache for the per-frame shader passes (CRT,
     // composite, bloom, logo draws). glGetUniformLocation is a
@@ -695,6 +695,9 @@ private:
     const GuideView* channel_guide_ = nullptr;
     void render_channel_guide(const GuideView& view, float alpha, bool window_dark);
     void render_channel_ident(const app::AppState& state, float opacity);
+    void render_channel_snow(float age, int channel);
+    uint32_t channel_snow_texture_ = 0;
+    bool channel_ident_locked_ = false;
     struct ChannelIdentLine {
         std::string text;
         float x, baseline;

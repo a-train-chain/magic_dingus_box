@@ -115,6 +115,10 @@ void Renderer::reset_gl() {
         glDeleteBuffers(1, &vbo_);
         vbo_ = 0;
     }
+    if (channel_snow_texture_) {
+        glDeleteTextures(1, &channel_snow_texture_);
+        channel_snow_texture_ = 0;
+    }
     if (logo_texture_id_ != 0) {
         flush_ui_batch();
         glDeleteTextures(1, &logo_texture_id_);
@@ -504,23 +508,23 @@ void Renderer::draw_line(float x1, float y1, float x2, float y2, float width, co
 }
 
 void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
-                                  float w, float h, float alpha_multiplier) {
+                                  float w, float h, float alpha_multiplier, video::TexRect uv) {
     // Same vertex layout as draw_quad, but switch the shader into
     // textured mode and bind the supplied texture. Mirrors the
     // render_title() logo-drawing idiom.
     if (batch_enabled_) {
         batch_reserve(tex_id);
-        batch_.quad(tex_id, x, y, x + w, y + h, 0.0f, 0.0f, 1.0f, 1.0f,
+        batch_.quad(tex_id, x, y, x + w, y + h, uv.u0, uv.v0, uv.u1, uv.v1,
                     {1.0f, 1.0f, 1.0f, ui_alpha_ * alpha_multiplier});
         batch_done();
         return;
     }
 
     float vertices[] = {
-        x, y,         0.0f, 0.0f,
-        x + w, y,     1.0f, 0.0f,
-        x, y + h,     0.0f, 1.0f,
-        x + w, y + h, 1.0f, 1.0f
+        x, y,         uv.u0, uv.v0,
+        x + w, y,     uv.u1, uv.v0,
+        x, y + h,     uv.u0, uv.v1,
+        x + w, y + h, uv.u1, uv.v1
     };
 
     flush_ui_batch();
@@ -572,6 +576,10 @@ void Renderer::cleanup() {
     if (vbo_ != 0) {
         glDeleteBuffers(1, &vbo_);
         vbo_ = 0;
+    }
+    if (channel_snow_texture_) {
+        glDeleteTextures(1, &channel_snow_texture_);
+        channel_snow_texture_ = 0;
     }
     if (logo_texture_id_ != 0) {
         flush_ui_batch();
