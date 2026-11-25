@@ -52,6 +52,7 @@ enum class MenuSection {
     CHANGE_RESOLUTION,
     CYCLE_BEZEL_STYLE,
     CYCLE_BEZEL,
+    CYCLE_MARQUEE_FRAME,
     CYCLE_SCANLINES,
     CYCLE_WARMTH,
     CYCLE_BLOOM,
@@ -186,6 +187,11 @@ public:
     void set_max_visible_items(int n) { max_visible_items_ = std::max(1, n); }
     int get_max_visible_items() const { return max_visible_items_; }
     MenuSection get_current_submenu() const { return current_submenu_; }
+    bool previewing_marquee_frame() const {
+        return is_active() && current_submenu_ == MenuSection::DISPLAY &&
+               selected_index_ >= 0 && static_cast<std::size_t>(selected_index_) < submenu_items_.size() &&
+               submenu_items_[selected_index_].section == MenuSection::CYCLE_MARQUEE_FRAME;
+    }
     // The open page draws Tube state (the Display page or a Tube group): the
     // only pages a web-applied Tube change needs rebuilt.
     bool page_shows_tube_state() const {

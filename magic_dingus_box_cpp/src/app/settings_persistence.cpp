@@ -195,6 +195,7 @@ std::string SettingsPersistence::serialize(const AppState& state) {
     display["tube"] = tube_to_json(state.display_settings.tube);
     // Media Browser wood-frame overlay during movie playback (v1.6.x).
     // Default true — see app_state.h docstring for behavior details.
+    display["marquee_frame"] = state.display_settings.marquee_frame().id;
     display["mb_playback_show_frame"] = state.display_settings.mb_playback_show_frame;
     // Media Browser CRT overlay intensities — independent from the
     // kiosk-side values above. Edited via MovieSettings → "CRT overlay"
@@ -523,6 +524,9 @@ utils::Result<> SettingsPersistence::load_settings_unguarded(AppState& state) {
         // default (matches the Marquee design intent).
         state.display_settings.mb_playback_show_frame =
             display.get("mb_playback_show_frame", true).asBool();
+        const auto& frame = display["marquee_frame"];
+        state.display_settings.marquee_frame_index = marquee_frame_index(
+            frame.isString() ? frame.asString() : "");
         // Media Browser CRT overlay intensities (v1.6.x). When the
         // mb_* keys aren't present in settings.json (upgrade path),
         // INHERIT the kiosk-side values that we just loaded above —

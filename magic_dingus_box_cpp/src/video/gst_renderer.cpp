@@ -28,10 +28,11 @@ static const char* fragment_shader_rgba = R"(
     precision mediump float;
     out vec4 FragColor;
     in vec2 TexCoord;
+    uniform vec4 sampleBounds;
     uniform float saturation;
     uniform sampler2D textureY; // Used as main texture for RGBA
     void main() {
-        vec4 color = texture(textureY, TexCoord);
+        vec4 color = texture(textureY, clamp(TexCoord, sampleBounds.xy, sampleBounds.zw));
         if (saturation < 1.0) {
             float y = dot(color.rgb, vec3(0.299, 0.587, 0.114));
             color.rgb = mix(vec3(y), color.rgb, saturation);
@@ -47,15 +48,17 @@ static const char* fragment_shader_i420 = R"(
     precision mediump float;
     out vec4 FragColor;
     in vec2 TexCoord;
+    uniform vec4 sampleBounds;
     uniform float saturation;
     uniform sampler2D textureY;
     uniform sampler2D textureU;
     uniform sampler2D textureV;
     
     void main() {
-        float y = texture(textureY, TexCoord).r;
-        float u = (texture(textureU, TexCoord).r - 0.5) * saturation;
-        float v = (texture(textureV, TexCoord).r - 0.5) * saturation;
+        vec2 sampleUV = clamp(TexCoord, sampleBounds.xy, sampleBounds.zw);
+        float y = texture(textureY, sampleUV).r;
+        float u = (texture(textureU, sampleUV).r - 0.5) * saturation;
+        float v = (texture(textureV, sampleUV).r - 0.5) * saturation;
         
         float r = y + 1.402 * v;
         float g = y - 0.344136 * u - 0.714136 * v;
@@ -72,13 +75,15 @@ static const char* fragment_shader_nv12 = R"(
     precision mediump float;
     out vec4 FragColor;
     in vec2 TexCoord;
+    uniform vec4 sampleBounds;
     uniform float saturation;
     uniform sampler2D textureY;
     uniform sampler2D textureU; // Actually UV plane
     
     void main() {
-        float y = texture(textureY, TexCoord).r;
-        vec2 uv = (texture(textureU, TexCoord).rg - 0.5) * saturation; // NV12 has UV interleaved
+        vec2 sampleUV = clamp(TexCoord, sampleBounds.xy, sampleBounds.zw);
+        float y = texture(textureY, sampleUV).r;
+        vec2 uv = (texture(textureU, sampleUV).rg - 0.5) * saturation; // NV12 has UV interleaved
         
         float u = uv.x;
         float v = uv.y;
@@ -179,7 +184,8 @@ void GstRenderer::set_viewport_size(uint32_t width, uint32_t height) {
 }
 
 void GstRenderer::set_picture(IRect target_fb, bool crop, IRect opening_fb,
-                              double target_aspect) {
+                              double target_aspect, bool solid_rim) {
+    picture_solid_rim_ = solid_rim;
     picture_mode_ = true;
     picture_target_ = target_fb;
     picture_crop_ = crop;
@@ -294,6 +300,7 @@ void GstRenderer::update_shader(int format) {
     
     // Set uniforms
     glUseProgram(program_id_);
+    sample_bounds_location_ = glGetUniformLocation(program_id_, "sampleBounds");
     saturation_location_ = glGetUniformLocation(program_id_, "saturation");
     saturation_ = 1.0f;
     glUniform1f(saturation_location_, saturation_);
@@ -577,18 +584,24 @@ void GstRenderer::apply_picture_placement() {
     // nothing outside it is touched.
     if (!(p.viewport == picture_target_)) {
         glEnable(GL_SCISSOR_TEST);
-        glScissor(picture_target_.x, gl_y(picture_target_),
-                  picture_target_.w, picture_target_.h);
+        const Placement background{picture_target_, {0, 0, 1, 1}};
+        const IRect clear = picture_solid_rim_ ? extend_to_bezel_shadow(
+            background, picture_target_, width_, height_).viewport : picture_target_;
+        glScissor(clear.x, gl_y(clear), clear.w, clear.h);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         glDisable(GL_SCISSOR_TEST);
     }
 
-    set_quad_tex(p.tex);
-    glViewport(p.viewport.x, gl_y(p.viewport), p.viewport.w, p.viewport.h);
+    glUniform4f(sample_bounds_location_, p.tex.u0, p.tex.v0, p.tex.u1, p.tex.v1);
+    const Placement draw = picture_solid_rim_
+        ? extend_to_bezel_shadow(p, picture_target_, width_, height_) : p;
+    set_quad_tex(draw.tex);
+    glViewport(draw.viewport.x, gl_y(draw.viewport), draw.viewport.w, draw.viewport.h);
 }
 
 void GstRenderer::apply_media_browser_viewport() {
+    glUniform4f(sample_bounds_location_, 0.f, 0.f, 1.f, 1.f);
     set_quad_tex(TexRect{0.0f, 0.0f, 1.0f, 1.0f});
 
     // Working canvas — full screen by default, OR the explicit inset
@@ -718,6 +731,7 @@ void GstRenderer::apply_media_browser_viewport() {
 
 void GstRenderer::render_quad(float tear, int channel) {
 
+    glUseProgram(program_id_);
     if (picture_mode_) {
         apply_picture_placement();
     } else {
@@ -740,7 +754,6 @@ void GstRenderer::render_quad(float tear, int channel) {
     // Disable depth test to ensure we draw over everything (or background)
     glDisable(GL_DEPTH_TEST);
     
-    glUseProgram(program_id_);
     // Chroma catches up over the two horizontal-lock phases. The UI is
     // composed separately, so the station number keeps its normal green.
     const float saturation = tear > 0.0f ? 0.64f : (tear < 0.0f ? 0.86f : 1.0f);

@@ -15,6 +15,7 @@
 #include <cstddef>
 
 #include "guide_nav.h"
+#include "marquee_frame.h"
 #include "tube/tube_inputs.h"   // tube::Picture (TubeRenderStatus)
 #include "tube/tube_setting.h"
 
@@ -171,6 +172,7 @@ struct BezelInfo {
     // for procedural and for any entry without a usable opening.
     bool has_opening = false;
     int opening_x = 0, opening_y = 0, opening_w = 0, opening_h = 0;
+    bool solid_rim = false;  // Fullscreen pictures and games fit this opening.
 };
 
 } // namespace app
@@ -701,6 +703,15 @@ public:
         // Quality preference / Auto-grab on add. Persisted in
         // config/settings.json as display.mb_playback_show_frame.
         bool mb_playback_show_frame = true;
+        std::size_t marquee_frame_index = 0;
+
+        const MarqueeFrame& marquee_frame() const {
+            return kMarqueeFrames[marquee_frame_index];
+        }
+
+        void next_marquee_frame() {
+            marquee_frame_index = (marquee_frame_index + 1) % kMarqueeFrames.size();
+        }
 
         // Media Browser CRT-overlay intensities — independent from the
         // kiosk's main-menu values above. Each one mirrors the

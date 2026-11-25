@@ -332,6 +332,12 @@ else
     echo -e "  ${DIM}No states directory${NC}"
 fi
 
+# Remove personal station packs from the shipping SD. Never follow the
+# optional link to the owner's external pack drive.
+for file in /var/lib/magic-dingus-box/stations/*/{atlas-v1.png,enabled}; do
+    if [[ -L "$file" ]]; then rm -f -- "$file"
+    elif [[ -f "$file" ]]; then shred -u -- "$file"; fi
+done
 settings_file="${CONFIG_DIR}/settings.json"
 if [[ -f "$settings_file" ]]; then
     rm -f "$settings_file"

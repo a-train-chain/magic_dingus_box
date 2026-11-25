@@ -31,6 +31,14 @@ COMPOSE="$CPP_DIR/services/docker-compose.yml"
     grep -q 'image: qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027' "$COMPOSE"
 }
 
+@test "Gluetun runs an init process to reap orphaned VPN probes" {
+    python3 - "$COMPOSE" <<'PYTHON'
+import sys, yaml
+with open(sys.argv[1]) as compose:
+    assert yaml.safe_load(compose)['services']['gluetun'].get('init') is True
+PYTHON
+}
+
 @test "native Proton startup uses traffic and unsupported modes keep forwarding latch" {
     run python3 -c "
 import yaml

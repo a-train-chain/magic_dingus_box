@@ -37,6 +37,7 @@ std::string read_opening(const Json::Value& entry, BezelInfo& bezel) {
         return "extends past the " + std::to_string(kBezelImageWidth) + "x" +
                std::to_string(kBezelImageHeight) + " image";
     }
+    bezel.solid_rim = entry["solid_rim"].isBool() && entry["solid_rim"].asBool();
     bezel.has_opening = true;
     bezel.opening_x = x;
     bezel.opening_y = y;

@@ -62,6 +62,7 @@ private:
         ServiceStatus,
         QualityProfile,
         AutoGrabOnAdd,            // Toggle: add-to-library auto-fires Search.
+        MarqueeFrame,
         PlaybackShowFrame,        // Toggle: show wood-frame overlay during playback.
         MinSeeders,
         StoragePath,

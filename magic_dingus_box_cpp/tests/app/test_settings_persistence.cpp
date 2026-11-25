@@ -824,3 +824,28 @@ TEST_CASE("settings: a save on a closed-gate board keeps the Tube choice",
     CHECK(moved_row_count(again.display_settings.tube) == 1);
     CHECK(row(again.display_settings.tube, tube::Effect::noise) == 70);
 }
+
+TEST_CASE("Marquee border cycles through the four installed styles and survives reload", "[settings]") {
+    SettingsSandbox sb;
+    AppState state;
+    for (const std::string id : {"simple_walnut", "shaker_cherry", "pegged_oak", "walnut_brass"}) {
+        const auto& frame = state.display_settings.marquee_frame();
+        REQUIRE(frame.id == id);
+        const auto asset = fs::path(__FILE__).parent_path().parent_path().parent_path()
+            / "assets" / "marquee" / frame.file;
+        REQUIRE(fs::is_regular_file(asset));
+        REQUIRE(SettingsPersistence::save_settings(state));
+        REQUIRE(saved_to_disk());
+        AppState restored;
+        REQUIRE(SettingsPersistence::load_settings(restored));
+        REQUIRE(restored.display_settings.marquee_frame().id == id);
+        state.display_settings.next_marquee_frame();
+    }
+    CHECK(state.display_settings.marquee_frame_index == 0);
+    for (const std::string value : {"null", "42", "\"retired_frame\""}) {
+        sb.write("{\"display\":{\"marquee_frame\":" + value + ",\"mb_playback_show_frame\":false}}");
+        REQUIRE(SettingsPersistence::load_settings(state));
+        CHECK(state.display_settings.marquee_frame_index == 0);
+        CHECK_FALSE(state.display_settings.mb_playback_show_frame);
+    }
+}
