@@ -27,7 +27,9 @@ public:
     void set_viewport_size(uint32_t width, uint32_t height);
     
     // Render current frame
-    void render();
+    // True when a picture from the current stream was drawn. tear is a
+    // horizontal fraction of picture width, applied to one band of video.
+    bool render(float tear = 0.0f, int channel = 0);
     
     // Check if we have a new frame
     uint64_t get_update_flags() const;
@@ -172,8 +174,8 @@ private:
     int allocated_format_ = -1;  // Track allocated format for glTexSubImage2D
     
     void init_gl_resources();
-    void upload_frame(GstSample* sample);
-    void render_quad();
+    bool upload_frame(GstSample* sample);
+    void render_quad(float tear, int channel);
     void apply_picture_placement();       // picture mode: tex + viewport
     void apply_media_browser_viewport();  // otherwise: full frame, inset/aspect math
     void set_quad_tex(const TexRect& tex);
