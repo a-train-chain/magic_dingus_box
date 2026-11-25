@@ -632,7 +632,7 @@ void PlaylistPlayback::land_on_channel(int channel) {
     }
 }
 
-bool PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
+bool PlaylistPlayback::finish_tune(int channel, bool keep_overlay, bool reuse_tune_stop) {
     warn_if_still_playing();
     // On air NOW, not at the press: the wait must not put playback behind.
     const Channel* ch = channel_at(channel);
@@ -656,7 +656,7 @@ bool PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     }
     // A load that returns OK starts the channel's start bound
     // (kChannelStartTimeout, tick_pipeline_error).
-    return load_on_air(channel, *oa, keep_overlay);
+    return load_on_air(channel, *oa, keep_overlay, /*on_demand=*/false, reuse_tune_stop);
 }
 
 double PlaylistPlayback::played_position(double player_pos) {
@@ -809,7 +809,7 @@ void PlaylistPlayback::rejoin_schedule(bool programme_ended) {
     load_on_air(channel, *oa, /*keep_overlay=*/true);
 }
 
-bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand) {
+bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand, bool reuse_tune_stop) {
     state_.channel_ident = {};
     state_.on_demand = on_demand;
     timezone_reload_pending_ = false;  // this load uses the current zone rules
@@ -858,7 +858,7 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     const auto selected = state_.loaded_on_demand;
     const auto movie = state_.loaded_movie;
     auto result = transport_.load_playlist_item_at(state_, pl, si.item,
-                                                   playlist_directory_, oa.offset_s);
+                                                   playlist_directory_, oa.offset_s, reuse_tune_stop);
     // Controller clears the retained item when starting any new load. Both
     // success and synchronous failure still belong to this attempted programme.
     state_.loaded_movie = movie;
@@ -936,7 +936,8 @@ void PlaylistPlayback::advance_pending_switch() {
     // The old loop, one iteration per due tick:
     //   while (is_playing() && retry_count < max_retries) { sleep 50; ++retry; }
     // Same queries in the same order, so the same poll count and outcome.
-    if (transport_.is_playing() && pending_.repolls < kSwitchMaxRepolls) {
+    const bool still_playing = transport_.is_playing();
+    if (still_playing && pending_.repolls < kSwitchMaxRepolls) {
         pending_.phase = SwitchPhase::Polling;
         ++pending_.repolls;
         pending_.next_check = now + kSwitchRepoll;
@@ -947,14 +948,17 @@ void PlaylistPlayback::advance_pending_switch() {
     pending_ = PendingSwitch{};
     if (done.tune) {
         const auto tuning = state_.channel_ident;
+        // A fullscreen dial turn already stopped the pipeline and waited the
+        // release interval. A timed-out stop still needs normal load handling.
+        const bool reuse_tune_stop = tuning.active() && !state_.ui_visible_when_playing && !still_playing;
         bool loaded;
         if (done.selected) {
             if (done.target != state_.tuned_channel) error_policy_ = video::PlaybackErrorPolicy{};
             const auto& a = done.selected->airing;
             loaded = load_on_air(done.target, OnAir{a.index, 0, a.starts_at, a.ends_at, 0},
-                                 done.keep_overlay, /*on_demand=*/true);
+                                 done.keep_overlay, /*on_demand=*/true, reuse_tune_stop);
         } else {
-            loaded = finish_tune(done.target, done.keep_overlay);
+            loaded = finish_tune(done.target, done.keep_overlay, reuse_tune_stop);
         }
         if (loaded && done.origin == TuneOrigin::Viewer && !state_.ui_visible_when_playing) {
             // load_on_air clears the previous ident on every load. Carry the

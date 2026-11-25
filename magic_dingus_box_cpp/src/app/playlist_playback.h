@@ -109,7 +109,7 @@ public:
                                                   const Playlist& playlist,
                                                   int item_index,
                                                   const std::string& playlist_directory,
-                                                  double offset_s) = 0;
+                                                  double offset_s, bool reuse_tune_stop) = 0;
     virtual void load_next_item(AppState& state, const std::string& playlist_directory) = 0;
     virtual void load_previous_item(AppState& state, const std::string& playlist_directory) = 0;
     virtual void play_random_global_video(AppState& state,
@@ -370,7 +370,7 @@ private:
     const Channel* channel_at(int c) const;
     std::string channel_identity(int c) const;
     // A tune's load, once its switch wait is over.
-    bool finish_tune(int channel, bool keep_overlay);
+    bool finish_tune(int channel, bool keep_overlay, bool reuse_tune_stop);
     // An item's natural end: load what is on the tuned channel now — but
     // never the airing just loaded again (app::boundary_join).
     void rejoin_schedule(bool programme_ended = true);
@@ -383,7 +383,8 @@ private:
     void land_on_channel(int channel);
     // Load channel `channel`'s scheduled item `oa` at its offset; true when
     // the load returned OK.
-    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand = false);
+    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand = false,
+                     bool reuse_tune_stop = false);
     bool timezone_reload_pending_ = false;
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
     // the channel picks up again from there — but no later than its length

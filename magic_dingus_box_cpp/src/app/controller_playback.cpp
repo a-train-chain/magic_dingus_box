@@ -443,7 +443,7 @@ void Controller::update_state(AppState& state) {
     state.status_text = status_text();
 }
 
-utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback, double start_offset_s) {
+utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback, double start_offset_s, bool reuse_tune_stop) {
     if (item_index < 0 || item_index >= static_cast<int>(playlist.items.size())) {
         std::string error = "Invalid item index " + std::to_string(item_index) + " for playlist " + playlist.title;
         std::cerr << "Error: " << error << std::endl;
@@ -516,7 +516,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         play();
         return utils::Result<>::ok();
     }
-    return load_item_media(state, item, playlist_directory, progress_callback, start_offset_s);
+    return load_item_media(state, item, playlist_directory, progress_callback, start_offset_s, reuse_tune_stop);
 }
 
 void Controller::load_next_item(AppState& state, const std::string& playlist_directory) {

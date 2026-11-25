@@ -59,6 +59,7 @@ struct FakeTransport : app::PlaylistTransport {
     app::UtcOffsetAt offset_at;
     int utc_offset_s(double utc) const override { return offset_at ? offset_at(utc) : zone_offset; }
     // load_playlist_item_at's offset_s, and the wall clock at that call.
+    bool reused_tune_stop = false;
     std::vector<double> offsets;
     std::vector<double> load_wall;
     // How long load_playlist_item_at blocks (both clocks move on before it
@@ -98,7 +99,8 @@ struct FakeTransport : app::PlaylistTransport {
         return load_ok ? utils::Result<>::ok() : utils::Result<>::fail("boom");
     }
     utils::Result<> load_playlist_item_at(app::AppState& state, const app::Playlist& pl, int idx,
-                                          const std::string&, double offset_s) override {
+                                          const std::string&, double offset_s, bool reuse_tune_stop) override {
+        reused_tune_stop = reuse_tune_stop;
         state.loaded_movie.reset();  // Controller::load_playlist_item clears retained ownership
         state.loaded_on_demand.reset();
         state.on_demand = false;
@@ -1283,6 +1285,7 @@ TEST_CASE("NEXT and PREV change channel live and leave the guide as it is",
         CHECK(g.t.last_offset() == Approx(10.2).margin(0.05));
         CHECK(g.s.tuned_channel == 2);
         CHECK(g.s.ui_visible_when_playing);
+        CHECK_FALSE(g.t.reused_tune_stop);
         CHECK_FALSE(g.s.channel_ident.active());
     }
     SECTION("guide hidden: dial moves at the press and stays there through lock") {
@@ -1299,6 +1302,7 @@ TEST_CASE("NEXT and PREV change channel live and leave the guide as it is",
         CHECK(id.loaded);
         CHECK(id.channel == 2);
         CHECK(id.tuned_at == press);
+        CHECK(g.t.reused_tune_stop);
         g.playing();
         g.pb.on_prev();
         CHECK(id.channel == 1);
