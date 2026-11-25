@@ -1230,6 +1230,11 @@ unset _i _store _pruned _stashed
 # themselves, which the `-f` test in the loop below skips — leaving an empty
 # Backups/ behind is correct, and restore rebuilds the tree on the way back in
 # via its own `mkdir -p "$(dirname "$dest")"`.
+# Opt-in station packs on SD are owner content. An external pack is a
+# symlink to the separately mounted movie disk, outside the SD image.
+for file in /var/lib/magic-dingus-box/stations/*/{atlas-v1.png,enabled}; do
+    [[ -f "$file" && ! -L "$file" ]] && SECRET_PATHS+=("$file")
+done
 _expanded=()
 shopt -s nullglob globstar dotglob
 for _entry in "${SECRET_PATHS[@]}"; do
