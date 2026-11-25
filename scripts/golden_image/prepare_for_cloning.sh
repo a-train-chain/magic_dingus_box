@@ -110,7 +110,7 @@ python3 "$CLONE_SWAP_HELPER" --check
 
 # ---------------------------------------------------------------------------
 # Preflight: secret tripwire — refuse to clone with stray secret-bearing
-# backups on disk
+# backups or operator validation artifacts on disk
 # ---------------------------------------------------------------------------
 # The SECRET_PATHS machinery below strips every secret this script KNOWS
 # about. What it cannot know about is operator debris: ad-hoc backups made
@@ -137,20 +137,34 @@ TRIPWIRE_HITS=(
     # (.magic_dingus_box_backup.ota_in_progress): an image carrying it
     # would make every clone "restore" this box's pre-update tree at its
     # first boot. Named that way on purpose so this glob catches it.
-    /home/magic/.magic_dingus_box_backup*
+    /home/magic/.magic_dingus_box_backup* /root/.magic_dingus_box_backup*
     /home/magic/*secret* /home/magic/*credential*
     /root/db-backup-* /root/*.env*
 )
+# Bench backups can contain the live services credentials. Validation runs
+# leave source snapshots, save backups, reports and logs in the invoking home.
+for operator_home in /home/magic /root; do
+    for candidate in \
+        "$operator_home"/mdb-bench/services.env.backup \
+        "$operator_home"/bluetooth-input-source-* "$operator_home"/bluetooth-input-validation-* \
+        "$operator_home"/hw_validate_*/ "$operator_home"/hw_validate_*.json \
+        "$operator_home"/predeploy-index-* "$operator_home"/pad_walk.py "$operator_home"/ui_launch_test.py \
+        "$operator_home"/kit2_before.md5 "$operator_home"/ota_1.11.0.log \
+        "$operator_home"/ota_beta3.log "$operator_home"/ota_beta4.log; do
+        if [[ -e "$candidate" || -L "$candidate" ]]; then
+            TRIPWIRE_HITS+=("${candidate%/}")
+        fi
+    done
+done
 shopt -u nullglob
 if [[ ${#TRIPWIRE_HITS[@]} -gt 0 ]]; then
     log "ERROR: secret tripwire — refusing to clone while these exist:"
     for hit in "${TRIPWIRE_HITS[@]}"; do
         log "         $hit"
     done
-    log "       These look like operator backups that may carry credentials"
-    log "       (API keys, the qBittorrent password, VPN keys). Delete them"
-    log "       or move them off the SD card, then re-run. The clone captures"
-    log "       every byte on the SD. NOTE: /mnt/ssd only counts as off-card"
+    log "       These operator backups or validation artifacts may include credentials"
+    log "       or per-box data. Review them and move them off the SD card, then re-run."
+    log "       The clone captures every byte on the SD. /mnt/ssd only counts as off-card"
     log "       when the movie drive is actually mounted there — verify with"
     log "       'mountpoint /mnt/ssd' first, or the files land on the SD and"
     log "       ship anyway."
