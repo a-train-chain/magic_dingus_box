@@ -171,6 +171,7 @@ struct BezelInfo {
     // for procedural and for any entry without a usable opening.
     bool has_opening = false;
     int opening_x = 0, opening_y = 0, opening_w = 0, opening_h = 0;
+    bool solid_rim = false;  // Fullscreen pictures and games fit this opening.
 };
 
 } // namespace app

@@ -10,6 +10,7 @@
 
 #include "app/app_state.h"
 #include "sink_suspension.h"
+#include "video/picture_placement.h"
 
 namespace retroarch {
 
@@ -29,15 +30,14 @@ enum class SessionWatchdog { Arm, Ping, Disarm };
 struct LaunchOptions {
     app::DisplayMode display_mode = app::DisplayMode::CRT_NATIVE;
     std::string bezel_file;
+    std::optional<video::IRect> bezel_picture;  // Solid-rim art, in 1920x1080 coordinates.
     // Video driver for this core. Set from the core name at launch
     // (see renderer_for_core). Defaults to Vulkan for the existing
     // 2D/PS1-class lineup.
     Renderer renderer = Renderer::Vulkan;
     // Display aspect of the picture this core will actually hand over, AFTER
-    // any per-title overscan crop. The viewport is sized to fill the screen
-    // HEIGHT at this ratio, so the picture always touches top and bottom and
-    // its geometry is never stretched; anything wider than the bezel's
-    // opening tucks under the frame, which is drawn over the video.
+    // any per-title overscan crop. Solid-rim bezels fit that aspect inside
+    // bezel_picture; the legacy viewport fills the screen height.
     //
     // 4:3 for everything that has no border to crop — Dreamcast, PS1, SNES
     // and the rest all land here. Only the N64 titles with a measured crop

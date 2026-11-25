@@ -9,6 +9,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -37,13 +38,12 @@ struct Box {
     int x = 0, y = 0, w = 0, h = 0;
 };
 
-// Bounding box of the pixels with alpha < 16 — the window the video shows
-// through. All zero when the image has no such pixel.
-Box transparent_box(const unsigned char* rgba, int w, int h) {
+// Bounding box of the glass at the specified shadow opacity.
+Box transparent_box(const unsigned char* rgba, int w, int h, int threshold) {
     int min_x = w, min_y = h, max_x = -1, max_y = -1;
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            if (rgba[(static_cast<size_t>(y) * w + x) * 4 + 3] >= 16) continue;
+            if (rgba[(static_cast<size_t>(y) * w + x) * 4 + 3] >= threshold) continue;
             if (x < min_x) min_x = x;
             if (x > max_x) max_x = x;
             if (y < min_y) min_y = y;
@@ -195,7 +195,32 @@ TEST_CASE("every shipped bezel declares the opening its image shows through",
         unsigned char* rgba =
             stbi_load((kBezelDir / b.file).string().c_str(), &w, &h, &channels, 4);
         REQUIRE(rgba != nullptr);
-        const Box m = transparent_box(rgba, w, h);
+        // At the 95% picture edge the contact shadow has alpha 33. The
+        // rounded corners may darken to 65, but even a caption touching
+        // the very corner should retain at least 74% of its brightness.
+        const Box m = transparent_box(rgba, w, h, b.solid_rim ? 35 : 16);
+        if (b.solid_rim) {
+            REQUIRE(w == 1920);
+            REQUIRE(h == 1080);
+            CHECK(b.opening_x == 276);
+            CHECK(b.opening_y == 27);
+            CHECK(b.opening_w == 1368);
+            CHECK(b.opening_h == 1026);
+            unsigned max_picture_alpha = 0;
+            unsigned min_cabinet_alpha = 255;
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const unsigned a = rgba[(static_cast<size_t>(y) * w + x) * 4 + 3];
+                    if (x >= 276 && x < 1644 && y >= 27 && y < 1053) {
+                        max_picture_alpha = std::max(max_picture_alpha, a);
+                    } else if (x < 268 || x >= 1652 || y < 19 || y >= 1061) {
+                        min_cabinet_alpha = std::min(min_cabinet_alpha, a);
+                    }
+                }
+            }
+            CHECK(max_picture_alpha <= 66);
+            CHECK(min_cabinet_alpha == 255);
+        }
         stbi_image_free(rgba);
 
         INFO("measured opening x" << m.x << " y" << m.y << " w" << m.w

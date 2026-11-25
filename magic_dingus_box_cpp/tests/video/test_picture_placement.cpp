@@ -192,3 +192,20 @@ TEST_CASE("whole and fill films use the whole widescreen output", "[picture_plac
     CHECK(video::place_picture(4.0/3, output, 16.0/9, output, false).viewport ==
           video::IRect{240, 0, 1440, 1080});
 }
+
+TEST_CASE("the solid bezel repeats the outer samples under the shadow at each display size") {
+    for (int width : {1920, 1280}) {
+        const int height = width * 9 / 16;
+        const auto opening = video::scale_image_rect({276, 27, 1368, 1026}, 1920, 1080, width, height);
+        const auto picture = video::place_picture(4.0 / 3.0, opening, 4.0 / 3.0, opening, true);
+        const auto draw = video::extend_to_bezel_shadow(picture, opening, width, height);
+        const int border = width == 1920 ? 8 : 5;
+        CHECK(draw.viewport.x == opening.x - border);
+        CHECK(draw.viewport.h == opening.h + border * 2);
+        // At the first source edge the extrapolated coordinate is exactly zero.
+        CHECK(draw.tex.u0 + border * (draw.tex.u1 - draw.tex.u0) / draw.viewport.w
+              == Approx(0).margin(1e-6));
+        const auto wide = video::place_picture(16.0 / 9.0, opening, 4.0 / 3.0, opening, false);
+        CHECK(video::extend_to_bezel_shadow(wide, opening, width, height).viewport.h == wide.viewport.h);
+    }
+}

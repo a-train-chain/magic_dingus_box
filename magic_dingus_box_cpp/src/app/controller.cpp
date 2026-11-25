@@ -335,7 +335,12 @@ utils::Result<> Controller::load_item_media(AppState& state, const app::Playlist
         {
             int idx = state.display_settings.bezel_index;
             if (idx >= 0 && idx < static_cast<int>(state.available_bezels.size())) {
-                opts.bezel_file = state.available_bezels[idx].file;
+                const auto& bezel = state.available_bezels[idx];
+                opts.bezel_file = bezel.file;
+                if (!bezel.file.empty() && bezel.solid_rim) {
+                    opts.bezel_picture = video::IRect{bezel.opening_x, bezel.opening_y,
+                                                      bezel.opening_w, bezel.opening_h};
+                }
             }
         }
 

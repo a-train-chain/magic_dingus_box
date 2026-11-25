@@ -2651,7 +2651,12 @@ int main(int /* argc */, char* /* argv */[]) {
                     picture_target = video::IRect{w.x, w.y, w.w, w.h};
                     opening = picture_target;
                 }
-                gst_renderer.set_picture(picture_target, crop, opening, target_aspect);
+                const bool solid_rim = drawn_bezel && drawn_bezel->solid_rim &&
+                                       guide_frame_view == nullptr && opening.w > 0 && opening.h > 0;
+                if (solid_rim) {
+                    picture_target = opening;
+                }
+                gst_renderer.set_picture(picture_target, crop, opening, target_aspect, solid_rim);
             } else {
                 gst_renderer.clear_picture();
             }

@@ -177,4 +177,17 @@ inline Placement place_picture(double src_aspect, IRect target,
     return Placement{viewport, kFullFrame};
 }
 
+// The sampled picture reaches the inner shadow through an 8 px strip
+// at 1080p. Extrapolate UVs across it; the shader clamps to the source
+// crop so captions stay in place. Letterbox and pillarbox bars stay black.
+inline Placement extend_to_bezel_shadow(Placement p, IRect opening, int fb_w, int fb_h) {
+    if (p.viewport.w <= 0 || p.viewport.h <= 0) return p;
+    const int dx = p.viewport.w == opening.w ? std::lround(8.0 * fb_w / 1920) : 0;
+    const int dy = p.viewport.h == opening.h ? std::lround(8.0 * fb_h / 1080) : 0;
+    const float du = (p.tex.u1 - p.tex.u0) * dx / p.viewport.w;
+    const float dv = (p.tex.v1 - p.tex.v0) * dy / p.viewport.h;
+    return {{p.viewport.x - dx, p.viewport.y - dy, p.viewport.w + 2 * dx, p.viewport.h + 2 * dy},
+            {p.tex.u0 - du, p.tex.v0 - dv, p.tex.u1 + du, p.tex.v1 + dv}};
+}
+
 }  // namespace video
