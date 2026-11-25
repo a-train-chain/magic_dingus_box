@@ -14,7 +14,7 @@ setup() {
             emit { print }
             emit && /^log "Preflight: secret tripwire clean"/ { exit }
         ' "$TESTS_REPO_ROOT/scripts/golden_image/prepare_for_cloning.sh" \
-            | sed "s|/home/magic|$T/home/magic|g; s|/root|$T/root|g"
+            | sed "s|/home/magic|$T/home/magic|g; s|/root|$T/root|g; s|/var/tmp|$T/var/tmp|g"
     } > "$T/preflight.sh"
 }
 
@@ -104,4 +104,13 @@ teardown() { rm -rf "$T"; }
             [ "$(cat "$T/$account/$name")" = 'ordinary asset' ]
         done
     done
+}
+
+@test "clone refuses a bench build left on the source SD" {
+    mkdir -p "$T/var/tmp/mdb-dial.example/previous"
+    touch "$T/var/tmp/mdb-dial.example/previous/settings.json"
+    run bash "$T/preflight.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"$T/var/tmp/mdb-dial.example"* ]]
+    [ -f "$T/var/tmp/mdb-dial.example/previous/settings.json" ]
 }

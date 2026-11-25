@@ -125,6 +125,8 @@ python3 "$CLONE_SWAP_HELPER" --check
 # costs a minute of moving a file, a false negative ships a credential.
 shopt -s nullglob
 TRIPWIRE_HITS=(
+    # Bench builds can hold complete installations, settings and screen captures.
+    /var/tmp/mdb-*
     /home/magic/db-backup-*
     /home/magic/*.env.backup* /home/magic/.env.backup*
     /home/magic/*.env.bak* /home/magic/env-backup*
