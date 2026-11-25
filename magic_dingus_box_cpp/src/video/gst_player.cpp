@@ -387,6 +387,12 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
                                           && !player->at_eos_.load();
                     player->is_paused_ = false;
 
+                    // An audio-only station has no picture to release the tuner mute.
+                    gint audio_tracks = 0, video_tracks = 0;
+                    g_object_get(player->playbin_, "n-audio", &audio_tracks,
+                                 "n-video", &video_tracks, nullptr);
+                    player->audio_only_stream_ = audio_tracks > 0 && video_tracks == 0;
+
                     // Inspect pipeline to see what decoder is used (only once per pipeline)
                     if (!player->decoder_inspected_) {
                         player->decoder_inspected_ = true;
@@ -733,6 +739,7 @@ void GstPlayer::stop() {
 }
 
 void GstPlayer::forget_stream() {
+    audio_only_stream_ = false;
     is_playing_ = false;
     is_paused_ = false;
     at_eos_ = false;
@@ -797,13 +804,19 @@ double GstPlayer::get_duration() const {
     return duration_;
 }
 
+void GstPlayer::set_tuner_muted(bool muted) {
+    if (tuner_muted_.load() == muted) return;
+    tuner_muted_ = muted;
+    if (initialized_) control_.set_volume(muted ? 0.0 : volume_pct_.load(), pipeline_ref());
+}
+
 void GstPlayer::set_volume(double volume) {
     if (!initialized_) return;
     volume_pct_ = volume;
     // Applied on the control thread: playbin hands it to pulsesink, which
     // takes its PulseAudio lock (and playsink's), and the render thread must
     // not queue behind a state change holding them.
-    control_.set_volume(volume, pipeline_ref());
+    control_.set_volume(tuner_muted_ ? 0.0 : volume, pipeline_ref());
 }
 
 double GstPlayer::get_volume() const {
@@ -861,6 +874,9 @@ void GstPlayer::execute(const PipelineCommand& cmd) {
             // The appsink is empty now: what it receives from here on is
             // this load's stream (frames_current()).
             flushed_generation_ = cmd.generation;
+            // Loads run ahead of queued volume changes. Apply the squelch
+            // before PLAYING so the new station cannot leak a syllable.
+            if (tuner_muted_) apply_volume(0.0, cmd.target);
             g_object_set(G_OBJECT(pipeline), "uri", cmd.uri.c_str(), nullptr);
             if (gst_element_set_state(pipeline, GST_STATE_PLAYING) ==
                 GST_STATE_CHANGE_FAILURE) {

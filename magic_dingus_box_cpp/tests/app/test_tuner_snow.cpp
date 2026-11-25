@@ -19,9 +19,10 @@ TEST_CASE("Tuner hiss follows the snow envelope and the master volume") {
         energy += double(full[i]) * full[i];
     }
     const double rms = std::sqrt(energy / length) / 32768;
-    CHECK(rms > 0.007);
-    CHECK(rms < 0.018);
-    CHECK(peak < 2400);
+    // Include attack and decay: the whole burst is between -32 and -29 dBFS.
+    CHECK(rms > 0.025);
+    CHECK(rms < 0.0355);
+    CHECK(peak < 5200);
     CHECK(full.front() == 0);
     CHECK(std::abs(full.back()) <= 1);
     CHECK(half_error <= 1);

@@ -17,6 +17,8 @@ inline float strength(float age_seconds) {
 // A little mid-band receiver hiss. Limit the level in the samples themselves,
 // so opening a new Pulse stream at full volume cannot produce a loud pop.
 inline void write_audio(int16_t* samples, int count, int first, uint32_t seed, int volume) {
+    // At full volume the body of the burst is about -29 dBFS RMS.
+    constexpr float gain_per_volume_percent = 42.5f;
     float low = 0.0f;
     float mid = 0.0f;
     for (int i = 0; i < count; ++i) {
@@ -26,7 +28,7 @@ inline void write_audio(int16_t* samples, int count, int first, uint32_t seed, i
         mid += 0.45f * (white - mid);
         const float age = static_cast<float>(first + i) / sample_rate;
         const float attack = std::min(1.0f, static_cast<float>(i) / (0.004f * sample_rate));
-        samples[i] = static_cast<int16_t>((mid - low) * (17.0f * volume) * attack * strength(age));
+        samples[i] = static_cast<int16_t>((mid - low) * (gain_per_volume_percent * volume) * attack * strength(age));
     }
 }
 

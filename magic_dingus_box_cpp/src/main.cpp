@@ -2142,7 +2142,9 @@ int main(int /* argc */, char* /* argv */[]) {
             ident = {};
         }
         const bool surf = ident.active() && !guide_painted_now;
-        tuner_audio.update(surf && !ident.started ? video::TunerAudio::Start(ident.tuned_at) : std::nullopt,
+        const bool acquiring_channel = surf && !ident.started;
+        player.set_tuner_muted(acquiring_channel && !(ident.loaded && player.audio_only_stream()));
+        tuner_audio.update(acquiring_channel ? video::TunerAudio::Start(ident.tuned_at) : std::nullopt,
                            state.master_volume);
         const int guide_tuned = playlist_playback.pending_tune().value_or(state.tuned_channel);
         double guide_now_utc = 0.0;
@@ -2747,6 +2749,7 @@ int main(int /* argc */, char* /* argv */[]) {
             if (gst_renderer.render(tear, ident.channel) && surf && !ident.started) {
                 ident.started = std::chrono::steady_clock::now();
                 tuner_audio.update(std::nullopt, 0);
+                player.set_tuner_muted(false);
             }
         }
         
