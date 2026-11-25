@@ -144,6 +144,7 @@ endif()
 set(VIDEO_SOURCES
     src/video/gst_player.cpp
     src/video/gst_renderer.cpp
+    src/video/tuner_audio.cpp
 )
 
 set(UI_SOURCES

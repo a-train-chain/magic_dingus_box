@@ -59,6 +59,7 @@ struct FakeTransport : app::PlaylistTransport {
     app::UtcOffsetAt offset_at;
     int utc_offset_s(double utc) const override { return offset_at ? offset_at(utc) : zone_offset; }
     // load_playlist_item_at's offset_s, and the wall clock at that call.
+    bool reused_tune_stop = false;
     std::vector<double> offsets;
     std::vector<double> load_wall;
     // How long load_playlist_item_at blocks (both clocks move on before it
@@ -98,7 +99,8 @@ struct FakeTransport : app::PlaylistTransport {
         return load_ok ? utils::Result<>::ok() : utils::Result<>::fail("boom");
     }
     utils::Result<> load_playlist_item_at(app::AppState& state, const app::Playlist& pl, int idx,
-                                          const std::string&, double offset_s) override {
+                                          const std::string&, double offset_s, bool reuse_tune_stop) override {
+        reused_tune_stop = reuse_tune_stop;
         state.loaded_movie.reset();  // Controller::load_playlist_item clears retained ownership
         state.loaded_on_demand.reset();
         state.on_demand = false;
@@ -1261,6 +1263,7 @@ TEST_CASE("a tune joins the on-air item after the settle, at the offset when the
     CHECK(g.s.current_item_index == 1);
     CHECK(g.s.last_channel_id == "path:/p/cartoons.yaml");
     CHECK_FALSE(g.s.master_shuffle_active);
+    CHECK_FALSE(g.s.channel_ident.active());  // an automatic tune stays quiet
     CHECK_FALSE(g.s.ui_visible_when_playing);  // a tune closes the guide
     CHECK(g.s.is_switching_playlist);          // released when the stream plays
     CHECK_FALSE(g.pb.switch_pending());
@@ -1282,17 +1285,86 @@ TEST_CASE("NEXT and PREV change channel live and leave the guide as it is",
         CHECK(g.t.last_offset() == Approx(10.2).margin(0.05));
         CHECK(g.s.tuned_channel == 2);
         CHECK(g.s.ui_visible_when_playing);
+        CHECK_FALSE(g.t.reused_tune_stop);
+        CHECK_FALSE(g.s.channel_ident.active());
     }
-    SECTION("guide hidden: channel up keeps it hidden") {
+    SECTION("guide hidden: dial moves at the press and stays there through lock") {
         g.pb.on_next();
+        auto& id = g.s.channel_ident;
+        CHECK(id.channel == 2);
+        const auto press = id.tuned_at;
+        CHECK_FALSE(id.loaded);
+        CHECK(id.opacity(g.t.now()) == 1.0f);
+        CHECK(id.tear(g.t.now()) == 0.0f);
         run_frames(g.pb, g.t, kSettled);
         CHECK(g.s.tuned_channel == 2);
         CHECK_FALSE(g.s.ui_visible_when_playing);
+        CHECK(id.loaded);
+        CHECK(id.channel == 2);
+        CHECK(id.tuned_at == press);
+        CHECK(g.t.reused_tune_stop);
+        g.playing();
+        g.pb.on_prev();
+        CHECK(id.channel == 1);
+        CHECK_FALSE(id.loaded);
+        run_frames(g.pb, g.t, kSettled);
+        CHECK(id.channel == 1);
+        CHECK(id.loaded);
+        CHECK_FALSE(id.started);
     }
-    SECTION("channel down from 01 is the 00 mix") {
+    SECTION("fast taps advance from the displayed channel, wrapping and reversing before a single load") {
+        using namespace std::chrono_literals;
+        g.pb.on_next();
+        REQUIRE(g.s.channel_ident.channel == 2);
+        run_frames(g.pb, g.t, 60ms);
+        g.pb.on_next();
+        REQUIRE(g.s.channel_ident.channel == 0);
+        run_frames(g.pb, g.t, 60ms);
+        g.pb.on_prev();
+        REQUIRE(g.s.channel_ident.channel == 2);
+        CHECK(g.pb.pending_tune() == 2);
+        run_frames(g.pb, g.t, 100ms);  // past the first press's release deadline
+        CHECK(g.t.calls == std::vector<std::string>{"stop"});
+        run_frames(g.pb, g.t, 100ms);
+        CHECK(g.t.calls == std::vector<std::string>{"stop", "load_at Movies 0"});
+        CHECK(g.s.channel_ident.loaded);
+        REQUIRE(g.s.is_switching_playlist);
+        g.pb.on_prev(); // the load began, but its first picture has not locked
+        CHECK(g.pb.pending_tune() == 1);
+        CHECK(g.s.channel_ident.channel == 1);
+        CHECK_FALSE(g.s.channel_ident.loaded);
+        CHECK(g.t.calls.back() == "stop");
+    }
+    SECTION("00 keeps its number during a slow tune and tears only the incoming picture") {
         g.pb.on_prev();
         run_frames(g.pb, g.t, kSettled);
-        CHECK(g.s.tuned_channel == 0);
+        REQUIRE(g.s.tuned_channel == 0);
+        REQUIRE(g.s.current_playlist_index != 0);
+        auto& id = g.s.channel_ident;
+        REQUIRE(id.channel == 0);
+        g.t.advance(std::chrono::seconds(5));
+        CHECK(id.opacity(g.t.now()) == 1.0f);
+        CHECK_FALSE(id.started);
+        CHECK(id.tear(g.t.now()) > 0.0f);
+        id.started = g.t.now();  // first uploaded destination frame
+        CHECK(id.tear(g.t.now()) > 0.0f);
+        g.t.advance(std::chrono::milliseconds(52));
+        CHECK(id.tear(g.t.now()) < 0.0f);
+        g.t.advance(std::chrono::milliseconds(50));
+        CHECK(id.tear(g.t.now()) == 0.0f);
+        g.t.advance(std::chrono::milliseconds(3200));
+        const float fading = id.opacity(g.t.now());
+        CHECK(fading > 0.0f);
+        CHECK(fading < 1.0f);
+        g.t.advance(std::chrono::seconds(1));
+        CHECK(id.opacity(g.t.now()) == 0.0f);
+        CHECK_FALSE(id.active());
+    }
+    SECTION("a failed channel load never announces a programme") {
+        g.t.load_ok = false;
+        g.pb.on_next();
+        run_frames(g.pb, g.t, kSettled);
+        CHECK_FALSE(g.s.channel_ident.active());
     }
 }
 
@@ -1350,6 +1422,7 @@ TEST_CASE("a guide opened while a channel change waits stays open after the load
     CHECK(g.t.last() == "load_at Movies 0");
     CHECK(g.s.tuned_channel == 2);
     CHECK(g.s.ui_visible_when_playing);
+    CHECK_FALSE(g.s.channel_ident.active());
 }
 
 TEST_CASE("pending_tune names the channel a tune is loading until its load runs",
@@ -1362,7 +1435,8 @@ TEST_CASE("pending_tune names the channel a tune is loading until its load runs"
     g.t.wall = kW0 + 10;
     CHECK_FALSE(g.pb.pending_tune().has_value());
 
-    SECTION("channel up") {
+    SECTION("channel up with the guide open") {
+        g.s.ui_visible_when_playing = true;
         g.pb.on_next();
         REQUIRE(g.pb.pending_tune().has_value());
         CHECK(*g.pb.pending_tune() == 2);

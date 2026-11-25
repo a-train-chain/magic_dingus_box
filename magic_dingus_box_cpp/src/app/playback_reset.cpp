@@ -24,6 +24,7 @@ void stop_to_menu(AppState& state, const std::string& error_message) {
 }
 
 void reset_main_ui_for_media_browser(AppState& state) {
+    state.channel_ident = {};
     state.loaded_movie.reset();
     state.loaded_on_demand.reset();
     state.on_demand = false;
@@ -36,6 +37,7 @@ void reset_main_ui_for_media_browser(AppState& state) {
 }
 
 void clear_now_playing(AppState& state) {
+    state.channel_ident = {};
     state.loaded_movie.reset();
     state.loaded_on_demand.reset();
     state.on_demand = false;

@@ -18,6 +18,9 @@
 // no raw GL, so nothing here needs a flush_ui_batch() first.
 
 #include "renderer.h"
+#include "app/tuner_snow.h"
+#include <GLES3/gl3.h>
+#include <array>
 
 #include "channel_guide_view.h"
 #include "font_manager.h"
@@ -603,6 +606,114 @@ void Renderer::GuidePainter::hints_and_logo() {
         const float lh = r_.logo_height_ * s;
         r_.draw_textured_quad(r_.logo_texture_id_, lr.x + lr.w - lw, lr.y + (lr.h - lh) / 2.0f, lw,
                               lh, alpha_);
+    }
+}
+
+void Renderer::render_channel_snow(float age, int channel) {
+    constexpr int side = 256;
+    // On a slow tune the set blanks after the brief loss of signal.
+    draw_quad(0, 0, width_, height_, Color(4, 5, 5));
+    const float opacity = app::tuner_snow::strength(age);
+    if (opacity == 0.0f) return;
+    if (!channel_snow_texture_) {
+        // A single-channel RF grain tile. Adjacent samples share a little
+        // luminance horizontally, as on a bandwidth-limited analogue signal.
+        std::array<uint8_t, side * side> grain;
+        uint32_t seed = 0x7f4a7c15u;
+        int previous = 0;
+        for (auto& pixel : grain) {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            const int sample = static_cast<int>(seed >> 24);
+            pixel = static_cast<uint8_t>((sample * sample / 255 * 3 + previous) / 4);
+            previous = sample;
+        }
+        flush_ui_batch();
+        glGenTextures(1, &channel_snow_texture_);
+        glBindTexture(GL_TEXTURE_2D, channel_snow_texture_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, side, side, 0, GL_RED,
+                     GL_UNSIGNED_BYTE, grain.data());
+    }
+    const int field = static_cast<int>(age * 60.0f);
+    const float u = ((field * 83 + channel * 41) % side) / float(side);
+    const float v = ((field * 47 + channel * 17) % side) / float(side);
+    draw_textured_quad(channel_snow_texture_, 0, 0, width_, height_, opacity,
+                       {u, v, u + width_ / 430.0f, v + height_ / 320.0f});
+    // A faint horizontal sync bar drifts through the snow beneath the station ID.
+    const float bar_y = height_ * ((channel % 7 + field * 3) % 17) / 17.0f;
+    draw_quad(0, bar_y, width_, std::max(1.0f, height_ / 45.0f),
+              Color(4, 5, 5, static_cast<uint8_t>(48 * opacity)));
+}
+
+void Renderer::render_channel_ident(const app::AppState& state, float opacity) {
+    const auto start = state.channel_ident.tuned_at;
+    const bool locked = state.channel_ident.started.has_value();
+    if (channel_ident_start_ != start || channel_ident_width_ != width_ ||
+        channel_ident_height_ != height_ || channel_ident_locked_ != locked) {
+        channel_ident_locked_ = locked;
+        channel_ident_start_ = start;
+        channel_ident_width_ = width_;
+        channel_ident_height_ = height_;
+        channel_ident_lines_.clear();
+
+        const int ch = state.channel_ident.channel;
+        const auto* playing = state.current_playlist_item();
+        if (ch < 0 || ch >= static_cast<int>(state.playlists.size())) return;
+
+        const bool crt = state.display_settings.mode == app::DisplayMode::CRT_NATIVE;
+        const int number_size = crt ? 34 : 48;
+        const int station_size = crt ? 20 : 28;
+        const int programme_size = crt ? 22 : 32;
+        // Inset both corners past the bezel and CRT overscan.
+        const int right = static_cast<int>(width_ * 0.925f);
+        const int inset_y = static_cast<int>(height_ * 0.085f);
+        const int max_width = static_cast<int>(width_ * 0.76f);
+        auto add_line = [&](const std::string& text, int baseline, int size, bool station) {
+            if (text.empty()) return;
+            auto& font = station ? *title_font_manager_ : *body_font_manager_;
+            channel_ident_lines_.push_back({text, static_cast<float>(right - font.get_text_width(text, size)),
+                                            static_cast<float>(baseline), size, station});
+        };
+        const int top = inset_y + title_font_manager_->get_baseline_at_size(number_size);
+        add_line("CH " + guide_detail::two_digits(ch), top, number_size, true);
+        if (locked && playing) {
+            auto station_width = [&](const std::string& s) {
+                return title_font_manager_->get_text_width(s, station_size);
+            };
+            add_line(fit_to_width(state.playlists[ch].title, max_width, station_width),
+                     top + station_size + (crt ? 3 : 5), station_size, true);
+
+            auto programme_width = [&](const std::string& s) {
+                return body_font_manager_->get_text_width(s, programme_size);
+            };
+            const auto lines = wrap_to_lines(playing->title, max_width, 2, programme_width);
+            const int line_height = programme_size + (crt ? 3 : 5);
+            int baseline = static_cast<int>(height_) - inset_y -
+                           (static_cast<int>(lines.size()) - 1) * line_height;
+            for (const auto& line : lines) {
+                add_line(line, baseline, programme_size, false);
+                baseline += line_height;
+            }
+        }
+    }
+
+    // A dark keyline reads over bright footage. The green phosphor trail
+    // stays fixed beside the lettering even as the video loses sync.
+    constexpr float bleed = 1.0f;
+    for (const auto& line : channel_ident_lines_) {
+        const auto paint = [&](float dx, float dy, Color ink) {
+            draw_text(line.text, line.x + dx, line.baseline + dy,
+                      line.size, ink, line.station, opacity);
+        };
+        paint(-1.0f, -1.0f, Color(4, 16, 8, 230));
+        paint(1.0f, 2.0f, Color(4, 16, 8, 245));
+        paint(bleed, 0.0f, Color(77, 255, 128, 90));
+        paint(0.0f, 0.0f, line.station ? Color(141, 255, 161) : Color(229, 255, 232));
     }
 }
 

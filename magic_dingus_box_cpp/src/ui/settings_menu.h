@@ -60,6 +60,7 @@ enum class MenuSection {
     CYCLE_INTERLACING,
     CYCLE_FLICKER,
     CYCLE_CRT_ENGINE,      // Classic → Enhanced (→ Tube when app::tube_offered) → Classic
+    APPLY_CABLE_TV,
     CYCLE_TUBE_LOOK,       // Tube: the look (PVM → Monitor → … → Everything)
     TUBE_RESET_LOOK,       // Tube: clear every row moved off the look
     TUBE_GROUP,            // Tube: a group row on Display, and the submenu it opens

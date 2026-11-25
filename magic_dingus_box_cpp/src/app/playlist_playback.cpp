@@ -3,6 +3,7 @@
 #include "auto_advance.h"
 #include "playback_reset.h"
 #include "playlist_reload.h"
+#include "tuner_snow.h"
 
 #include <algorithm>
 #include <cmath>
@@ -460,6 +461,7 @@ void PlaylistPlayback::reanchor_airing(std::optional<ChannelAiring>& held) {
 }
 
 void PlaylistPlayback::set_channels(const std::vector<Channel>* channels) {
+    state_.channel_ident = {};
     channels_ = channels;
     // Reload can renumber a tune during its cooperative settle. Its target
     // is the channel chosen at the press, independent of the new row order.
@@ -547,7 +549,7 @@ void PlaylistPlayback::play_on_demand(int channel, const OnAir& oa) {
     // A rejected re-entrant press must not replace the pending selection.
     if (switch_pending() || state_.is_switching_playlist || state_.showing_intro_video ||
         transport_.now() < timeout_settle_until_) return;
-    tune(channel, false);
+    tune(channel, false, TuneOrigin::Viewer);
     if (switch_pending()) {
         pending_.selected = selected;
         state_.off_air_return_id.clear();
@@ -555,16 +557,20 @@ void PlaylistPlayback::play_on_demand(int channel, const OnAir& oa) {
     }
 }
 
-void PlaylistPlayback::tune(int channel, bool keep_overlay) {
+void PlaylistPlayback::tune(int channel, bool keep_overlay, TuneOrigin origin) {
     const Channel* ch = channel_at(channel);  // nullptr in List style
     if (!ch || ch->items.empty()) return;     // nothing to join
-    // SELECT's gates (see on_select): no tune over the intro, behind a
-    // pending switch or the stuck-switch timeout's settle, or over a switch
-    // still in flight.
-    if (state_.showing_intro_video) return;
-    if (switch_pending() || transport_.now() < timeout_settle_until_) return;
-    if (state_.is_switching_playlist) return;
+    const auto now = transport_.now();
+    if (state_.showing_intro_video || state_.is_loading_game || now < timeout_settle_until_) return;
+    const bool turning_dial = origin == TuneOrigin::Dial && !state_.ui_visible_when_playing;
+    const bool continuing = turning_dial && state_.channel_ident.active();
+    const bool reuse_stop = switch_pending();
+    if (reuse_stop && !(continuing && pending_.origin == TuneOrigin::Dial &&
+                        !pending_switch_obsolete_reason())) return;
+    if (!reuse_stop && state_.is_switching_playlist &&
+        !(continuing && state_.channel_ident.loaded)) return;
 
+    state_.channel_ident = {};
     // SELECT's mid-playback switch, with the channel as its target.
     state_.is_switching_playlist = true;
     switch_start_generation_ = transport_.stream_generation();
@@ -581,21 +587,32 @@ void PlaylistPlayback::tune(int channel, bool keep_overlay) {
     state_.last_advanced_item_index = -1;
     state_.last_advanced_duration = 0.0;
 
-    transport_.stop();
+    if (reuse_stop) {
+        // The decoder is already stopping. Keep its release deadline and
+        // give the last dial position time to settle before loading it.
+        pending_.next_check = std::max(pending_.next_check, now + tuner_snow::duration);
+    } else {
+        transport_.stop();
+        pending_.next_check = transport_.now() + kSwitchSettle;
+    }
     pending_.phase = SwitchPhase::Settling;
     pending_.target = channel;
-    pending_.next_check = transport_.now() + kSwitchSettle;
     pending_.repolls = 0;
     pending_.tune = true;
     pending_.identity = channel_identity(channel);
     pending_.keep_overlay = keep_overlay;
+    pending_.origin = origin;
+    if (origin != TuneOrigin::Automatic && !state_.ui_visible_when_playing) {
+        state_.channel_ident.channel = channel;
+        state_.channel_ident.tuned_at = transport_.now();
+    }
 }
 
 void PlaylistPlayback::on_channel_step(int delta) {
     if (!guide_style() || delta == 0 || channels_->empty()) return;
     const int n = static_cast<int>(channels_->size());
     const int step = delta > 0 ? 1 : -1;
-    const int from = state_.tuned_channel;
+    const int from = pending_tune().value_or(state_.tuned_channel);
     // From nothing tuned, up starts at 00 and down at the last channel.
     int c = (from >= 0 && from < n) ? from : (step > 0 ? -1 : n);
     for (int i = 0; i < n; ++i) {
@@ -606,7 +623,7 @@ void PlaylistPlayback::on_channel_step(int delta) {
             // it stands THEN — `tune(c, ui_visible_when_playing)` froze it as
             // it stood at the press, and a guide opened during the ~200 ms
             // wait closed again at the load.
-            tune(c, /*keep_overlay=*/true);
+            tune(c, /*keep_overlay=*/true, TuneOrigin::Dial);
             return;
         }
     }
@@ -625,7 +642,7 @@ void PlaylistPlayback::land_on_channel(int channel) {
     }
 }
 
-void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
+bool PlaylistPlayback::finish_tune(int channel, bool keep_overlay, bool reuse_tune_stop) {
     warn_if_still_playing();
     // On air NOW, not at the press: the wait must not put playback behind.
     const Channel* ch = channel_at(channel);
@@ -633,14 +650,14 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     const auto offset = [this](double utc) { return transport_.utc_offset_s(utc); };
     const auto oa = ch ? join_point(*ch, now, offset(now), offset) : std::nullopt;
     if (!oa) {
-        if (park_off_air(channel)) return;
+        if (park_off_air(channel)) return false;
         // The list was rebuilt during the wait and the channel lost its
         // schedule (or the style went back to List).
         std::cerr << "Tune to channel " << channel << " failed: nothing scheduled"
                   << std::endl;
         if (ch) land_on_channel(channel);  // not past a list that shrank
         app::stop_to_menu(state_);
-        return;
+        return false;
     }
     // Each channel gets its own failure run: failures on the channel being
     // left must not use up this one's budget.
@@ -649,7 +666,7 @@ void PlaylistPlayback::finish_tune(int channel, bool keep_overlay) {
     }
     // A load that returns OK starts the channel's start bound
     // (kChannelStartTimeout, tick_pipeline_error).
-    load_on_air(channel, *oa, keep_overlay);
+    return load_on_air(channel, *oa, keep_overlay, /*on_demand=*/false, reuse_tune_stop);
 }
 
 double PlaylistPlayback::played_position(double player_pos) {
@@ -802,7 +819,8 @@ void PlaylistPlayback::rejoin_schedule(bool programme_ended) {
     load_on_air(channel, *oa, /*keep_overlay=*/true);
 }
 
-bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand) {
+bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand, bool reuse_tune_stop) {
+    state_.channel_ident = {};
     state_.on_demand = on_demand;
     timezone_reload_pending_ = false;  // this load uses the current zone rules
     land_on_channel(channel);
@@ -850,7 +868,7 @@ bool PlaylistPlayback::load_on_air(int channel, const OnAir& oa, bool keep_overl
     const auto selected = state_.loaded_on_demand;
     const auto movie = state_.loaded_movie;
     auto result = transport_.load_playlist_item_at(state_, pl, si.item,
-                                                   playlist_directory_, oa.offset_s);
+                                                   playlist_directory_, oa.offset_s, reuse_tune_stop);
     // Controller clears the retained item when starting any new load. Both
     // success and synchronous failure still belong to this attempted programme.
     state_.loaded_movie = movie;
@@ -918,6 +936,7 @@ void PlaylistPlayback::advance_pending_switch() {
         std::cerr << "Playlist switch to row " << pending_.target
                   << " abandoned before its load (" << why << ")" << std::endl;
         pending_ = PendingSwitch{};
+        state_.channel_ident = {};
         return;
     }
 
@@ -927,7 +946,8 @@ void PlaylistPlayback::advance_pending_switch() {
     // The old loop, one iteration per due tick:
     //   while (is_playing() && retry_count < max_retries) { sleep 50; ++retry; }
     // Same queries in the same order, so the same poll count and outcome.
-    if (transport_.is_playing() && pending_.repolls < kSwitchMaxRepolls) {
+    const bool still_playing = transport_.is_playing();
+    if (still_playing && pending_.repolls < kSwitchMaxRepolls) {
         pending_.phase = SwitchPhase::Polling;
         ++pending_.repolls;
         pending_.next_check = now + kSwitchRepoll;
@@ -937,13 +957,27 @@ void PlaylistPlayback::advance_pending_switch() {
     const PendingSwitch done = pending_;
     pending_ = PendingSwitch{};
     if (done.tune) {
+        const auto tuning = state_.channel_ident;
+        // A fullscreen dial turn already stopped the pipeline and waited the
+        // release interval. A timed-out stop still needs normal load handling.
+        const bool reuse_tune_stop = tuning.active() && !state_.ui_visible_when_playing && !still_playing;
+        bool loaded;
         if (done.selected) {
             if (done.target != state_.tuned_channel) error_policy_ = video::PlaybackErrorPolicy{};
             const auto& a = done.selected->airing;
-            load_on_air(done.target, OnAir{a.index, 0, a.starts_at, a.ends_at, 0},
-                        done.keep_overlay, /*on_demand=*/true);
+            loaded = load_on_air(done.target, OnAir{a.index, 0, a.starts_at, a.ends_at, 0},
+                                 done.keep_overlay, /*on_demand=*/true, reuse_tune_stop);
         } else {
-            finish_tune(done.target, done.keep_overlay);
+            loaded = finish_tune(done.target, done.keep_overlay, reuse_tune_stop);
+        }
+        if (loaded && done.origin != TuneOrigin::Automatic && !state_.ui_visible_when_playing) {
+            // load_on_air clears the previous ident on every load. Carry the
+            // accepted dial turn across this load, including its snow clock.
+            state_.channel_ident.channel = done.target;
+            state_.channel_ident.tuned_at = tuning.active() ? tuning.tuned_at : transport_.now();
+            state_.channel_ident.loaded = true;
+        } else {
+            state_.channel_ident = {};
         }
     } else {
         finish_switch(done.target);
