@@ -40,6 +40,9 @@ public:
     double get_position() const override;
     double get_duration() const override;
     
+    // Temporarily silence only the program while a fullscreen channel tunes.
+    void set_tuner_muted(bool muted);
+    bool audio_only_stream() const { return audio_only_stream_; }
     void set_volume(double volume) override;
     double get_volume() const override;
     
@@ -124,6 +127,8 @@ private:
     // reading playbin's "volume" asks pulsesink, which waits for a
     // PulseAudio round trip — on the render thread, at every video start.
     std::atomic<double> volume_pct_{100.0};
+    std::atomic<bool> tuner_muted_{false};  // read by the worker before starting a load
+    bool audio_only_stream_ = false;       // discovered at PLAYING, cleared when the stream changes
     // Written by the control thread once a load's NULL has run (see
     // frames_current()); stream_generation_ is the render thread's own.
     std::atomic<uint64_t> flushed_generation_{0};

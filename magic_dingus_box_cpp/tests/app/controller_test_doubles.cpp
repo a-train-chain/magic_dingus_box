@@ -67,11 +67,13 @@ namespace app {
 utils::Result<> Controller::load_item_media(AppState&, const app::PlaylistItem& item,
                                             const std::string& playlist_directory,
                                             std::function<void()>,
-                                            double start_offset_s) {
+                                            double start_offset_s, bool reuse_tune_stop) {
     using test_doubles::events;
     if (item.source_type == "local" || item.source_type == "video") {
-        stop();
-        events().push_back("settle");
+        if (!reuse_tune_stop) {
+            stop();
+            events().push_back("settle");
+        }
         auto load_result = load_file_with_resolution(item.path, playlist_directory,
                                                      item.start + start_offset_s,
                                                      item.end, false);

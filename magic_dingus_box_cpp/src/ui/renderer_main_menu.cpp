@@ -76,7 +76,7 @@ void Renderer::render(app::AppState& state) {
     bool is_transitioning = (state.current_playlist_index >= 0 && state.current_item_index >= 0);
     bool should_clear = (!state.video_active && !state.ui_visible_when_playing && !is_transitioning) || 
                         (state.intro_complete && !state.video_active);  // Clear after intro completes
-    if (should_clear) {
+    if (should_clear && !state.channel_ident.active()) {
         // No video and no video loading: clear with background color (UI should always show when no video)
         // Also clear after intro video completes to remove any lingering video frames
         glClearColor(
@@ -104,7 +104,7 @@ void Renderer::render(app::AppState& state) {
     // If we're transitioning between videos, don't show UI at all — except
     // the guide, which stays up through a tune's load gap (the window dark
     // until the new stream arrives).
-    if (is_transitioning && !state.video_active && guide == nullptr) {
+    if (is_transitioning && !state.video_active && guide == nullptr && !state.channel_ident.active()) {
         return;  // Don't render UI during video transitions
     }
     
@@ -140,6 +140,12 @@ void Renderer::render(app::AppState& state) {
     // active AND whether other always-visible UI elements (scrub bar,
     // settings menu) are showing. Saves ~3-5% CPU + reduces GPU contention
     // with v4l2h264dec on the Pi 4 during fullscreen 1080p playback.
+    const bool settings_open = state.settings_menu &&
+        (state.settings_menu->is_active() || state.settings_menu->is_opening() ||
+         state.settings_menu->is_closing());
+    const auto ident_now = std::chrono::steady_clock::now();
+    const float ident_alpha = (guide_style && !guide && !settings_open && !state.ui_visible_when_playing)
+        ? state.channel_ident.opacity(ident_now) : 0.0f;
     if (ui_overlay_alpha <= 0.0f) {
         const auto& s = state.display_settings;
         const bool any_crt_effect = (s.scanline_intensity   > 0.0f ||
@@ -149,12 +155,8 @@ void Renderer::render(app::AppState& state) {
                                      s.bloom_intensity      > 0.0f ||
                                      s.interlacing_intensity > 0.0f ||
                                      s.flicker_intensity    > 0.0f);
-        const bool settings_open = state.settings_menu &&
-            (state.settings_menu->is_active()  ||
-             state.settings_menu->is_opening() ||
-             state.settings_menu->is_closing());
         const bool seek_visible = state.show_seek_bar;
-        if (!any_crt_effect && !settings_open && !seek_visible) {
+        if (!any_crt_effect && !settings_open && !seek_visible && ident_alpha <= 0.0f) {
             // Nothing would draw; skip the rest of the UI render entirely.
             return;
         }
@@ -280,6 +282,14 @@ void Renderer::render(app::AppState& state) {
         (void)background_alpha;  // Suppress unused variable warning
     }
     
+    if (ident_alpha > 0.0f) {
+        if (!state.channel_ident.started) {
+            const float age = std::chrono::duration<float>(ident_now - state.channel_ident.tuned_at).count();
+            render_channel_snow(age, state.channel_ident.channel);
+        }
+        render_channel_ident(state, ident_alpha);
+    }
+
     // Render volume overlay (always on top if active)
     render_volume_overlay(state);
 

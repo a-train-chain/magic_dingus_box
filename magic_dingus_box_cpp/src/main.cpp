@@ -7,6 +7,7 @@
 #include "platform/frame_presenter.h"
 #include "platform/bluez_worker.h"
 #include "video/gst_player.h"
+#include "video/tuner_audio.h"
 #include "video/gst_renderer.h"
 #include "video/content_area.h"
 #include "video/picture_placement.h"
@@ -1163,6 +1164,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // video::kWedgedAfter (30 s) on one command, stop pinging: that restart
     // is still the last resort.
     bool pipeline_wedge_logged = false;
+    video::TunerAudio tuner_audio;
 
     while (running && !g_shutdown_requested) {
         if (auto stall = loop_stall_report.tick(
@@ -1580,7 +1582,8 @@ int main(int /* argc */, char* /* argv */[]) {
                 app::guide_tune_taken(state, row, playlist_playback.pending_tune() == row);
             }
             if (cmd.tune >= 0) {
-                playlist_playback.tune(cmd.tune, /*keep_overlay=*/false);
+                playlist_playback.tune(cmd.tune, /*keep_overlay=*/false,
+                                       app::PlaylistPlayback::TuneOrigin::Viewer);
                 app::guide_tune_taken(state, cmd.tune,
                                       playlist_playback.pending_tune() == cmd.tune);
             }
@@ -2132,6 +2135,17 @@ int main(int /* argc */, char* /* argv */[]) {
         // channel being left.
         const bool guide_style_now = playlist_playback.guide_style();
         const bool guide_painted_now = guide_style_now && app::guide_painted(state);
+        auto& ident = state.channel_ident;
+        if (ident.active() && (!guide_style_now || state.ui_visible_when_playing ||
+            settings_menu.is_active() || settings_menu.is_opening() || settings_menu.is_closing() ||
+            state.showing_intro_video || state.is_loading_game)) {
+            ident = {};
+        }
+        const bool surf = ident.active() && !guide_painted_now;
+        const bool acquiring_channel = surf && !ident.started;
+        player.set_tuner_muted(acquiring_channel && !(ident.loaded && player.audio_only_stream()));
+        tuner_audio.update(acquiring_channel ? video::TunerAudio::Start(ident.tuned_at) : std::nullopt,
+                           state.master_volume);
         const int guide_tuned = playlist_playback.pending_tune().value_or(state.tuned_channel);
         double guide_now_utc = 0.0;
         int guide_offset_s = 0;
@@ -2339,7 +2353,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // has_pending(). The volume slider appears 300 ms into a BTN4
             // hold with no new input — hence button_held.
             act.transient_overlay =
-                ui::Toast::is_active() || ui::Toast::has_pending() ||
+                surf || ui::Toast::is_active() || ui::Toast::has_pending() ||
                 state.has_error_message() || state.show_volume_slider ||
                 state.show_seek_bar || state.seek_bar_timer > 0.0 ||
                 menu_hold.button_held || state.is_loading_game;
@@ -2602,7 +2616,7 @@ int main(int /* argc */, char* /* argv */[]) {
         // clear above left there — and that clear runs on every frame once
         // the intro is complete.
         // This handles both intro video and regular video playback
-        if (should_render_video) {
+        if (should_render_video && (!surf || ident.loaded)) {
             // Playlist and intro video draw through the picture placement
             // into `content`: the whole output for full-screen guide films,
             // otherwise the centred 4:3 rect in Modern TV or the whole
@@ -2731,7 +2745,12 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 #endif
 
-            gst_renderer.render();
+            const float tear = surf ? ident.tear(std::chrono::steady_clock::now()) : 0.0f;
+            if (gst_renderer.render(tear, ident.channel) && surf && !ident.started) {
+                ident.started = std::chrono::steady_clock::now();
+                tuner_audio.update(std::nullopt, 0);
+                player.set_tuner_muted(false);
+            }
         }
         
         // Render UI overlay (will skip if intro video is showing - handled in renderer.cpp)

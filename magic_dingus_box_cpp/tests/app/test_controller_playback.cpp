@@ -556,8 +556,8 @@ struct ControllerAdapter final : app::PlaylistTransport {
         return c.load_playlist_item(s, pl, i, d);
     }
     utils::Result<> load_playlist_item_at(app::AppState& s, const app::Playlist& pl, int i,
-                                          const std::string& d, double offset_s) override {
-        return c.load_playlist_item(s, pl, i, d, nullptr, offset_s);
+                                          const std::string& d, double offset_s, bool reuse_tune_stop) override {
+        return c.load_playlist_item(s, pl, i, d, nullptr, offset_s, reuse_tune_stop);
     }
     void load_next_item(app::AppState& s, const std::string& d) override { c.load_next_item(s, d); }
     void load_previous_item(app::AppState& s, const std::string& d) override {

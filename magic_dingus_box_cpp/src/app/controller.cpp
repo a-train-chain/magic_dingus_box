@@ -111,100 +111,33 @@ void wait_with_callback(int milliseconds, std::function<void()> callback) {
     }
 }
 
-utils::Result<> Controller::load_item_media(AppState& state, const app::PlaylistItem& item, const std::string& playlist_directory, std::function<void()> progress_callback, double start_offset_s) {
-    if (item.source_type == "local") {
+utils::Result<> Controller::load_item_media(AppState& state, const app::PlaylistItem& item, const std::string& playlist_directory, std::function<void()> progress_callback, double start_offset_s, bool reuse_tune_stop) {
+    if (item.source_type == "local" || item.source_type == "video") {
         std::cout << "Starting playlist transition..." << std::endl;
-
-        // Stop current playback. Queued, not waited for: GstPlayer's control
-        // thread takes the pipeline to NULL, which can wait seconds for a
-        // read the SD card holds (video/pipeline_control.h — a stall
-        // reload stuck right here was a watchdog kill on 2026-11-15).
-        stop();
-        std::cout << "Stopped playback, loading new file..." << std::endl;
-
-        // Brief delay for MPV to stop
-        // TODO(render-thread): this 200 ms settle and wait_for_playback_start's
-        // up-to-1000 ms below block the render thread on EVERY track change.
-        // They should become a per-frame state machine like the playlist
-        // switch in playlist_playback.cpp, but the settle exists because the
-        // DRM driver needs time to release the previous video's buffers, so
-        // that change needs hardware validation on both boards. The control
-        // thread measures this gap from when the stop actually FINISHED, so
-        // the hardware still sees NULL, >= 200 ms, PLAYING (load_not_before).
-        // (A MISSING file no longer reaches here — load_playlist_item refuses
-        // it first.)
-        wait_with_callback(200, progress_callback);
-
-        // Load the new file
-        std::cout << "Loading file: " << item.path << std::endl;
-        // Trim points from the playlist. These were hardcoded to 0.0/0.0, so a
-        // playlist authored with in/out points played every item in full.
-        // start_offset_s: a Channel Guide tune joins the item mid-way.
-        auto load_result = load_file_with_resolution(item.path, playlist_directory,
-                                                     item.start + start_offset_s,
-                                                     item.end, false);
-        if (load_result) {
-            std::cout << "File loaded successfully, starting playback..." << std::endl;
-
-            play();
-
-            // Wait for playback to start — but exit the moment it does
-            // instead of always burning the full budget. GstPlayer::
-            // update_state() treats ASYNC+pending==PLAYING as playing, so
-            // this typically exits on the first tick (~16ms) where the old
-            // fixed wait_with_callback(1000) froze the render thread a full
-            // second every launch. The 1000ms cap and the warning on
-            // timeout are unchanged.
-            wait_for_playback_start(1000, progress_callback);
-
-            // Verify playback actually started
-            if (!is_playing()) {
-                std::cerr << "Warning: Playback did not start after load - this may cause playlist switching issues" << std::endl;
-            }
-
-            // Debug: Check audio-related properties after video starts. The
-            // volume last set, not a PulseAudio read-back (GstPlayer).
-            try {
-                double vol = player_->get_volume();
-                std::cout << "DEBUG: After playlist transition - volume=" << vol << std::endl;
-            } catch (const std::exception& e) {
-                std::cerr << "DEBUG: Error checking audio properties: " << e.what() << std::endl;
-            }
-
-            return utils::Result<>::ok();
-        } else {
-            std::string error = "Failed to load playlist item: " + item.path + " (" + load_result.error() + ")";
-            std::cerr << "Error: " << error << std::endl;
-            return utils::Result<>::fail(error);
+        if (!reuse_tune_stop) {
+            stop();
+            // The worker preserves this interval from the completion of its
+            // stop, even if taking the old pipeline to NULL was slow.
+            wait_with_callback(200, progress_callback);
         }
-    } else if (item.source_type == "video") {
-        // Treat "video" as an alias for "local"
-        std::cout << "Starting playlist transition (source_type=video)..." << std::endl;
-
-        stop();
-        // Same blocking settle as the "local" branch — see the TODO there.
-        wait_with_callback(200, progress_callback);
 
         std::cout << "Loading file: " << item.path << std::endl;
-        // Trim points from the playlist. These were hardcoded to 0.0/0.0, so a
-        // playlist authored with in/out points played every item in full.
-        auto load_result = load_file_with_resolution(item.path, playlist_directory,
-                                                     item.start + start_offset_s,
-                                                     item.end, false);
-        if (load_result) {
-            std::cout << "File loaded successfully, starting playback..." << std::endl;
-            play();
-            // Early-exit poll — see the "local" branch above for rationale.
+        auto result = load_file_with_resolution(item.path, playlist_directory,
+                                                item.start + start_offset_s, item.end, false);
+        if (!result) {
+            return utils::Result<>::fail("Failed to load playlist item: " + item.path +
+                                         " (" + result.error() + ")");
+        }
+        play();
+        if (!reuse_tune_stop) {
             wait_for_playback_start(1000, progress_callback);
             if (!is_playing()) {
                 std::cerr << "Warning: Playback did not start after load" << std::endl;
             }
-            return utils::Result<>::ok();
-        } else {
-            std::string error = "Failed to load playlist item: " + item.path + " (" + load_result.error() + ")";
-            std::cerr << "Error: " << error << std::endl;
-            return utils::Result<>::fail(error);
         }
+        // A fullscreen tune confirms the new stream in the normal frame loop;
+        // return now so it can present the first decoded picture immediately.
+        return utils::Result<>::ok();
     } else if (item.source_type == "emulated_game") {
         // Handle RetroArch game launch
         std::cout << "Launching RetroArch game: " << item.title << std::endl;

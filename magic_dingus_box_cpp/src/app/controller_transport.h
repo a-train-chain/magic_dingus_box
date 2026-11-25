@@ -40,9 +40,9 @@ public:
     utils::Result<> load_playlist_item_at(AppState& state, const Playlist& playlist,
                                           int item_index,
                                           const std::string& playlist_directory,
-                                          double offset_s) override {
+                                          double offset_s, bool reuse_tune_stop) override {
         return controller_.load_playlist_item(state, playlist, item_index,
-                                              playlist_directory, nullptr, offset_s);
+                                              playlist_directory, nullptr, offset_s, reuse_tune_stop);
     }
     void load_next_item(AppState& state, const std::string& dir) override {
         controller_.load_next_item(state, dir);

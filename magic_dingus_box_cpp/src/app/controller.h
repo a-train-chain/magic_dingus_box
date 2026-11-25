@@ -95,7 +95,7 @@ public:
     // start_offset_s: join a video item this far past its own `start:`
     // (a Channel Guide tune: the scheduled position); ignored for games.
     // Returns Result with error message on failure
-    utils::Result<> load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr, double start_offset_s = 0.0);
+    utils::Result<> load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr, double start_offset_s = 0.0, bool reuse_tune_stop = false);
     
     // Navigation
     //
@@ -203,7 +203,7 @@ private:
     utils::Result<> load_item_media(AppState& state, const app::PlaylistItem& item,
                                     const std::string& playlist_directory,
                                     std::function<void()> progress_callback,
-                                    double start_offset_s);
+                                    double start_offset_s, bool reuse_tune_stop);
 
     video::VideoPlayer* player_;
     retroarch::RetroArchLauncher retroarch_launcher_;

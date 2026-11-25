@@ -109,7 +109,7 @@ public:
                                                   const Playlist& playlist,
                                                   int item_index,
                                                   const std::string& playlist_directory,
-                                                  double offset_s) = 0;
+                                                  double offset_s, bool reuse_tune_stop) = 0;
     virtual void load_next_item(AppState& state, const std::string& playlist_directory) = 0;
     virtual void load_previous_item(AppState& state, const std::string& playlist_directory) = 0;
     virtual void play_random_global_video(AppState& state,
@@ -210,7 +210,8 @@ public:
     // (kChannelPlaysS).
     // Dropped (like SELECT) in List style, for a channel with no schedule,
     // during the intro, and while a switch is pending or in flight.
-    void tune(int channel, bool keep_overlay);
+    enum class TuneOrigin { Automatic, Viewer, Dial };
+    void tune(int channel, bool keep_overlay, TuneOrigin origin = TuneOrigin::Automatic);
     // Select a whole programme, including tomorrow's lineup. Captures media
     // identity now; settle/reloads may remap it or cancel, never replace it.
     void play_on_demand(int channel, const OnAir& airing);
@@ -342,6 +343,7 @@ private:
         int repolls = 0;  // 50 ms re-polls used so far
         std::string identity;       // pending channel survives row renumbering
         bool tune = false;          // a Channel Guide tune, not a SELECT
+        TuneOrigin origin = TuneOrigin::Automatic;
         bool keep_overlay = false;  // tune(): leave the overlay as it is
         std::optional<ChannelAiring> selected;  // whole programme, anchored by media identity
     };
@@ -368,7 +370,7 @@ private:
     const Channel* channel_at(int c) const;
     std::string channel_identity(int c) const;
     // A tune's load, once its switch wait is over.
-    void finish_tune(int channel, bool keep_overlay);
+    bool finish_tune(int channel, bool keep_overlay, bool reuse_tune_stop);
     // An item's natural end: load what is on the tuned channel now — but
     // never the airing just loaded again (app::boundary_join).
     void rejoin_schedule(bool programme_ended = true);
@@ -381,7 +383,8 @@ private:
     void land_on_channel(int channel);
     // Load channel `channel`'s scheduled item `oa` at its offset; true when
     // the load returned OK.
-    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand = false);
+    bool load_on_air(int channel, const OnAir& oa, bool keep_overlay, bool on_demand = false,
+                     bool reuse_tune_stop = false);
     bool timezone_reload_pending_ = false;
     // Scheduled end (UTC) of the channel item last loaded: when it fails,
     // the channel picks up again from there — but no later than its length
