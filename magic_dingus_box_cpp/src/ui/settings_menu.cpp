@@ -1,4 +1,5 @@
 #include "settings_menu.h"
+#include "app/cable_tv_look.h"
 #include <unistd.h>
 #include "controller_wizard.h"
 #include "pairing_screen.h"
@@ -331,6 +332,15 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
         }
         items.emplace_back("Back", MenuSection::BACK);
         return items;
+    }
+
+    if (app::effective_crt_engine(settings.crt_engine, tube_offered) == app::CrtEngine::Enhanced) {
+        items.emplace_back("Apply Cable TV look", MenuSection::APPLY_CABLE_TV,
+                           "Light scanlines, fine phosphor mask, warm picture", [this, &settings]() {
+                               app::apply_cable_tv_look(settings);
+                               rebuild_current_submenu();
+                               app::SettingsPersistence::save_settings(*app_state_);
+                           });
     }
 
     items.insert(items.end(), {

@@ -177,12 +177,16 @@ TEST_CASE("Tube menu: with the renderer not ready the Display page is exactly to
                 SettingsMenuManager sm{&state};
                 sm.enter_submenu(MenuSection::DISPLAY);
                 before[i] = labels(sm);
-                CHECK(sublabels(sm) == kTodaysSublabels);
+                auto expected = kTodaysSublabels;
+                expected.insert(expected.begin() + 3, "Light scanlines, fine phosphor mask, warm picture");
+                CHECK(sublabels(sm) == expected);
                 press(sm, "CRT Engine: ");
                 stepped[i] = state.display_settings.crt_engine;
                 after[i] = labels(sm);
             }
-            CHECK(before[1] == todays_labels_with_engine("CRT Engine: Enhanced"));
+            auto expected = todays_labels_with_engine("CRT Engine: Enhanced");
+            expected.insert(expected.begin() + 3, "Apply Cable TV look");
+            CHECK(before[1] == expected);
             CHECK(before[1] == before[0]);
             CHECK(stepped[1] == app::CrtEngine::Classic);
             CHECK(stepped[0] == app::CrtEngine::Classic);
@@ -735,4 +739,19 @@ TEST_CASE("Tube menu: the Display page follows the films answer and the tube's s
     state.tube_render.yielding = false;
     sm.update();
     REQUIRE(row(sm, "Degauss")->action);
+}
+
+TEST_CASE("Applying Cable TV from Display updates the sliders and saves the look",
+          "[settings_menu][crt]") {
+    ui_test::fake_reset();
+    app::AppState state{};
+    state.display_settings.set_crt_engine(app::CrtEngine::Enhanced);
+    SettingsMenuManager sm{&state};
+    sm.enter_submenu(MenuSection::DISPLAY);
+    press(sm, "Apply Cable TV look");
+    CHECK(row(sm, "Scanlines: Low (25%)"));
+    CHECK(row(sm, "RGB Mask: Low (16%)"));
+    CHECK(row(sm, "Color Warmth: Low (12%)"));
+    CHECK(row(sm, "Screen Bloom: OFF"));
+    CHECK(ui_test::fake_settings_saves() == 1);
 }

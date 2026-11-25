@@ -7,6 +7,7 @@
 #include "platform/frame_presenter.h"
 #include "platform/bluez_worker.h"
 #include "video/gst_player.h"
+#include "video/tuner_audio.h"
 #include "video/gst_renderer.h"
 #include "video/content_area.h"
 #include "video/picture_placement.h"
@@ -1163,6 +1164,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // video::kWedgedAfter (30 s) on one command, stop pinging: that restart
     // is still the last resort.
     bool pipeline_wedge_logged = false;
+    video::TunerAudio tuner_audio;
 
     while (running && !g_shutdown_requested) {
         if (auto stall = loop_stall_report.tick(
@@ -2140,6 +2142,8 @@ int main(int /* argc */, char* /* argv */[]) {
             ident = {};
         }
         const bool surf = ident.active() && !guide_painted_now;
+        tuner_audio.update(surf && !ident.started ? video::TunerAudio::Start(ident.tuned_at) : std::nullopt,
+                           state.master_volume);
         const int guide_tuned = playlist_playback.pending_tune().value_or(state.tuned_channel);
         double guide_now_utc = 0.0;
         int guide_offset_s = 0;
@@ -2742,6 +2746,7 @@ int main(int /* argc */, char* /* argv */[]) {
             const float tear = surf ? ident.tear(std::chrono::steady_clock::now()) : 0.0f;
             if (gst_renderer.render(tear, ident.channel) && surf && !ident.started) {
                 ident.started = std::chrono::steady_clock::now();
+                tuner_audio.update(std::nullopt, 0);
             }
         }
         

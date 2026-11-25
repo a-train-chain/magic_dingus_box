@@ -18,6 +18,7 @@
 // no raw GL, so nothing here needs a flush_ui_batch() first.
 
 #include "renderer.h"
+#include "app/tuner_snow.h"
 #include <GLES3/gl3.h>
 #include <array>
 
@@ -612,7 +613,8 @@ void Renderer::render_channel_snow(float age, int channel) {
     constexpr int side = 256;
     // On a slow tune the set blanks after the brief loss of signal.
     draw_quad(0, 0, width_, height_, Color(4, 5, 5));
-    if (age >= 0.15f) return;
+    const float opacity = app::tuner_snow::strength(age);
+    if (opacity == 0.0f) return;
     if (!channel_snow_texture_) {
         // A single-channel RF grain tile. Adjacent samples share a little
         // luminance horizontally, as on a bandwidth-limited analogue signal.
@@ -640,9 +642,12 @@ void Renderer::render_channel_snow(float age, int channel) {
     const int field = static_cast<int>(age * 60.0f);
     const float u = ((field * 83 + channel * 41) % side) / float(side);
     const float v = ((field * 47 + channel * 17) % side) / float(side);
-    const float opacity = std::clamp((0.15f - age) / 0.055f, 0.0f, 1.0f);
     draw_textured_quad(channel_snow_texture_, 0, 0, width_, height_, opacity,
                        {u, v, u + width_ / 430.0f, v + height_ / 320.0f});
+    // A faint horizontal sync bar drifts through the snow beneath the station ID.
+    const float bar_y = height_ * ((channel % 7 + field * 3) % 17) / 17.0f;
+    draw_quad(0, bar_y, width_, std::max(1.0f, height_ / 45.0f),
+              Color(4, 5, 5, static_cast<uint8_t>(48 * opacity)));
 }
 
 void Renderer::render_channel_ident(const app::AppState& state, float opacity) {
