@@ -2428,6 +2428,8 @@ int main(int /* argc */, char* /* argv */[]) {
             sig.add(static_cast<uint64_t>(state.display_settings.mode));
             app::add_tube_redraw_signature(sig, state);
             sig.add(static_cast<uint64_t>(state.display_settings.bezel_index));
+            sig.add(state.display_settings.marquee_frame_index);
+            sig.add(state.display_settings.mb_playback_show_frame);
             // An open, static Settings menu: page, cursor, row labels.
             if (settings_shown) {
                 sig.add(settings_menu.redraw_signature());
